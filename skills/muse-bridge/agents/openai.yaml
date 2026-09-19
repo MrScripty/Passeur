@@ -1,0 +1,4 @@
+interface:
+  display_name: "Muse Bridge"
+  short_description: "Set up and use Muse delegation from Codex"
+  default_prompt: "Set up or use the Muse Bridge for this repository."

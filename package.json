@@ -1,0 +1,33 @@
+{
+  "name": "muse-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "muse-bridge": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "probe:wait": "tsx scripts/probe-wait.ts",
+    "probe:muse": "tsx scripts/probe-muse.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@muse-code/sdk": "1.3.0",
+    "proper-lockfile": "4.1.2",
+    "zod": "4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "24.7.2",
+    "@types/proper-lockfile": "4.1.4",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}
