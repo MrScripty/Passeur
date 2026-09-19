@@ -22,7 +22,7 @@ Run commands from the repository root. The bridge requires Node.js 20 or newer, 
      --confirm-subscription
    ```
 
-   Add `--worktree-root /absolute/approved/root` to enable implementation tasks. The command prints JSON containing `codex_config`; translate it into the equivalent `[mcp_servers.muse_bridge]` TOML entry in the user's Codex config. Preserve unrelated settings. The essential values are the absolute Node executable, `dist/src/cli.js`, `serve`, the canonical project and profile paths, `tool_timeout_sec = 2100`, and `enabled_tools = ["delegate_to_muse", "muse_result"]`.
+   Add `--worktree-root /absolute/approved/root` to enable implementation tasks. That root must be outside the source checkout. The command prints JSON containing `codex_config`; translate it into the equivalent `[mcp_servers.muse_bridge]` TOML entry in the user's Codex config. Preserve unrelated settings. The essential values are the absolute Node executable, `dist/src/cli.js`, `serve`, the canonical project and profile paths, `tool_timeout_sec = 2100`, and `enabled_tools = ["delegate_to_muse", "muse_result"]`.
 
 4. Ensure Codex allows MCP tool-call elicitation and routes approval prompts to the human. The bridge refuses delegation when the client does not advertise elicitation.
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { ProfileSchema } from "./contracts/index.js";
 import { loadProfile } from "./core/profile.js";
+import { cleanupTask } from "./core/cleanup.js";
 import { doctor } from "./diagnostics/doctor.js";
 import { serve } from "./mcp/server.js";
 import { TaskStore } from "./store/task-store.js";
@@ -19,7 +20,7 @@ function usage(): never { console.error("Usage: muse-bridge <configure|doctor|se
 
 async function main(): Promise<void> {
   const command = process.argv[2]; if (!command) usage();
-  const { values } = parseArgs({ args: process.argv.slice(3), options: { project: { type: "string" }, profile: { type: "string" }, task: { type: "string" }, follow: { type: "boolean" }, yes: { type: "boolean" }, "muse-bin": { type: "string" }, model: { type: "string" }, "worktree-root": { type: "string" }, "confirm-subscription": { type: "boolean" } }, strict: true });
+  const { values } = parseArgs({ args: process.argv.slice(3), options: { project: { type: "string" }, profile: { type: "string" }, task: { type: "string" }, follow: { type: "boolean" }, yes: { type: "boolean" }, reconcile: { type: "boolean" }, "muse-bin": { type: "string" }, model: { type: "string" }, "worktree-root": { type: "string" }, "confirm-subscription": { type: "boolean" } }, strict: true });
   if (!values.project) usage();
   const project = await canonicalProject(values.project); const id = projectId(project); const locations = roots(id); const profilePath = resolve(values.profile ?? locations.defaultProfile); const store = new TaskStore(locations.store);
   if (command === "configure") {
@@ -36,7 +37,7 @@ async function main(): Promise<void> {
   if (!values.task) usage(); const record = await store.find({ task_id: values.task }); if (!record) throw new Error("Task not found");
   if (command === "result") { console.log(JSON.stringify(await store.readResult(record.task_id), null, 2)); return; }
   if (command === "logs") { const path = join(store.taskDir(record.task_id), "events.ndjson"); if (!values.follow) { process.stdout.write(await readFile(path)); return; } const child = (await import("node:child_process")).spawn("tail", ["-f", path], { stdio: "inherit" }); await new Promise((done) => child.once("exit", done)); return; }
-  if (command === "cleanup") { if (!values.yes) throw new Error("cleanup requires --yes; retained worktrees are never removed by this command"); await rm(store.taskDir(record.task_id), { recursive: true }); console.log(`Removed task records for ${record.task_id}; any task worktree was retained.`); return; }
+  if (command === "cleanup") { if (!values.yes) throw new Error("cleanup requires --yes; retained worktrees are never removed by this command"); await cleanupTask({ store, lockPath: locations.store, taskId: record.task_id, reconcile: values.reconcile ?? false }); console.log(`Removed task records for ${record.task_id}; any task worktree was retained.`); return; }
   usage();
 }
 

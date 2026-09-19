@@ -28,7 +28,7 @@ export async function resolveProjectFile(root: string, input: string): Promise<s
 }
 
 export async function git(root: string, args: string[]): Promise<string> {
-  try { return (await exec("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })).stdout.trim(); }
+  try { return (await exec("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })).stdout.trimEnd(); }
   catch (error) { throw new BridgeError("GIT_ERROR", error instanceof Error ? error.message : String(error)); }
 }
 

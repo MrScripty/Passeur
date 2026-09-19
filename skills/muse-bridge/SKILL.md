@@ -28,8 +28,8 @@ Build `delegate_to_muse` input with:
 
 The call remains pending through Muse execution and human permission prompts. Await it. Do not start a polling loop. A human approval form authorizes only the exact live choice returned by Muse.
 
-Treat `execution_status: completed` as the end of the worker run. Assess the result from `worker_assessment`, checks, changed files, artifacts, staleness, and stop evidence. Inspect the retained worktree before integrating implementation results. Preserve failed or partial work when it is useful.
+Treat `execution_status: completed` as the end of the worker run. `worker_assessment` and `worker_reported` checks are Muse's constrained report; runtime-observed checks carry stronger evidence. Assess changed files, artifacts, staleness, and stop evidence independently. Inspect the retained worktree before integrating implementation results. Preserve failed or partial work when it is useful.
 
-Use `muse_result` for recovery or a bounded artifact read after a task has ended. An active task returning `RESULT_NOT_READY` is a state report, not a reason to poll.
+Use `muse_result` for recovery or a bounded artifact read by `artifact_id` after a task has ended. Request `base64` encoding for binary file artifacts. An active task returning `RESULT_NOT_READY` is a state report, not a reason to poll.
 
 When `worker_stop` is `unconfirmed`, reconcile the process and workspace before attempting another assignment. The bridge intentionally blocks replacement work until that task record is explicitly cleaned up.

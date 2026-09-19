@@ -69,8 +69,11 @@ export async function serve(options: { project: string; projectId: string; profi
       if (!record) return operationalError("RESULT_NOT_FOUND", "No task matches the supplied identifier");
       const state = await options.store.readState(record.task_id);
       if (state.phase !== "terminal") return operationalError("RESULT_NOT_READY", "The task has no terminal result yet");
-      const text = await options.store.readSection(record.task_id, request.section, request.offset, request.limit);
-      return { content: [{ type: "text" as const, text }], structuredContent: { task_id: record.task_id, section: request.section, offset: request.offset, bytes: Buffer.byteLength(text), content: text } };
+      const section = request.section ?? "result";
+      const artifact = request.artifact_id ? await options.store.readArtifact(record.task_id, request.artifact_id, request.offset, request.limit) : undefined;
+      const text = artifact ? artifact.toString(request.encoding) : await options.store.readSection(record.task_id, section, request.offset, request.limit);
+      const selector = request.artifact_id ? { artifact_id: request.artifact_id } : { section };
+      return { content: [{ type: "text" as const, text }], structuredContent: { task_id: record.task_id, ...selector, offset: request.offset, bytes: artifact?.byteLength ?? Buffer.byteLength(text), encoding: artifact ? request.encoding : "utf8", content: text } };
     } catch (error) { return operationalError("RESULT_READ_FAILED", error instanceof Error ? error.message : String(error)); }
   });
 

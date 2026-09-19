@@ -1,5 +1,5 @@
 import { MuseClient, type ApprovalDecisionInput, type TurnOutcome } from "@muse-code/sdk";
-import type { DelegateRequest, ExecutionStatus, Profile } from "../contracts/index.js";
+import type { DelegateRequest, DelegateResult, ExecutionStatus, Profile } from "../contracts/index.js";
 
 export type ApprovalRequest = {
   id: string;
@@ -10,7 +10,10 @@ export type ApprovalRequest = {
 };
 export type ApprovalDecision = { choice_id: string };
 export type ApprovalHandler = (request: ApprovalRequest, signal: AbortSignal) => Promise<ApprovalDecision>;
-export type WorkerRun = { status: ExecutionStatus; summary: string; reported_model?: string; error?: { code: string; message: string }; worker_stop: "confirmed" | "unconfirmed" };
+export type WorkerRun = {
+  status: ExecutionStatus; summary: string; reported_model?: string; error?: { code: string; message: string }; worker_stop: "confirmed" | "unconfirmed";
+  worker_assessment: DelegateResult["worker_assessment"]; blockers: string[]; questions: string[]; checks: DelegateResult["checks"];
+};
 export interface WorkerAdapter { run(input: { request: DelegateRequest; prompt: string; workspace: string; profile: Profile; signal: AbortSignal; approve: ApprovalHandler; onEvent: (event: unknown) => Promise<void> }): Promise<WorkerRun>; }
 
 function childEnvironment(): NodeJS.ProcessEnv {
@@ -26,32 +29,65 @@ function outcomeStatus(outcome: TurnOutcome): ExecutionStatus {
   return outcome.params.error?.kind === "authRequired" ? "blocked" : "failed";
 }
 
+export function parseWorkerReport(text: string | undefined, workspace: string): Pick<WorkerRun, "summary" | "worker_assessment" | "blockers" | "questions" | "checks"> {
+  const fallback = { summary: text ?? "No worker report was returned", worker_assessment: "unknown" as const, blockers: [] as string[], questions: [] as string[], checks: [] as DelegateResult["checks"] };
+  if (!text) return fallback;
+  const marker = text.match(/MUSE_BRIDGE_RESULT\s*(\{[\s\S]*\})\s*$/);
+  if (!marker?.[1]) return fallback;
+  try {
+    const value = JSON.parse(marker[1]) as Record<string, unknown>;
+    const assessment = ["met", "partial", "unmet", "unknown"].includes(String(value.assessment)) ? value.assessment as WorkerRun["worker_assessment"] : "unknown";
+    return {
+      summary: typeof value.summary === "string" ? value.summary.slice(0, 16_384) : fallback.summary,
+      worker_assessment: assessment,
+      blockers: Array.isArray(value.blockers) ? value.blockers.filter((item): item is string => typeof item === "string").slice(0, 50) : [],
+      questions: Array.isArray(value.questions) ? value.questions.filter((item): item is string => typeof item === "string").slice(0, 50) : [],
+      checks: Array.isArray(value.checks) ? value.checks.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const check = item as Record<string, unknown>;
+        if (typeof check.command !== "string") return [];
+        return [{ command: check.command.slice(0, 4096), cwd: typeof check.cwd === "string" ? check.cwd.slice(0, 4096) : workspace, exit_code: typeof check.exit_code === "number" ? check.exit_code : null, evidence: "worker_reported" as const }];
+      }).slice(0, 100) : [],
+    };
+  } catch { return fallback; }
+}
+
 export class MuseSdkAdapter implements WorkerAdapter {
+  constructor(private readonly spawnClient: typeof MuseClient.spawn = MuseClient.spawn) {}
   async run(input: Parameters<WorkerAdapter["run"]>[0]): Promise<WorkerRun> {
     const args = ["serve"];
     if (input.request.mode === "review") args.push("--disable-write", "--disable-shell", "--sandbox-network", input.profile.review.sandbox_network);
     else args.push("--sandbox-network", input.profile.implementation.sandbox_network);
     let client: MuseClient | undefined;
     let stopped: "confirmed" | "unconfirmed" = "confirmed";
+    let consume: Promise<void> | undefined;
+    const pendingEvents = new Set<Promise<void>>();
+    let eventError: unknown;
+    const emit = (event: unknown): Promise<void> => {
+      const pending = Promise.resolve(input.onEvent(event)).catch((error) => { eventError ??= error; }).finally(() => pendingEvents.delete(pending));
+      pendingEvents.add(pending);
+      return pending;
+    };
     const stop = async () => {
       if (!client) return;
       const owned = client; client = undefined;
       try { await owned.close(); } catch { stopped = "unconfirmed"; }
     };
+    let result: WorkerRun;
     try {
-      client = await MuseClient.spawn({
+      client = await this.spawnClient({
         museBin: input.profile.muse_bin,
         args,
         env: childEnvironment(),
         clientInfo: { name: "muse-bridge", version: "0.1.0" },
         shutdownTimeoutMs: input.profile.stop_grace_ms,
-        onStderr: (chunk) => { void input.onEvent({ kind: "muse_stderr", text: chunk.slice(0, 16_384) }); },
+        onStderr: (chunk) => { void emit({ kind: "muse_stderr", text: chunk.slice(0, 16_384) }); },
       });
       const session = await client.startSession({ workspaceRoot: input.workspace, modelId: input.profile.model, approvalMode: "onRequest" });
       const reported = session.opening?.result.session.modelId ?? undefined;
       if (reported !== input.profile.model) throw new Error(`Muse reported model ${reported ?? "<unknown>"}; requested ${input.profile.model}`);
       session.onApproval(async (request): Promise<ApprovalDecisionInput> => {
-        await input.onEvent({ kind: "approval_requested", approval_id: request.approvalId, tool: request.toolName });
+        await emit({ kind: "approval_requested", approval_id: request.approvalId, tool: request.toolName });
         const decision = await input.approve({
           id: request.approvalId,
           tool: request.toolName,
@@ -61,21 +97,36 @@ export class MuseSdkAdapter implements WorkerAdapter {
         }, input.signal);
         return { choiceId: decision.choice_id };
       });
-      session.onApprovalError((failure) => { void input.onEvent({ kind: "approval_error", failure }); });
+      session.onApprovalError((failure) => { void emit({ kind: "approval_error", failure }); });
       const turn = await session.sendUserTurn({ input: [{ type: "text", text: input.prompt }], displayText: `Muse bridge task ${input.request.request_key}` });
       const texts: string[] = [];
-      const consume = (async () => { for await (const item of turn.items()) { if (item.kind === "agentMessage" && item.text) texts.push(item.text); await input.onEvent({ kind: "item", item_kind: item.kind, status: item.status, text: item.text?.slice(0, 8192) }); } })();
-      const abort = new Promise<never>((_, reject) => input.signal.addEventListener("abort", () => reject(input.signal.reason ?? new Error("aborted")), { once: true }));
+      const checks: DelegateResult["checks"] = [];
+      consume = (async () => { for await (const item of turn.items()) {
+        if (item.kind === "agentMessage" && item.text) texts.push(item.text);
+        if (item.kind === "userShell" && item.commandText) checks.push({ command: item.commandText, cwd: input.workspace, exit_code: item.exitCode ?? null, evidence: "runtime_observed" });
+        await emit({ kind: "item", item_kind: item.kind, status: item.status, text: item.text?.slice(0, 8192) });
+      } })();
+      const abort = new Promise<never>((_, reject) => {
+        const rejectAbort = () => reject(input.signal.reason ?? new Error("aborted"));
+        if (input.signal.aborted) rejectAbort(); else input.signal.addEventListener("abort", rejectAbort, { once: true });
+      });
       const outcome = await Promise.race([turn.completed, abort]);
       await consume;
+      if (eventError) throw eventError;
       const status = outcomeStatus(outcome);
       const terminalError = outcome.kind === "completed" ? outcome.params.error : undefined;
-      await stop();
-      return { status, summary: texts.at(-1) ?? outcome.kind, reported_model: reported, ...(terminalError ? { error: { code: terminalError.kind, message: terminalError.message } } : {}), worker_stop: stopped };
+      const report = parseWorkerReport(texts.at(-1), input.workspace);
+      result = { status, ...report, checks: [...checks, ...report.checks], reported_model: reported, ...(terminalError ? { error: { code: terminalError.kind, message: terminalError.message } } : {}), worker_stop: stopped };
     } catch (error) {
+      const summary = error instanceof Error ? error.message : String(error);
+      result = input.signal.aborted
+        ? { status: input.signal.reason?.code === "TASK_TIMEOUT" ? "timed_out" : "cancelled", summary: String(input.signal.reason ?? "Task cancelled"), worker_assessment: "unknown", blockers: [], questions: [], checks: [], worker_stop: stopped }
+        : { status: "failed", summary, worker_assessment: "unknown", blockers: [], questions: [], checks: [], error: { code: "MUSE_RUNTIME_ERROR", message: summary }, worker_stop: stopped };
+    } finally {
       await stop();
-      if (input.signal.aborted) return { status: input.signal.reason?.code === "TASK_TIMEOUT" ? "timed_out" : "cancelled", summary: String(input.signal.reason ?? "Task cancelled"), worker_stop: stopped };
-      return { status: "failed", summary: error instanceof Error ? error.message : String(error), error: { code: "MUSE_RUNTIME_ERROR", message: error instanceof Error ? error.message : String(error) }, worker_stop: stopped };
+      if (consume) await Promise.allSettled([consume]);
+      await Promise.allSettled([...pendingEvents]);
     }
+    return { ...result, worker_stop: stopped };
   }
 }

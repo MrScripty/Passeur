@@ -17,4 +17,6 @@ Recorded September 19, 2026 on the current Linux environment.
 | Subscription provenance | Per-profile `user_confirmed`, `provider_verified`, or `unverified` | Real tasks reject `unverified`; no provider machine proof claimed |
 | Parent-loss cleanup | SDK owned-host close and host-death handling | Graceful close path implemented; abrupt parent-death descendant test remains |
 
+Deterministic coverage now includes atomic concurrent admission, request-key attachment and conflicts, partial-record quarantine, lease-aware cleanup and explicit reconciliation, cancellation iterator settlement, revision drift, worktree-root confinement, untracked binary artifact copies, artifact allowlisting, worker-report parsing, and compact-result byte limits.
+
 No live, billable Muse inference was run during implementation. The opt-in probes and installed-client cases in the design plan must be completed in a disposable repository before describing this environment as fully compatible. Update this record with dates, trace locations, effective model, approval policy, credential provenance, and negative-fixture observations after those runs.

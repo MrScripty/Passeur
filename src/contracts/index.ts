@@ -51,17 +51,21 @@ export type DelegateResult = {
 export const ResultRequestSchema = z.object({
   task_id: z.string().uuid().optional(),
   request_key: bounded(128).optional(),
-  section: z.enum(["result", "manifest", "log"]).default("result"),
+  section: z.enum(["result", "log"]).optional(),
+  artifact_id: bounded(128).optional(),
+  encoding: z.enum(["utf8", "base64"]).default("utf8"),
   offset: z.number().int().min(0).default(0),
   limit: z.number().int().min(1).max(24_576).default(24_576),
-}).strict().refine((value) => Number(Boolean(value.task_id)) + Number(Boolean(value.request_key)) === 1, "supply exactly one task_id or request_key");
+}).strict()
+  .refine((value) => Number(Boolean(value.task_id)) + Number(Boolean(value.request_key)) === 1, "supply exactly one task_id or request_key")
+  .refine((value) => !(value.section && value.artifact_id), "supply section or artifact_id, not both");
 
 export type ResultRequest = z.infer<typeof ResultRequestSchema>;
 
 export const ProfileSchema = z.object({
   schema_version: z.literal(1),
   muse_bin: z.string().min(1),
-  model: z.string().min(1),
+  model: z.string().min(1).max(256),
   review: z.object({ disable_write: z.literal(true), disable_shell: z.literal(true), sandbox_network: z.enum(["restricted", "proxy-only"]) }).strict(),
   implementation: z.object({ enabled: z.boolean(), worktree_root: z.string().min(1).optional(), sandbox_network: z.enum(["restricted", "proxy-only", "enabled"]) }).strict(),
   task_timeout_ms: z.number().int().min(60_000).max(86_400_000).default(1_800_000),
