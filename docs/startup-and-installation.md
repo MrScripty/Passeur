@@ -85,3 +85,10 @@ Responses/stderr are bounded and redact common credential patterns. Do not put s
 This source change keeps task schema 2, supported schema-1 history, retained results, explicit dispositions and the existing worker adapter. It does not move state. Stop/drain existing known coordinators before switching registrations to a different installed build. Rollback selects an existing previous runtime explicitly; it does not reset records or imply every older runtime can interpret newer state.
 
 The artifact installation contract is not tamper-proof against a user editing their own files. Linux evidence does not establish Windows/macOS, network-filesystem, multi-user or process-fencing guarantees. Complete [installed acceptance](installed-acceptance.md) before treating the setup as operationally accepted.
+
+
+## Registered-agent extension
+
+The installed allowlist now includes seven neutral operations (`passeur_status`, `passeur_prepare`, `passeur_agents`, `passeur_delegate`, `passeur_delegate_batch`, `passeur_result`, `passeur_finalize`) and the four supported legacy Muse operations. Re-register the exact new installed runtime under the existing server name/binding through the procedure above. Do not leave an old six-tool allowlist and mistake hidden neutral tools for a missing provider.
+
+Agent profiles remain lazily loaded. [Registered-agent configuration](registered-agents.md) owns explicit profile edits, version migration and controlled restart requirements. The existing package manifest/install code supplies the adapter dependency closure; verify the actual installed candidate without relying on its source checkout. Build/runtime identity, server name, agent ID and native vendor client identifier remain distinct.

@@ -1,7 +1,9 @@
 # Repository instructions
 
-For development, apply MrScripty/Coding-Standards: read CORE-STANDARDS.md, then STANDARDS-ROUTER.md and the applicable canonical modules. The startup plan records the inspected standards revision and route; do not infer that unexecuted verification passed.
+For development, apply MrScripty/Coding-Standards: read CORE-STANDARDS.md, then STANDARDS-ROUTER.md and applicable canonical modules. The governing plan records its adopted revision, scope and evidence; source implementation and passing partial checks do not imply acceptance.
 
-Written-plan work requires an explicit repository-relative plan.md path and operation (start, continue or verify). Preserve unrelated changes and normal hooks. Do not interpret this file as authority to install dependencies, change personal configuration, run inference, or rewrite shared history.
+Written-plan work requires an explicit repository-relative plan.md and operation (`start`, `continue` or `verify`). Preserve unrelated changes and ordinary hooks. This file grants no authority to install dependencies, change personal configuration, authenticate, use live accounts, publish or rewrite shared history.
 
-For Muse delegation, MCP setup, retained-result recovery, or bridge diagnostics, read and follow [`.agents/skills/muse-bridge/SKILL.md`](.agents/skills/muse-bridge/SKILL.md).
+For task delegation, startup diagnosis, setup, retained evidence and resource accounting, follow [the Passeur usage skill](.agents/skills/passeur-bridge/SKILL.md). Existing Muse skill entrypoints remain compatibility routes.
+
+For registration-only changes or implementing/qualifying a new runtime adapter, follow [the adapter-authoring skill](.agents/skills/passeur-agent-adapter/SKILL.md). Preserve RepositoryRuntime's lazy preparation/lease lifecycle and the shared coordinator. New native dependencies must not become prerequisites for MCP discovery or retained-result access.

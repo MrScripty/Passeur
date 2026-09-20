@@ -1,5 +1,6 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import type { ApprovalHandler } from "../muse/types.js";
+import type { ApprovalHandler } from "../agents/types.js";
+import { BridgeError } from "../core/errors.js";
 import { Mutex, throwIfAborted, withAbort } from "../core/async.js";
 
 /** One arbiter per MCP connection. It serializes human prompts, not worker execution. */
@@ -18,10 +19,11 @@ export function nativeApprovalHandler(server: Pick<Server, "elicitInput">, timeo
     try {
       return await queue.run(controller.signal, async () => {
         const once = request.choices.filter((choice) => choice.scope === "once" || choice.decision.startsWith("denied"));
-        const choices = once.length ? once : request.choices;
+        if (!once.length) throw new BridgeError("APPROVAL_UNSUPPORTED", "The runtime offered no single-operation or denial choice");
+        const choices = once;
         const result = await server.elicitInput({
           mode: "form",
-          message: `Muse requests permission\nTask: ${request.task_id ?? "unknown"}\nWorkspace: ${request.workspace ?? "unknown"}\nRequest: ${request.id}\nTool: ${request.tool}\nOperation: ${request.raw_args}\nScope: ${JSON.stringify(request.subject)}`,
+          message: `Worker requests permission\nTask: ${request.task_id ?? "unknown"}\nWorkspace: ${request.workspace ?? "unknown"}\nRequest: ${request.id}\nTool: ${request.tool}\nOperation: ${request.raw_args}\nScope: ${JSON.stringify(request.subject)}`,
           requestedSchema: { type: "object", properties: {
             decision: { type: "string", title: "Decision", oneOf: choices.map((choice) => ({ const: choice.id, title: `${choice.label} (${choice.scope})` })) },
           }, required: ["decision"] },

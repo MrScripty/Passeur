@@ -1,3 +1,13 @@
+# Registered-agent recovery additions
+
+New v3 records retain their original non-secret execution snapshot. Recovery never consults the current registration/model to describe them. An interrupted v1/v2 task without a snapshot receives explicitly unavailable historical identity and an empty model representation, while prior immutable results remain unchanged. Read/result operations and equivalent v3 retries have no live-agent prerequisite. Preparing or reconciling incomplete work never restarts inference.
+
+Profile migration is an explicit backed-up operator edit, not startup recovery. Old binaries cannot interpret new task-store versions; a profile backup alone is not a store downgrade procedure. Keep the configured namespace, original bytes and the current runtime capable of reading them. Unknown versions remain distinct from corruption. Disposition contracts and exact protected-commit evidence remain unchanged.
+
+Use the neutral `passeur_result` and `passeur_finalize` aliases below; the legacy Muse names remain supported. The following preserved resource procedures continue to apply.
+
+---
+
 # Evidence, recovery and resource retirement
 
 > Current prerequisite policy: the MCP interface remains available for diagnosis even when coordination cannot be acquired. `passeur_prepare` and protected operations perform authorized preparation lazily. History reads never migrate/quarantine; offline recovery/finalization/cleanup do not require Muse availability or subscription verification. Any older eager-server-start/profile prerequisite below is superseded by [startup-and-installation.md](startup-and-installation.md). Resource-specific stopped-worker, commit-protection and explicit-disposition requirements remain binding.

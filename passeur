@@ -10,7 +10,7 @@ command="${1:-start}"
 case "$command" in
   --help|help|--version) exec node "$cli" "$@" ;;
   install) exec node "$cli" "$@" ;;
-  start|serve|setup|configure|register-codex|doctor|inspect|result|logs|finalize|cleanup|reconcile) shift || true ;;
+  start|serve|setup|configure|register-codex|doctor|inspect|result|logs|finalize|cleanup|reconcile|agents|configure-agent|migrate-profile) shift || true ;;
   /*|./*|../*|.) command="start" ;;
   *) printf 'Unknown Passeur action: %s\n' "$command" >&2; exit 1 ;;
 esac

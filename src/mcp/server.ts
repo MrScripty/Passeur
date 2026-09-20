@@ -1,3 +1,5 @@
+import { AssignmentSchema, AgentBatchSchema, AgentCatalogSchema, AgentCatalogRequestSchema } from "../contracts/agents.js";
+import { errorInfo } from "../core/errors.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { BatchRequestSchema, DelegateRequestSchema, FinalizeRequestSchema, ResultRequestSchema } from "../contracts/index.js";
@@ -7,7 +9,7 @@ import { diagnosticInfo } from "../core/errors.js";
 import { batchToolPayload, resultReceipt, textChunk, toolPayload } from "../core/result.js";
 import { ApprovalQueue, nativeApprovalHandler } from "../approvals/native.js";
 
-const instructions = `Use schema_version 2 for tasks. Inspect passeur_status when diagnosis is needed; passeur_prepare establishes repository coordination without inference. Discovery and diagnostics do not acquire authority. Delegate independent assignments through delegate_to_muse or delegate_to_muse_batch; calls wait, so do not poll. Implementation names an exact base_commit and local target_ref. Workers perform scoped verification and ordinary commits using repository policy and hooks. Passeur does not test, review, merge or repair contributions. Codex owns broader acceptance and integration. Read retained evidence through muse_result when useful and account for resources through muse_finalize after integration or explicit retention/archive. A batch has no shared feature or test meaning.`;
+const instructions = `Use schema_version 3 and an explicit agent_id for neutral tasks. Discover configured agents through passeur_agents. The Muse compatibility tools retain version 2. Inspect passeur_status when diagnosis is needed; passeur_prepare establishes repository coordination without inference. Discovery and diagnostics do not acquire authority. Delegate independent assignments through passeur_delegate or passeur_delegate_batch; calls wait, so do not poll. Implementation names an exact base_commit and local target_ref. Workers perform scoped verification and ordinary commits using repository policy and hooks. Passeur does not test, review, merge or repair contributions. The calling agent owns broader acceptance and integration. Read retained evidence through passeur_result when useful and account for resources through passeur_finalize after integration or explicit retention/archive. A batch has no shared feature or test meaning.`;
 function failure(error: unknown) {
   return toolPayload({ error: RuntimeFailureSchema.parse(diagnosticInfo(error)) }, true);
 }
@@ -40,12 +42,40 @@ export function createMcpServer(runtime: RepositoryRuntime) {
     try { return toolPayload(RuntimeStatusSchema.parse(await runtime.prepare(AbortSignal.any([extra.signal, lifecycle.signal])))); }
     catch (error) { return failure(error); }
   });
+  mcp.registerTool("passeur_agents", {
+    title: "List registered agents", description: "Read configured agents and configuration limitations without acquiring coordination or probing a vendor. Runtime readiness is not established by this observation.",
+    inputSchema: AgentCatalogRequestSchema, annotations: { readOnlyHint: true },
+  }, async (request) => {
+    try { return toolPayload(AgentCatalogSchema.parse(await runtime.agents(request.offset, request.limit))); }
+    catch (error) { return failure(error); }
+  });
+  mcp.registerTool("passeur_delegate", {
+    title: "Delegate to a registered agent", description: "Await one schema-version-3 assignment selected by agent_id. No automatic provider fallback, testing or integration.",
+    inputSchema: AssignmentSchema,
+  }, async (request, extra) => {
+    try {
+      const result = await runtime.delegate(request, context(extra.signal));
+      return toolPayload(resultReceipt(result, await runtime.resource(result.task_id)), result.execution_status !== "completed");
+    } catch (error) { return failure(error); }
+  });
+  mcp.registerTool("passeur_delegate_batch", {
+    title: "Delegate independent registered-agent tasks", description: "Await up to eight independent v3 assignments; each chooses an agent. Sibling failures do not imply cancellation.",
+    inputSchema: AgentBatchSchema,
+  }, async (request, extra) => {
+    try {
+      const settled = await runtime.delegateBatch(request.assignments, context(extra.signal));
+      const results = await Promise.all(settled.map(async (entry) => entry.result
+        ? { request_key: entry.request_key, result: resultReceipt(entry.result, await runtime.resource(entry.result.task_id)) }
+        : { request_key: entry.request_key, error: entry.error }));
+      return batchToolPayload(results, settled.some((entry) => !entry.result || entry.result.execution_status !== "completed"), 3);
+    } catch (error) { return failure(error); }
+  });
   mcp.registerTool("delegate_to_muse", {
     title: "Delegate an independent Muse task", description: "Await one scoped worker. Implementation delivers commits, not whole-system acceptance. Use schema_version 2.",
     inputSchema: DelegateRequestSchema,
   }, async (request, extra) => {
     try {
-      const result = await runtime.delegate(request, context(extra.signal));
+      const result = await runtime.delegateMuse(request, context(extra.signal));
       return toolPayload(resultReceipt(result, await runtime.resource(result.task_id)), result.execution_status !== "completed");
     } catch (error) { return failure(error); }
   });
@@ -54,15 +84,19 @@ export function createMcpServer(runtime: RepositoryRuntime) {
     inputSchema: BatchRequestSchema,
   }, async (request, extra) => {
     try {
-      const settled = await runtime.delegateBatch(request.assignments, context(extra.signal));
+      const run = context(extra.signal);
+      const settled = await Promise.all(request.assignments.map(async (assignment) => {
+        try { return { request_key: assignment.request_key, result: await runtime.delegateMuse(assignment, run) }; }
+        catch (error) { return { request_key: assignment.request_key, error: errorInfo(error) }; }
+      }));
       const results = await Promise.all(settled.map(async (entry) => entry.result
         ? { request_key: entry.request_key, result: resultReceipt(entry.result, await runtime.resource(entry.result.task_id)) }
         : { request_key: entry.request_key, error: entry.error }));
       return batchToolPayload(results, settled.some((entry) => !entry.result || entry.result.execution_status !== "completed"));
     } catch (error) { return failure(error); }
   });
-  mcp.registerTool("muse_result", {
-    title: "Read retained Muse evidence", description: "Read bounded historical evidence without launching a worker, acquiring a lease, or migrating state. Resource records are current observations, not a transactional snapshot.",
+  for (const tool of ["passeur_result", "muse_result"] as const) mcp.registerTool(tool, {
+    title: "Read retained agent evidence", description: "Read bounded historical evidence without launching a worker, acquiring a lease, or migrating state. Resource records are current observations, not a transactional snapshot.",
     inputSchema: ResultRequestSchema, annotations: { readOnlyHint: true },
   }, async (request) => {
     try {
@@ -78,7 +112,7 @@ export function createMcpServer(runtime: RepositoryRuntime) {
       }
     } catch (error) { return failure(error); }
   });
-  mcp.registerTool("muse_finalize", {
+  for (const tool of ["passeur_finalize", "muse_finalize"] as const) mcp.registerTool(tool, {
     title: "Record resource dispositions", description: "Account for external integration, explicit retention or archive; safely retire only owned stopped resources. No inference, tests or merge.",
     inputSchema: FinalizeRequestSchema,
   }, async (request, extra) => {

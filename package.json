@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && npm run test:core && vitest run",
+    "test": "npm run build && npm run test:core && npm run test:native && vitest run",
     "test:watch": "vitest",
     "test:core": "tsc -p tsconfig.core.json && node --test --test-concurrency=1 tests/core/*.test.mjs",
     "probe:wait": "tsx scripts/probe-wait.ts",
@@ -18,7 +18,9 @@
     "probe:parallel": "node dist/scripts/probe-parallel.js",
     "build:runtime": "tsx scripts/build-runtime.ts",
     "probe:installed": "tsx scripts/probe-installed.ts",
-    "test:installed": "npm run build && vitest run tests/integration/mcp-startup.test.ts tests/integration/installed-runtime.test.ts tests/integration/registration-probe.test.ts"
+    "test:installed": "npm run build && vitest run tests/integration/mcp-startup.test.ts tests/integration/installed-runtime.test.ts tests/integration/registration-probe.test.ts",
+    "test:native": "tsc -p tsconfig.native.json && node --test tests/native/*.test.mjs",
+    "probe:agents": "node dist/scripts/probe-agents.js"
   },
   "engines": {
     "node": ">=20"

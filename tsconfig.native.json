@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "outDir": ".passeur-native", "types": ["node"] },
+  "include": [],
+  "files": ["src/agents/codex/transport.ts", "src/agents/codex/protocol.ts"]
+}

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { fixture, done, context, hold, until } from './helpers.mjs';
 import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
 import { Coordinator } from '../../.passeur-core/src/core/coordinator.js';
+import { resultReceipt, toolPayload } from '../../.passeur-core/src/core/result.js';
 
 test('two unrelated workers overlap before either completes', {timeout: 5000}, async t => {
   const f = await fixture(t), gate = hold(); let starts = 0;
@@ -52,15 +53,20 @@ test('queued owner cancellation finishes without launching a worker', async t =>
 });
 test('queue time consumes the original deadline', async t => {
   const f=await fixture(t), gate=hold();let starts=0;
-  const c=f.coordinator({run:async()=>{starts++;await gate.promise;return done();}},{max_workers:1,task_timeout_ms:80});
-  const a=c.delegate(f.request('a'),context());await until(()=>starts===1);
-  const b=c.delegate(f.request('b'),context());const result=await b;assert.equal(result.execution_status,'timed_out');assert.equal(starts,1);
+  const c=f.coordinator({run:async()=>{starts++;await gate.promise;return done();}},{max_workers:1});
+  const a=c.delegate(f.request('a'),context()), b=c.delegate(f.request('b'),context());
+  await until(()=>starts===1 && c.queuedCount===1);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  t.mock.timers.setTime(Date.now()+60_001);
+  // Completing the slot invokes the real queue deadline check against the controlled clock.
+  gate.release();
+  const result=await b;assert.equal(result.execution_status,'timed_out');assert.equal(starts,1);
   gate.release();await a;
 });
 test('missing terminal persistence freezes replacement starts', async t => {
   const f=await fixture(t);let starts=0;
   class FailingStore extends TaskStore { async writeResult(id,result){ if(result.request_key==='bad')throw Error('disk full');return super.writeResult(id,result);} }
-  const store=new FailingStore(f.state), c=new Coordinator(f.root,'project',f.profile,store,{run:async()=>{starts++;return done({worker_stop:'unconfirmed'});}});
+  const store=new FailingStore(f.state), c=new Coordinator(f.root,'project',f.policy,store,f.registry({run:async()=>{starts++;return done({worker_stop:'unconfirmed'});}}));
   await assert.rejects(c.delegate(f.request('bad'),context()),/disk full/);
   await assert.rejects(c.delegate(f.request('next'),context()),{code:'PROJECT_NEEDS_RECONCILIATION'});assert.equal(starts,1);
 });
@@ -74,15 +80,15 @@ test('unknown stop blocks queued replacement but lets a known sibling finish', a
 test('shutdown includes admission currently publishing a task', async t=>{
   const f=await fixture(t), publish=hold();let entered=false,starts=0;
   class SlowStore extends TaskStore {async create(...args){entered=true;await publish.promise;return super.create(...args);}}
-  const store=new SlowStore(f.state),c=new Coordinator(f.root,'project',f.profile,store,{run:async()=>{starts++;return done();}});
+  const store=new SlowStore(f.state),c=new Coordinator(f.root,'project',f.policy,store,f.registry({run:async()=>{starts++;return done();}}));
   const request=c.delegate(f.request('admission'),context());await until(()=>entered);
   let closed=false;const close=c.shutdown().then(()=>closed=true);await new Promise(resolve=>setTimeout(resolve,10));assert.equal(closed,false);
   publish.release();await close;await request;assert.equal(starts,0);assert.equal(c.activeCount,0);
 });
-test('fresh and cached result sizes remain bounded',async t=>{
+test('fresh and cached public receipts remain bounded without shortening retained results',async t=>{
   const f=await fixture(t),c=f.coordinator({run:async()=>done({summary:'x'.repeat(100000)})});
   const a=await c.delegate(f.request('large'),context()),b=await c.delegate(f.request('large'),context());
-  assert.ok(Buffer.byteLength(JSON.stringify(a))<=24576);assert.ok(Buffer.byteLength(JSON.stringify(b))<=24576);assert.equal(a.task_id,b.task_id);
+  assert.ok(Buffer.byteLength(JSON.stringify(toolPayload(resultReceipt(a))))<=24576);assert.ok(Buffer.byteLength(JSON.stringify(toolPayload(resultReceipt(b))))<=24576);assert.equal(a.task_id,b.task_id);assert.equal(a.summary.length,100000);assert.equal(b.summary.length,100000);
 });
 test('already cancelled request publishes no task',async t=>{
   const f=await fixture(t),ctrl=new AbortController();ctrl.abort(Error('cancelled'));let starts=0;

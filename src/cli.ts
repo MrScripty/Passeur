@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { BridgeError, diagnosticInfo, nativeCode } from "./core/errors.js";
-import type { Profile } from "./contracts/types.js";
+import type { AgentProfile } from "./contracts/agents.js";
 import type { LaunchIntent } from "./core/repository-runtime.js";
 import type { CodexMcpRegistration } from "./codex/config.js";
 
@@ -18,6 +18,9 @@ Usage: passeur <action> [options]
   setup|configure --project PATH [--profile FILE] [--server-name NAME]
   register-codex --project PATH --server-name NAME [--runtime DIRECTORY]
   doctor --project PATH [--prepare --yes]
+  agents --project PATH [--offset NUMBER] [--limit 1..4]
+  configure-agent --project PATH --agent-file FILE --yes [--replace-agent FINGERPRINT]
+  migrate-profile --project PATH --yes
   inspect --project PATH
   result|logs --project PATH --task UUID [--follow]
   finalize --project PATH --operations FILE --yes
@@ -53,6 +56,7 @@ function integer(value: string | undefined, flag: string): number | undefined {
 }
 const options = {
   project: { type: "string" }, profile: { type: "string" }, "state-root": { type: "string" }, "expected-repository-id": { type: "string" },
+  "agent-file": { type: "string" }, "replace-agent": { type: "string" }, offset: { type: "string" }, limit: { type: "string" },
   task: { type: "string" }, follow: { type: "boolean" }, yes: { type: "boolean" },
   "muse-bin": { type: "string" }, model: { type: "string" }, "worktree-root": { type: "string" }, "confirm-subscription": { type: "boolean" },
   "max-workers": { type: "string" }, "max-queued-tasks": { type: "string" }, operations: { type: "string" },
@@ -64,10 +68,10 @@ const options = {
 type Values = ReturnType<typeof decode>["values"];
 function decode(args: string[]) { return parseArgs({ args, options, strict: true, allowPositionals: false }); }
 
-async function saveProfile(path: string, values: Values): Promise<Profile> {
-  const { ProfileSchema } = await import("./contracts/index.js");
+async function saveProfile(path: string, values: Values): Promise<AgentProfile> {
+  const { normalizeProfile } = await import("./core/profile.js");
   const maxWorkers = integer(values["max-workers"], "--max-workers"), maxQueued = integer(values["max-queued-tasks"], "--max-queued-tasks");
-  const profile = ProfileSchema.parse({
+  const profile = normalizeProfile({
     schema_version: 1, muse_bin: values["muse-bin"] ?? "muse", model: required(values.model, "--model"),
     review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" },
     implementation: { enabled: Boolean(values["worktree-root"]), ...(values["worktree-root"] ? { worktree_root: resolve(values["worktree-root"]) } : {}), sandbox_network: "proxy-only" },
@@ -119,7 +123,7 @@ async function register(intent: LaunchIntent, values: Values): Promise<void> {
   });
   const { probeRegistration } = await import("./codex/probe.js");
   const probe = await probeRegistration(descriptor, Boolean(values["verify-readiness"]));
-  console.log(JSON.stringify({ ...installed, server_name: descriptor.server_name, ...probe, configuration: { status: "passed", scope: "codex mcp get configuration inspection" },
+  console.log(JSON.stringify({ ...installed, ...probe, configuration: { status: "passed", scope: "codex mcp get configuration inspection" },
     next_action: "Start a new Codex session and verify its actual tool attachment. Installed agent workflow remains unverified until the opt-in live procedure passes." }, null, 2));
   if (probe.transport.status !== "passed" || (values["verify-readiness"] && probe.readiness.status !== "passed")) process.exitCode = 1;
 }
@@ -158,7 +162,7 @@ async function main(): Promise<void> {
     const { runtimeIdentity } = await import("./install/runtime.js");
     console.log(JSON.stringify(await runtimeIdentity(runtimeRoot))); return;
   }
-  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install"]);
+  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile"]);
   if (!actions.has(action)) throw new BridgeError("ACTION_UNSUPPORTED", `Unknown action: ${action}`);
   const { values } = decode(process.argv.slice(3));
   const bindingFlags = ["project", "profile", "state-root", "expected-repository-id"];
@@ -166,6 +170,9 @@ async function main(): Promise<void> {
   const configurationFlags = ["model", "muse-bin", "worktree-root", "confirm-subscription", "max-workers", "max-queued-tasks", "install-codex"];
   const actionFlags: Record<string, string[]> = {
     serve: bindingFlags, start: bindingFlags, inspect: bindingFlags,
+    agents: [...bindingFlags, "offset", "limit"],
+    "configure-agent": [...bindingFlags, "agent-file", "replace-agent", "yes"],
+    "migrate-profile": [...bindingFlags, "yes"],
     setup: [...bindingFlags, ...registrationFlags, "install-codex"],
     configure: [...bindingFlags, ...configurationFlags, ...registrationFlags],
     "register-codex": [...bindingFlags, ...registrationFlags],
@@ -201,7 +208,20 @@ async function main(): Promise<void> {
     const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
     const profile = await saveProfile(required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME"), values);
     if (values["install-codex"]) await register(intent, values);
-    else console.log(JSON.stringify({ profile: binding.profilePath, capacity: { workers: profile.max_workers, queued: profile.max_queued_tasks }, configuration: "not_installed", installed_workflow: "not_run" }, null, 2));
+    else console.log(JSON.stringify({ profile: binding.profilePath, capacity: { workers: profile.execution.max_workers, queued: profile.execution.max_queued_tasks }, configuration: "not_installed", installed_workflow: "not_run" }, null, 2));
+    return;
+  }
+  if (action === "configure-agent" || action === "migrate-profile") {
+    if (!values.yes) throw new BridgeError("PROFILE_EDIT_AUTHORITY_REQUIRED", `${action} requires --yes`);
+    const [{ resolveRepositoryBinding }, { editProfile }, { readProfileJson }] = await Promise.all([
+      import("./core/repository-runtime.js"), import("./core/profile-edit.js"), import("./core/profile.js"),
+    ]);
+    const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
+    const edit = action === "migrate-profile" ? { kind: "migrate" as const } : {
+      kind: "configure-agent" as const, registration: await readProfileJson(required(values["agent-file"], "--agent-file")),
+      ...(values["replace-agent"] ? { replace_fingerprint: values["replace-agent"] } : {}),
+    };
+    console.log(JSON.stringify(await editProfile(required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME"), edit), null, 2));
     return;
   }
   const [{ RepositoryRuntime }, { runtimeIdentity }] = await Promise.all([import("./core/repository-runtime.js"), import("./install/runtime.js")]);
@@ -214,7 +234,11 @@ async function main(): Promise<void> {
   const abortRuntime = () => { closing ??= runtime.shutdown(stop.signal.reason); void closing.catch(() => undefined); };
   stop.signal.addEventListener("abort", abortRuntime, { once: true });
   try {
-    if (action === "doctor") {
+    if (action === "agents") {
+      const { AgentCatalogRequestSchema, AgentCatalogSchema } = await import("./contracts/agents.js");
+      const range = AgentCatalogRequestSchema.parse({ offset: integer(values.offset, "--offset"), limit: integer(values.limit, "--limit") });
+      console.log(JSON.stringify(AgentCatalogSchema.parse(await runtime.agents(range.offset, range.limit)), null, 2));
+    } else if (action === "doctor") {
       if (values.prepare && !values.yes) throw new BridgeError("READINESS_AUTHORITY_REQUIRED", "doctor --prepare requires --yes");
       const { doctor } = await import("./diagnostics/doctor.js");
       const report = await doctor(runtime, Boolean(values.prepare), stop.signal);

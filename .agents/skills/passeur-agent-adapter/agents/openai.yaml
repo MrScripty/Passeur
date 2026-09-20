@@ -1,0 +1,4 @@
+interface:
+  display_name: "Passeur Agent Adapter"
+  short_description: "Implement and qualify registered agents in Passeur"
+  default_prompt: "Use $passeur-agent-adapter to configure or implement the requested Passeur agent integration. Apply the supplied plan path and operation when planned work governs it; otherwise establish the bounded change and its verification."

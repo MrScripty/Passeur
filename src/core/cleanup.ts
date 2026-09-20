@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { BridgeError } from "./errors.js";
-import { TaskStore } from "../store/task-store.js";
+import type { TaskStore } from "../store/task-store.js";
 /** Lease ownership belongs to runtime composition. Only bulky evidence is collected. */
 export async function cleanupTask(options: { store: TaskStore; taskId: string; assertAuthority?: () => void }): Promise<void> {
   options.assertAuthority?.();

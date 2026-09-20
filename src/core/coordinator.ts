@@ -1,26 +1,28 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import type { DelegateRequest, DelegateResult, Profile, ResourceRecord, StoredResult } from "../contracts/types.js";
+import type { ResourceRecord } from "../contracts/types.js";
+import type { Assignment, AgentResult, ExecutionPolicy } from "../contracts/agents.js";
+import type { AgentRegistry, SelectedAgent } from "../agents/registry.js";
+import { priorTaskResult } from "./prior-task.js";
 import { BridgeError, errorInfo } from "./errors.js";
-import { Mutex, stableHash, throwIfAborted, withAbort } from "./async.js";
+import { Mutex, canonicalHash, throwIfAborted, withAbort } from "./async.js";
 import { transition, type TaskState } from "./state.js";
-import { baseResult, compactResult } from "./result.js";
-import type { ApprovalHandler, WorkerAdapter } from "../muse/types.js";
-import { TaskStore, type StoredRequest } from "../store/task-store.js";
+import { baseResult } from "./result.js";
+import type { ApprovalHandler } from "../agents/types.js";
+import type { TaskStore, StoredRequest } from "../store/task-store.js";
 import { collectChanges, createDiff, createManifest, observeDelivery, prepareWorkspace, type Workspace } from "../workspace/worktree.js";
 import { currentRevision, digestFiles, sourceStatus } from "../workspace/project.js";
-export { compactResult } from "./result.js";
-export type RunContext = { signal: AbortSignal; approve: ApprovalHandler; progress?: (message: string) => Promise<void> };
+export type RunContext = { signal: AbortSignal; approve: ApprovalHandler; approvalAvailable?: boolean; progress?: (message: string) => Promise<void> };
 type Entry = {
-  record: StoredRequest; request: DelegateRequest; context: RunContext; hash: string;
-  controller: AbortController; promise: Promise<DelegateResult>; resolve: (result: DelegateResult) => void; reject: (error: unknown) => void;
+  selected: SelectedAgent; record: StoredRequest; request: Assignment; context: RunContext; hash: string;
+  controller: AbortController; promise: Promise<AgentResult>; resolve: (result: AgentResult) => void; reject: (error: unknown) => void;
   stage: "queued" | "running" | "settling"; slot: boolean; timer: NodeJS.Timeout;
   detachOwner: () => void;
 };
 const now = () => new Date().toISOString();
-export function assignmentPrompt(request: DelegateRequest, taskId: string, workspace: Workspace): string {
-  return `Complete one independent Passeur assignment.\nTask: ${taskId}\nMode: ${request.mode}\nWorkspace: ${workspace.path}\nObjective: ${request.objective}\n\nContext:\n${request.context}\n\nAcceptance criteria:\n${request.acceptance_criteria.map((item) => `- ${item}`).join("\n")}\n\nContext files:\n${request.context_files?.join("\n") ?? "none"}\nAllowed paths:\n${request.allowed_paths?.join("\n") ?? "follow the assignment scope"}\n\nRead applicable repository instructions in this workspace. Other workers may be implementing unrelated or unfinished components. Verify only what this assignment and the repository standards require; disclose deferred or unavailable checks.\n${request.mode === "implement" ? "Inspect and stage only your intended changes. Create standards-compliant commits on the assigned task branch through ordinary Git, preserving repository hooks and commit/signing policy. Do not update target refs, sibling workspaces, or shared Git configuration. Do not bypass hooks. Fix scoped check failures within this assignment or report the blocker. Commit all intended delivery files; leave no nonignored uncommitted work. Do not manufacture an empty commit. No end-to-end build or primary-model review is required merely because this worker finishes." : "Inspect only; no commit or repository modification is required."}\n\nFinish with MUSE_BRIDGE_RESULT followed by one JSON object:\n{"summary":"short outcome","assessment":"met|partial|unmet|unknown","blockers":[],"questions":[],"checks":[{"command":"command actually run","cwd":"directory","exit_code":0}],"no_changes_reason":"include only when no changes were needed"}\nKeep verification claims truthful. Passeur will identify the actual Git deliverable; it will not run or select project tests for you.`;
+export function assignmentPrompt(request: Assignment, taskId: string, workspace: Workspace): string {
+  return `Complete one independent Passeur assignment.\nTask: ${taskId}\nMode: ${request.mode}\nWorkspace: ${workspace.path}\nObjective: ${request.objective}\n\nContext:\n${request.context}\n\nAcceptance criteria:\n${request.acceptance_criteria.map((item) => `- ${item}`).join("\n")}\n\nContext files:\n${request.context_files?.join("\n") ?? "none"}\nAllowed paths:\n${request.allowed_paths?.join("\n") ?? "follow the assignment scope"}\n\nRead applicable repository instructions in this workspace. Other workers may be implementing unrelated or unfinished components. Verify only what this assignment and the repository standards require; disclose deferred or unavailable checks.\n${request.mode === "implement" ? "Inspect and stage only your intended changes. Create standards-compliant commits on the assigned task branch through ordinary Git, preserving repository hooks and commit/signing policy. Do not update target refs, sibling workspaces, or shared Git configuration. Do not bypass hooks. Fix scoped check failures within this assignment or report the blocker. Commit all intended delivery files; leave no nonignored uncommitted work. Do not manufacture an empty commit. No end-to-end build or primary-model review is required merely because this worker finishes." : "Inspect only; no commit or repository modification is required."}\n\nFinish with PASSEUR_RESULT followed by one JSON object:\n{"summary":"short outcome","assessment":"met|partial|unmet|unknown","blockers":[],"questions":[],"checks":[{"command":"command actually run","cwd":"directory","exit_code":0}],"no_changes_reason":"include only when no changes were needed"}\nKeep verification claims truthful. Passeur will identify the actual Git deliverable; it will not run or select project tests for you.`;
 }
 
 /** One owner, many independent executions. The lock covers admission, never inference. */
@@ -33,7 +35,9 @@ export class Coordinator {
   #closing = false;
   #frozen: string | undefined;
   #pumping = false;
-  constructor(readonly project: string, readonly projectId: string, readonly profile: Profile, readonly store: TaskStore, readonly worker: WorkerAdapter, readonly assertAuthority?: () => void) {}
+  constructor(readonly project: string, readonly projectId: string, readonly policy: ExecutionPolicy, readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority?: () => void) {
+    this.policy = structuredClone(policy); Object.freeze(this.policy.implementation); Object.freeze(this.policy);
+  }
   isActive(taskId: string): boolean { return [...this.#entries.values()].some((entry) => entry.record.task_id === taskId); }
   get activeCount(): number { return this.#active; }
   get queuedCount(): number { return this.#queue.length; }
@@ -51,12 +55,17 @@ export class Coordinator {
     for (const entry of this.#queue) entry.controller.abort(new BridgeError("PROJECT_NEEDS_RECONCILIATION", this.#frozen));
     this.#kick();
   }
-  async delegate(request: DelegateRequest, context: RunContext): Promise<DelegateResult> {
+  async delegate(request: Assignment, context: RunContext): Promise<AgentResult> {
     throwIfAborted(context.signal);
-    if (request.schema_version !== 2) throw new BridgeError("CONTRACT_UPGRADE_REQUIRED", "Use schema_version 2; implementation now requires a committed delivery and target_ref");
+    if (request.schema_version !== 3) throw new BridgeError("CONTRACT_UPGRADE_REQUIRED", "Use schema_version 3 with agent_id");
     let entry!: Entry;
-    let cached: StoredResult | undefined;
-    const hash = stableHash(request);
+    let cached: AgentResult | undefined;
+    request = structuredClone(request);
+    Object.freeze(request.acceptance_criteria);
+    if (request.allowed_paths) Object.freeze(request.allowed_paths);
+    if (request.context_files) Object.freeze(request.context_files);
+    Object.freeze(request);
+    const hash = canonicalHash(request);
     await this.#admission.run(async () => {
       throwIfAborted(context.signal);
       if (this.#closing) throw new BridgeError("BRIDGE_CLOSING", "The coordinator is shutting down");
@@ -65,14 +74,10 @@ export class Coordinator {
         if (active.hash !== hash) throw new BridgeError("REQUEST_KEY_CONFLICT", "The active key belongs to a different assignment");
         entry = active; return;
       }
-      const existing = await this.store.find({ request_key: request.request_key });
-      if (existing) {
-        if (existing.request.schema_version === 1) throw new BridgeError("LEGACY_REQUEST_KEY", "This key belongs to historical version-1 work; use muse_result, not re-execution");
-        if (existing.canonical_hash !== hash) throw new BridgeError("REQUEST_KEY_CONFLICT", "The key belongs to a different assignment");
-        cached = await this.store.readResult(existing.task_id);
-        if (!cached) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", `Task ${existing.task_id} has no trustworthy terminal result`);
-        return;
-      }
+      cached = await priorTaskResult(this.store, request);
+      if (cached) return;
+      if (context.approvalAvailable === false) throw new BridgeError("ELICITATION_UNAVAILABLE", "New execution requires human approval capability");
+      const selected = this.registry.select(request, this.policy);
       await this.assertMutationAllowed();
       // Known live siblings are not historical incomplete executions.
       for (const prior of await this.store.list()) {
@@ -80,34 +85,33 @@ export class Coordinator {
         const result = await this.store.readResult(prior.task_id);
         if (!result || (result.worker_stop === "unconfirmed" && !(await this.store.readResource(prior.task_id))?.stop_reconciled)) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", `Task ${prior.task_id} needs reconciliation before new starts`);
       }
-      const workers = this.profile.max_workers ?? 2, queueLimit = this.profile.max_queued_tasks ?? 8;
+      const workers = this.policy.max_workers ?? 2, queueLimit = this.policy.max_queued_tasks ?? 8;
       const occupying = [...this.#entries.values()].filter((value) => value.stage !== "settling").length;
       if (occupying >= workers + queueLimit) throw new BridgeError("CAPACITY_EXCEEDED", "The bounded worker pool and queue are full");
       throwIfAborted(context.signal);
       const acceptedAt = Date.now(), taskId = randomUUID();
-      const record: StoredRequest = { task_id: taskId, project_id: this.projectId, canonical_hash: hash, accepted_at: new Date(acceptedAt).toISOString(), deadline_at: new Date(acceptedAt + this.profile.task_timeout_ms).toISOString(), request };
+      const record: StoredRequest = { task_id: taskId, project_id: this.projectId, canonical_hash: hash, accepted_at: new Date(acceptedAt).toISOString(), deadline_at: new Date(acceptedAt + this.policy.task_timeout_ms).toISOString(), request, execution: selected.snapshot };
       await this.store.create(record, { phase: "queued", updated_at: now() });
       let resolve!: Entry["resolve"], reject!: Entry["reject"];
-      const promise = new Promise<DelegateResult>((yes, no) => { resolve = yes; reject = no; });
+      const promise = new Promise<AgentResult>((yes, no) => { resolve = yes; reject = no; });
       promise.catch(() => undefined);
       const controller = new AbortController();
       const cancelOwner = () => controller.abort(context.signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Owning request cancelled"));
-      const timer = setTimeout(() => controller.abort(new BridgeError("TASK_TIMEOUT", "Absolute task deadline exceeded, including queue time")), Math.max(0, acceptedAt + this.profile.task_timeout_ms - Date.now()));
-      entry = { record, request, context, hash, controller, promise, resolve, reject, stage: "queued", slot: false, timer, detachOwner: () => context.signal.removeEventListener("abort", cancelOwner) };
+      const timer = setTimeout(() => controller.abort(new BridgeError("TASK_TIMEOUT", "Absolute task deadline exceeded, including queue time")), Math.max(0, acceptedAt + this.policy.task_timeout_ms - Date.now()));
+      entry = { selected, record, request, context, hash, controller, promise, resolve, reject, stage: "queued", slot: false, timer, detachOwner: () => context.signal.removeEventListener("abort", cancelOwner) };
       this.#entries.set(request.request_key, entry); this.#queue.push(entry);
       controller.signal.addEventListener("abort", () => this.#kick(), { once: true });
       if (this.#closing) controller.abort(new BridgeError("BRIDGE_CLOSING", "Coordinator closed during admission"));
       if (context.signal.aborted) cancelOwner(); else context.signal.addEventListener("abort", cancelOwner, { once: true });
     });
     if (cached) {
-      if (cached.schema_version !== 2) throw new BridgeError("LEGACY_REQUEST_KEY", "Read historical results through muse_result");
-      return compactResult(cached);
+      return cached;
     }
     this.#kick();
     // Only the first context is wired to entry.controller. Duplicate subscribers merely detach.
     return withAbort(entry.promise, context.signal);
   }
-  async delegateBatch(assignments: DelegateRequest[], context: RunContext): Promise<Array<{ request_key: string; result?: DelegateResult; error?: { code: string; message: string } }>> {
+  async delegateBatch(assignments: Assignment[], context: RunContext): Promise<Array<{ request_key: string; result?: AgentResult; error?: { code: string; message: string } }>> {
     if (!assignments.length || assignments.length > 8 || new Set(assignments.map((item) => item.request_key)).size !== assignments.length) throw new BridgeError("INVALID_BATCH", "Supply one to eight unique request keys");
     return Promise.all(assignments.map(async (request) => {
       try { return { request_key: request.request_key, result: await this.delegate(request, context) }; }
@@ -128,18 +132,18 @@ export class Coordinator {
       const cancelled = this.#queue.filter((entry) => entry.controller.signal.aborted);
       this.#queue = this.#queue.filter((entry) => !entry.controller.signal.aborted);
       for (const entry of cancelled) { entry.stage = "settling"; void this.#run(entry); }
-      while (!this.#closing && !this.#frozen && this.#queue.length && this.#active < (this.profile.max_workers ?? 2)) {
+      while (!this.#closing && !this.#frozen && this.#queue.length && this.#active < (this.policy.max_workers ?? 2)) {
         const entry = this.#queue.shift()!;
         entry.stage = "running"; entry.slot = true; this.#active++;
         void this.#run(entry);
       }
     }).catch((error) => this.#freeze(errorInfo(error).message)).finally(() => {
       this.#pumping = false;
-      if (this.#queue.some((entry) => entry.controller.signal.aborted) || (!this.#closing && !this.#frozen && this.#queue.length && this.#active < (this.profile.max_workers ?? 2))) this.#kick();
+      if (this.#queue.some((entry) => entry.controller.signal.aborted) || (!this.#closing && !this.#frozen && this.#queue.length && this.#active < (this.policy.max_workers ?? 2))) this.#kick();
     });
   }
   async #run(entry: Entry): Promise<void> {
-    let result: DelegateResult | undefined, failure: unknown;
+    let result: AgentResult | undefined, failure: unknown;
     try {
       result = await this.#execute(entry);
       if (result.worker_stop === "unconfirmed") await this.#freeze(`Worker ${entry.record.task_id} did not confirm shutdown`);
@@ -152,14 +156,14 @@ export class Coordinator {
         if (entry.slot) this.#active--;
         this.#entries.delete(entry.request.request_key);
       });
-      if (result) entry.resolve(compactResult(result)); else entry.reject(failure);
+      if (result) entry.resolve(result); else entry.reject(failure);
       this.#kick();
     }
   }
-  async #execute(entry: Entry): Promise<DelegateResult> {
+  async #execute(entry: Entry): Promise<AgentResult> {
     const { request, context, controller, record } = entry, id = record.task_id;
     let state: TaskState = { phase: "queued", updated_at: now() }, workspace: Workspace | undefined;
-    let result = baseResult(id, request, this.profile), workerSettled = false, pendingApprovals = 0;
+    let result = baseResult(id, request, entry.selected.snapshot), workerSettled = false, pendingApprovals = 0;
     const phaseLock = new Mutex();
     const phase = (next: TaskState["phase"]) => phaseLock.run(async () => {
       state = transition(state, next); await this.store.writeState(id, state);
@@ -170,14 +174,14 @@ export class Coordinator {
       await phase("preparing"); await progress(`Preparing ${id}`);
       await this.assertMutationAllowed();
       // Unique task workspaces and Git's own locks isolate preparation; hooks run outside the administrative mutex.
-      workspace = await prepareWorkspace(this.project, request, this.profile, this.projectId, id, {
+      workspace = await prepareWorkspace(this.project, request, this.policy, this.projectId, id, {
           signal: controller.signal, ...(this.assertAuthority ? { assertAuthority: this.assertAuthority } : {}),
           onIntent: async (intent) => this.store.writeResource(id, {
             schema_version: 1, task_id: id, project_id: this.projectId, state: "creating", updated_at: now(),
             worktree_path: intent.path, branch_ref: intent.branch!, base_commit: intent.base_commit!, target_ref: intent.target_ref!,
           }),
       });
-      result = baseResult(id, request, this.profile, workspace);
+      result = baseResult(id, request, entry.selected.snapshot, workspace);
       const resource = await this.store.readResource(id);
       await this.store.writeResource(id, resource ? { ...resource, state: "pending", updated_at: now() } : {
         schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now(),
@@ -187,12 +191,12 @@ export class Coordinator {
       const initialStatus = await sourceStatus(workspace.path, false, controller.signal), initialRevision = await currentRevision(workspace.path, controller.signal);
       if (request.mode === "review" && initialRevision) result.workspace.base_commit = initialRevision;
       throwIfAborted(controller.signal);
-      await phase("running"); await progress(`Muse task ${id} is working`);
+      await phase("running"); await progress(`Agent task ${id} is working`);
       result.worker_stop = "unconfirmed";
       this.assertAuthority?.();
-      const run = await this.worker.run({
+      const run = await entry.selected.worker.run({
         request, task_id: id, prompt: assignmentPrompt(request, id, workspace), workspace: workspace.path,
-        profile: this.profile, signal: controller.signal,
+        policy: this.policy, signal: controller.signal,
         onEvent: (event) => this.store.appendEvent(id, event),
         approve: async (approval, signal) => {
           await phaseLock.run(async () => {
@@ -212,7 +216,7 @@ export class Coordinator {
       // Stop evidence must survive every optional finalization operation below.
       result = { ...result, execution_status: run.status, worker_stop: run.worker_stop, worker_assessment: run.worker_assessment, summary: run.summary,
         blockers: [...run.blockers], questions: run.questions, checks: run.checks,
-        model: { requested: this.profile.model, ...(run.reported_model ? { reported: run.reported_model } : {}) }, ...(run.error ? { error: run.error } : {}) };
+        model: { ...(entry.selected.snapshot.requested_model ? { requested: entry.selected.snapshot.requested_model } : {}), ...(run.reported_model ? { reported: run.reported_model } : {}) }, ...(run.error ? { error: run.error } : {}) };
       workerSettled = true;
       if (run.worker_stop === "unconfirmed") await this.#freeze(`Worker ${id} did not confirm shutdown`);
       await phase("finalizing"); await progress(`Collecting ${id}`);
@@ -250,7 +254,7 @@ export class Coordinator {
     await phaseLock.run(async () => { state = transition(state, "terminal", { outcome: result.execution_status }); await this.store.writeState(id, state); });
     return result;
   }
-  async #artifacts(id: string, workspace: Workspace, result: DelegateResult, changes: Awaited<ReturnType<typeof collectChanges>>): Promise<void> {
+  async #artifacts(id: string, workspace: Workspace, result: AgentResult, changes: Awaited<ReturnType<typeof collectChanges>>): Promise<void> {
     const dir = join(this.store.taskDir(id), "artifacts"); this.assertAuthority?.(); await mkdir(dir, { recursive: true, mode: 0o700 });
     const files = await createManifest(workspace, dir, changes, this.assertAuthority);
     const manifestPath = join(dir, "manifest.json"), diffPath = join(dir, "changes.diff");

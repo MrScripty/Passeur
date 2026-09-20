@@ -14,14 +14,14 @@ it("dispatches a real MCP batch to overlapping independent workers and returns b
     resolveBinding: async () => ({ project: f.root, repositoryId: "project", commonDir: f.root,
       stateRoot: f.store.root, storeRoot: f.store.root, profilePath: `${f.root}/profile.json` }),
     legacyRoots: async () => [], profile: async () => f.profile,
-    worker: { run: async () => { peak = Math.max(peak, ++active); if (active === 2) started.resolve(); await held.promise; active--; return completed(); } },
+    definitions: f.definitions({ run: async () => { peak = Math.max(peak, ++active); if (active === 2) started.resolve(); await held.promise; active--; return completed(); } }),
   });
   const owner = createMcpServer(runtime);
   const client = new Client({ name: "passeur-fixture", version: "1.0.0" }, { capabilities: { elicitation: {} } });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   try {
     await Promise.all([owner.mcp.connect(serverTransport), client.connect(clientTransport)]);
-    const response = client.callTool({ name: "delegate_to_muse_batch", arguments: { schema_version: 2, assignments: [f.request("a"), f.request("b")] } });
+    const response = client.callTool({ name: "passeur_delegate_batch", arguments: { schema_version: 3, assignments: [f.request("a"), f.request("b")] } });
     await started.promise; expect(peak).toBe(2); held.resolve();
     const result = await response;
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24_576);

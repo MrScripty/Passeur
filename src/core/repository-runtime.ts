@@ -1,12 +1,16 @@
 import { join, resolve } from "node:path";
-import type { Profile, DelegateRequest, DelegateResult, FinalizeOperation, ResultRequest, StoredResult } from "../contracts/types.js";
+import type { DelegateRequest, DelegateResult, FinalizeOperation, ResultRequest, StoredResult } from "../contracts/types.js";
 import type { RuntimeBinding, RuntimeIdentity, RuntimeStatus } from "../contracts/runtime.js";
 import type { TaskStore } from "../store/task-store.js";
 import type { Coordinator, RunContext } from "./coordinator.js";
-import type { WorkerAdapter } from "../muse/types.js";
+import type { AdapterDefinition } from "../agents/types.js";
+import type { AgentProfile, Assignment, AgentResult, AgentCatalog } from "../contracts/agents.js";
+import type { AgentRegistry } from "../agents/registry.js";
+import { lookupPriorTask, terminalPriorTask } from "./prior-task.js";
+import { legacyMuseResult } from "./result.js";
 import type { RepositoryLease } from "./lease.js";
 import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure } from "./errors.js";
-import { Mutex, withAbort } from "./async.js";
+import { Mutex, withAbort, stableHash } from "./async.js";
 
 const PREPARATION_TIMEOUT_MS = 90_000;
 export type LaunchIntent = {
@@ -15,15 +19,16 @@ export type LaunchIntent = {
 export type ResolvedBinding = {
   project: string; repositoryId: string; commonDir: string; stateRoot: string; storeRoot: string; profilePath?: string;
 };
-type Environment = Pick<NodeJS.ProcessEnv, "HOME" | "XDG_STATE_HOME" | "XDG_CONFIG_HOME">;
+// Binding consults only HOME/XDG keys; callers may supply a read-only environment map.
+type Environment = Readonly<Record<string, string | undefined>>;
 export type RuntimeDependencies = {
   resolveBinding?: (intent: LaunchIntent, environment: Environment, signal: AbortSignal) => Promise<ResolvedBinding>;
   acquire?: (path: string, signal: AbortSignal, compromised: (error: BridgeError) => void) => Promise<RepositoryLease>;
   store?: (root: string, authority: () => void) => TaskStore;
   recover?: (store: TaskStore) => Promise<void>;
   legacyRoots?: (binding: ResolvedBinding, signal: AbortSignal) => Promise<string[]>;
-  profile?: (path: string) => Promise<Profile>;
-  worker?: WorkerAdapter;
+  profile?: (path: string) => Promise<AgentProfile>;
+  definitions?: Readonly<Record<string, AdapterDefinition>>;
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
@@ -67,8 +72,9 @@ export class RepositoryRuntime {
   #lease: RepositoryLease | undefined;
   #store: TaskStore | undefined;
   #preparation: Promise<void> | undefined;
-  #profile: Profile | undefined;
-  #profileLoading: Promise<Profile> | undefined;
+  #profile: AgentProfile | undefined;
+  #registry: AgentRegistry | undefined;
+  #profileLoading: Promise<AgentProfile> | undefined;
   #coordinator: Coordinator | undefined;
   #composition: Promise<Coordinator> | undefined;
   #shutdown: Promise<void> | undefined;
@@ -81,7 +87,7 @@ export class RepositoryRuntime {
     this.#deps = dependencies;
     this.#environment = { HOME: environment.HOME, XDG_STATE_HOME: environment.XDG_STATE_HOME, XDG_CONFIG_HOME: environment.XDG_CONFIG_HOME };
   }
-  approvalTimeoutMs(): number { return this.#profile?.task_timeout_ms ?? 1_800_000; }
+  approvalTimeoutMs(): number { return this.#profile?.execution.task_timeout_ms ?? 1_800_000; }
   observeApproval(available: boolean): void { this.#approval = available ? "available" : "unavailable"; }
   status(): RuntimeStatus {
     const resolved = this.#binding;
@@ -171,7 +177,7 @@ export class RepositoryRuntime {
       if (this.#deps.recover) await this.#deps.recover(this.#store);
       else {
         const { reconcileStoredTasks } = await import("./recovery.js");
-        await reconcileStoredTasks(this.#store, "unavailable-after-restart");
+        await reconcileStoredTasks(this.#store);
       }
       authority();
       const frozen = await this.#store.frozenReason();
@@ -233,15 +239,18 @@ export class RepositoryRuntime {
         if (!profilePath) throw new BridgeError("PROFILE_PATH_UNAVAILABLE", "Execution requires an explicit profile path or configured HOME/XDG config root", { stage: "execution.profile" });
         if (!this.#profileLoading) {
           this.#profileLoading = this.#deps.profile ? this.#deps.profile(profilePath)
-            : import("./profile.js").then(({ loadProfile }) => loadProfile(profilePath));
+            : import("./profile.js").then(({ loadAgentProfile }) => loadAgentProfile(profilePath));
         }
-        this.#profile = await this.#profileLoading;
+        const profile = await this.#profileLoading;
         this.#assertOpen();
         await this.#ensurePrepared(this.#lifetime.signal);
         const { Coordinator } = await import("./coordinator.js");
-        const worker = this.#deps.worker ?? new (await import("../muse/adapter.js")).MuseSdkAdapter();
+        const { AgentRegistry } = await import("../agents/registry.js");
+        const definitions = this.#deps.definitions ?? (await import("../agents/builtins.js")).builtinAdapters;
+        const registry = new AgentRegistry(profile, definitions);
         this.#assertOpen(); this.#assertAuthority();
-        this.#coordinator = new Coordinator(binding.project, binding.repositoryId, this.#profile, this.#store!, worker, () => this.#assertAuthority());
+        this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority());
+        this.#profile = profile; this.#registry = registry;
         this.#executionFailure = undefined;
         return this.#coordinator;
       })();
@@ -253,22 +262,62 @@ export class RepositoryRuntime {
     }
     return this.#composition;
   }
-  delegate(request: DelegateRequest, context: RunContext): Promise<DelegateResult> {
+  agents(offset = 0, limit = 4): Promise<AgentCatalog> {
     return this.#track(async () => {
-      context.signal.throwIfAborted();
-      if (this.#approval !== "available") throw new BridgeError("ELICITATION_UNAVAILABLE", "Human approval elicitation is not advertised by this client", { stage: "execution.approval" });
-      const coordinator = await withAbort(this.#execution(), context.signal);
-      context.signal.throwIfAborted(); this.#assertOpen();
-      return coordinator.delegate(request, context);
+      if (this.#registry) return this.#registry.catalog(true, offset, limit);
+      const path = this.#intent.profilePath ?? (await this.#resolve(this.#lifetime.signal)).profilePath;
+      if (!path) throw new BridgeError("PROFILE_PATH_UNAVAILABLE", "Agent discovery requires a profile path");
+      const profile = this.#deps.profile ? await this.#deps.profile(path) : await (await import("./profile.js")).loadAgentProfile(path);
+      const { AgentRegistry } = await import("../agents/registry.js");
+      const definitions = this.#deps.definitions ?? (await import("../agents/builtins.js")).builtinAdapters;
+      this.#assertOpen();
+      return new AgentRegistry(profile, definitions).catalog(false, offset, limit);
     });
   }
-  delegateBatch(assignments: DelegateRequest[], context: RunContext): Promise<Array<{ request_key: string; result?: DelegateResult; error?: { code: string; message: string } }>> {
+  delegate(request: Assignment, context: RunContext): Promise<AgentResult> {
+    return this.#track(async () => {
+      context.signal.throwIfAborted();
+      if (!this.#coordinator) {
+        const prior = await lookupPriorTask(await this.#readStore(), request);
+        // Composition may have finished during the read. Its live-task map owns subscriber attachment.
+        if (!this.#coordinator) {
+          const result = terminalPriorTask(prior);
+          context.signal.throwIfAborted();
+          if (result) return result;
+          if (this.#approval !== "available") throw new BridgeError("ELICITATION_UNAVAILABLE", "New execution requires human approval capability");
+        }
+      }
+      const coordinator = this.#coordinator ?? await withAbort(this.#execution(), context.signal);
+      context.signal.throwIfAborted(); this.#assertOpen();
+      return coordinator.delegate(request, { ...context, approvalAvailable: this.#approval === "available" });
+    });
+  }
+  delegateBatch(assignments: Assignment[], context: RunContext): Promise<Array<{ request_key: string; result?: AgentResult; error?: { code: string; message: string } }>> {
     return this.#track(async () => {
       if (!assignments.length || assignments.length > 8 || new Set(assignments.map((item) => item.request_key)).size !== assignments.length) throw new BridgeError("INVALID_BATCH", "Supply one to eight unique request keys");
       return Promise.all(assignments.map(async (request) => {
         try { return { request_key: request.request_key, result: await this.delegate(request, context) }; }
         catch (error) { return { request_key: request.request_key, error: errorInfo(error) }; }
       }));
+    });
+  }
+  /** Deployed Muse v2 calls preserve their original retry comparison and representable result contract. */
+  delegateMuse(request: DelegateRequest, context: RunContext): Promise<DelegateResult> {
+    return this.#track(async () => {
+      context.signal.throwIfAborted();
+      const store = await this.#readStore();
+      const previous = await store.find({ request_key: request.request_key });
+      if (previous && previous.request.schema_version !== 3) {
+        if (previous.request.schema_version !== 2) throw new BridgeError("LEGACY_REQUEST_KEY", "Read historical v1 work through passeur_result");
+        if (previous.canonical_hash !== stableHash(request)) throw new BridgeError("REQUEST_KEY_CONFLICT", "The key belongs to a different assignment");
+        const saved = await store.readResult(previous.task_id);
+        if (!saved) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", "Historical execution lacks terminal evidence");
+        if (saved.schema_version !== 2) throw new BridgeError("LEGACY_RESULT_UNREPRESENTABLE", "Read the versioned recovery evidence through passeur_result");
+        context.signal.throwIfAborted();
+        return saved;
+      }
+      const { museAssignment } = await import("../contracts/agents.js");
+      return legacyMuseResult(await this.delegate(museAssignment(request), context));
     });
   }
   async #readStore(): Promise<TaskStore> {

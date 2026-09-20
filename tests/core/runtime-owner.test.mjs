@@ -14,7 +14,7 @@ async function temporary(t) { const root=await mkdtemp(join(tmpdir(),'passeur-le
 function runtimeFixture(t, overrides={}) {
   let state='held', releases=0, acquired=0, initializes=0, recoveries=0, authority, notification;
   const lease={get state(){return state},assertOwned(){if(state!=='held')throw new BridgeError('LEASE_COMPROMISED','lost')},async release(){releases++;state='released'}};
-  const store={async initialize(){authority();initializes++},async importLegacy(){authority()},async frozenReason(){return undefined},async list(){return []},async readResource(){return undefined}};
+  const store={async initialize(){authority();initializes++},async importLegacy(){authority()},async frozenReason(){return undefined},async list(){return []},async find(){return undefined},async readResource(){return undefined}};
   const runtime=new RepositoryRuntime({project:'/fixture/project'},identity,{
     resolveBinding:async()=>binding,legacyRoots:async()=>[],
     acquire:async(_path,_signal,onLost)=>{acquired++;notification=onLost;state='held';return lease},
@@ -118,7 +118,7 @@ test('runtime shutdown is idempotent and rejects new admission',async t=>{
   assert.throws(()=>f.runtime.prepare(),{code:'BRIDGE_CLOSING'});assert.equal(f.releases,1);
 });
 test('missing client approval capability is rejected before execution composition',async t=>{
-  const f=runtimeFixture(t);await assert.rejects(f.runtime.delegate({}, {signal:new AbortController().signal}),{code:'ELICITATION_UNAVAILABLE'});assert.equal(f.acquired,0);
+  const f=runtimeFixture(t);await assert.rejects(f.runtime.delegate({schema_version:3,agent_id:'muse',request_key:'new',mode:'review',objective:'review',context:'',acceptance_criteria:['Report']}, {signal:new AbortController().signal,approve:async()=>({choice_id:'deny'})}),{code:'ELICITATION_UNAVAILABLE'});assert.equal(f.acquired,0);
 });
 test('history access has no lease or execution prerequisite and denies accidental writes',async t=>{
   const f=runtimeFixture(t,{profile:async()=>{throw Error('must not load')}});const result=await f.runtime.inspect();assert.deepEqual(result.tasks,[]);assert.equal(f.acquired,0);assert.throws(()=>f.authority(),{code:'READ_ONLY_STORE'});

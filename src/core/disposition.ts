@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import type { FinalizeOperation, FinalizeReceipt, ResourceRecord } from "../contracts/types.js";
 import { Mutex, stableHash } from "./async.js";
 import { BridgeError, errorInfo } from "./errors.js";
-import { TaskStore } from "../store/task-store.js";
+import type { TaskStore } from "../store/task-store.js";
 import { deleteProtectedRef, exactCommit, git, isAncestor, refHead, sourceStatus, validateBranchRef, validateOid } from "../workspace/project.js";
 import { worktreeEntries } from "../workspace/worktree.js";
 export type ResourceGuard = { administration: Mutex; isActive: (taskId: string) => boolean; assertMutationAllowed: () => Promise<void> };
@@ -27,7 +27,7 @@ export class DispositionManager {
       const state = await this.store.readState(operation.task_id);
       let resource = await this.store.readResource(operation.task_id);
       if (!request || request.project_id !== this.projectId || !result || state.phase !== "terminal") throw new BridgeError("RESULT_NOT_READY", "The task needs a durable terminal result owned by this repository");
-      if (request.request.schema_version !== 2 || !resource || resource.state === "legacy_unclassified") throw new BridgeError("LEGACY_UNCLASSIFIED", "Historical tasks require explicit resource classification; no ownership is inferred");
+      if (request.request.schema_version === 1 || !resource || resource.state === "legacy_unclassified") throw new BridgeError("LEGACY_UNCLASSIFIED", "Historical tasks require explicit resource classification; no ownership is inferred");
       if (result.worker_stop === "unconfirmed" && !resource.stop_reconciled) throw new BridgeError("RECONCILIATION_REQUIRED", "Worker shutdown is unconfirmed");
       if (resource.project_id !== this.projectId || resource.task_id !== operation.task_id || !resource.worktree_path || resource.branch_ref !== operation.expected_branch_ref) throw new BridgeError("RESOURCE_OWNERSHIP_INVALID", "Expected branch/path does not match the recorded task resource");
       if (resource.state === "retired" && !prior) throw new BridgeError("RESOURCE_RETIRED", "Use the original operation key to retrieve the retirement receipt");

@@ -5,8 +5,8 @@ const oid = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i, "a full Git obj
 const branch = bounded(512).startsWith("refs/heads/");
 const key = bounded(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const relativePath = bounded(4096).refine((value) => !value.startsWith("/") && !value.includes("\0") && !value.split(/[\\/]/).includes(".."), "must be a project-relative path without traversal");
-export const DelegateRequestSchema = z.object({
-  schema_version: z.literal(2), request_key: key, mode: z.enum(["review", "implement"]),
+export const AssignmentBodySchema = z.object({
+  request_key: key, mode: z.enum(["review", "implement"]),
   objective: bounded(16_384), context: z.string().max(32_768),
   acceptance_criteria: z.array(bounded(2048)).min(1).max(50),
   context_files: z.array(relativePath).max(50).optional(), allowed_paths: z.array(relativePath).max(50).optional(),
@@ -17,6 +17,7 @@ export const DelegateRequestSchema = z.object({
   }
   if (Buffer.byteLength(JSON.stringify(value)) > 65_536) context.addIssue({ code: "custom", message: "assignment envelope exceeds 64 KiB" });
 });
+export const DelegateRequestSchema = AssignmentBodySchema.safeExtend({ schema_version: z.literal(2) });
 export const BatchRequestSchema = z.object({ schema_version: z.literal(2), assignments: z.array(DelegateRequestSchema).min(1).max(8) }).strict().superRefine((value, context) => {
   if (new Set(value.assignments.map((item) => item.request_key)).size !== value.assignments.length) context.addIssue({ code: "custom", message: "duplicate request keys in batch" });
   if (Buffer.byteLength(JSON.stringify(value)) > 262_144) context.addIssue({ code: "custom", message: "batch exceeds 256 KiB" });

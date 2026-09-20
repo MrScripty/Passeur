@@ -5,3 +5,4 @@ coverage/
 .passeur-core/
 .passeur-build/
 .passeur-runtime/
+.passeur-native/

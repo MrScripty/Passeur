@@ -18,7 +18,7 @@
     "src/core/disposition.ts",
     "src/core/cleanup.ts",
     "src/core/recovery.ts",
-    "src/muse/report.ts",
+    "src/agents/report.ts",
     "src/core/repository-runtime.ts",
     "src/core/lease.ts"
   ]

@@ -9,7 +9,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
 
 const exec = promisify(execFile);
-export const CODEX_ENABLED_TOOLS = ["passeur_status", "passeur_prepare", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize"] as const;
+export const CODEX_ENABLED_TOOLS = ["passeur_status", "passeur_prepare", "passeur_agents", "passeur_delegate", "passeur_delegate_batch", "passeur_result", "passeur_finalize", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize"] as const;
 export type CodexMcpRegistration = {
   server_name: string;
   command: string; args: string[]; cwd: string; env: Record<string, string>;

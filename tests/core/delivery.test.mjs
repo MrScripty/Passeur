@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fixture, git, done, context, commitFile } from './helpers.mjs';
 import { observeDelivery, prepareWorkspace } from '../../.passeur-core/src/workspace/worktree.js';
 import { repositoryIdentity } from '../../.passeur-core/src/workspace/project.js';
-import { parseWorkerReport } from '../../.passeur-core/src/muse/report.js';
+import { parseWorkerReport } from '../../.passeur-core/src/agents/report.js';
 import { toolPayload, resultReceipt } from '../../.passeur-core/src/core/result.js';
 
 test('worker commits invoke normal hooks; Passeur runs no application test gate', async t=>{
@@ -66,15 +66,15 @@ test('genuine finalization failure preserves an already observed committed deliv
   const result=await c.delegate(f.implementation('finalize-fails'),context());assert.equal(result.worker_stop,'confirmed');assert.equal(result.error.code,'FINALIZATION_FAILED');assert.equal(result.delivery.status,'committed');
 });
 test('implementation worktree root cannot be inside source',async t=>{
-  const f=await fixture(t);await assert.rejects(prepareWorkspace(f.root,f.implementation('root'),{...f.profile,implementation:{...f.profile.implementation,worktree_root:join(f.root,'nested')}},'project',crypto.randomUUID()),{code:'INVALID_WORKTREE_ROOT'});
+  const f=await fixture(t);await assert.rejects(prepareWorkspace(f.root,f.implementation('root'),{...f.policy,implementation:{...f.policy.implementation,worktree_root:join(f.root,'nested')}},'project',crypto.randomUUID()),{code:'INVALID_WORKTREE_ROOT'});
 });
 test('linked worktrees have the same repository owner identity',async t=>{
   const f=await fixture(t),linked=join(f.temp,'linked');await git(f.root,'worktree','add','-b','linked',linked,f.base);
   assert.deepEqual(await repositoryIdentity(f.root),await repositoryIdentity(linked));
 });
 test('reported checks remain worker claims and nonfinite exit codes stay unknown',()=>{
-  const parsed=parseWorkerReport('MUSE_BRIDGE_RESULT {"summary":"done","assessment":"met","checks":[{"command":"unit","exit_code":0}],"no_changes_reason":"already there"}','/work');
-  assert.equal(parsed.checks[0].evidence,'worker_reported');assert.equal(parsed.no_changes_reason,'already there');assert.equal(parseWorkerReport('not json','/work').worker_assessment,'unknown');
+  const parsed=parseWorkerReport('PASSEUR_RESULT {"summary":"done","assessment":"met","blockers":[],"questions":[],"checks":[{"command":"unit","cwd":"/work","exit_code":0}],"no_changes_reason":"already there"}');
+  assert.equal(parsed.checks[0].evidence,'worker_reported');assert.equal(parsed.no_changes_reason,'already there');assert.throws(()=>parseWorkerReport('not json'),{code:'WORKER_REPORT_INVALID'});
 });
 test('aggregate receipts stay below the actual MCP payload limit',async t=>{
   const f=await fixture(t),c=f.coordinator({run:async()=>done({summary:'\\\n'.repeat(20000),blockers:['x'.repeat(10000)]})});

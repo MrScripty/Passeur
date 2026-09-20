@@ -8,11 +8,11 @@ The runtime composes the existing task coordinator, TaskStore and DispositionMan
 
 Version-specific artifacts own build identity and production dependency closure; the Codex adapter owns named configuration and resolved launch verification. Operational procedures are in [startup-and-installation.md](startup-and-installation.md); evidence is in the [implementation report](plans/discoverable-startup-and-installed-runtime/reports/implementation-evidence.md). Configuration, direct MCP transport, coordination readiness and actual host/provider acceptance remain separate claims.
 
-The current design is governed by [the parallel-worker plan](plans/parallel-worker-commit-handoff/plan.md). The original CLI plan remains historical for the earlier serial release. Its serial limit, uncommitted handoff, mandatory per-worker review language and record-only cleanup are superseded.
+The current agent extension is governed by [the registered-agent plan](plans/registered-agents/plan.md), on the discoverable-startup runtime. The [parallel-worker plan](plans/parallel-worker-commit-handoff/plan.md) supplies the preserved task/Git lifecycle. The original CLI plan remains historical for the earlier serial release. Its serial limit, uncommitted handoff, mandatory per-worker review language and record-only cleanup are superseded.
 
 ## Responsibility
 
-Codex supplies independent assignments, exact bases, target refs and scoped acceptance criteria. Muse reads applicable repository instructions, implements the assignment, performs scoped checks and commits through ordinary Git. Repository scripts and hooks own mechanical checks. Codex decides integration and broader review/testing.
+The caller supplies independent assignments, exact bases, target refs and scoped acceptance criteria. The selected worker reads applicable repository instructions, implements the assignment, performs scoped checks and commits through ordinary Git. Repository scripts and hooks own mechanical checks. The caller decides integration and broader review/testing.
 
 Passeur owns capacity, pending MCP calls, approvals, deadlines, cancellation, delivery identity and its own Git-resource lifecycle. It does not run project tests, rewrite a worker's report with a model, infer dependencies or features, automatically repair, or merge. Concurrency is an execution property, not a shared acceptance boundary.
 
@@ -26,7 +26,7 @@ Deadlines are absolute from acceptance and include queue time, preparation, appr
 
 ## Runtime and hooks
 
-Each task owns a Muse startup handle before initialization completes, then a client/session/turn. Cancellation and bounded stop handling cover startup, submission and output consumption. The pinned SDK adapter remains the only production vendor runtime boundary.
+Each task owns an adapter startup handle before initialization completes, then a client/session/turn. Cancellation and bounded stop handling cover startup, submission and output consumption. Native adapters own their respective production runtime boundaries; configuration-only factories do not load native SDKs during discovery.
 
 The runtime inherits a deliberate environment without alternate API keys or hook-bypass variables. Passeur does not alter Git identity, signing, `core.hooksPath`, test scripts or package dependencies. A hook failure is handled by the worker within its task or reported as a blocker. Commit success does not prove a hook ran or the task is semantically correct.
 
@@ -42,8 +42,12 @@ No-change delivery requires an explicit worker explanation and unchanged Git fac
 
 Execution results are immutable. Separate resource records track creation intent, pending delivery, explicit retention, cleanup in progress and retirement. Creation intent is saved before `git worktree add`.
 
-`muse_finalize` acknowledges integration already performed by Codex, retains a task with owner/reason/next action, or archives the exact head under explicit authority. It never integrates code. Every operation supplies an idempotency key, exact expected task ref and head. Receipts survive retries.
+`passeur_finalize` acknowledges integration already performed by the caller, retains a task with owner/reason/next action, or archives the exact head under explicit authority. It never integrates code. Every operation supplies an idempotency key, exact expected task ref and head. Receipts survive retries.
 
 For integrated retirement, the full task tip must be an ancestor of the accepted commit, which must remain reachable through the named target. Squash or cherry-pick equivalence does not establish this; retain or explicitly archive the source instead. Archive refs use `refs/passeur/archive/<task-id>` and are created and verified before removal.
 
 Retirement refuses changed heads, unknown ownership, live or uncertain workers, locked worktrees, in-progress Git operations and dirty/untracked/ignored content. There is no force-remove, automatic prune or permanent discard of unique work. Repository-approved cleanup of disposable build outputs happens outside Passeur before retrying retirement. Passeur removes only its owned worktree and redundant branch, conditionally deletes the expected ref, verifies protection and saves the receipt. Partial retirement resumes bookkeeping on retry, not inference or integration.
+
+## Registered-agent ownership
+
+[The adapter contract](agent-adapters.md) owns the current registry, worker boundary and native lifecycle. RepositoryRuntime remains the preparation/lease/composition owner; Coordinator remains the single task scheduler. New v3 admitted snapshots preserve historical identity independently of current profiles. Existing store decoders own persistence, and MCP receipts summarize full results without altering evidence. See [registered agents](registered-agents.md) for public versions and migration.

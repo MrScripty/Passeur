@@ -6,7 +6,7 @@ it("recovers terminal state from an already-saved result without replay", async 
   try {
     const result = await coordinator.delegate(f.request("recover"), context());
     await f.store.writeState(result.task_id, { phase: "finalizing", updated_at: new Date().toISOString() });
-    await reconcileStoredTasks(f.store, "model");
+    await reconcileStoredTasks(f.store);
     expect((await f.store.readState(result.task_id)).phase).toBe("terminal"); expect(runs).toBe(1);
   } finally { await coordinator.shutdown(); await f.dispose(); }
 });

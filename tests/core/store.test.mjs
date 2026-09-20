@@ -16,18 +16,18 @@ test('unpublished creation directories cannot be mistaken for active tasks',asyn
 });
 test('saved result repairs a nonterminal state without another worker',async t=>{
   const f=await fixture(t),c=f.coordinator({run:async()=>done()}),result=await c.delegate(f.request('recover'),context());
-  await f.store.writeState(result.task_id,{phase:'finalizing',updated_at:new Date().toISOString()});await reconcileStoredTasks(f.store,'model');
+  await f.store.writeState(result.task_id,{phase:'finalizing',updated_at:new Date().toISOString()});await reconcileStoredTasks(f.store);
   assert.equal((await f.store.readState(result.task_id)).phase,'terminal');assert.deepEqual(await f.store.readResult(result.task_id),result);
 });
 test('interrupted queued tasks are not replayed and did not start a worker',async t=>{
   const f=await fixture(t),id=crypto.randomUUID(),now=new Date().toISOString();
-  await f.store.create({task_id:id,project_id:'project',canonical_hash:'hash',accepted_at:now,deadline_at:now,request:f.request('queued')},{phase:'queued',updated_at:now});
-  await reconcileStoredTasks(f.store,'model');const result=await f.store.readResult(id);assert.equal(result.execution_status,'interrupted');assert.equal(result.worker_stop,'not_started');
+  await f.store.create(f.admission(f.request('queued'),id),{phase:'queued',updated_at:now});
+  await reconcileStoredTasks(f.store);const result=await f.store.readResult(id);assert.equal(result.execution_status,'interrupted');assert.equal(result.worker_stop,'not_started');
 });
 test('legacy task records stay readable and resources remain unclassified',async t=>{
   const f=await fixture(t),id=crypto.randomUUID(),now=new Date().toISOString();
-  await f.store.create({task_id:id,project_id:'old-project',canonical_hash:'hash',accepted_at:now,deadline_at:now,request:{...f.request('legacy'),schema_version:1}},{phase:'queued',updated_at:now});
-  await reconcileStoredTasks(f.store,'model');assert.equal((await f.store.readResult(id)).schema_version,1);assert.equal((await f.store.readResource(id)).state,'legacy_unclassified');
+  await f.store.create({task_id:id,project_id:'old-project',canonical_hash:'hash',accepted_at:now,deadline_at:now,request:((({agent_id,...request})=>({...request,schema_version:1}))(f.request('legacy')))},{phase:'queued',updated_at:now});
+  await reconcileStoredTasks(f.store);assert.equal((await f.store.readResult(id)).schema_version,3);assert.equal((await f.store.readResult(id)).identity.status,'unavailable');assert.equal((await f.store.readResource(id)).state,'legacy_unclassified');
   const c=f.coordinator({run:async()=>done()});await assert.rejects(c.delegate(f.request('legacy'),context()),{code:'LEGACY_REQUEST_KEY'});
 });
 test('terminal execution result is immutable',async t=>{
@@ -37,7 +37,7 @@ test('terminal execution result is immutable',async t=>{
 test('artifact reads reject symlink escapes and arbitrary IDs',async t=>{
   const f=await fixture(t),id=crypto.randomUUID();
   const c=f.coordinator({run:async()=>done()}),sample=await c.delegate(f.request('sample'),context());
-  await mkdir(join(f.store.taskDir(id),'artifacts'),{recursive:true});await writeFile(join(f.temp,'outside.txt'),'private');await symlink(join(f.temp,'outside.txt'),join(f.store.taskDir(id),'artifacts','escape'));
+  const admission=await f.store.find({task_id:sample.task_id});await f.store.create({...admission,task_id:id},{phase:'queued',updated_at:new Date().toISOString()});await writeFile(join(f.temp,'outside.txt'),'private');await symlink(join(f.temp,'outside.txt'),join(f.store.taskDir(id),'artifacts','escape'));
   await f.store.writeResult(id,{...sample,task_id:id,artifacts:[{id:'escape',kind:'report',path:'artifacts/escape',bytes:7}]});
   await assert.rejects(f.store.readArtifact(id,'escape',0,100),{code:'INVALID_ARTIFACT'});await assert.rejects(f.store.readArtifact(id,'arbitrary',0,100),{code:'ARTIFACT_NOT_FOUND'});
 });

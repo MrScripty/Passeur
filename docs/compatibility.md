@@ -1,3 +1,13 @@
+# Registered-agent implementation candidate — September 20, 2026
+
+Baseline: `49724a8b65bf7540622934e4f25cc3178f9c00dc`. New neutral execution/result v3, profile v2 and paged catalog v1; unchanged status/preparation and resource disposition versions. Existing Muse v2 tools and supported old profile/history reads remain explicit compatibility paths. The reserved Muse client identifier is `muse_bridge`.
+
+Current evidence and unresolved native/pinned checks are in [the registered-agent implementation report](plans/registered-agents/reports/implementation-evidence.md). Codex is a Linux implementation-only, explicitly opted-in candidate, not an accepted compatibility promise. Native effective controls and actual account/provenance behavior are not established by controlled peer tests.
+
+The records below are historical observations with their original limits. They are not success evidence for this new candidate.
+
+---
+
 # Compatibility and verification record
 
 ## Discoverable-startup source candidate — September 20, 2026

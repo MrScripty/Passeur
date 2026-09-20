@@ -1,0 +1,83 @@
+import { isAbsolute, resolve } from "node:path";
+import { BridgeError } from "../../core/errors.js";
+
+// These decoders project the explicitly consumed native facts. Other documented native metadata is ignored,
+// never retained or used as authorization. See docs/agents/codex.md for upstream schema identities.
+function record(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+export function object(value: unknown, operation: string): Record<string, unknown> {
+  if (!record(value)) throw new BridgeError("CODEX_PROTOCOL_INVALID", `${operation} requires an object`);
+  return value;
+}
+export function text(value: unknown, operation: string, max = 4096): string {
+  if (typeof value !== "string" || !value || value.length > max) throw new BridgeError("CODEX_PROTOCOL_INVALID", `${operation} requires bounded text`);
+  return value;
+}
+export function correlate(value: unknown, threadId: string, turnId: string): Record<string, unknown> {
+  const event = object(value, "turn event");
+  if (event.threadId !== threadId || event.turnId !== turnId) throw new BridgeError("CODEX_CORRELATION_INVALID", "Native event belongs to another thread or turn");
+  return event;
+}
+export function assertAccount(value: unknown): void {
+  const response = object(value, "account/read");
+  if (response.requiresOpenaiAuth !== true || response.account === null || object(response.account, "account/read.account").type !== "chatgpt") {
+    throw new BridgeError("CODEX_AUTH_UNAVAILABLE", "The configured runtime must use its existing ChatGPT login; API-key fallback is not allowed");
+  }
+}
+export function assertConfiguration(value: unknown): void {
+  const config = object(object(value, "config/read").config, "config");
+  const features = object(config.features, "config.features");
+  const servers = object(config.mcp_servers, "config.mcp_servers");
+  if (Object.keys(servers).length || features.multi_agent !== false || features.apps !== false ||
+      features.plugins !== false || config.web_search !== "disabled" || config.forced_login_method !== "chatgpt") {
+    throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Effective configuration did not establish child-tool and credential isolation");
+  }
+}
+export function assertNoMcp(value: unknown): void {
+  const response = object(value, "mcpServerStatus/list");
+  if (!Array.isArray(response.data) || response.data.length !== 0 || response.nextCursor !== null) {
+    throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Child MCP availability is not empty and fully observed");
+  }
+}
+export function threadStarted(value: unknown, workspace: string, model: string, networkAccess: boolean): { threadId: string; reportedModel: string } {
+  const response = object(value, "thread/start");
+  const thread = object(response.thread, "thread/start.thread");
+  const sandbox = object(response.sandbox, "thread/start.sandbox");
+  const cwd = text(response.cwd, "thread/start.cwd");
+  if (!isAbsolute(cwd) || resolve(cwd) !== resolve(workspace) || response.model !== model || response.modelProvider !== "openai" ||
+      response.approvalPolicy !== "on-request" || response.approvalsReviewer !== "user" ||
+      sandbox.type !== "workspaceWrite" || sandbox.networkAccess !== networkAccess || !Array.isArray(sandbox.writableRoots) ||
+      sandbox.writableRoots.some((root) => typeof root !== "string" || !isAbsolute(root) || resolve(root) !== resolve(workspace))) {
+    throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Codex did not establish the requested model, workspace, approval and sandbox policy");
+  }
+  return { threadId: text(thread.id, "thread.id", 256), reportedModel: model };
+}
+export function turnStarted(value: unknown): string {
+  const turn = object(object(value, "turn/start").turn, "turn/start.turn");
+  if (typeof turn.status !== "string" || !["inProgress", "completed", "failed", "interrupted"].includes(turn.status)) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Unknown native turn status");
+  return text(turn.id, "turn.id", 256);
+}
+export function terminalTurn(value: unknown, threadId: string, turnId: string): "completed" | "failed" | "interrupted" {
+  const event = object(value, "turn/completed");
+  const turn = object(event.turn, "turn/completed.turn");
+  if (event.threadId !== threadId || turn.id !== turnId) throw new BridgeError("CODEX_CORRELATION_INVALID", "Terminal event belongs to another thread or turn");
+  if (turn.status !== "completed" && turn.status !== "failed" && turn.status !== "interrupted") throw new BridgeError("CODEX_PROTOCOL_INVALID", "Terminal event lacks a terminal status");
+  if (turn.status === "completed" && turn.error !== null) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Completed turn contains an error");
+  return turn.status;
+}
+export function approval(value: unknown, threadId: string, turnId: string, workspace: string, method: string) {
+  const request = correlate(value, threadId, turnId);
+  const itemId = text(request.itemId, "approval.itemId", 256);
+  // Policy amendments, managed network grants and broader roots are not the one-operation approval contract.
+  if (request.proposedExecpolicyAmendment != null || request.proposedNetworkPolicyAmendments != null ||
+      request.networkApprovalContext != null || request.grantRoot != null || request.additionalPermissions != null ||
+      (request.environmentId != null) || (request.kind !== undefined && request.kind !== "command")) {
+    throw new BridgeError("CODEX_APPROVAL_UNSUPPORTED", "This approval would extend the admitted permission contract");
+  }
+  if (method === "item/commandExecution/requestApproval") {
+    const cwd = text(request.cwd, "approval.cwd");
+    if (!isAbsolute(cwd) || resolve(cwd) !== resolve(workspace)) throw new BridgeError("CODEX_APPROVAL_UNSUPPORTED", "The command requests a different working directory");
+    return { itemId, command: text(request.command, "approval.command", 8192), cwd };
+  }
+  if (method === "item/fileChange/requestApproval") return { itemId, command: "Review the pending file changes in the assigned worktree", cwd: workspace };
+  throw new BridgeError("CODEX_REQUEST_UNSUPPORTED", "This native request has no supported approval contract");
+}

@@ -1,3 +1,5 @@
+import { AssignmentSchema, ExecutionSnapshotSchema, ExecutionIdentitySchema } from "../contracts/agents.js";
+import { canonicalHash, stableHash } from "../core/async.js";
 import { z } from "zod";
 import { DelegateRequestSchema, FinalizeOperationSchema } from "../contracts/index.js";
 import type { FinalizeReceipt, ResourceRecord, StoredResult } from "../contracts/types.js";
@@ -22,8 +24,15 @@ const legacyRequest = z.object({
 const requestRecord = z.object({
   task_id: uuid, project_id: nonempty, canonical_hash: nonempty,
   accepted_at: instant, deadline_at: instant,
-  request: z.union([DelegateRequestSchema, legacyRequest]),
-}).strict().refine((r) => Date.parse(r.deadline_at) >= Date.parse(r.accepted_at), "deadline precedes acceptance");
+  request: z.union([AssignmentSchema, DelegateRequestSchema, legacyRequest]), execution: ExecutionSnapshotSchema.optional(),
+}).strict().refine((r) => Date.parse(r.deadline_at) >= Date.parse(r.accepted_at), "deadline precedes acceptance").superRefine((r, context) => {
+  if ((r.request.schema_version === 3) !== (r.execution !== undefined)) context.addIssue({ code: "custom", message: "execution snapshot and source version disagree" });
+  if (r.request.schema_version === 3 && r.execution && (r.execution.agent_id !== r.request.agent_id ||
+      r.execution.configuration_fingerprint !== canonicalHash(r.execution.configuration) || r.canonical_hash !== canonicalHash(r.request) ||
+      Date.parse(r.deadline_at) - Date.parse(r.accepted_at) !== r.execution.policy.task_timeout_ms)) {
+    context.addIssue({ code: "custom", message: "admission identity or deadline mismatch" });
+  }
+});
 const taskState = z.object({
   phase: z.enum(["accepted", "queued", "preparing", "running", "awaiting_input", "stopping", "finalizing", "terminal"]),
   outcome: outcome.optional(), updated_at: instant, reason: text.optional(),
@@ -52,6 +61,23 @@ const resultFields = {
 const storedResult = z.discriminatedUnion("schema_version", [
   z.object({ ...resultFields, schema_version: z.literal(1) }).strict(),
   z.object({ ...resultFields, schema_version: z.literal(2), delivery }).strict(),
+  z.object({ ...resultFields, schema_version: z.literal(3), delivery, identity: ExecutionIdentitySchema,
+    model: z.object({ requested: nonempty.optional(), reported: nonempty.optional() }).strict(),
+  }).strict().superRefine((r, context) => {
+    if (r.identity.status === "admitted") {
+      const snapshot = r.identity.snapshot;
+      if (snapshot.configuration_fingerprint !== canonicalHash(snapshot.configuration) || r.model.requested !== snapshot.requested_model) {
+        context.addIssue({ code: "custom", message: "result identity mismatch" });
+      }
+    } else if (r.execution_status !== "interrupted" || r.model.requested !== undefined || r.model.reported !== undefined || r.worker_stop === "confirmed") {
+      context.addIssue({ code: "custom", message: "historical recovery fabricates evidence" });
+    }
+    if (r.delivery.status === "committed" && (r.worker_stop !== "confirmed" || !r.delivery.base_commit ||
+        !r.delivery.head_commit || !r.delivery.tree_oid || !r.delivery.branch_ref || !r.delivery.target_ref ||
+        !r.delivery.worktree_path || !r.delivery.commits?.length || r.delivery.commits.at(-1) !== r.delivery.head_commit)) {
+      context.addIssue({ code: "custom", message: "incomplete committed delivery" });
+    }
+  }),
 ]);
 const resourceRecord = z.object({
   schema_version: z.literal(1), task_id: uuid, project_id: nonempty,
@@ -67,7 +93,8 @@ const finalizeReceipt = z.object({
   operation: FinalizeOperationSchema, request_hash: nonempty,
   state: z.enum(["intent", "cleanup_pending", "done"]), resource: resourceRecord,
   error: error.optional(), updated_at: instant,
-}).strict().refine((r) => r.operation.task_id === r.resource.task_id, "receipt task identity mismatch");
+}).strict().refine((r) => r.operation.task_id === r.resource.task_id, "receipt task identity mismatch")
+  .refine((r) => r.request_hash === stableHash(r.operation), "receipt operation hash mismatch");
 const safetyRecord = z.object({ reason: nonempty, at: instant }).strict();
 
 function recordObject(value: unknown): value is Record<string, unknown> {
@@ -93,7 +120,7 @@ function identity(actual: string, expected: string, stage: string): void {
 }
 
 export function decodeRequest(value: unknown, id: string): StoredRequest {
-  if (recordObject(value)) version(value.request, [1, 2], "store.request");
+  if (recordObject(value)) version(value.request, [1, 2, 3], "store.request");
   const result = parse(requestRecord, value, "store.request");
   identity(result.task_id, id, "store.request");
   // Complete schema proof above; stored JSON cannot carry optional undefined properties.
@@ -104,7 +131,7 @@ export function decodeState(value: unknown): TaskState {
   return parse(taskState, value, "store.state") as TaskState;
 }
 export function decodeResult(value: unknown, id: string): StoredResult {
-  version(value, [1, 2], "store.result");
+  version(value, [1, 2, 3], "store.result");
   const result = parse(storedResult, value, "store.result");
   identity(result.task_id, id, "store.result");
   return result as StoredResult;
@@ -126,4 +153,27 @@ export function decodeReceipt(value: unknown, id: string, key?: string): Finaliz
 export function decodeSafety(value: unknown): { reason: string; at: string } {
   version(value, [], "store.safety");
   return parse(safetyRecord, value, "store.safety");
+}
+
+/** Cross-file identity proof. Readable records alone do not prove they describe the same task. */
+export function assertResultAdmission(result: StoredResult, admission: StoredRequest): void {
+  identity(result.task_id, admission.task_id, "store.result.admission");
+  identity(result.request_key, admission.request.request_key, "store.result.request_key");
+  if (admission.request.schema_version === 3) {
+    if (result.schema_version !== 3 || result.identity.status !== "admitted" || !admission.execution ||
+        canonicalHash(result.identity.snapshot) !== canonicalHash(admission.execution)) {
+      throw new BridgeError("STORE_CORRUPT", "Terminal execution identity differs from its admitted snapshot");
+    }
+    if (result.delivery.base_commit && admission.request.mode === "implement" && result.delivery.base_commit !== admission.request.base_commit ||
+        result.delivery.target_ref && result.delivery.target_ref !== admission.request.target_ref ||
+        admission.request.mode === "review" && result.delivery.status !== "not_applicable") {
+      throw new BridgeError("STORE_CORRUPT", "Terminal delivery contradicts its assignment");
+    }
+  } else if (result.schema_version === 3) {
+    if (result.identity.status !== "unavailable" || result.identity.source_schema_version !== admission.request.schema_version) {
+      throw new BridgeError("STORE_CORRUPT", "Historical recovery misidentifies the original contract");
+    }
+  } else if (result.schema_version !== admission.request.schema_version) {
+    throw new BridgeError("STORE_CORRUPT", "Historical request and result versions disagree");
+  }
 }

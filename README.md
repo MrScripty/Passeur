@@ -1,19 +1,25 @@
 # Passeur
 
-Passeur exposes repository-scoped agent delegation through MCP. Codex controls decomposition and integration; Muse workers perform their assigned work and ordinary commits; Passeur manages execution, approvals, retained evidence and owned worktree/ref disposition.
+Passeur exposes repository-scoped registered-agent delegation through MCP. The caller selects independent assignments, agents and integration timing. Workers perform scoped checks and ordinary Git commits. Passeur owns execution, approval handoff, retained evidence and protected worktree/ref disposition.
 
-## Startup and installation
+## Registered agents
 
-See [Startup and installation](docs/startup-and-installation.md) for the current CLI and deployment procedure. The interface now exposes `passeur_status` and `passeur_prepare` alongside `delegate_to_muse`, `delegate_to_muse_batch`, `muse_result` and `muse_finalize`.
+Muse is a registered runtime adapter rather than the whole bridge. Several named configurations can reuse one adapter. A second Codex app-server implementation is included as a Linux, implementation-only, explicitly opted-in qualification candidate. Passeur adds no agent reasoning loop, automatic provider routing, test selection, repair or merge engine.
 
-Operational project, profile, state and provider failures do not prevent the tool catalog from being exposed by an otherwise functioning installation. Coordination readiness is not provider compatibility. One coordinator can manage multiple independent workers; a second connection stays available for diagnosis while execution authority is held elsewhere.
+Use `passeur_agents` to inspect configured agents in bounded pages, then `passeur_delegate` or `passeur_delegate_batch` with schema v3 and an explicit `agent_id`. Read retained evidence with `passeur_result` and account for resources through `passeur_finalize`. `passeur_status` and `passeur_prepare` retain their independent startup/coordination semantics. Existing Muse v2 tools remain compatibility entrypoints sharing the same coordinator.
 
-Normal registrations use explicit project names and version-specific installed runtimes. Development registration is explicit. No run action builds, installs, repairs state, changes permissions or selects another state namespace as a fallback.
+[Configure and use registered agents](docs/registered-agents.md) covers profile migration, operator edits, retries and compatibility. [Adapter contract](docs/agent-adapters.md) defines ownership; [the adapter-authoring skill](.agents/skills/passeur-agent-adapter/SKILL.md) guides future integrations.
 
-## Development and evidence
+## Startup and installed runtime
 
-After authorized dependency provisioning, run `npm ci`, `npm run check` and `npm test`. Tests exercise Passeur's own behavior; Passeur does not become a test runner or acceptance engine for delegated projects.
+Follow [startup and installation](docs/startup-and-installation.md). Missing agent/profile/repository prerequisites do not hide the tool catalog in an otherwise functioning installation. Factories do not start native SDKs at discovery. One runtime retains the configured repository lease, lazy preparation and terminal drain; all agents share one coordinator and bounded queue.
 
-The startup implementation is a **source candidate awaiting full pinned-dependency and installed-host verification**, not an accepted release. See [implementation evidence](docs/plans/discoverable-startup-and-installed-runtime/reports/implementation-evidence.md). Complete [real installed acceptance](docs/installed-acceptance.md) before marking the plan Accepted.
+Use named caller registrations bound to exact installed builds and the existing state namespace. Rebuilding source does not update a running process. No run action installs dependencies, authenticates, rewrites personal configuration, changes permissions or selects another state root as fallback.
 
-Task schema 2, supported version-1 history, scoped worker commits, bounded results and protected dispositions remain. See [design](docs/design.md), [recovery](docs/recovery.md), [compatibility](docs/compatibility.md), and the [agent skill](.agents/skills/muse-bridge/SKILL.md).
+## Development and qualification
+
+After authorized provisioning in the complete checkout, run `npm ci`, `npm run check`, `npm test` and `npm run build:runtime`. `npm run test:native` runs the standalone Codex transport/projection checks with controlled Node peers. Tests exercise Passeur's behavior, not delegated project acceptance.
+
+This is a **source implementation candidate with blocked full pinned and installed-native acceptance**, not a certified compliant release. Read [implementation evidence](docs/plans/registered-agents/reports/implementation-evidence.md) for actual executed checks and their limits. Native Muse/Codex permissions, billing provenance, tool isolation and descendants require real qualification; a configured entry is not that evidence.
+
+The existing startup plan's installed-host claims remain required. Follow [installed-host acceptance](docs/installed-acceptance.md), [recovery](docs/recovery.md), and [compatibility](docs/compatibility.md). No live account or personal configuration was used to produce this source package.

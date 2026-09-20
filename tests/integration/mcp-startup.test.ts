@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { expect, it } from "vitest";
 import { RuntimeStatusSchema } from "../../src/contracts/runtime.js";
 const exec = promisify(execFile);
-const catalog = ["passeur_status", "passeur_prepare", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize"].sort();
+const catalog = ["passeur_agents", "passeur_delegate", "passeur_delegate_batch", "passeur_result", "passeur_finalize", "passeur_status", "passeur_prepare", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize"].sort();
 async function connect(project: string, state: string) {
   const client = new Client({ name: "passeur_acceptance", version: "1" }, { capabilities: {} });
   const transport = new StdioClientTransport({ command: process.execPath,

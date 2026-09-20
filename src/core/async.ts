@@ -47,10 +47,14 @@ export async function settlesWithin(operation: Promise<unknown>, milliseconds: n
     ]);
   } finally { if (timer) clearTimeout(timer); }
 }
-export function stableHash(value: unknown): string {
+/** Retained v1/v2 keys keep the historical collation; changing it would invalidate actual retries. */
+export function stableHash(value: unknown): string { return hashJson(value, (a, b) => a.localeCompare(b)); }
+/** V3 admission/configuration identity is independent of locale. Inputs are validated JSON values. */
+export function canonicalHash(value: unknown): string { return hashJson(value, (a, b) => a < b ? -1 : a > b ? 1 : 0); }
+function hashJson(value: unknown, compare: (a: string, b: string) => number): string {
   const canonical = (item: unknown): unknown => {
     if (Array.isArray(item)) return item.map(canonical);
-    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => [key, canonical(val)]));
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).sort(([a], [b]) => compare(a, b)).map(([key, val]) => [key, canonical(val)]));
     return item;
   };
   return createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");

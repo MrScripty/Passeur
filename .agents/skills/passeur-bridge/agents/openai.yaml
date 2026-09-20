@@ -1,0 +1,4 @@
+interface:
+  display_name: "Passeur Delegation"
+  short_description: "Discover agents, delegate tasks, and account for committed work."
+  default_prompt: "Use $passeur-bridge to discover configured agents, delegate a scoped assignment, and inspect its delivery and resource disposition."

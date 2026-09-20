@@ -5,11 +5,12 @@ import type { FinalizeReceipt, HistoricalRequest, ResourceRecord, StoredResult }
 import { KeyedMutex, stableHash } from "../core/async.js";
 import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
 import type { TaskState } from "../core/state.js";
-import { decodeRequest, decodeState, decodeResult, decodeResource, decodeReceipt, decodeSafety } from "./record-codecs.js";
+import { decodeRequest, decodeState, decodeResult, decodeResource, decodeReceipt, decodeSafety, assertResultAdmission } from "./record-codecs.js";
 
 export type StoredRequest = {
   task_id: string; project_id: string; canonical_hash: string;
   accepted_at: string; deadline_at: string; request: HistoricalRequest;
+  execution?: import("../contracts/agents.js").ExecutionSnapshot;
 };
 export type MutationAuthority = () => void;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -100,6 +101,8 @@ export class TaskStore {
   }
   async writeResult(id: string, result: StoredResult): Promise<void> {
     decodeResult(result, id);
+    const admission = decodeRequest(await this.#required(join(this.taskDir(id), "request.json")), id);
+    assertResultAdmission(result, admission);
     await this.#writes.run(id, async () => {
       const existing = await this.readResult(id);
       if (existing) {
@@ -161,7 +164,11 @@ export class TaskStore {
   }
   async readResult(id: string): Promise<StoredResult | undefined> {
     const value = await this.#json(join(this.taskDir(id), "result.json"));
-    return value === undefined ? undefined : decodeResult(value, id);
+    if (value === undefined) return undefined;
+    const result = decodeResult(value, id);
+    const admission = decodeRequest(await this.#required(join(this.taskDir(id), "request.json")), id);
+    assertResultAdmission(result, admission);
+    return result;
   }
   async readSlice(id: string, section: "result" | "log", offset: number, limit: number): Promise<Buffer> {
     return this.#readBounded(join(this.taskDir(id), section === "result" ? "result.json" : "events.ndjson"), offset, limit);

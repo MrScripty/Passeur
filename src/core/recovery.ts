@@ -1,27 +1,29 @@
-import type { DelegateResult, ResourceRecord, StoredResult } from "../contracts/types.js";
+import type { AgentResult } from "../contracts/agents.js";
+import type { ResourceRecord, StoredResult } from "../contracts/types.js";
 import { BridgeError } from "./errors.js";
-import { TaskStore } from "../store/task-store.js";
+import type { TaskStore } from "../store/task-store.js";
 const now = () => new Date().toISOString();
 /** Must run under the repository-owner lease, before admission. Never replays inference. */
-export async function reconcileStoredTasks(store: TaskStore, requestedModel: string): Promise<void> {
+export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
   await store.quarantineIncomplete();
   for (const record of await store.list()) {
     let state = await store.readState(record.task_id);
     let saved = await store.readResult(record.task_id);
     if (!saved && state.phase !== "terminal") {
-      const result: DelegateResult = {
-        schema_version: 2, task_id: record.task_id, request_key: record.request.request_key,
+      const result: AgentResult = {
+        schema_version: 3,
+        identity: record.request.schema_version === 3 && record.execution
+          ? { status: "admitted", snapshot: record.execution }
+          : { status: "unavailable", source_schema_version: record.request.schema_version === 1 ? 1 : 2, reason: "The historical request did not retain execution identity" },
+        task_id: record.task_id, request_key: record.request.request_key,
         execution_status: "interrupted", worker_stop: state.phase === "accepted" || state.phase === "queued" ? "not_started" : "unconfirmed", worker_assessment: "unknown",
         summary: "The previous execution was interrupted. It was not replayed.", blockers: [], questions: [],
         error: { code: "INTERRUPTED_ON_RESTART", message: `Recovered phase ${state.phase}` },
-        model: { requested: requestedModel }, workspace: { kind: record.request.mode === "review" ? "source_read_only" : "task_worktree", stale: true },
+        model: record.execution?.requested_model ? { requested: record.execution.requested_model } : {}, workspace: { kind: record.request.mode === "review" ? "source_read_only" : "task_worktree", stale: true },
         delivery: { status: record.request.mode === "review" ? "not_applicable" : "incomplete", reason: "Interrupted execution requires explicit reconciliation" },
         changed_files: [], checks: [], artifacts: [], output_truncated: false,
       };
-      if (record.request.schema_version === 1) {
-        const { delivery: _delivery, ...old } = result;
-        saved = { ...old, schema_version: 1 };
-      } else saved = result;
+      saved = result;
       await store.writeResult(record.task_id, saved);
     }
     if (!saved) { await store.freeze(`Terminal task ${record.task_id} has no result; restore its evidence before admission`); continue; }
