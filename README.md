@@ -22,7 +22,7 @@ Configure a project interactively, then start its MCP server:
 ./passeur start /path/to/project
 ```
 
-The project defaults to the current directory. Running `./passeur` for an unconfigured project opens the same setup. Add the printed MCP configuration to Codex.
+The project defaults to the current directory. Setup offers to install the Codex MCP registration automatically, preserving unrelated Codex settings and backing up an existing configuration. For a profile created by an earlier version, run `./passeur register-codex /path/to/project`. Restart Codex afterward and use `/mcp` to confirm the tools appear.
 
 See [setup](docs/setup.md) for profiles and MCP registration. New execution requests use **schema version 2**. Existing profile files keep version 1 and acquire documented defaults: two active workers, eight queued tasks. Lower `max_workers` explicitly when required by your machine or account.
 

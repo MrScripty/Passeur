@@ -10,13 +10,21 @@ Use a clean repository root and an approved task-worktree root outside the sourc
 
 2. Setup reads the installed Muse model catalog and asks the user to select a model. It uses the `muse` executable found on `PATH`.
 
-3. Generate a project profile and proposed Codex MCP entry:
+3. Generate a project profile and install its Codex MCP entry:
 
    ```sh
    ./passeur setup /absolute/path/to/project
    ```
 
-   Enable implementation worktrees when prompted and supply an approved root outside the source checkout. The command prints JSON containing `codex_config`; translate it into the equivalent `[mcp_servers.muse_bridge]` TOML entry in the user's Codex config. Preserve unrelated settings. The essential values are the absolute Node executable, `dist/src/cli.js`, `serve`, the canonical project and profile paths, `tool_timeout_sec = 2100`, and `enabled_tools = ["delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize"]`.
+   Enable implementation worktrees when prompted and supply an approved root outside the source checkout. Accept the Codex registration prompt to update `~/.codex/config.toml` without copying terminal output. Passeur preserves unrelated settings, backs up an existing config, verifies the entry through the Codex CLI and restores the previous config if verification fails.
+
+   For an existing profile, register it directly:
+
+   ```sh
+   ./passeur register-codex /absolute/path/to/project
+   ```
+
+   Non-interactive configuration can add `--install-codex`. Decline the interactive registration prompt only when another workflow owns Codex configuration; Passeur then prints copy-safe TOML as a fallback.
 
 4. Ensure Codex allows MCP tool-call elicitation and routes approval prompts to the human. The bridge refuses delegation when the client does not advertise elicitation.
 
@@ -26,7 +34,7 @@ Use a clean repository root and an approved task-worktree root outside the sourc
    ./passeur doctor /absolute/path/to/project
    ```
 
-6. Restart Codex after changing its MCP configuration, then confirm that all four tools appear. Initializing the server does not launch Muse inference.
+6. Restart Codex after changing its MCP configuration, then use `/mcp` to confirm that all four tools appear. Initializing the server does not launch Muse inference.
 
 Start the configured server with `./passeur start /absolute/path/to/project`. The project defaults to the current directory.
 

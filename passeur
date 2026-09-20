@@ -11,7 +11,7 @@ fi
 
 command="${1:-start}"
 case "$command" in
-  start|setup|configure|doctor|inspect|result|logs|finalize|cleanup|reconcile) shift || true ;;
+  start|setup|configure|register-codex|doctor|inspect|result|logs|finalize|cleanup|reconcile) shift || true ;;
   *) command="start" ;;
 esac
 

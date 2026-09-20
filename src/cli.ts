@@ -4,7 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import { FinalizeRequestSchema, ProfileSchema } from "./contracts/index.js";
+import { CODEX_ENABLED_TOOLS, installCodexMcpRegistration, renderCodexMcpToml, type CodexMcpRegistration } from "./codex/config.js";
+import { FinalizeRequestSchema, ProfileSchema, type Profile } from "./contracts/index.js";
 import { loadProfile } from "./core/profile.js";
 import { cleanupTask } from "./core/cleanup.js";
 import { DispositionManager } from "./core/disposition.js";
@@ -20,13 +21,41 @@ import { canonicalProject, projectId, repositoryIdentity } from "./workspace/pro
 import { worktreeEntries } from "./workspace/worktree.js";
 
 function usage(): never {
-  console.error("Usage: muse-bridge <setup|configure|doctor|serve|inspect|result|logs|finalize|cleanup|reconcile> --project <path> [options]");
+  console.error("Usage: muse-bridge <setup|configure|register-codex|doctor|serve|inspect|result|logs|finalize|cleanup|reconcile> --project <path> [options]");
   process.exit(2);
+}
+
+function codexRegistration(project: string, profilePath: string): CodexMcpRegistration {
+  return {
+    command: process.execPath,
+    args: [fileURLToPath(import.meta.url), "serve", "--project", project, "--profile", profilePath],
+    startup_timeout_sec: 10,
+    tool_timeout_sec: 2100,
+    enabled_tools: CODEX_ENABLED_TOOLS,
+  };
+}
+
+async function registerCodex(project: string, profilePath: string): Promise<void> {
+  const result = await installCodexMcpRegistration(codexRegistration(project, profilePath));
+  console.log(`${result.changed ? "Installed" : "Verified"} Codex MCP registration in ${result.configPath}.`);
+  if (result.backupPath) console.log(`Previous configuration backed up at ${result.backupPath}.`);
+  console.log("Restart Codex, then use /mcp to confirm that muse_bridge exposes all four tools.");
+}
+
+function printConfiguration(profilePath: string, project: string, profile: Profile): void {
+  const registration = codexRegistration(project, profilePath);
+  console.log(JSON.stringify({
+    profile: profilePath,
+    capacity: { workers: profile.max_workers, queued: profile.max_queued_tasks },
+    codex_config: registration,
+    codex_config_toml: renderCodexMcpToml(registration),
+    next_step: "Rerun configure with --install-codex, or run register-codex after this profile exists.",
+  }, null, 2));
 }
 
 async function saveProfile(profilePath: string, project: string, values: {
   model: string; museBin: string; worktreeRoot?: string; confirmed: boolean; maxWorkers?: number; maxQueuedTasks?: number;
-}): Promise<void> {
+}): Promise<Profile> {
   const profile = ProfileSchema.parse({
     schema_version: 1, muse_bin: values.museBin, model: values.model,
     review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" },
@@ -39,13 +68,10 @@ async function saveProfile(profilePath: string, project: string, values: {
   try { await readFile(profilePath); throw new Error("Profile already exists; edit it deliberately or choose a new --profile path"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600, flag: "wx" }); await chmod(profilePath, 0o600);
-  console.log(JSON.stringify({ profile: profilePath, capacity: { workers: profile.max_workers, queued: profile.max_queued_tasks },
-    codex_config: { command: process.execPath, args: [fileURLToPath(import.meta.url), "serve", "--project", project, "--profile", profilePath],
-      startup_timeout_sec: 10, tool_timeout_sec: 2100, enabled_tools: ["delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize"] },
-  }, null, 2));
+  return profile;
 }
 
-async function interactiveSetup(profilePath: string, project: string): Promise<void> {
+async function interactiveSetup(profilePath: string, project: string, installRequested = false): Promise<void> {
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   const ask = async (prompt: string, fallback?: string) => (await terminal.question(`${prompt}${fallback ? ` [${fallback}]` : ""}: `)).trim() || fallback || "";
   try {
@@ -69,7 +95,15 @@ async function interactiveSetup(profilePath: string, project: string): Promise<v
     const confirmed = /^y(es)?$/i.test(await ask("Have you verified this Muse login uses your intended subscription? (y/N)", "N"));
     if (!confirmed) throw new Error("Subscription confirmation is required before Passeur can delegate work");
     await saveProfile(profilePath, project, { model, museBin, ...(worktreeRoot ? { worktreeRoot } : {}), confirmed });
-    console.log("\nSetup complete. Add the codex_config values above to Codex, then run ./passeur again.");
+    const install = installRequested || /^y(es)?$/i.test(await ask("Install or update the Codex MCP registration now? (Y/n)", "Y"));
+    if (install) await registerCodex(project, profilePath);
+    else {
+      console.log("\nCodex registration was not changed. Run this later to install it without copying configuration:");
+      console.log(`  ./passeur register-codex ${JSON.stringify(project)}`);
+      console.log("\nCopy-safe fallback TOML:\n");
+      console.log(renderCodexMcpToml(codexRegistration(project, profilePath)));
+    }
+    console.log("Setup complete.");
   } finally { terminal.close(); }
 }
 
@@ -79,6 +113,7 @@ async function main(): Promise<void> {
     project: { type: "string" }, profile: { type: "string" }, task: { type: "string" }, follow: { type: "boolean" }, yes: { type: "boolean" },
     "muse-bin": { type: "string" }, model: { type: "string" }, "worktree-root": { type: "string" }, "confirm-subscription": { type: "boolean" },
     "max-workers": { type: "string" }, "max-queued-tasks": { type: "string" }, operations: { type: "string" },
+    "install-codex": { type: "boolean" },
     "confirm-worker-stopped": { type: "boolean" }, owner: { type: "string" }, reason: { type: "string" },
   }, strict: true });
   if (!values.project) usage();
@@ -93,18 +128,21 @@ async function main(): Promise<void> {
   // The profile remains project-specific; runtime ownership and records are repository-common.
   if (command === "setup") {
     if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Interactive setup requires a terminal");
-    await interactiveSetup(profilePath, project); return;
+    await interactiveSetup(profilePath, project, values["install-codex"] ?? false); return;
   }
   if (command === "configure") {
     if (!values.model) throw new Error("configure requires --model with the exact installed model ID");
-    await saveProfile(profilePath, project, {
+    const profile = await saveProfile(profilePath, project, {
       model: values.model, museBin: values["muse-bin"] ?? "muse",
       ...(values["worktree-root"] ? { worktreeRoot: values["worktree-root"] } : {}),
       confirmed: values["confirm-subscription"] ?? false,
       ...(values["max-workers"] === undefined ? {} : { maxWorkers: Number(values["max-workers"]) }),
       ...(values["max-queued-tasks"] === undefined ? {} : { maxQueuedTasks: Number(values["max-queued-tasks"]) }),
-    }); return;
+    });
+    if (values["install-codex"]) await registerCodex(project, profilePath); else printConfiguration(profilePath, project, profile);
+    return;
   }
+  if (command === "register-codex") { await loadProfile(profilePath, false); await registerCodex(project, profilePath); return; }
   if (command === "doctor") { console.log(JSON.stringify(await doctor(project, profilePath, await loadProfile(profilePath, false)), null, 2)); return; }
   let legacyRoots = [join(stateRoot, "muse-bridge", "projects", projectId(project))];
   if (repository.common_dir !== project) {

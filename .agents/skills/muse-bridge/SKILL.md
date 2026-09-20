@@ -1,6 +1,6 @@
 ---
 name: muse-bridge
-description: Delegate independent tasks to parallel Muse CLI workers, locate committed results, and account for Passeur-owned resources without mandatory per-worker primary-model review.
+description: Set up or troubleshoot Passeur's Codex MCP registration, delegate independent tasks to parallel Muse CLI workers, locate committed results, and account for Passeur-owned resources.
 ---
 
 # Passeur / Muse Bridge
@@ -8,6 +8,10 @@ description: Delegate independent tasks to parallel Muse CLI workers, locate com
 Codex owns decomposition, dependencies, base selection, integration, broader testing and acceptance. Muse owns its scoped implementation, verification and ordinary standards-compliant commits. Passeur manages execution and deliverable resources; it does not test, repair, merge or create PRs.
 
 Read [setup](references/setup.md) for installation or migration. Use schema version 2 for execution.
+
+## Bootstrap Codex
+
+When setup is requested or the Passeur tools are unavailable, read the setup reference. With an existing profile, offer to run `./passeur register-codex <project>` after receiving authority to update the user's Codex configuration. This preserves unrelated settings, backs up an existing config and verifies the registered server. Tell the user to restart Codex after success; the current session cannot acquire newly registered MCP tools.
 
 ## Delegate
 

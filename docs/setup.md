@@ -15,11 +15,19 @@ npm run build
 
 Use a clean repository root, a Muse executable/model identifier verified against the installed runtime, and the normal subscription-linked credential. The confirmation is a dated user assertion, not provider billing proof.
 
-The interactive setup reads the installed Muse model catalog and creates a profile with the default capacity of two workers and eight queued tasks. The project directory defaults to the current directory.
+The interactive setup reads the installed Muse model catalog and creates a profile with the default capacity of two workers and eight queued tasks. The project directory defaults to the current directory. Accept its final prompt to install the MCP entry directly into Codex without copying configuration text.
 
 ```sh
 ./passeur setup /absolute/path/to/project
 ```
+
+For a profile created previously, install or repair only its Codex registration:
+
+```sh
+./passeur register-codex /absolute/path/to/project
+```
+
+Passeur updates only `[mcp_servers.muse_bridge]` in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`), preserves unrelated text, and writes `config.toml.passeur-backup` before replacing an existing file. It verifies the result with `codex mcp get muse_bridge --json`; failed verification restores the previous config. Existing nested `muse_bridge` tables require manual migration so their settings are not silently discarded.
 
 For non-interactive configuration or explicit capacity limits, run:
 
@@ -31,12 +39,13 @@ node dist/src/cli.js configure \
   --model VERIFIED_INSTALLED_MODEL_ID \
   --worktree-root /absolute/task-worktrees \
   --max-workers 2 --max-queued-tasks 8 \
-  --confirm-subscription
+  --confirm-subscription \
+  --install-codex
 ```
 
 The worktree root must be outside the source checkout. Existing profiles are not overwritten. They keep `schema_version: 1`; absent capacity fields resolve to two workers/eight queued tasks. Edit them deliberately and restart the coordinator to change the limit. Concurrency is not a claim about provider quota or entitlement.
 
-The repository-local agent skill is in `.agents/skills/muse-bridge`. Copy the printed MCP entry into Codex while preserving unrelated settings. For example:
+The repository-local agent skill is in `.agents/skills/muse-bridge`. It directs Codex to `register-codex` when the Passeur tools are missing. If another workflow owns Codex configuration, omit `--install-codex`; `configure` prints both structured JSON and copy-safe TOML. The installed entry is equivalent to:
 
 ```toml
 [mcp_servers.muse_bridge]
