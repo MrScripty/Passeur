@@ -1,4 +1,4 @@
-import { MuseClient, type ApprovalDecisionInput, type TurnOutcome } from "@muse-code/sdk";
+import { MuseClient, readSessionDurability, spawnMspConnection, type ApprovalDecisionInput, type MuseClientSpawnOptions, type TurnOutcome } from "@muse-code/sdk";
 import type { DelegateRequest, DelegateResult, ExecutionStatus, Profile } from "../contracts/index.js";
 
 export type ApprovalRequest = {
@@ -15,6 +15,15 @@ export type WorkerRun = {
   worker_assessment: DelegateResult["worker_assessment"]; blockers: string[]; questions: string[]; checks: DelegateResult["checks"];
 };
 export interface WorkerAdapter { run(input: { request: DelegateRequest; prompt: string; workspace: string; profile: Profile; signal: AbortSignal; approve: ApprovalHandler; onEvent: (event: unknown) => Promise<void> }): Promise<WorkerRun>; }
+export type ClientStartup = { ready: Promise<MuseClient>; close: () => Promise<unknown> };
+export type ClientStarter = (options: MuseClientSpawnOptions) => ClientStartup;
+
+function startOwnedClient(options: MuseClientSpawnOptions): ClientStartup {
+  const handshake = spawnMspConnection({ command: options.museBin, ...(options.args ? { args: options.args } : {}), ...(options.env ? { env: options.env } : {}), ...(options.onStderr ? { onStderr: options.onStderr } : {}), ...(options.shutdownTimeoutMs === undefined ? {} : { shutdownTimeoutMs: options.shutdownTimeoutMs }) });
+  const ready = handshake.initialize({ clientInfo: options.clientInfo, ...(options.capabilities ? { capabilities: options.capabilities } : {}) }).then((spawned) => new MuseClient(spawned.connection, { durability: readSessionDurability(spawned.initializeResult), host: spawned }));
+  ready.catch(() => undefined);
+  return { ready, close: () => handshake.close() };
+}
 
 function childEnvironment(): NodeJS.ProcessEnv {
   const allow = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR", "TERM"];
@@ -71,13 +80,14 @@ export function parseWorkerReport(text: string | undefined, workspace: string): 
 }
 
 export class MuseSdkAdapter implements WorkerAdapter {
-  constructor(private readonly spawnClient: typeof MuseClient.spawn = MuseClient.spawn) {}
+  constructor(private readonly startClient: ClientStarter = startOwnedClient) {}
   async run(input: Parameters<WorkerAdapter["run"]>[0]): Promise<WorkerRun> {
     if (input.signal.aborted) return cancelledRun(input.signal, "not_started");
     const args = ["serve"];
     if (input.request.mode === "review") args.push("--disable-write", "--disable-shell", "--sandbox-network", input.profile.review.sandbox_network);
     else args.push("--sandbox-network", input.profile.implementation.sandbox_network);
     let client: MuseClient | undefined;
+    let startup: ClientStartup | undefined;
     let stopped: "confirmed" | "unconfirmed" = "unconfirmed";
     let consume: Promise<void> | undefined;
     let consumeError: unknown;
@@ -91,6 +101,10 @@ export class MuseSdkAdapter implements WorkerAdapter {
       return pending;
     };
     const stop = async () => {
+      if (startup) {
+        const owned = startup; startup = undefined;
+        stopped = await settlesWithin(Promise.resolve().then(() => owned.close()), cleanupRemaining()) ? "confirmed" : "unconfirmed";
+      }
       if (!client) return;
       const owned = client; client = undefined;
       const close = Promise.resolve().then(() => owned.close());
@@ -98,7 +112,7 @@ export class MuseSdkAdapter implements WorkerAdapter {
     };
     let result: WorkerRun;
     try {
-      client = await this.spawnClient({
+      startup = this.startClient({
         museBin: input.profile.muse_bin,
         args,
         env: childEnvironment(),
@@ -106,7 +120,8 @@ export class MuseSdkAdapter implements WorkerAdapter {
         shutdownTimeoutMs: input.profile.stop_grace_ms,
         onStderr: (chunk) => { void emit({ kind: "muse_stderr", text: chunk.slice(0, 16_384) }); },
       });
-      if (input.signal.aborted) throw input.signal.reason;
+      client = await withAbort(startup.ready, input.signal);
+      startup = undefined;
       const session = await withAbort(client.startSession({ workspaceRoot: input.workspace, modelId: input.profile.model, approvalMode: "onRequest" }), input.signal);
       const reported = session.opening?.result.session.modelId ?? undefined;
       if (reported !== input.profile.model) throw new Error(`Muse reported model ${reported ?? "<unknown>"}; requested ${input.profile.model}`);

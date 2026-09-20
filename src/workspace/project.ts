@@ -35,11 +35,16 @@ export async function git(root: string, args: string[]): Promise<string> {
 export async function currentRevision(root: string): Promise<string | undefined> { try { return (await git(root, ["rev-parse", "HEAD^{commit}"])).trim(); } catch { return undefined; } }
 export async function sourceStatus(root: string): Promise<string[]> { try { return (await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).split("\0").filter(Boolean); } catch { return []; } }
 
-export async function digestFiles(root: string, paths: string[]): Promise<Record<string, string>> {
-  const result: Record<string, string> = {};
+export async function digestFiles(root: string, paths: string[], allowMissing = false): Promise<Record<string, string | null>> {
+  const result: Record<string, string | null> = {};
   for (const path of paths) {
-    const absolute = await resolveProjectFile(root, path);
-    result[path] = createHash("sha256").update(await readFile(absolute)).digest("hex");
+    try {
+      const absolute = await resolveProjectFile(root, path);
+      result[path] = createHash("sha256").update(await readFile(absolute)).digest("hex");
+    } catch (error) {
+      if (!allowMissing || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      result[path] = null;
+    }
   }
   return result;
 }

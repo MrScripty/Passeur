@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, unlink } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -67,11 +67,11 @@ describe("Coordinator", () => {
     await expect(coordinator.delegate({ ...request, request_key: "cancelled" }, { signal: controller.signal, approve: async () => ({ choice_id: "deny" }) })).rejects.toMatchObject({ code: "REQUEST_CANCELLED" });
     expect(runs).toBe(0); expect(await store.list()).toEqual([]);
   });
-  it("preserves unconfirmed stop evidence when finalization fails", async () => {
+  it("preserves unconfirmed stop evidence after a referenced file is deleted", async () => {
     const root = await mkdtemp(join(tmpdir(), "muse-finalize-test-")); await writeFile(join(root, "watched.txt"), "before"); const store = new TaskStore(join(root, "state"));
     const worker: WorkerAdapter = { run: async () => { await unlink(join(root, "watched.txt")); return { ...completed(), worker_stop: "unconfirmed" }; } }; const coordinator = new Coordinator(root, "project", profile, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
     const result = await coordinator.delegate({ ...request, request_key: "finalize", context_files: ["watched.txt"] }, context);
-    expect(result.worker_stop).toBe("unconfirmed"); expect(result.error?.code).toBe("FINALIZATION_FAILED");
+    expect(result.worker_stop).toBe("unconfirmed"); expect(result.error).toBeUndefined();
     await expect(coordinator.delegate({ ...request, request_key: "after-finalize" }, context)).rejects.toMatchObject({ code: "PROJECT_NEEDS_RECONCILIATION" });
   });
   it("compacts both fresh and cached delegation responses", async () => {
@@ -84,5 +84,26 @@ describe("Coordinator", () => {
     const worker: WorkerAdapter = { run: async () => { started(); await held; return completed(); } }; const coordinator = new Coordinator(root, "project", profile, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
     const running = coordinator.delegate({ ...request, request_key: "shutdown" }, context); await didStart; let idle = false; const waiting = coordinator.waitForIdle().then(() => { idle = true; }); await Promise.resolve(); expect(idle).toBe(false); release(); const result = await running; await waiting;
     expect(await store.readState(result.task_id)).toMatchObject({ phase: "terminal" }); expect(await store.readResult(result.task_id)).toBeDefined();
+  });
+  it("blocks replacement work when terminal result persistence fails", async () => {
+    class FailingStore extends TaskStore { failures = 1; override async writeResult(taskId: string, result: Parameters<TaskStore["writeResult"]>[1]) { if (this.failures-- > 0) throw Object.assign(new Error("disk full"), { code: "ENOSPC" }); await super.writeResult(taskId, result); } }
+    const root = await mkdtemp(join(tmpdir(), "muse-persistence-test-")); const store = new FailingStore(join(root, "state")); let runs = 0;
+    const worker: WorkerAdapter = { run: async () => { runs++; return { ...completed(), worker_stop: "unconfirmed" }; } }; const coordinator = new Coordinator(root, "project", profile, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
+    await expect(coordinator.delegate({ ...request, request_key: "write-fails" }, context)).rejects.toThrow("disk full");
+    await expect(coordinator.delegate({ ...request, request_key: "replacement" }, context)).rejects.toMatchObject({ code: "PROJECT_NEEDS_RECONCILIATION" }); expect(runs).toBe(1);
+  });
+  it("collects artifacts when implementation deletes a referenced file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "muse-delete-test-")); await exec("git", ["init", "-q", root]); await exec("git", ["-C", root, "config", "user.email", "test@example.com"]); await exec("git", ["-C", root, "config", "user.name", "Test"]); await writeFile(join(root, "watched.txt"), "before\n"); await exec("git", ["-C", root, "add", "."]); await exec("git", ["-C", root, "commit", "-qm", "initial"]); const base = (await exec("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim();
+    const state = await mkdtemp(join(tmpdir(), "muse-delete-state-")); const worktrees = await mkdtemp(join(tmpdir(), "muse-delete-worktrees-")); const enabled = { ...profile, implementation: { enabled: true, worktree_root: worktrees, sandbox_network: "proxy-only" as const } }; const store = new TaskStore(state);
+    const worker: WorkerAdapter = { run: async (input) => { await unlink(join(input.workspace, "watched.txt")); return completed(); } }; const coordinator = new Coordinator(root, "project", enabled, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
+    const result = await coordinator.delegate({ ...request, request_key: "delete", mode: "implement", base_commit: base, context_files: ["watched.txt"] }, context);
+    expect(result.error).toBeUndefined(); expect(result.changed_files).toEqual(["watched.txt"]); expect(result.artifacts.map((artifact) => artifact.id)).toEqual(expect.arrayContaining(["manifest", "diff"]));
+  });
+  it("warns when a rename moves an out-of-scope source into the allowed scope", async () => {
+    const root = await mkdtemp(join(tmpdir(), "muse-rename-test-")); await exec("git", ["init", "-q", root]); await exec("git", ["-C", root, "config", "user.email", "test@example.com"]); await exec("git", ["-C", root, "config", "user.name", "Test"]); await mkdir(join(root, "outside")); await writeFile(join(root, "outside", "original.txt"), "before\n"); await exec("git", ["-C", root, "add", "."]); await exec("git", ["-C", root, "commit", "-qm", "initial"]); const base = (await exec("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim();
+    const state = await mkdtemp(join(tmpdir(), "muse-rename-state-")); const worktrees = await mkdtemp(join(tmpdir(), "muse-rename-worktrees-")); const enabled = { ...profile, implementation: { enabled: true, worktree_root: worktrees, sandbox_network: "proxy-only" as const } }; const store = new TaskStore(state);
+    const worker: WorkerAdapter = { run: async (input) => { await mkdir(join(input.workspace, "allowed")); await rename(join(input.workspace, "outside", "original.txt"), join(input.workspace, "allowed", "moved.txt")); await exec("git", ["-C", input.workspace, "add", "-A"]); return completed(); } }; const coordinator = new Coordinator(root, "project", enabled, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
+    const result = await coordinator.delegate({ ...request, request_key: "rename", mode: "implement", base_commit: base, allowed_paths: ["allowed"] }, context);
+    expect(result.changed_files).toEqual(["allowed/moved.txt"]); expect(result.blockers.join("\n")).toContain("outside/original.txt");
   });
 });

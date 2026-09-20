@@ -30,6 +30,11 @@ export async function changedFiles(workspace: Workspace): Promise<string[]> {
   return (await collectChanges(workspace)).map((change) => change.path).sort();
 }
 
+export async function changedPathsForScope(workspace: Workspace): Promise<string[]> {
+  const changes = await collectChanges(workspace);
+  return [...new Set(changes.flatMap((change) => change.old_path ? [change.old_path, change.path] : [change.path]))].sort();
+}
+
 export async function createDiff(workspace: Workspace): Promise<string> {
   if (workspace.kind !== "task_worktree") return "";
   return git(workspace.path, ["diff", "--binary", "--no-ext-diff", workspace.base_commit!]);

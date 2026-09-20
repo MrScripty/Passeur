@@ -6,7 +6,7 @@ import { BridgeError } from "./errors.js";
 import { transition, type TaskState } from "./state.js";
 import type { ApprovalHandler, WorkerAdapter } from "../muse/adapter.js";
 import { TaskStore, type StoredRequest } from "../store/task-store.js";
-import { changedFiles, createDiff, createManifest, prepareWorkspace, type Workspace } from "../workspace/worktree.js";
+import { changedFiles, changedPathsForScope, createDiff, createManifest, prepareWorkspace, type Workspace } from "../workspace/worktree.js";
 import { currentRevision, digestFiles, repositoryInstructions, sourceStatus } from "../workspace/project.js";
 
 export type RunContext = { signal: AbortSignal; approve: ApprovalHandler; progress?: (message: string) => Promise<void> };
@@ -60,6 +60,7 @@ export class Coordinator {
           for (const prior of await this.store.list()) {
             const result = await this.store.readResult(prior.task_id);
             if (result?.worker_stop === "unconfirmed") throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", `Task ${prior.task_id} has unconfirmed worker shutdown; inspect and explicitly clean up its record after reconciling the process and workspace`);
+            if (!result && (await this.store.readState(prior.task_id)).phase !== "terminal") throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", `Task ${prior.task_id} has no trustworthy terminal result; inspect and explicitly clean up its record after reconciling the process and workspace`);
           }
           const taskId = crypto.randomUUID();
           const acceptedAt = new Date();
@@ -100,13 +101,14 @@ export class Coordinator {
       result = { ...result, execution_status: run.status, worker_stop: run.worker_stop, worker_assessment: run.worker_assessment, summary: run.summary, blockers: run.blockers, questions: run.questions, checks: run.checks, model: { requested: this.profile.model, ...(run.reported_model ? { reported: run.reported_model } : {}) }, ...(run.error ? { error: run.error } : {}) };
       workerSettled = true;
       state = transition(state, "finalizing"); await this.store.writeState(taskId, state); await context.progress?.("Collecting Muse result");
-      const after = await digestFiles(workspace.path, paths);
+      const after = await digestFiles(workspace.path, paths, true);
       const finalStatus = await sourceStatus(workspace.path);
       const finalRevision = await currentRevision(workspace.path);
       const stale = JSON.stringify(before) !== JSON.stringify(after) || (request.mode === "review" && (JSON.stringify(initialStatus) !== JSON.stringify(finalStatus) || initialRevision !== finalRevision));
       const files = await changedFiles(workspace);
       result = { ...result, workspace: { ...result.workspace, stale }, changed_files: files };
-      const outsideScope = request.allowed_paths ? files.filter((file) => !request.allowed_paths!.some((allowed) => file === allowed || file.startsWith(`${allowed.replace(/\/$/, "")}/`))) : [];
+      const scopePaths = request.allowed_paths ? await changedPathsForScope(workspace) : [];
+      const outsideScope = request.allowed_paths ? scopePaths.filter((file) => !request.allowed_paths!.some((allowed) => file === allowed || file.startsWith(`${allowed.replace(/\/$/, "")}/`))) : [];
       if (outsideScope.length) result.blockers.push(`Changes outside allowed_paths require review: ${outsideScope.join(", ")}`);
       if (request.mode === "implement") await this.#artifacts(taskId, workspace, result);
       state = transition(state, "terminal", { outcome: result.execution_status });
