@@ -9,17 +9,12 @@ Run commands from the repository root. The bridge requires Node.js 20 or newer, 
    npm run build
    ```
 
-2. Establish the exact Muse model identifier supported by the installed runtime. Pass that identifier explicitly; the bridge has no fallback model.
+2. Setup reads the installed Muse model catalog and asks the user to select a model. It uses the `muse` executable found on `PATH`.
 
 3. Generate a project profile and proposed Codex MCP entry:
 
    ```sh
-   node dist/src/cli.js configure \
-     --project "$PWD" \
-     --profile /absolute/path/to/muse-bridge-profile.json \
-     --muse-bin /absolute/path/to/muse \
-     --model VERIFIED_INSTALLED_MODEL_ID \
-     --confirm-subscription
+   ./passeur setup /absolute/path/to/project
    ```
 
    Add `--worktree-root /absolute/approved/root` to enable implementation tasks. That root must be outside the source checkout. The command prints JSON containing `codex_config`; translate it into the equivalent `[mcp_servers.muse_bridge]` TOML entry in the user's Codex config. Preserve unrelated settings. The essential values are the absolute Node executable, `dist/src/cli.js`, `serve`, the canonical project and profile paths, `tool_timeout_sec = 2100`, and `enabled_tools = ["delegate_to_muse", "muse_result"]`.
@@ -29,12 +24,12 @@ Run commands from the repository root. The bridge requires Node.js 20 or newer, 
 5. Run local, non-inference diagnostics:
 
    ```sh
-   node dist/src/cli.js doctor \
-     --project "$PWD" \
-     --profile /absolute/path/to/muse-bridge-profile.json
+   ./passeur doctor /absolute/path/to/project
    ```
 
 6. Restart Codex after changing its MCP configuration, then confirm that `delegate_to_muse` and `muse_result` appear. Initializing the server does not launch Muse inference.
+
+Start the configured server with `./passeur start /absolute/path/to/project`. The project defaults to the current directory.
 
 Use `scripts/probe-wait.ts` to verify long same-call waiting. Run `scripts/probe-muse.ts` only in a disposable project with `MUSE_BRIDGE_LIVE=1` after confirming billing provenance. Record live compatibility evidence in `docs/compatibility.md`.
 

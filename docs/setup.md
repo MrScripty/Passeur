@@ -9,21 +9,16 @@ npm install
 npm run build
 ```
 
-Create a profile. The subscription flag records the user's dated confirmation; it does not infer coverage from a successful login.
+Create a profile with the interactive setup. The project directory defaults to the current directory.
 
 ```sh
-node dist/src/cli.js configure \
-  --project /absolute/path/to/project \
-  --profile /absolute/path/to/profile.json \
-  --muse-bin /absolute/path/to/muse \
-  --model VERIFIED_INSTALLED_MODEL_ID \
-  --confirm-subscription
+./passeur setup /absolute/path/to/project
 ```
 
 Add the printed MCP entry to Codex. Ensure Codex permits tool-call MCP elicitation and routes it to the human reviewer. Set `tool_timeout_sec = 2100`. Then run the non-billable checks:
 
 ```sh
-node dist/src/cli.js doctor --project /absolute/path/to/project --profile /absolute/path/to/profile.json
+./passeur doctor /absolute/path/to/project
 ```
 
 Good review assignments name a narrow objective, relevant files and decisions, and observable acceptance criteria. For example: inspect `src/parser.ts` for unchecked bounds; cite exact locations; report only actionable correctness findings. Implementation assignments additionally require a clean source checkout, a full commit object ID, enabled implementation support, and a user-approved worktree root in the profile.
