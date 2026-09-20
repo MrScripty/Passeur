@@ -74,6 +74,14 @@ describe("Coordinator", () => {
     expect(result.worker_stop).toBe("unconfirmed"); expect(result.error).toBeUndefined();
     await expect(coordinator.delegate({ ...request, request_key: "after-finalize" }, context)).rejects.toMatchObject({ code: "PROJECT_NEEDS_RECONCILIATION" });
   });
+  it("preserves unconfirmed stop evidence when post-worker finalization fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "muse-finalization-fault-test-")); const store = new TaskStore(join(root, "state")); let runs = 0;
+    const worker: WorkerAdapter = { run: async () => { runs++; return { ...completed(), worker_stop: "unconfirmed" }; } }; const coordinator = new Coordinator(root, "project", profile, store, worker);
+    const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }), progress: async (message: string) => { if (message === "Collecting Muse result") throw new Error("finalization fault"); } };
+    const result = await coordinator.delegate({ ...request, request_key: "finalization-fault" }, context);
+    expect(result).toMatchObject({ execution_status: "completed", worker_stop: "unconfirmed", error: { code: "FINALIZATION_FAILED", message: "finalization fault" } });
+    await expect(coordinator.delegate({ ...request, request_key: "after-finalization-fault" }, { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) })).rejects.toMatchObject({ code: "PROJECT_NEEDS_RECONCILIATION" }); expect(runs).toBe(1);
+  });
   it("compacts both fresh and cached delegation responses", async () => {
     const root = await mkdtemp(join(tmpdir(), "muse-compact-test-")); const store = new TaskStore(join(root, "state")); const worker: WorkerAdapter = { run: async () => completed("x".repeat(100_000)) }; const coordinator = new Coordinator(root, "project", profile, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
     const oversized = { ...request, request_key: "oversized" }; const first = await coordinator.delegate(oversized, context); const cached = await coordinator.delegate(oversized, context);
