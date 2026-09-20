@@ -6,6 +6,17 @@ const profile: Profile = { schema_version: 1, muse_bin: "muse", model: "model", 
 const input = (adapter: MuseSdkAdapter, controller: AbortController, selectedProfile = profile) => adapter.run({ request, profile: selectedProfile, workspace: "/work", prompt: "prompt", task_id: "task", signal: controller.signal, approve: async () => ({ choice_id: "deny" }), onEvent: async () => {} });
 const starts = (client: unknown): ClientStarter => () => ({ ready: Promise.resolve(client as never), close: async () => {} });
 describe("owned Muse startup and cancellation", () => {
+  it("uses a Muse-compatible machine identifier", async () => {
+    let clientName: string | undefined;
+    const starter: ClientStarter = (options) => {
+      clientName = options.clientInfo.name;
+      return { ready: Promise.reject(new Error("stop after capture")), close: async () => {} };
+    };
+    const result = await input(new MuseSdkAdapter(starter), new AbortController());
+    expect(result.status).toBe("failed");
+    expect(clientName).toMatch(/^[a-z0-9_]+$/);
+    expect(clientName).toBe("muse_bridge");
+  });
   it("does not start an already-cancelled assignment", async () => {
     let spawns = 0; const controller = new AbortController(); controller.abort(new Error("cancelled"));
     const result = await input(new MuseSdkAdapter(() => { spawns++; throw new Error("must not spawn"); }), controller);

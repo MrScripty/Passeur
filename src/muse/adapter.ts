@@ -57,7 +57,7 @@ export class MuseSdkAdapter implements WorkerAdapter {
     let result: WorkerRun;
     try {
       startup = this.startClient({ museBin: input.profile.muse_bin, args, cwd: input.workspace, env: childEnvironment(),
-        clientInfo: { name: "muse-bridge", version: "0.1.0" }, shutdownTimeoutMs: input.profile.stop_grace_ms,
+        clientInfo: { name: "muse_bridge", version: "0.1.0" }, shutdownTimeoutMs: input.profile.stop_grace_ms,
         onStderr: (chunk) => { void emit({ kind: "muse_stderr", text: chunk.slice(0, 16_384) }); },
       });
       client = await withAbort(startup.ready, input.signal); startup = undefined;
