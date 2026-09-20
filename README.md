@@ -1,42 +1,19 @@
 # Passeur
 
-A local TypeScript/Node MCP bridge: Codex delegates independent assignments to concurrent Muse CLI workers. Each implementation worker performs its scoped verification and ordinary Git commits. Passeur identifies the committed work and manages its processes, worktrees and disposition records.
+Passeur exposes repository-scoped agent delegation through MCP. Codex controls decomposition and integration; Muse workers perform their assigned work and ordinary commits; Passeur manages execution, approvals, retained evidence and owned worktree/ref disposition.
 
-Passeur does not select or run a delegated repository's tests, require a Codex review after each worker, group tasks by feature, merge contributions, create PRs, or implement a repair loop. Repository instructions/hooks and the workers own scoped verification. Codex owns integration, broader testing and acceptance.
+## Startup and installation
 
-## Setup
+See [Startup and installation](docs/startup-and-installation.md) for the current CLI and deployment procedure. The interface now exposes `passeur_status` and `passeur_prepare` alongside `delegate_to_muse`, `delegate_to_muse_batch`, `muse_result` and `muse_finalize`.
 
-Use a supported Node runtime satisfying the pinned dependencies, Git, Codex CLI and the compatible authenticated Muse CLI. Dependency versions have not changed in this update.
+Operational project, profile, state and provider failures do not prevent the tool catalog from being exposed by an otherwise functioning installation. Coordination readiness is not provider compatibility. One coordinator can manage multiple independent workers; a second connection stays available for diagnosis while execution authority is held elsewhere.
 
-```sh
-npm ci
-npm run check
-npm test
-npm run build
-```
+Normal registrations use explicit project names and version-specific installed runtimes. Development registration is explicit. No run action builds, installs, repairs state, changes permissions or selects another state namespace as a fallback.
 
-Configure a project interactively, then start its MCP server:
+## Development and evidence
 
-```sh
-./passeur setup /path/to/project
-./passeur start /path/to/project
-```
+After authorized dependency provisioning, run `npm ci`, `npm run check` and `npm test`. Tests exercise Passeur's own behavior; Passeur does not become a test runner or acceptance engine for delegated projects.
 
-The project defaults to the current directory. Setup offers to install the Codex MCP registration automatically, preserving unrelated Codex settings and backing up an existing configuration. For a profile created by an earlier version, run `./passeur register-codex /path/to/project`. Restart Codex afterward and use `/mcp` to confirm the tools appear.
+The startup implementation is a **source candidate awaiting full pinned-dependency and installed-host verification**, not an accepted release. See [implementation evidence](docs/plans/discoverable-startup-and-installed-runtime/reports/implementation-evidence.md). Complete [real installed acceptance](docs/installed-acceptance.md) before marking the plan Accepted.
 
-See [setup](docs/setup.md) for profiles and MCP registration. New execution requests use **schema version 2**. Existing profile files keep version 1 and acquire documented defaults: two active workers, eight queued tasks. Lower `max_workers` explicitly when required by your machine or account.
-
-## Tools
-
-| Tool | Purpose |
-| --- | --- |
-| `delegate_to_muse` | Await one independent task through its original MCP call. |
-| `delegate_to_muse_batch` | Submit up to eight independent assignments and await their separate outcomes; no common feature or test gate is implied. |
-| `muse_result` | Read retained evidence and current resource availability in bounded ranges. |
-| `muse_finalize` | Record external integration, retain, or explicitly archive a stopped task; safely retire only owned resources. |
-
-For implementation, supply the exact `base_commit` and full local `target_ref`. The target is metadata, not permission for Passeur to modify it. Results distinguish execution status, Git delivery facts and resource disposition. A `committed` result is not certification of correctness, hooks or standards compliance.
-
-Codex can run tools against a returned worktree or integrate the commit without loading the entire diff into model context. After integration, it acknowledges the accepted ref/commit through `muse_finalize`. Unrelated workers continue running.
-
-See [design](docs/design.md), [recovery and retirement](docs/recovery.md), and [compatibility](docs/compatibility.md). Live subscription, sandbox, human approval and installed-client behavior must be verified in a disposable repository; local fake-worker tests do not establish those facts.
+Task schema 2, supported version-1 history, scoped worker commits, bounded results and protected dispositions remain. See [design](docs/design.md), [recovery](docs/recovery.md), [compatibility](docs/compatibility.md), and the [agent skill](.agents/skills/muse-bridge/SKILL.md).

@@ -1,5 +1,7 @@
 # Plan: Parallel Workers and Committed Handoffs
 
+> Startup/deployment supersession: [Discoverable Startup and Installed Runtime](../discoverable-startup-and-installed-runtime/plan.md) now owns MCP availability, operation-specific coordination readiness, runtime installation and named registration. The one-coordinator/many-worker contract remains. A missing profile/provider or blocked lease no longer prevents tool discovery. This plan retains its independent parallel execution and committed-resource acceptance claims; shared evidence is linked, never inferred from implementation status.
+
 **Plan status:** `Verifying`
 **Current phase:** M4 — Installed dependency and live acceptance
 **Next slice:** Run the full pinned-dependency checks and the opt-in installed Codex/Muse acceptance cases.

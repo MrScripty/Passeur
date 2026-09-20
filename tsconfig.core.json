@@ -1,11 +1,25 @@
 {
   "compilerOptions": {
-    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
-    "strict": true, "noUncheckedIndexedAccess": true, "exactOptionalPropertyTypes": true,
-    "skipLibCheck": true, "types": ["node"], "rootDir": ".", "outDir": ".passeur-core"
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ],
+    "rootDir": ".",
+    "outDir": ".passeur-core"
   },
   "files": [
-    "src/core/coordinator.ts", "src/core/disposition.ts", "src/core/cleanup.ts",
-    "src/core/recovery.ts", "src/muse/report.ts"
+    "src/core/coordinator.ts",
+    "src/core/disposition.ts",
+    "src/core/cleanup.ts",
+    "src/core/recovery.ts",
+    "src/muse/report.ts",
+    "src/core/repository-runtime.ts",
+    "src/core/lease.ts"
   ]
 }

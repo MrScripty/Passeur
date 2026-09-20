@@ -3,3 +3,5 @@ dist/
 coverage/
 *.tsbuildinfo
 .passeur-core/
+.passeur-build/
+.passeur-runtime/

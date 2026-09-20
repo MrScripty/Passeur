@@ -1,5 +1,9 @@
 # Evidence, recovery and resource retirement
 
+> Current prerequisite policy: the MCP interface remains available for diagnosis even when coordination cannot be acquired. `passeur_prepare` and protected operations perform authorized preparation lazily. History reads never migrate/quarantine; offline recovery/finalization/cleanup do not require Muse availability or subscription verification. Any older eager-server-start/profile prerequisite below is superseded by [startup-and-installation.md](startup-and-installation.md). Resource-specific stopped-worker, commit-protection and explicit-disposition requirements remain binding.
+>
+> Permission/storage failure and unsupported versions are not corruption authority. Recovery validates the selected record family before quarantining proven incomplete/corrupt records. Retain bytes and the current namespace; never remove another owner's lock or substitute a new root. Detected lease compromise blocks new protected effects and leaves uncertain in-flight effects unresolved.
+
 The repository-common state location is `$XDG_STATE_HOME/muse-bridge/repositories/<common-directory-hash>`, defaulting to `~/.local/state`. This is separate from the worktree root and configured project-specific profile.
 
 Each task retains its assignment, immutable terminal result, mutable resource record, bounded event log, optional artifacts and operation receipts. A stopped worker's resource can still be pending or retained; a historical result path is not evidence the directory still exists. Inspect the current resource record.

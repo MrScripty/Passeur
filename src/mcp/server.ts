@@ -1,123 +1,131 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { BatchRequestSchema, DelegateRequestSchema, FinalizeRequestSchema, ResultRequestSchema, type Profile } from "../contracts/index.js";
-import { Coordinator } from "../core/coordinator.js";
-import { DispositionManager } from "../core/disposition.js";
-import { acquireRepositoryLease } from "../core/lease.js";
-import { reconcileStoredTasks } from "../core/recovery.js";
-import { errorInfo } from "../core/errors.js";
+import { BatchRequestSchema, DelegateRequestSchema, FinalizeRequestSchema, ResultRequestSchema } from "../contracts/index.js";
+import { PrepareRequestSchema, RuntimeFailureSchema, RuntimeStatusSchema, StatusRequestSchema } from "../contracts/runtime.js";
+import { RepositoryRuntime } from "../core/repository-runtime.js";
+import { diagnosticInfo } from "../core/errors.js";
 import { batchToolPayload, resultReceipt, textChunk, toolPayload } from "../core/result.js";
 import { ApprovalQueue, nativeApprovalHandler } from "../approvals/native.js";
-import { MuseSdkAdapter, type WorkerAdapter } from "../muse/adapter.js";
-import { TaskStore } from "../store/task-store.js";
 
-const instructions = `Use schema_version 2. Delegate independent work through delegate_to_muse or delegate_to_muse_batch. Calls stay pending; do not poll. Implementation assignments name an exact base_commit and local target_ref. Muse performs its scoped verification and ordinary commits using repository policy and hooks. Passeur does not test, review, merge, or automatically repair contributions. No per-worker Codex review is required. Codex decides broader verification and integration timing. Results identify committed work; request full evidence through muse_result only when useful. After external integration, use muse_finalize to account for owned resources, or explicitly retain/archive them. A batch has no shared feature or test meaning.`;
-type Options = { project: string; projectId: string; profile: Profile; store: TaskStore; worker?: WorkerAdapter };
-function failure(error: unknown) { const info = errorInfo(error); return toolPayload({ error: { code: info.code, message: info.message.slice(0, 2048) } }, true); }
+const instructions = `Use schema_version 2 for tasks. Inspect passeur_status when diagnosis is needed; passeur_prepare establishes repository coordination without inference. Discovery and diagnostics do not acquire authority. Delegate independent assignments through delegate_to_muse or delegate_to_muse_batch; calls wait, so do not poll. Implementation names an exact base_commit and local target_ref. Workers perform scoped verification and ordinary commits using repository policy and hooks. Passeur does not test, review, merge or repair contributions. Codex owns broader acceptance and integration. Read retained evidence through muse_result when useful and account for resources through muse_finalize after integration or explicit retention/archive. A batch has no shared feature or test meaning.`;
+function failure(error: unknown) {
+  return toolPayload({ error: RuntimeFailureSchema.parse(diagnosticInfo(error)) }, true);
+}
 
-/** Testable MCP composition; process lease and transport are owned by serve(). */
-export function createMcpServer(options: Options) {
-  const mcp = new McpServer({ name: "muse-bridge", version: "0.1.0" }, { capabilities: { logging: {} }, instructions });
-  const coordinator = new Coordinator(options.project, options.projectId, options.profile, options.store, options.worker ?? new MuseSdkAdapter());
-  const disposition = new DispositionManager(options.project, options.projectId, options.store, coordinator);
-  const lifecycle = new AbortController(), approvals = new ApprovalQueue();
-  const approve = nativeApprovalHandler(mcp.server, () => options.profile.task_timeout_ms, approvals);
-  const missingElicitation = () => !mcp.server.getClientCapabilities()?.elicitation;
+/** Pure composition. Project/profile/state/provider work happens only in runtime operations. */
+export function createMcpServer(runtime: RepositoryRuntime) {
+  const identity = runtime.status().runtime;
+  const mcp = new McpServer({ name: "passeur", version: identity.package_version }, { capabilities: { logging: {} }, instructions });
+  const lifecycle = new AbortController();
+  const approvals = new ApprovalQueue();
+  // The task's signal supplies its absolute deadline; this is only the elicitation request ceiling.
+  const approve = nativeApprovalHandler(mcp.server, () => runtime.approvalTimeoutMs(), approvals);
+  const context = (signal: AbortSignal) => {
+    runtime.observeApproval(Boolean(mcp.server.getClientCapabilities()?.elicitation));
+    return { signal: AbortSignal.any([signal, lifecycle.signal]), approve };
+  };
+  mcp.registerTool("passeur_status", {
+    title: "Inspect Passeur runtime and readiness", description: "Read running build, configured binding and observed blockers. Never acquires a lease, repairs state or launches a worker.",
+    inputSchema: StatusRequestSchema, annotations: { readOnlyHint: true },
+  }, async () => {
+    try {
+      runtime.observeApproval(Boolean(mcp.server.getClientCapabilities()?.elicitation));
+      return toolPayload(RuntimeStatusSchema.parse(runtime.status()));
+    } catch (error) { return failure(error); }
+  });
+  mcp.registerTool("passeur_prepare", {
+    title: "Prepare repository coordination", description: "Acquire repository coordination and reconcile supported retained state. No inference. Successful readiness retains the lease until this connection closes.",
+    inputSchema: PrepareRequestSchema,
+  }, async (_request, extra) => {
+    try { return toolPayload(RuntimeStatusSchema.parse(await runtime.prepare(AbortSignal.any([extra.signal, lifecycle.signal])))); }
+    catch (error) { return failure(error); }
+  });
   mcp.registerTool("delegate_to_muse", {
-    title: "Delegate an independent Muse task",
-    description: "Await one scoped worker. Implementation delivers commits, not whole-system acceptance. Use schema_version 2; earlier requests must be upgraded.",
+    title: "Delegate an independent Muse task", description: "Await one scoped worker. Implementation delivers commits, not whole-system acceptance. Use schema_version 2.",
     inputSchema: DelegateRequestSchema,
   }, async (request, extra) => {
     try {
-      if (missingElicitation()) return toolPayload({ error: { code: "ELICITATION_UNAVAILABLE", message: "Human approval elicitation is not advertised by this client" } }, true);
-      const signal = AbortSignal.any([extra.signal, lifecycle.signal]);
-      const result = await coordinator.delegate(request, { signal, approve });
-      return toolPayload(resultReceipt(result, await options.store.readResource(result.task_id)), result.execution_status !== "completed");
+      const result = await runtime.delegate(request, context(extra.signal));
+      return toolPayload(resultReceipt(result, await runtime.resource(result.task_id)), result.execution_status !== "completed");
     } catch (error) { return failure(error); }
   });
   mcp.registerTool("delegate_to_muse_batch", {
-    title: "Delegate independent Muse tasks in parallel",
-    description: "Submit one to eight independent assignments and await only these results. No grouping, testing, merging, or fail-fast cancellation of siblings is implied.",
+    title: "Delegate independent Muse tasks in parallel", description: "Submit one to eight independent assignments and await only their results. No shared acceptance or fail-fast cancellation is implied.",
     inputSchema: BatchRequestSchema,
   }, async (request, extra) => {
     try {
-      if (missingElicitation()) return toolPayload({ error: { code: "ELICITATION_UNAVAILABLE", message: "Human approval elicitation is not advertised" } }, true);
-      const settled = await coordinator.delegateBatch(request.assignments, { signal: AbortSignal.any([extra.signal, lifecycle.signal]), approve });
+      const settled = await runtime.delegateBatch(request.assignments, context(extra.signal));
       const results = await Promise.all(settled.map(async (entry) => entry.result
-        ? { request_key: entry.request_key, result: resultReceipt(entry.result, await options.store.readResource(entry.result.task_id)) }
-        : { request_key: entry.request_key, error: { code: entry.error!.code, message: entry.error!.message.slice(0, 300) } }));
+        ? { request_key: entry.request_key, result: resultReceipt(entry.result, await runtime.resource(entry.result.task_id)) }
+        : { request_key: entry.request_key, error: entry.error }));
       return batchToolPayload(results, settled.some((entry) => !entry.result || entry.result.execution_status !== "completed"));
     } catch (error) { return failure(error); }
   });
   mcp.registerTool("muse_result", {
-    title: "Read retained Muse evidence",
-    description: "Read historical results or bounded artifacts plus current resource state. This never launches a worker and is not a polling mechanism.",
+    title: "Read retained Muse evidence", description: "Read bounded historical evidence without launching a worker, acquiring a lease, or migrating state. Resource records are current observations, not a transactional snapshot.",
     inputSchema: ResultRequestSchema, annotations: { readOnlyHint: true },
   }, async (request) => {
     try {
-      const record = await options.store.find(request.task_id ? { task_id: request.task_id } : { request_key: request.request_key! });
-      if (!record) return toolPayload({ error: { code: "RESULT_NOT_FOUND", message: "No matching task" } }, true);
-      const result = await options.store.readResult(record.task_id);
-      if (!result) return toolPayload({ error: { code: "RESULT_NOT_READY", message: "No terminal result is available" } }, true);
-      const resource = await options.store.readResource(record.task_id);
-      const buffer = request.artifact_id
-        ? await options.store.readArtifact(record.task_id, request.artifact_id, request.offset, request.limit)
-        : await options.store.readSlice(record.task_id, request.section ?? "result", request.offset, request.limit);
-      const encoding = request.encoding;
+      const { task_id, resource, buffer } = await runtime.retained(request);
       let length = buffer.length;
       while (true) {
-        const chunk = textChunk(buffer, length, encoding);
-        try { return toolPayload({ task_id: record.task_id, resource: resource ?? { state: "legacy_unclassified" },
+        const chunk = textChunk(buffer, length, request.encoding);
+        try { return toolPayload({ task_id, resource: resource ?? { state: "legacy_unclassified" },
           ...(request.artifact_id ? { artifact_id: request.artifact_id } : { section: request.section ?? "result" }),
           offset: request.offset, bytes: chunk.bytes, next_offset: request.offset + chunk.bytes,
-          eof: buffer.length === 0, encoding, content: chunk.content }); }
+          eof: buffer.length === 0, encoding: request.encoding, content: chunk.content }); }
         catch (error) { if (length <= 1) throw error; length = Math.floor(length / 2); }
       }
     } catch (error) { return failure(error); }
   });
   mcp.registerTool("muse_finalize", {
-    title: "Record resource dispositions",
-    description: "Acknowledge external integration, retain, or explicitly archive stopped tasks; safely retire only owned resources. Does not merge or test code.",
+    title: "Record resource dispositions", description: "Account for external integration, explicit retention or archive; safely retire only owned stopped resources. No inference, tests or merge.",
     inputSchema: FinalizeRequestSchema,
   }, async (request, extra) => {
-    const results = [];
-    for (const operation of request.operations) {
-      if (extra.signal.aborted || lifecycle.signal.aborted) break;
-      try {
-        const receipt = await disposition.finalize(operation);
-        results.push({ task_id: operation.task_id, operation_key: operation.operation_key, state: receipt.state,
-          disposition: operation.disposition, resource_state: receipt.resource.state,
-          protection_ref: receipt.resource.protection_ref, protected_commit: receipt.resource.protected_commit });
-      } catch (error) {
-        const info = errorInfo(error);
-        results.push({ task_id: operation.task_id, operation_key: operation.operation_key, error: { code: info.code, message: info.message.slice(0, 512) } });
-      }
-    }
-    return batchToolPayload(results, results.some((entry) => "error" in entry));
+    try {
+      const settled = await runtime.finalize(request.operations, AbortSignal.any([extra.signal, lifecycle.signal]));
+      const results = settled.map((entry) => entry.receipt ? {
+        task_id: entry.task_id, operation_key: entry.operation_key, state: entry.receipt.state,
+        disposition: entry.receipt.operation.disposition, resource_state: entry.receipt.resource.state,
+        protection_ref: entry.receipt.resource.protection_ref, protected_commit: entry.receipt.resource.protected_commit,
+      } : { task_id: entry.task_id, operation_key: entry.operation_key, error: entry.error });
+      return batchToolPayload(results, settled.some((entry) => entry.error));
+    } catch (error) { return failure(error); }
   });
   let shutdown: Promise<void> | undefined;
-  return { mcp, coordinator, disposition, shutdown: () => shutdown ??= (async () => {
+  return { mcp, runtime, shutdown: () => shutdown ??= (async () => {
     lifecycle.abort(new Error("MCP connection closed"));
-    await coordinator.shutdown(new Error("MCP connection closed"));
+    await runtime.shutdown();
   })() };
 }
-export async function serve(options: Options & { lockPath: string; legacyStoreRoots?: string[] }): Promise<void> {
-  const release = await acquireRepositoryLease(options.lockPath);
-  let owner: ReturnType<typeof createMcpServer> | undefined;
+
+/** Own EOF, transport closure and signals through one observed terminal path. */
+export async function serve(runtime: RepositoryRuntime): Promise<void> {
+  const owner = createMcpServer(runtime);
   let closing: Promise<void> | undefined;
+  let finish!: () => void;
+  const ended = new Promise<void>((resolve) => { finish = resolve; });
+  let failure: unknown;
   const close = () => closing ??= (async () => {
-    try { await owner?.shutdown(); await owner?.mcp.close(); } finally { await release(); }
+    try { await owner.shutdown(); }
+    catch (error) { failure = error; }
+    try { await owner.mcp.close(); }
+    catch (error) { failure ??= error; }
+    finally { finish(); }
   })();
+  const end = () => { void close(); };
+  const interrupt = () => { process.exitCode = 130; end(); };
+  const terminate = () => { process.exitCode = 143; end(); };
+  process.stdin.once("end", end);
+  process.once("SIGINT", interrupt); process.once("SIGTERM", terminate);
+  owner.mcp.server.onclose = end;
   try {
-    await options.store.initialize();
-    for (const root of options.legacyStoreRoots ?? []) await options.store.importLegacy(root);
-    await reconcileStoredTasks(options.store, options.profile.model);
-    owner = createMcpServer(options);
-    const end = () => { void close().catch((error) => console.error(errorInfo(error).message)); };
-    process.stdin.once("end", end);
-    process.once("SIGINT", () => { void close().finally(() => { process.exitCode = 130; }); });
-    process.once("SIGTERM", () => { void close().finally(() => { process.exitCode = 143; }); });
-    owner.mcp.server.onclose = end;
     await owner.mcp.connect(new StdioServerTransport());
+    await ended;
+    if (failure) throw failure;
   } catch (error) { await close(); throw error; }
+  finally {
+    process.stdin.removeListener("end", end);
+    process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
+  }
 }

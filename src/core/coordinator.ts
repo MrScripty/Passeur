@@ -33,12 +33,13 @@ export class Coordinator {
   #closing = false;
   #frozen: string | undefined;
   #pumping = false;
-  constructor(readonly project: string, readonly projectId: string, readonly profile: Profile, readonly store: TaskStore, readonly worker: WorkerAdapter) {}
+  constructor(readonly project: string, readonly projectId: string, readonly profile: Profile, readonly store: TaskStore, readonly worker: WorkerAdapter, readonly assertAuthority?: () => void) {}
   isActive(taskId: string): boolean { return [...this.#entries.values()].some((entry) => entry.record.task_id === taskId); }
   get activeCount(): number { return this.#active; }
   get queuedCount(): number { return this.#queue.length; }
   get frozenReason(): string | undefined { return this.#frozen; }
   async assertMutationAllowed(): Promise<void> {
+    this.assertAuthority?.();
     const reason = this.#frozen ?? await this.store.frozenReason();
     if (reason) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", reason);
     if (this.#closing) throw new BridgeError("BRIDGE_CLOSING", "The coordinator is shutting down");
@@ -167,15 +168,14 @@ export class Coordinator {
     try {
       throwIfAborted(controller.signal);
       await phase("preparing"); await progress(`Preparing ${id}`);
-      workspace = await this.administration.run(async () => {
-        if (this.#frozen) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", this.#frozen);
-        return prepareWorkspace(this.project, request, this.profile, this.projectId, id, {
-          signal: controller.signal,
+      await this.assertMutationAllowed();
+      // Unique task workspaces and Git's own locks isolate preparation; hooks run outside the administrative mutex.
+      workspace = await prepareWorkspace(this.project, request, this.profile, this.projectId, id, {
+          signal: controller.signal, ...(this.assertAuthority ? { assertAuthority: this.assertAuthority } : {}),
           onIntent: async (intent) => this.store.writeResource(id, {
             schema_version: 1, task_id: id, project_id: this.projectId, state: "creating", updated_at: now(),
             worktree_path: intent.path, branch_ref: intent.branch!, base_commit: intent.base_commit!, target_ref: intent.target_ref!,
           }),
-        });
       });
       result = baseResult(id, request, this.profile, workspace);
       const resource = await this.store.readResource(id);
@@ -189,6 +189,7 @@ export class Coordinator {
       throwIfAborted(controller.signal);
       await phase("running"); await progress(`Muse task ${id} is working`);
       result.worker_stop = "unconfirmed";
+      this.assertAuthority?.();
       const run = await this.worker.run({
         request, task_id: id, prompt: assignmentPrompt(request, id, workspace), workspace: workspace.path,
         profile: this.profile, signal: controller.signal,
@@ -250,11 +251,14 @@ export class Coordinator {
     return result;
   }
   async #artifacts(id: string, workspace: Workspace, result: DelegateResult, changes: Awaited<ReturnType<typeof collectChanges>>): Promise<void> {
-    const dir = join(this.store.taskDir(id), "artifacts"); await mkdir(dir, { recursive: true, mode: 0o700 });
-    const files = await createManifest(workspace, dir, changes);
+    const dir = join(this.store.taskDir(id), "artifacts"); this.assertAuthority?.(); await mkdir(dir, { recursive: true, mode: 0o700 });
+    const files = await createManifest(workspace, dir, changes, this.assertAuthority);
     const manifestPath = join(dir, "manifest.json"), diffPath = join(dir, "changes.diff");
+    this.assertAuthority?.();
     await writeFile(manifestPath, `${JSON.stringify({ base_commit: workspace.base_commit, head_commit: result.delivery.head_commit, files }, null, 2)}\n`, { mode: 0o600 });
-    await writeFile(diffPath, await createDiff(workspace), { mode: 0o600 });
+    const diff = await createDiff(workspace);
+    this.assertAuthority?.();
+    await writeFile(diffPath, diff, { mode: 0o600 });
     for (const [artifactId, kind, path] of [["manifest", "manifest", manifestPath], ["diff", "diff", diffPath]] as const) result.artifacts.push({ id: artifactId, kind, path: relative(this.store.taskDir(id), path), bytes: (await stat(path)).size });
     for (const file of files) if (file.artifact_path && file.artifact_id) {
       const path = join(dir, file.artifact_path);

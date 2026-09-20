@@ -11,7 +11,7 @@ const now = () => new Date().toISOString();
 
 /** Acknowledges externally performed integration. Never merges, cherry-picks, tests, or reviews code. */
 export class DispositionManager {
-  constructor(readonly project: string, readonly projectId: string, readonly store: TaskStore, readonly guard: ResourceGuard) {}
+  constructor(readonly project: string, readonly projectId: string, readonly store: TaskStore, readonly guard: ResourceGuard, readonly assertAuthority?: () => void) {}
   async finalize(operation: FinalizeOperation): Promise<FinalizeReceipt> {
     return this.guard.administration.run(async () => {
       validateOid(operation.expected_head);
@@ -78,15 +78,17 @@ export class DispositionManager {
         if (operation.disposition === "archived") {
           const archive = await refHead(this.project, protectionRef);
           if (archive && archive !== operation.expected_head) throw new BridgeError("ARCHIVE_REF_CONFLICT", "Existing archive ref names different work");
+          this.assertAuthority?.();
           if (!archive) await git(this.project, ["update-ref", protectionRef, operation.expected_head, "0".repeat(operation.expected_head.length)]);
         }
         await this.#verifyProtection(operation, protectionRef);
+        this.assertAuthority?.();
         if (own) await git(this.project, ["worktree", "remove", resource.worktree_path!]);
         await this.#verifyProtection(operation, protectionRef);
         const branch = await refHead(this.project, resource.branch_ref!);
         if (branch !== undefined) {
           if (branch !== operation.expected_head) throw new BridgeError("HEAD_CHANGED", "Task ref changed during retirement");
-          await deleteProtectedRef(this.project, resource.branch_ref!, operation.expected_head, protectionRef);
+          await deleteProtectedRef(this.project, resource.branch_ref!, operation.expected_head, protectionRef, undefined, this.assertAuthority);
         }
         if ((await worktreeEntries(this.project)).some((entry) => resolve(entry.path) === resolve(resource!.worktree_path!)) || await refHead(this.project, resource.branch_ref!)) throw new BridgeError("RETIREMENT_INCOMPLETE", "Owned registration or branch still exists");
         await this.#verifyProtection(operation, protectionRef);

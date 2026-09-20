@@ -6,7 +6,7 @@ import { BridgeError } from "../core/errors.js";
 import { throwIfAborted } from "../core/async.js";
 import { exactCommit, git, isAncestor, isWithin, refHead, sourceStatus, validateBranchRef } from "./project.js";
 export type Workspace = { kind: "source_read_only" | "task_worktree"; path: string; base_commit?: string; branch?: string; target_ref?: string; signal?: AbortSignal };
-export type WorkspaceOptions = { signal?: AbortSignal; onIntent?: (workspace: Workspace) => Promise<void> };
+export type WorkspaceOptions = { signal?: AbortSignal; assertAuthority?: () => void; onIntent?: (workspace: Workspace) => Promise<void> };
 
 export async function prepareWorkspace(root: string, request: DelegateRequest, profile: Profile, projectId: string, taskId: string, options: WorkspaceOptions = {}): Promise<Workspace> {
   throwIfAborted(options.signal);
@@ -22,15 +22,18 @@ export async function prepareWorkspace(root: string, request: DelegateRequest, p
   const sourceRoot = await realpath(root);
   const requestedRoot = resolve(profile.implementation.worktree_root);
   if (isWithin(sourceRoot, requestedRoot)) throw new BridgeError("INVALID_WORKTREE_ROOT", "Worktree root must be outside the source checkout");
+  options.assertAuthority?.(); throwIfAborted(options.signal);
   await mkdir(requestedRoot, { recursive: true, mode: 0o700 });
   const worktreeRoot = await realpath(requestedRoot);
   if (isWithin(sourceRoot, worktreeRoot)) throw new BridgeError("INVALID_WORKTREE_ROOT", "Worktree root resolves inside source checkout");
   const parent = join(worktreeRoot, projectId);
+  options.assertAuthority?.(); throwIfAborted(options.signal);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   if (!isWithin(worktreeRoot, await realpath(parent))) throw new BridgeError("INVALID_WORKTREE_ROOT", "Task parent escapes worktree root");
   const workspace: Workspace = { kind: "task_worktree", path: join(parent, taskId), base_commit: base, branch: `refs/heads/muse-bridge/${taskId}`, target_ref: request.target_ref, ...(options.signal ? { signal: options.signal } : {}) };
   await options.onIntent?.(workspace);
   throwIfAborted(options.signal);
+  options.assertAuthority?.();
   await git(root, ["worktree", "add", "-b", workspace.branch!.slice("refs/heads/".length), workspace.path, base], options.signal);
   return workspace;
 }
@@ -102,7 +105,7 @@ export async function changedPathsForScope(workspace: Workspace): Promise<string
 export async function createDiff(workspace: Workspace): Promise<string> {
   return workspace.kind !== "task_worktree" ? "" : git(workspace.path, ["diff", "--binary", "--no-ext-diff", workspace.base_commit!], workspace.signal);
 }
-export async function createManifest(workspace: Workspace, artifactDir: string, changes?: WorkspaceChange[]): Promise<ManifestEntry[]> {
+export async function createManifest(workspace: Workspace, artifactDir: string, changes?: WorkspaceChange[], assertAuthority?: () => void): Promise<ManifestEntry[]> {
   const entries: ManifestEntry[] = [];
   let copied = 0;
   for (const change of changes ?? await collectChanges(workspace)) {
@@ -120,7 +123,9 @@ export async function createManifest(workspace: Workspace, artifactDir: string, 
         entry.sha256 = createHash("sha256").update(await readFile(absolute)).digest("hex");
         if (change.untracked) {
           const copy = join(artifactDir, "files", change.path);
+          assertAuthority?.();
           await mkdir(dirname(copy), { recursive: true, mode: 0o700 });
+          assertAuthority?.();
           await copyFile(absolute, copy);
           entry.artifact_path = relative(artifactDir, copy); entry.artifact_id = `file-${++copied}`;
         }
@@ -131,8 +136,8 @@ export async function createManifest(workspace: Workspace, artifactDir: string, 
   return entries;
 }
 export type WorktreeEntry = { path: string; head?: string; branch?: string; locked?: boolean; prunable?: boolean };
-export async function worktreeEntries(root: string): Promise<WorktreeEntry[]> {
-  const tokens = (await git(root, ["worktree", "list", "--porcelain", "-z"])).split("\0");
+export async function worktreeEntries(root: string, signal?: AbortSignal): Promise<WorktreeEntry[]> {
+  const tokens = (await git(root, ["worktree", "list", "--porcelain", "-z"], signal)).split("\0");
   const entries: WorktreeEntry[] = [];
   let current: WorktreeEntry | undefined;
   for (const token of tokens) {

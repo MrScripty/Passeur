@@ -1,38 +1,36 @@
 ---
 name: muse-bridge
-description: Set up or troubleshoot Passeur's Codex MCP registration, delegate independent tasks to parallel Muse CLI workers, locate committed results, and account for Passeur-owned resources.
+description: Configure or diagnose Passeur MCP registrations, prepare repository coordination, delegate independent Muse work, read retained evidence and account for owned resources.
 ---
 
 # Passeur / Muse Bridge
 
-Codex owns decomposition, dependencies, base selection, integration, broader testing and acceptance. Muse owns its scoped implementation, verification and ordinary standards-compliant commits. Passeur manages execution and deliverable resources; it does not test, repair, merge or create PRs.
+Codex owns decomposition, dependencies, base selection, integration and broader acceptance. Muse owns its scoped implementation, verification and ordinary commits. Passeur owns execution/resources; it does not test, repair, merge, create PRs or certify worker-code correctness.
 
-Read [setup](references/setup.md) for installation or migration. Use schema version 2 for execution.
+Read [setup](references/setup.md) before installation, registration or troubleshooting. Obtain authority before changing personal configuration, installing packages, spending inference allowance, changing permissions or retiring resources.
 
-## Bootstrap Codex
+## Diagnose before delegation
 
-When setup is requested or the Passeur tools are unavailable, read the setup reference. With an existing profile, offer to run `./passeur register-codex <project>` after receiving authority to update the user's Codex configuration. This preserves unrelated settings, backs up an existing config and verifies the registered server. Tell the user to restart Codex after success; the current session cannot acquire newly registered MCP tools.
+Use `passeur_status` to inspect the running build and observed readiness. It is read-only and does not prove Muse compatibility. `not_checked` means no observation. `passeur_prepare` explicitly acquires authority and initializes/imports/reconciles supported state without inference. Delegation also prepares automatically.
 
-## Delegate
+Tools remain listed when the profile/state/provider is operationally unavailable. Interpret the returned failure: genuine contention, permission, unsupported version and corruption are different. Preserve the configured state namespace and authoritative records. A second coordinator may diagnose but must wait for safe owner handover before executing. Do not delete locks, auto-kill unknown owners or substitute another state directory.
 
-Supply a stable unique request key, bounded objective, self-contained context, scoped acceptance criteria and useful relative file references. Implementation requires an exact base commit and a full local target ref. The target is metadata, not permission for Passeur to modify it.
+A repaired pre-admission failure can be retried in the same Passeur process. Running code does not change when source or installed artifacts are rebuilt. Rebinding a ready process or replacing its active execution profile requires controlled shutdown/restart. New Codex namespace attachment must be checked in the actual installed host; registration is not proof of live attachment.
 
-Use `delegate_to_muse` for one assignment or `delegate_to_muse_batch` for up to eight independent assignments. Concurrent tasks need not be related. A batch groups only submission/waiting, not feature acceptance or testing. Requests remain pending until their tasks finish. Do not poll; request retained evidence only when needed.
+## Delegate and consume
 
-Muse should read repository instructions, perform appropriate scoped checks, respect Git hooks, stage intentionally and commit on its owned branch. Unfinished surrounding work is not a requirement to complete another task. Failed required scoped checks are repaired within the assignment or reported as blockers. Passeur adds no verification or automatic repair loop.
+Use task schema 2 and a stable unique request key. Include a bounded objective, self-contained context, scoped acceptance criteria and useful relative file references. Implementation requires an exact base commit and full local target ref. The target is disposition metadata, not permission to modify it.
 
-## Consume results
+`delegate_to_muse` awaits one task. `delegate_to_muse_batch` awaits up to eight independent tasks without introducing feature grouping or fail-fast cancellation of siblings. Calls remain pending; do not poll. Request full retained evidence only when useful.
 
-Use the returned commit/ref/worktree references. The files can be tested or integrated without loading the entire diff into context. There is no mandatory primary-model review at each worker completion; decide when larger review or testing is useful.
+Workers read repository instructions, change only their scope, run required scoped checks, preserve hooks, inspect staged changes and commit on the assigned branch. Surrounding unfinished components do not authorize expansion. Report a blocker when required work exceeds the assignment. No automatic Passeur repair or per-worker primary-model review is introduced.
 
-Distinguish execution status, delivery status, reported checks and current resource state. `committed` is a Git identity claim, not proof of hooks, correctness or standards compliance. A failed run can leave useful committed work. Uncommitted residue is incomplete delivery. A no-change result needs a worker explanation and matching Git facts.
+Distinguish execution status, committed-delivery identity, worker-reported checks and current resource state. A commit is not a correctness certificate; failed execution can leave useful committed work. Uncommitted residue is incomplete delivery.
 
-## Integrate and account for resources
+## Integrate and account
 
-Integrate through the repository's normal Git workflow when appropriate. Passeur does not choose the mechanism or combine contributions automatically.
+Integrate through normal user/repository Git authority. Use `muse_finalize` for explicit integrated, retained or archived dispositions with the expected task head/ref and stable operation key. Preserve the whole task tip under a verified protecting ref; patch similarity alone is not integration authority.
 
-Then use `muse_finalize` with explicit expected task head/ref and a stable operation key to acknowledge integrated work, retain it with an owner/reason/next action, or archive it under explicit authority. Integrated retirement requires full-tip ancestry into the accepted target. Merely claiming integration or matching patches is insufficient.
+Read `docs/recovery.md` for offline recovery and historical records. History and administrative operations do not require a working inference profile. Unknown worker shutdown remains unresolved, and corrupt/unsupported/unreadable records are never replaced with an empty successful state. Cleanup collects eligible bulky evidence only and preserves identity/disposition receipts.
 
-Passeur removes only its clean, stopped, accounted-for resources. Resolve ignored build outputs through repository cleanup policy first. Unknown shutdown freezes replacement execution until manual reconciliation. Healthy unrelated workers need not be cancelled for ordinary task failure or retirement.
-
-Read `docs/recovery.md` for legacy history, partial retirement and offline reconciliation. `cleanup` now collects bulky evidence only after resources are accounted for; it preserves identity and disposition receipts.
+Use `docs/installed-acceptance.md` for opt-in real-host verification. Report configuration, direct MCP transport, readiness and live workflow evidence separately; no simulated or unrun check becomes accepted.

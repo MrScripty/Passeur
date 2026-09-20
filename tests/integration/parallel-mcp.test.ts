@@ -2,13 +2,21 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { expect, it } from "vitest";
 import { createMcpServer } from "../../src/mcp/server.js";
+import { RepositoryRuntime } from "../../src/core/repository-runtime.js";
 import { fixture, completed, deferred } from "../fixtures/bridge.js";
 
 it("dispatches a real MCP batch to overlapping independent workers and returns bounded receipts", async () => {
   const f = await fixture(), held = deferred(), started = deferred(); let active = 0, peak = 0;
-  const owner = createMcpServer({ project: f.root, projectId: "project", profile: f.profile, store: f.store,
+  const runtime = new RepositoryRuntime({ project: f.root }, {
+    package_version: "0.1.0", build_id: "test", mode: "development", node_version: process.version,
+    node_executable: process.execPath, pid: process.pid, started_at: new Date().toISOString(),
+  }, {
+    resolveBinding: async () => ({ project: f.root, repositoryId: "project", commonDir: f.root,
+      stateRoot: f.store.root, storeRoot: f.store.root, profilePath: `${f.root}/profile.json` }),
+    legacyRoots: async () => [], profile: async () => f.profile,
     worker: { run: async () => { peak = Math.max(peak, ++active); if (active === 2) started.resolve(); await held.promise; active--; return completed(); } },
   });
+  const owner = createMcpServer(runtime);
   const client = new Client({ name: "passeur-fixture", version: "1.0.0" }, { capabilities: { elicitation: {} } });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   try {

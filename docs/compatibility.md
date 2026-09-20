@@ -1,5 +1,11 @@
 # Compatibility and verification record
 
+## Discoverable-startup source candidate — September 20, 2026
+
+Source implementation and test sources are provided, but full pinned-dependency, real MCP, installed-artifact and actual Codex/Muse acceptance have not run in the preparation environment. The focused lifecycle/error checks passed with controlled dependency boundaries; they do not upgrade the historical observations below. See [implementation evidence](plans/discoverable-startup-and-installed-runtime/reports/implementation-evidence.md) and [installed acceptance](installed-acceptance.md).
+
+Runtime pins remain MCP SDK 1.30.0, Muse SDK 1.3.0, proper-lockfile 4.1.2 and Zod 4.1.11. The source update adds smol-toml 1.6.1 for grammar-aware configuration. Its npm resolution/integrity must be confirmed by npm ci. A version pin or successful registration is not actual host/provider compatibility evidence.
+
 ## Parallel-worker implementation — September 20, 2026
 
 Source baseline: `d726cab8e8e76abd3ab56a7937f784ebed4b66cb`.

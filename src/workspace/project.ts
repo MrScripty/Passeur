@@ -11,9 +11,9 @@ export async function canonicalProject(path: string): Promise<string> {
   return root;
 }
 export function projectId(root: string): string { return createHash("sha256").update(root).digest("hex").slice(0, 24); }
-export async function repositoryIdentity(root: string): Promise<{ common_dir: string; id: string }> {
+export async function repositoryIdentity(root: string, signal?: AbortSignal): Promise<{ common_dir: string; id: string }> {
   try {
-    const common = await realpath((await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
+    const common = await realpath((await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim());
     return { common_dir: common, id: projectId(common) };
   } catch (error) {
     // Non-Git directories remain supported for read-only assignments only.
@@ -126,12 +126,13 @@ export async function repositoryInstructions(root: string): Promise<Array<{ path
 }
 
 /** Delete the exact task ref only while a known protecting ref still has its verified value. */
-export async function deleteProtectedRef(root: string, branch: string, expected: string, protectionRef: string, signal?: AbortSignal): Promise<void> {
+export async function deleteProtectedRef(root: string, branch: string, expected: string, protectionRef: string, signal?: AbortSignal, assertAuthority?: () => void): Promise<void> {
   await validateBranchRef(root, branch, signal);
   if (branch === protectionRef) throw new BridgeError("INVALID_PROTECTION", "A resource cannot protect itself during deletion");
   await git(root, ["check-ref-format", protectionRef], signal);
   const protectedHead = await refHead(root, protectionRef, signal);
   if (!protectedHead || !await isAncestor(root, expected, protectedHead, signal)) throw new BridgeError("COMMIT_NOT_RETAINED", "The protecting ref does not retain the expected task commit");
   // Git locks and verifies both refs in one transaction; a concurrent target movement refuses deletion.
+  assertAuthority?.();
   await git(root, ["update-ref", "--stdin"], signal, `start\nverify ${protectionRef} ${protectedHead}\ndelete ${branch} ${expected}\nprepare\ncommit\n`);
 }

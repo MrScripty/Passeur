@@ -1,210 +1,265 @@
 #!/usr/bin/env node
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
-import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import { CODEX_ENABLED_TOOLS, installCodexMcpRegistration, renderCodexMcpToml, type CodexMcpRegistration } from "./codex/config.js";
-import { FinalizeRequestSchema, ProfileSchema, type Profile } from "./contracts/index.js";
-import { loadProfile } from "./core/profile.js";
-import { cleanupTask } from "./core/cleanup.js";
-import { DispositionManager } from "./core/disposition.js";
-import { acquireRepositoryLease } from "./core/lease.js";
-import { acknowledgeStoppedTask, reconcileStoredTasks } from "./core/recovery.js";
-import { Mutex } from "./core/async.js";
-import { BridgeError, errorInfo } from "./core/errors.js";
-import { doctor } from "./diagnostics/doctor.js";
-import { serve } from "./mcp/server.js";
-import { discoverMuseModels, type MuseModel } from "./muse/models.js";
-import { TaskStore } from "./store/task-store.js";
-import { canonicalProject, projectId, repositoryIdentity } from "./workspace/project.js";
-import { worktreeEntries } from "./workspace/worktree.js";
+import { parseArgs } from "node:util";
+import { createInterface } from "node:readline/promises";
+import { setTimeout as delay } from "node:timers/promises";
+import { BridgeError, diagnosticInfo, nativeCode } from "./core/errors.js";
+import type { Profile } from "./contracts/types.js";
+import type { LaunchIntent } from "./core/repository-runtime.js";
+import type { CodexMcpRegistration } from "./codex/config.js";
 
-function usage(): never {
-  console.error("Usage: muse-bridge <setup|configure|register-codex|doctor|serve|inspect|result|logs|finalize|cleanup|reconcile> --project <path> [options]");
-  process.exit(2);
+const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const help = `Passeur — repository-scoped agent coordination
+
+Usage: passeur <action> [options]
+  serve|start --project PATH [--profile FILE] [--state-root PATH]
+  setup|configure --project PATH [--profile FILE] [--server-name NAME]
+  register-codex --project PATH --server-name NAME [--runtime DIRECTORY]
+  doctor --project PATH [--prepare --yes]
+  inspect --project PATH
+  result|logs --project PATH --task UUID [--follow]
+  finalize --project PATH --operations FILE --yes
+  cleanup --project PATH --task UUID --yes
+  reconcile --project PATH --task UUID --confirm-worker-stopped --owner NAME --reason TEXT --yes
+  install --artifact DIRECTORY --install-root DIRECTORY --yes
+  --version | --help
+
+configure requires --model ID and supports --muse-bin, --worktree-root,
+--confirm-subscription, --max-workers, --max-queued-tasks and --install-codex.
+Registration supports --config-path FILE, --verify-readiness --yes,
+--replace-binding FINGERPRINT, --adopt-unmanaged, --development-runtime,
+and --tool-timeout-sec SECONDS (default 2100). Normal registration requires
+an installed runtime. --adopt-unmanaged explicitly permits TOML formatting
+and comment loss; the original configuration is backed up.
+
+serve never builds, installs or edits configuration. Normal run/setup use
+HOME or XDG_CONFIG_HOME/XDG_STATE_HOME unless paths are explicit. Registration
+pins project/profile/state paths. Close external config editors while registering.
+Exit 0 means the requested action passed; 1 means failure or blocked required
+verification; 130/143 represent interruption by SIGINT/SIGTERM. Live agent
+compatibility is reported separately and is never implied by registration.
+`;
+
+function required(value: string | undefined, flag: string): string {
+  if (!value?.trim()) throw new BridgeError("ARGUMENT_REQUIRED", `${flag} is required`);
+  return value;
 }
-
-function codexRegistration(project: string, profilePath: string): CodexMcpRegistration {
-  return {
-    command: process.execPath,
-    args: [fileURLToPath(import.meta.url), "serve", "--project", project, "--profile", profilePath],
-    startup_timeout_sec: 10,
-    tool_timeout_sec: 2100,
-    enabled_tools: CODEX_ENABLED_TOOLS,
-  };
+function integer(value: string | undefined, flag: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new BridgeError("ARGUMENT_INVALID", `${flag} requires a nonnegative integer`);
+  return Number(value);
 }
+const options = {
+  project: { type: "string" }, profile: { type: "string" }, "state-root": { type: "string" }, "expected-repository-id": { type: "string" },
+  task: { type: "string" }, follow: { type: "boolean" }, yes: { type: "boolean" },
+  "muse-bin": { type: "string" }, model: { type: "string" }, "worktree-root": { type: "string" }, "confirm-subscription": { type: "boolean" },
+  "max-workers": { type: "string" }, "max-queued-tasks": { type: "string" }, operations: { type: "string" },
+  "install-codex": { type: "boolean" }, "confirm-worker-stopped": { type: "boolean" }, owner: { type: "string" }, reason: { type: "string" },
+  "server-name": { type: "string" }, runtime: { type: "string" }, "config-path": { type: "string" }, "replace-binding": { type: "string" },
+  "adopt-unmanaged": { type: "boolean" }, "development-runtime": { type: "boolean" }, "verify-readiness": { type: "boolean" },
+  "tool-timeout-sec": { type: "string" }, prepare: { type: "boolean" }, artifact: { type: "string" }, "install-root": { type: "string" },
+} as const;
+type Values = ReturnType<typeof decode>["values"];
+function decode(args: string[]) { return parseArgs({ args, options, strict: true, allowPositionals: false }); }
 
-async function registerCodex(project: string, profilePath: string): Promise<void> {
-  const result = await installCodexMcpRegistration(codexRegistration(project, profilePath));
-  console.log(`${result.changed ? "Installed" : "Verified"} Codex MCP registration in ${result.configPath}.`);
-  if (result.backupPath) console.log(`Previous configuration backed up at ${result.backupPath}.`);
-  console.log("Restart Codex, then use /mcp to confirm that muse_bridge exposes all four tools.");
-}
-
-function printConfiguration(profilePath: string, project: string, profile: Profile): void {
-  const registration = codexRegistration(project, profilePath);
-  console.log(JSON.stringify({
-    profile: profilePath,
-    capacity: { workers: profile.max_workers, queued: profile.max_queued_tasks },
-    codex_config: registration,
-    codex_config_toml: renderCodexMcpToml(registration),
-    next_step: "Rerun configure with --install-codex, or run register-codex after this profile exists.",
-  }, null, 2));
-}
-
-async function saveProfile(profilePath: string, project: string, values: {
-  model: string; museBin: string; worktreeRoot?: string; confirmed: boolean; maxWorkers?: number; maxQueuedTasks?: number;
-}): Promise<Profile> {
+async function saveProfile(path: string, values: Values): Promise<Profile> {
+  const { ProfileSchema } = await import("./contracts/index.js");
+  const maxWorkers = integer(values["max-workers"], "--max-workers"), maxQueued = integer(values["max-queued-tasks"], "--max-queued-tasks");
   const profile = ProfileSchema.parse({
-    schema_version: 1, muse_bin: values.museBin, model: values.model,
+    schema_version: 1, muse_bin: values["muse-bin"] ?? "muse", model: required(values.model, "--model"),
     review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" },
-    implementation: { enabled: Boolean(values.worktreeRoot), ...(values.worktreeRoot ? { worktree_root: resolve(values.worktreeRoot) } : {}), sandbox_network: "proxy-only" },
-    max_workers: values.maxWorkers ?? 2, max_queued_tasks: values.maxQueuedTasks ?? 8,
-    task_timeout_ms: 1_800_000, stop_grace_ms: 60_000,
-    subscription: { provenance: values.confirmed ? "user_confirmed" : "unverified", ...(values.confirmed ? { verified_at: new Date().toISOString(), note: "User-confirmed during setup; not provider billing proof" } : {}) },
+    implementation: { enabled: Boolean(values["worktree-root"]), ...(values["worktree-root"] ? { worktree_root: resolve(values["worktree-root"]) } : {}), sandbox_network: "proxy-only" },
+    ...(maxWorkers === undefined ? {} : { max_workers: maxWorkers }), ...(maxQueued === undefined ? {} : { max_queued_tasks: maxQueued }),
+    subscription: { provenance: values["confirm-subscription"] ? "user_confirmed" : "unverified",
+      ...(values["confirm-subscription"] ? { verified_at: new Date().toISOString(), note: "Operator-confirmed credential path; not provider billing proof" } : {}) },
   });
-  await mkdir(dirname(profilePath), { recursive: true, mode: 0o700 });
-  try { await readFile(profilePath); throw new Error("Profile already exists; edit it deliberately or choose a new --profile path"); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600, flag: "wx" }); await chmod(profilePath, 0o600);
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(path, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  await chmod(path, 0o600);
   return profile;
 }
 
-async function interactiveSetup(profilePath: string, project: string, installRequested = false): Promise<void> {
+async function registration(intent: LaunchIntent, values: Values): Promise<CodexMcpRegistration> {
+  const { resolveRepositoryBinding } = await import("./core/repository-runtime.js");
+  const { installedEntry, runtimeIdentity } = await import("./install/runtime.js");
+  const { CODEX_ENABLED_TOOLS, validateServerName } = await import("./codex/config.js");
+  const serverName = validateServerName(required(values["server-name"], "--server-name"));
+  const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
+  const profilePath = required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME");
+  const root = resolve(values.runtime ?? runtimeRoot);
+  let cli: string, identity;
+  if (values["development-runtime"]) {
+    cli = join(root, "dist", "src", "cli.js");
+    identity = await runtimeIdentity(root);
+  } else {
+    const installed = await installedEntry(root);
+    cli = installed.entry;
+    identity = await runtimeIdentity(installed.root);
+  }
+  const timeout = integer(values["tool-timeout-sec"], "--tool-timeout-sec") ?? 2100;
+  if (timeout < 1) throw new BridgeError("ARGUMENT_INVALID", "--tool-timeout-sec must be positive");
+  return {
+    server_name: serverName, command: process.execPath,
+    args: [cli, "serve", "--project", binding.project, "--profile", profilePath, "--state-root", binding.stateRoot, "--expected-repository-id", binding.repositoryId],
+    cwd: root, env: {}, startup_timeout_sec: 10, tool_timeout_sec: timeout, enabled_tools: CODEX_ENABLED_TOOLS,
+    project: binding.project, profile: profilePath, state_root: binding.stateRoot, repository_id: binding.repositoryId,
+    build_id: identity.build_id, development: identity.mode !== "installed",
+  };
+}
+async function register(intent: LaunchIntent, values: Values): Promise<void> {
+  if (values["verify-readiness"] && !values.yes) throw new BridgeError("READINESS_AUTHORITY_REQUIRED", "--verify-readiness requires --yes; preparation may import/reconcile state");
+  const descriptor = await registration(intent, values);
+  const { installCodexMcpRegistration } = await import("./codex/config.js");
+  const installed = await installCodexMcpRegistration(descriptor, {
+    ...(values["config-path"] ? { configPath: resolve(values["config-path"]) } : {}),
+    ...(values["replace-binding"] ? { replaceBinding: values["replace-binding"] } : {}),
+    ...(values["adopt-unmanaged"] ? { adoptUnmanaged: true } : {}),
+  });
+  const { probeRegistration } = await import("./codex/probe.js");
+  const probe = await probeRegistration(descriptor, Boolean(values["verify-readiness"]));
+  console.log(JSON.stringify({ ...installed, server_name: descriptor.server_name, ...probe, configuration: { status: "passed", scope: "codex mcp get configuration inspection" },
+    next_action: "Start a new Codex session and verify its actual tool attachment. Installed agent workflow remains unverified until the opt-in live procedure passes." }, null, 2));
+  if (probe.transport.status !== "passed" || (values["verify-readiness"] && probe.readiness.status !== "passed")) process.exitCode = 1;
+}
+async function setup(intent: LaunchIntent, values: Values): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) throw new BridgeError("TERMINAL_REQUIRED", "Interactive setup requires a terminal");
+  const { resolveRepositoryBinding } = await import("./core/repository-runtime.js");
+  const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
+  const { discoverMuseModels } = await import("./muse/models.js");
+  const models = await discoverMuseModels();
+  if (!models.length) throw new BridgeError("MODEL_CATALOG_EMPTY", "No visible Muse models; refresh the Muse model catalog before setup");
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
-  const ask = async (prompt: string, fallback?: string) => (await terminal.question(`${prompt}${fallback ? ` [${fallback}]` : ""}: `)).trim() || fallback || "";
+  const ask = async (prompt: string) => (await terminal.question(prompt)).trim();
   try {
-    console.log(`Passeur setup for ${project}\n`);
-    const models = await discoverMuseModels();
-    if (!models.length) throw new Error("No visible Muse models were found. Start Muse once to refresh its local model catalog, then rerun setup");
-    console.log("Muse models:");
-    models.forEach((model, index) => console.log(`  ${index + 1}) ${model.display_label ?? model.model_id}${model.is_default ? " (default)" : model.is_current ? " (current)" : ""}${model.description ? `\n     ${model.description}` : ""}`));
-    let selected: MuseModel | undefined;
-    while (!selected) {
-      const choice = await ask("Select a model", "1"); const index = Number(choice) - 1;
-      selected = Number.isInteger(index) ? models[index] : undefined;
-      if (!selected) console.log(`Enter a number from 1 to ${models.length}.`);
-    }
-    const model = selected.model_id;
-    const museBin = "muse";
-    console.log("Using Muse executable from PATH: muse");
-    const implementation = /^y(es)?$/i.test(await ask("Enable implementation worktrees? (y/N)", "N"));
-    const worktreeRoot = implementation ? await ask("Worktree root (must be outside the project)") : undefined;
-    if (implementation && !worktreeRoot) throw new Error("A worktree root is required when implementation tasks are enabled");
-    const confirmed = /^y(es)?$/i.test(await ask("Have you verified this Muse login uses your intended subscription? (y/N)", "N"));
-    if (!confirmed) throw new Error("Subscription confirmation is required before Passeur can delegate work");
-    await saveProfile(profilePath, project, { model, museBin, ...(worktreeRoot ? { worktreeRoot } : {}), confirmed });
-    const install = installRequested || /^y(es)?$/i.test(await ask("Install or update the Codex MCP registration now? (Y/n)", "Y"));
-    if (install) await registerCodex(project, profilePath);
-    else {
-      console.log("\nCodex registration was not changed. Run this later to install it without copying configuration:");
-      console.log(`  ./passeur register-codex ${JSON.stringify(project)}`);
-      console.log("\nCopy-safe fallback TOML:\n");
-      console.log(renderCodexMcpToml(codexRegistration(project, profilePath)));
-    }
-    console.log("Setup complete.");
+    console.log(`Passeur setup for ${binding.project}`);
+    models.forEach((model, index) => console.log(`${index + 1}) ${model.display_label ?? model.model_id}`));
+    const choice = Number((await ask("Select model [1]: ")) || "1") - 1;
+    const selected = Number.isInteger(choice) ? models[choice] : undefined;
+    if (!selected) throw new BridgeError("MODEL_SELECTION_INVALID", "Select one of the numbered models");
+    const implement = /^(y|yes)$/i.test(await ask("Enable implementation worktrees? [y/N]: "));
+    const worktrees = implement ? required(await ask("Worktree root outside the project: "), "worktree root") : undefined;
+    const confirmed = /^(y|yes)$/i.test(await ask("Have you verified the intended Muse subscription credential path? [y/N]: "));
+    await saveProfile(required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME"), { ...values, model: selected.model_id, "confirm-subscription": confirmed,
+      ...(worktrees ? { "worktree-root": worktrees } : {}) });
+    const doInstall = values["install-codex"] || /^(y|yes)$/i.test(await ask("Install a named Codex registration now? [y/N]: "));
+    if (doInstall) {
+      const name = values["server-name"] ?? required(await ask("Codex server name (for example passeur_pumas): "), "server name");
+      await register(intent, { ...values, "server-name": name });
+    } else console.log(JSON.stringify({ profile: binding.profilePath, configuration: "not_installed", installed_workflow: "not_run" }));
   } finally { terminal.close(); }
 }
 
 async function main(): Promise<void> {
-  const command = process.argv[2]; if (!command) usage();
-  const { values } = parseArgs({ args: process.argv.slice(3), options: {
-    project: { type: "string" }, profile: { type: "string" }, task: { type: "string" }, follow: { type: "boolean" }, yes: { type: "boolean" },
-    "muse-bin": { type: "string" }, model: { type: "string" }, "worktree-root": { type: "string" }, "confirm-subscription": { type: "boolean" },
-    "max-workers": { type: "string" }, "max-queued-tasks": { type: "string" }, operations: { type: "string" },
-    "install-codex": { type: "boolean" },
-    "confirm-worker-stopped": { type: "boolean" }, owner: { type: "string" }, reason: { type: "string" },
-  }, strict: true });
-  if (!values.project) usage();
-  const project = await canonicalProject(values.project), repository = await repositoryIdentity(project);
-  const home = process.env.HOME;
-  if (!home && (!process.env.XDG_STATE_HOME || !process.env.XDG_CONFIG_HOME)) throw new Error("HOME or explicit XDG configuration/state roots are required");
-  const stateRoot = process.env.XDG_STATE_HOME ?? join(home!, ".local", "state");
-  const configRoot = process.env.XDG_CONFIG_HOME ?? join(home!, ".config");
-  const storeRoot = join(stateRoot, "muse-bridge", "repositories", repository.id);
-  const defaultProfile = join(configRoot, "muse-bridge", "projects", `${projectId(project)}.json`);
-  const profilePath = resolve(values.profile ?? defaultProfile), store = new TaskStore(storeRoot);
-  // The profile remains project-specific; runtime ownership and records are repository-common.
-  if (command === "setup") {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("Interactive setup requires a terminal");
-    await interactiveSetup(profilePath, project, values["install-codex"] ?? false); return;
+  const action = process.argv[2];
+  if (action === "--help" || action === "help" || !action) { process.stdout.write(help); return; }
+  if (action === "--version") {
+    const { runtimeIdentity } = await import("./install/runtime.js");
+    console.log(JSON.stringify(await runtimeIdentity(runtimeRoot))); return;
   }
-  if (command === "configure") {
-    if (!values.model) throw new Error("configure requires --model with the exact installed model ID");
-    const profile = await saveProfile(profilePath, project, {
-      model: values.model, museBin: values["muse-bin"] ?? "muse",
-      ...(values["worktree-root"] ? { worktreeRoot: values["worktree-root"] } : {}),
-      confirmed: values["confirm-subscription"] ?? false,
-      ...(values["max-workers"] === undefined ? {} : { maxWorkers: Number(values["max-workers"]) }),
-      ...(values["max-queued-tasks"] === undefined ? {} : { maxQueuedTasks: Number(values["max-queued-tasks"]) }),
-    });
-    if (values["install-codex"]) await registerCodex(project, profilePath); else printConfiguration(profilePath, project, profile);
+  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install"]);
+  if (!actions.has(action)) throw new BridgeError("ACTION_UNSUPPORTED", `Unknown action: ${action}`);
+  const { values } = decode(process.argv.slice(3));
+  const bindingFlags = ["project", "profile", "state-root", "expected-repository-id"];
+  const registrationFlags = ["server-name", "runtime", "config-path", "replace-binding", "adopt-unmanaged", "development-runtime", "verify-readiness", "tool-timeout-sec", "yes"];
+  const configurationFlags = ["model", "muse-bin", "worktree-root", "confirm-subscription", "max-workers", "max-queued-tasks", "install-codex"];
+  const actionFlags: Record<string, string[]> = {
+    serve: bindingFlags, start: bindingFlags, inspect: bindingFlags,
+    setup: [...bindingFlags, ...registrationFlags, "install-codex"],
+    configure: [...bindingFlags, ...configurationFlags, ...registrationFlags],
+    "register-codex": [...bindingFlags, ...registrationFlags],
+    doctor: [...bindingFlags, "prepare", "yes"], result: [...bindingFlags, "task"],
+    logs: [...bindingFlags, "task", "follow"], finalize: [...bindingFlags, "operations", "yes"],
+    cleanup: [...bindingFlags, "task", "yes"], reconcile: [...bindingFlags, "task", "yes", "confirm-worker-stopped", "owner", "reason"],
+    install: ["artifact", "install-root", "yes"],
+  };
+  for (const key of Object.keys(values)) if (!actionFlags[action]!.includes(key)) throw new BridgeError("ARGUMENT_INAPPLICABLE", `--${key} does not apply to ${action}`);
+  if (action === "install") {
+    if (!values.yes) throw new BridgeError("INSTALL_AUTHORITY_REQUIRED", "install requires --yes");
+    const { installRuntime } = await import("./install/runtime.js");
+    console.log(JSON.stringify(await installRuntime(resolve(required(values.artifact, "--artifact")), resolve(required(values["install-root"], "--install-root"))), null, 2)); return;
+  }
+  for (const [key, value] of Object.entries({ project: values.project, profile: values.profile, state: values["state-root"] })) {
+    if (value !== undefined && (!value.length || value.length > 4096 || value.includes("\0"))) throw new BridgeError("PATH_ARGUMENT_INVALID", `${key} must be a bounded path without NUL`);
+  }
+  if (values["expected-repository-id"] !== undefined && !/^[a-f0-9]{24}$/.test(values["expected-repository-id"])) throw new BridgeError("REPOSITORY_ID_INVALID", "Expected the canonical 24-hex repository identity");
+  const intent: LaunchIntent = { project: resolve(required(values.project, "--project")),
+    ...(values.profile ? { profilePath: resolve(values.profile) } : {}), ...(values["state-root"] ? { stateRoot: resolve(values["state-root"]) } : {}),
+    ...(values["expected-repository-id"] ? { expectedRepositoryId: values["expected-repository-id"] } : {}) };
+  // Transport bootstrap deliberately has no profile, repository, store or Muse prerequisites.
+  if (action === "serve" || action === "start") {
+    const [{ RepositoryRuntime }, { runtimeIdentity }, { serve }] = await Promise.all([
+      import("./core/repository-runtime.js"), import("./install/runtime.js"), import("./mcp/server.js"),
+    ]);
+    await serve(new RepositoryRuntime(intent, await runtimeIdentity(runtimeRoot))); return;
+  }
+  if (action === "setup") { await setup(intent, values); return; }
+  if (action === "register-codex") { await register(intent, values); return; }
+  if (action === "configure") {
+    const { resolveRepositoryBinding } = await import("./core/repository-runtime.js");
+    const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
+    const profile = await saveProfile(required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME"), values);
+    if (values["install-codex"]) await register(intent, values);
+    else console.log(JSON.stringify({ profile: binding.profilePath, capacity: { workers: profile.max_workers, queued: profile.max_queued_tasks }, configuration: "not_installed", installed_workflow: "not_run" }, null, 2));
     return;
   }
-  if (command === "register-codex") { await loadProfile(profilePath, false); await registerCodex(project, profilePath); return; }
-  if (command === "doctor") { console.log(JSON.stringify(await doctor(project, profilePath, await loadProfile(profilePath, false)), null, 2)); return; }
-  let legacyRoots = [join(stateRoot, "muse-bridge", "projects", projectId(project))];
-  if (repository.common_dir !== project) {
-    legacyRoots = [...new Set([...legacyRoots, ...(await worktreeEntries(project)).map((entry) => join(stateRoot, "muse-bridge", "projects", projectId(entry.path)))])];
-  }
-  if (command === "serve") {
-    let profile;
-    try { profile = await loadProfile(profilePath); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        if (process.stdin.isTTY && process.stdout.isTTY) { await interactiveSetup(profilePath, project); return; }
-        throw new Error(`Passeur is not configured for ${project}. Run:\n  ./passeur setup "${project}"`);
-      }
-      throw error;
-    }
-    await serve({ project, projectId: repository.id, profile, store, lockPath: storeRoot, legacyStoreRoots: legacyRoots }); return;
-  }
-  if (command === "inspect") {
-    const records = await store.list();
-    console.log(JSON.stringify({ repository, frozen: await store.frozenReason(), tasks: await Promise.all(records.map(async (record) => ({ task_id: record.task_id, request_key: record.request.request_key,
-      state: await store.readState(record.task_id), resource: await store.readResource(record.task_id) ?? { state: "legacy_unclassified" } }))),
-      note: "Start serve or an offline mutation once to import legacy path-keyed records; inspection never mutates them.",
-    }, null, 2)); return;
-  }
-  if (command === "finalize" || command === "cleanup" || command === "reconcile") {
-    if (!values.yes) throw new Error(`${command} requires --yes; it never authorizes deletion of unique or dirty work`);
-    const release = await acquireRepositoryLease(storeRoot);
-    try {
-      for (const root of legacyRoots) await store.importLegacy(root);
-      await reconcileStoredTasks(store, "unavailable-after-restart");
-      if (command === "finalize") {
-        if (!values.operations) throw new Error("finalize requires --operations <JSON-file> containing schema_version:2 and operations");
-        const request = FinalizeRequestSchema.parse(JSON.parse(await readFile(values.operations, "utf8")));
-        const manager = new DispositionManager(project, repository.id, store, { administration: new Mutex(), isActive: () => false,
-          assertMutationAllowed: async () => { const frozen = await store.frozenReason(); if (frozen) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", frozen); } });
-        const results = [];
-        for (const operation of request.operations) {
-          try { results.push(await manager.finalize(operation)); }
-          catch (error) { results.push({ task_id: operation.task_id, operation_key: operation.operation_key, error: errorInfo(error) }); process.exitCode = 1; }
+  const [{ RepositoryRuntime }, { runtimeIdentity }] = await Promise.all([import("./core/repository-runtime.js"), import("./install/runtime.js")]);
+  const runtime = new RepositoryRuntime(intent, await runtimeIdentity(runtimeRoot));
+  const stop = new AbortController();
+  const interrupt = () => { process.exitCode = 130; stop.abort(new BridgeError("REQUEST_CANCELLED", "Interrupted")); };
+  const terminate = () => { process.exitCode = 143; stop.abort(new BridgeError("REQUEST_CANCELLED", "Terminated")); };
+  process.once("SIGINT", interrupt); process.once("SIGTERM", terminate);
+  let closing: Promise<void> | undefined;
+  const abortRuntime = () => { closing ??= runtime.shutdown(stop.signal.reason); void closing.catch(() => undefined); };
+  stop.signal.addEventListener("abort", abortRuntime, { once: true });
+  try {
+    if (action === "doctor") {
+      if (values.prepare && !values.yes) throw new BridgeError("READINESS_AUTHORITY_REQUIRED", "doctor --prepare requires --yes");
+      const { doctor } = await import("./diagnostics/doctor.js");
+      const report = await doctor(runtime, Boolean(values.prepare), stop.signal);
+      console.log(JSON.stringify(report, null, 2));
+      if (values.prepare && report.status.coordination.state !== "ready") process.exitCode = 1;
+    } else if (action === "inspect") console.log(JSON.stringify(await runtime.inspect(), null, 2));
+    else if (action === "result") console.log(JSON.stringify(await runtime.result(required(values.task, "--task")), null, 2));
+    else if (action === "logs") {
+      let offset = 0;
+      do {
+        stop.signal.throwIfAborted();
+        const buffer = await runtime.logs(required(values.task, "--task"), offset); offset += buffer.length;
+        if (buffer.length) {
+          if (!process.stdout.write(buffer)) await new Promise<void>((done, reject) => {
+            const clear = () => { process.stdout.removeListener("drain", drained); process.stdout.removeListener("error", failed); stop.signal.removeEventListener("abort", aborted); };
+            const drained = () => { clear(); done(); };
+            const failed = (error: Error) => { clear(); reject(error); };
+            const aborted = () => { clear(); reject(stop.signal.reason); };
+            process.stdout.once("drain", drained); process.stdout.once("error", failed); stop.signal.addEventListener("abort", aborted, { once: true });
+            if (stop.signal.aborted) aborted();
+          });
         }
-        console.log(JSON.stringify({ results }, null, 2)); return;
+        else if (values.follow) await delay(250, undefined, { signal: stop.signal }); else break;
+      } while (true);
+    } else {
+      if (!values.yes) throw new BridgeError("MUTATION_AUTHORITY_REQUIRED", `${action} requires --yes`);
+      if (action === "finalize") {
+        const { FinalizeRequestSchema } = await import("./contracts/index.js");
+        const request = FinalizeRequestSchema.parse(JSON.parse(await readFile(required(values.operations, "--operations"), "utf8")));
+        const results = await runtime.finalize(request.operations, stop.signal);
+        console.log(JSON.stringify({ results }, null, 2)); if (results.some((entry) => entry.error)) process.exitCode = 1;
+      } else if (action === "cleanup") { await runtime.cleanup(required(values.task, "--task")); console.log("Collected eligible bulky evidence; retained identity and disposition receipts."); }
+      else if (action === "reconcile") {
+        if (!values["confirm-worker-stopped"]) throw new BridgeError("RECONCILIATION_AUTHORITY_REQUIRED", "Reconcile requires --confirm-worker-stopped with process evidence");
+        await runtime.reconcile(required(values.task, "--task"), required(values.owner, "--owner"), required(values.reason, "--reason"));
+        console.log(JSON.stringify(await runtime.inspect(), null, 2));
       }
-      if (!values.task) throw new Error(`${command} requires --task <UUID>`);
-      if (command === "reconcile") {
-        if (!values["confirm-worker-stopped"] || !values.owner || !values.reason) throw new Error("reconcile requires --confirm-worker-stopped, --owner and --reason with manual process/workspace evidence");
-        await acknowledgeStoppedTask(store, values.task, values.owner, values.reason);
-        console.log(JSON.stringify({ resource: await store.readResource(values.task), remaining_safety_condition: await store.frozenReason() }, null, 2)); return;
-      }
-      if (await store.frozenReason()) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", "Reconcile repository safety before evidence collection");
-      await cleanupTask({ store, taskId: values.task });
-      console.log("Collected bulky artifacts/logs; task, result, disposition and request-key receipts remain."); return;
-    } finally { await release(); }
+    }
+  } finally {
+    process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
+    stop.signal.removeEventListener("abort", abortRuntime);
+    await (closing ?? runtime.shutdown());
   }
-  if (!values.task) usage();
-  const record = await store.find({ task_id: values.task }); if (!record) throw new Error("Task not found; legacy imports occur only under an owner lease");
-  if (command === "result") { console.log(JSON.stringify({ result: await store.readResult(record.task_id), resource: await store.readResource(record.task_id) ?? { state: "legacy_unclassified" } }, null, 2)); return; }
-  if (command === "logs") {
-    const path = join(store.taskDir(record.task_id), "events.ndjson");
-    if (!values.follow) { process.stdout.write(await readFile(path)); return; }
-    const child = (await import("node:child_process")).spawn("tail", ["-f", "--", path], { stdio: "inherit" });
-    await new Promise<void>((resolveDone, reject) => { child.once("error", reject); child.once("exit", () => resolveDone()); }); return;
-  }
-  usage();
 }
-main().catch((error) => { console.error(errorInfo(error).message); process.exitCode = 1; });
+main().catch((error: unknown) => {
+  console.error(JSON.stringify(diagnosticInfo(error)));
+  if (!process.exitCode) process.exitCode = nativeCode(error) === "ABORT_ERR" ? 130 : 1;
+});

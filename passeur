@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cli="$repo_root/dist/src/cli.js"
-
 if [[ ! -f "$cli" ]]; then
-  echo "Passeur is not built. Run: npm install && npm run build" >&2
+  printf '%s\n' 'Passeur is not built. Explicitly provision dependencies, then run npm run build.' >&2
   exit 1
 fi
-
 command="${1:-start}"
 case "$command" in
-  start|setup|configure|register-codex|doctor|inspect|result|logs|finalize|cleanup|reconcile) shift || true ;;
-  *) command="start" ;;
+  --help|help|--version) exec node "$cli" "$@" ;;
+  install) exec node "$cli" "$@" ;;
+  start|serve|setup|configure|register-codex|doctor|inspect|result|logs|finalize|cleanup|reconcile) shift || true ;;
+  /*|./*|../*|.) command="start" ;;
+  *) printf 'Unknown Passeur action: %s\n' "$command" >&2; exit 1 ;;
 esac
-
 project="$PWD"
 if [[ $# -gt 0 && "$1" != -* ]]; then project="$1"; shift; fi
 if [[ "$command" == "start" ]]; then command="serve"; fi
-
 exec node "$cli" "$command" --project "$project" "$@"

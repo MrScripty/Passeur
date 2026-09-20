@@ -1,5 +1,13 @@
 # Parallel workers and committed handoffs
 
+## Current startup and deployment boundary
+
+The discoverable-startup implementation replaces eager startup prerequisites described in older sections below. MCP discovery/status are composed before project, profile, state, recovery and provider access. RepositoryRuntime owns one lazy, single-flight preparation lifecycle and a lease retained through safe shutdown. Read-only history and administrative recovery do not depend on inference credentials or a working provider. Lease loss blocks new mutations and preserves unresolved in-flight outcomes; it is not process fencing.
+
+The runtime composes the existing task coordinator, TaskStore and DispositionManager; it introduces neither a daemon nor another task authority. Execution/delivery/disposition contracts below remain. The caller supplies validated operations, not a replaceable project/state binding or preparation ordering.
+
+Version-specific artifacts own build identity and production dependency closure; the Codex adapter owns named configuration and resolved launch verification. Operational procedures are in [startup-and-installation.md](startup-and-installation.md); evidence is in the [implementation report](plans/discoverable-startup-and-installed-runtime/reports/implementation-evidence.md). Configuration, direct MCP transport, coordination readiness and actual host/provider acceptance remain separate claims.
+
 The current design is governed by [the parallel-worker plan](plans/parallel-worker-commit-handoff/plan.md). The original CLI plan remains historical for the earlier serial release. Its serial limit, uncommitted handoff, mandatory per-worker review language and record-only cleanup are superseded.
 
 ## Responsibility
