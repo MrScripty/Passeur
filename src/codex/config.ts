@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { chmod, lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
+import { inspectStartupRequirement, resolveStartupRequirement, type StartupPolicyEvidence, type StartupPolicyObservation } from "./startup-policy.js";
 
 const exec = promisify(execFile);
 export const CODEX_ENABLED_TOOLS = ["passeur_status", "passeur_prepare", "passeur_agents", "passeur_delegate", "passeur_delegate_batch", "passeur_result", "passeur_finalize", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize"] as const;
@@ -16,9 +17,11 @@ export type CodexMcpRegistration = {
   startup_timeout_sec: number; tool_timeout_sec: number; enabled_tools: readonly string[];
   project: string; profile: string; state_root: string; repository_id: string; build_id: string;
   development: boolean;
+  /** Omitted for an update: preserve the existing server policy. New servers default optional. */
+  required?: boolean;
 };
 export type EditAuthority = { replaceBinding?: string; adoptUnmanaged?: boolean };
-type InstallOptions = EditAuthority & { configPath?: string; verify?: () => Promise<void> };
+type InstallOptions = EditAuthority & { configPath?: string; verify?: () => Promise<StartupPolicyObservation | void> };
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function validateServerName(name: string): string {
@@ -46,6 +49,7 @@ function servers(doc: Record<string, unknown>): Record<string, unknown> {
 }
 function validateRegistration(registration: CodexMcpRegistration): void {
   validateServerName(registration.server_name);
+  resolveStartupRequirement(registration.required, undefined);
   for (const [key, value] of Object.entries({ command: registration.command, cwd: registration.cwd, project: registration.project, profile: registration.profile, state_root: registration.state_root })) {
     if (!isAbsolute(value) || value.includes("\0")) throw new BridgeError("REGISTRATION_INVALID", `${key} must be an absolute path without NUL`);
   }
@@ -56,13 +60,16 @@ function validateRegistration(registration: CodexMcpRegistration): void {
   for (const value of [registration.startup_timeout_sec, registration.tool_timeout_sec]) if (!Number.isFinite(value) || value <= 0) throw new BridgeError("REGISTRATION_INVALID", "Timeouts must be positive seconds");
 }
 function transport(registration: CodexMcpRegistration) {
-  return { command: registration.command, args: [...registration.args], cwd: registration.cwd,
+  return { command: registration.command, args: [...registration.args], cwd: registration.cwd, required: registration.required ?? false,
     startup_timeout_sec: registration.startup_timeout_sec, tool_timeout_sec: registration.tool_timeout_sec,
     enabled_tools: [...registration.enabled_tools], ...(Object.keys(registration.env).length ? { env: { ...registration.env } } : {}) };
 }
+function managedBlock(name: string, table: Record<string, unknown>): string {
+  return `# passeur:begin ${name}\n${TOML.stringify({ mcp_servers: { [name]: table } } as Parameters<typeof TOML.stringify>[0])}# passeur:end ${name}\n`;
+}
 export function renderCodexMcpToml(registration: CodexMcpRegistration): string {
   validateRegistration(registration);
-  return `# passeur:begin ${registration.server_name}\n${TOML.stringify({ mcp_servers: { [registration.server_name]: transport(registration) } })}# passeur:end ${registration.server_name}\n`;
+  return managedBlock(registration.server_name, transport(registration));
 }
 function argument(table: unknown, flag: string): string | undefined {
   if (!object(table) || !Array.isArray(table.args) || table.args.some((value) => typeof value !== "string")) return undefined;
@@ -84,6 +91,7 @@ export function registrationFingerprint(table: unknown): string {
 export function mergeCodexMcpToml(source: string, registration: CodexMcpRegistration, authority: EditAuthority = {}): string {
   validateRegistration(registration);
   const current = document(source), tables = servers(current), prior = tables[registration.server_name];
+  registration = { ...registration, required: resolveStartupRequirement(registration.required, object(prior) ? prior.required : undefined) };
   for (const [name, table] of Object.entries(tables)) {
     const repository = argument(table, "--expected-repository-id"), state = argument(table, "--state-root");
     if (repository === registration.repository_id && state && state !== registration.state_root) {
@@ -97,8 +105,15 @@ export function mergeCodexMcpToml(source: string, registration: CodexMcpRegistra
       stage: "codex.config.binding", next_action: `Review the existing registration, then explicitly replace binding ${registrationFingerprint(prior)}.`,
     });
   }
-  const expected = { ...current, mcp_servers: { ...tables, [registration.server_name]: transport(registration) } };
-  const block = renderCodexMcpToml(registration);
+  // Registration owns launch/catalog fields, not operator approval or denial policy.
+  // These already parsed values are preserved exactly, not reinterpreted or weakened.
+  const policy = object(prior) ? Object.fromEntries(
+    ["enabled", "disabled_tools", "default_tools_approval_mode", "tools"]
+      .filter((key) => Object.hasOwn(prior, key)).map((key) => [key, prior[key]]),
+  ) : {};
+  const selected = { ...policy, ...transport(registration) };
+  const expected = { ...current, mcp_servers: { ...tables, [registration.server_name]: selected } };
+  const block = managedBlock(registration.server_name, selected);
   const starts = [...source.matchAll(new RegExp(`^# passeur:begin ${registration.server_name}\\r?$`, "gm"))];
   const ends = [...source.matchAll(new RegExp(`^# passeur:end ${registration.server_name}\\r?$`, "gm"))];
   let updated: string;
@@ -154,11 +169,11 @@ const inspectionSchema = z.object({
     env: z.record(z.string(), z.string()).nullable().optional(), env_vars: z.array(z.string()).nullable().optional(),
   }).passthrough(),
   enabled_tools: z.array(z.string()), disabled_tools: z.array(z.string()).nullable().optional(),
-  startup_timeout_sec: z.number(), tool_timeout_sec: z.number(),
+  startup_timeout_sec: z.number(), tool_timeout_sec: z.number(), required: z.boolean().optional(),
 }).passthrough();
 
 /** Only the documented stdio inspection variant is supported; unrelated metadata is non-authorizing. */
-export function verifyInspection(value: unknown, registration: CodexMcpRegistration): void {
+export function verifyInspection(value: unknown, registration: CodexMcpRegistration): StartupPolicyObservation {
   const parsed = inspectionSchema.safeParse(value);
   if (!parsed.success) throw new BridgeError("CODEX_INSPECTION_UNSUPPORTED", "Codex inspection did not return the supported complete stdio configuration representation");
   const actual = parsed.data;
@@ -172,8 +187,9 @@ export function verifyInspection(value: unknown, registration: CodexMcpRegistrat
     || actual.startup_timeout_sec !== registration.startup_timeout_sec || actual.tool_timeout_sec !== registration.tool_timeout_sec) {
     throw new BridgeError("CODEX_REGISTRATION_MISMATCH", "Codex resolves a different or disabled registration in the selected project/configuration context");
   }
+  return inspectStartupRequirement(actual.required, registration.required);
 }
-export async function verifyCodexMcpRegistration(registration: CodexMcpRegistration, configPath = defaultConfigPath()): Promise<void> {
+export async function verifyCodexMcpRegistration(registration: CodexMcpRegistration, configPath = defaultConfigPath()): Promise<StartupPolicyObservation> {
   validateServerName(registration.server_name);
   if (basename(configPath) !== "config.toml") throw new BridgeError("CODEX_CONFIG_PATH_UNSUPPORTED", "Codex inspection requires a config.toml inside its selected CODEX_HOME");
   const output = await exec("codex", ["mcp", "get", registration.server_name, "--json"], { cwd: registration.project,
@@ -181,10 +197,10 @@ export async function verifyCodexMcpRegistration(registration: CodexMcpRegistrat
   let value: unknown;
   try { value = JSON.parse(output.stdout); }
   catch (cause) { throw new BridgeError("CODEX_INSPECTION_INVALID", "Codex inspection returned malformed JSON", { cause }); }
-  verifyInspection(value, registration);
+  return verifyInspection(value, registration);
 }
 
-export async function installCodexMcpRegistration(registration: CodexMcpRegistration, options: InstallOptions = {}): Promise<{ configPath: string; backupPath?: string; changed: boolean; configuration: "passed" }> {
+export async function installCodexMcpRegistration(registration: CodexMcpRegistration, options: InstallOptions = {}): Promise<{ configPath: string; backupPath?: string; changed: boolean; configuration: "passed"; startup_policy: StartupPolicyEvidence }> {
   const configPath = options.configPath ?? defaultConfigPath();
   await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
   const lockfile = (await import("proper-lockfile")).default;
@@ -198,15 +214,32 @@ export async function installCodexMcpRegistration(registration: CodexMcpRegistra
     } catch (error) { if (nativeCode(error) !== "ENOENT") throw error; }
     const original = await readOptional(configPath);
     const updated = Buffer.from(mergeCodexMcpToml(original?.toString("utf8") ?? "", registration, options));
-    const verify = options.verify ?? (() => verifyCodexMcpRegistration(registration, configPath));
-    if (original?.equals(updated)) { authority(); await verify(); authority(); return { configPath, changed: false, configuration: "passed" }; }
+    // Merge resolves preservation against the original table under the config-writer lease.
+    const selected = servers(document(updated.toString("utf8")))[registration.server_name];
+    if (!object(selected)) throw new BridgeError("CODEX_CONFIG_INVALID", "Selected registration is missing after merge");
+    const resolved = { ...registration, required: resolveStartupRequirement(undefined, selected.required) };
+    const verify = options.verify ?? (() => verifyCodexMcpRegistration(resolved, configPath));
+    const verifyPublished = async (): Promise<StartupPolicyEvidence> => {
+      authority();
+      const inspection = await verify();
+      authority();
+      if (!(await readOptional(configPath))?.equals(updated)) {
+        throw new BridgeError("CONFIG_CHANGED_CONCURRENTLY", "Codex config changed during verification; preserve it and inspect the effective configuration");
+      }
+      return { required: resolved.required, configuration: "passed", inspection: inspection ?? { status: "not_run" }, host_attachment: "not_run" };
+    };
+    if (original?.equals(updated)) {
+      const startup_policy = await verifyPublished();
+      return { configPath, changed: false, configuration: "passed", startup_policy };
+    }
     const current = await readOptional(configPath);
     if (!isDeepStrictEqual(current, original)) throw new BridgeError("CONFIG_CHANGED_CONCURRENTLY", "Codex config changed before publication");
     const mode = original ? (await lstat(configPath)).mode & 0o777 : 0o600;
     const backupPath = original ? `${configPath}.passeur-${randomUUID()}.bak` : undefined;
     if (original && backupPath) { authority(); await writeFile(backupPath, original, { mode, flag: "wx" }); }
     await atomicWrite(configPath, updated, mode, authority);
-    try { await verify(); authority(); }
+    let startup_policy: StartupPolicyEvidence;
+    try { startup_policy = await verifyPublished(); }
     catch (cause) {
       const candidate = await readOptional(configPath);
       if (!candidate?.equals(updated) || compromised) throw new BridgeError("CONFIG_ROLLBACK_CONFLICT", "Verification failed, but a changed configuration was preserved rather than overwritten by an old backup", { cause, path: configPath });
@@ -214,6 +247,6 @@ export async function installCodexMcpRegistration(registration: CodexMcpRegistra
       else { authority(); await unlink(configPath); }
       throw new BridgeError("CODEX_INSPECTION_FAILED", "Codex configuration inspection failed; the unchanged candidate was rolled back", { cause, path: configPath });
     }
-    return { configPath, ...(backupPath ? { backupPath } : {}), changed: true, configuration: "passed" };
+    return { configPath, ...(backupPath ? { backupPath } : {}), changed: true, configuration: "passed", startup_policy };
   } finally { if (!compromised) await release(); }
 }

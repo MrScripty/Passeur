@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { RuntimeStatusSchema, type RuntimeStatus } from "../contracts/runtime.js";
+import { RuntimeStatusSchema, type RuntimeFailure, type RuntimeStatus } from "../contracts/runtime.js";
 import { BridgeError, diagnosticInfo, safeText, type ErrorInfo } from "../core/errors.js";
 import type { CodexMcpRegistration } from "./config.js";
 
@@ -12,6 +12,15 @@ export type ProbeReport = {
 const CALL_TIMEOUT_MS = 10_000;
 const CLOSE_TIMEOUT_MS = 10_000;
 const ENVIRONMENT_KEYS = ["PATH", "HOME", "USER", "LANG", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"] as const;
+function runtimeFailureInfo(failure: RuntimeFailure): ErrorInfo {
+  return {
+    code: failure.code, message: failure.message,
+    ...(failure.stage !== undefined ? { stage: failure.stage } : {}),
+    ...(failure.path !== undefined ? { path: failure.path } : {}),
+    ...(failure.native_code !== undefined ? { native_code: failure.native_code } : {}),
+    ...(failure.next_action !== undefined ? { next_action: failure.next_action } : {}),
+  };
+}
 export function launchEnvironment(overrides: Record<string, string>): Record<string, string> {
   return { ...Object.fromEntries(ENVIRONMENT_KEYS.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]!]])), ...overrides };
 }
@@ -73,7 +82,7 @@ export async function probeRegistration(registration: CodexMcpRegistration, prep
         const current = await client.callTool({ name: "passeur_status", arguments: {} }, undefined, { timeout: CALL_TIMEOUT_MS });
         if (!current.isError) {
           report.status = RuntimeStatusSchema.parse(current.structuredContent);
-          if (report.status.coordination.failure) report.readiness.error = report.status.coordination.failure;
+          if (report.status.coordination.failure) report.readiness.error = runtimeFailureInfo(report.status.coordination.failure);
         }
       } else {
         report.status = RuntimeStatusSchema.parse(ready.structuredContent);

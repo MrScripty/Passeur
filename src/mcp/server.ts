@@ -3,6 +3,7 @@ import { errorInfo } from "../core/errors.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { BatchRequestSchema, DelegateRequestSchema, FinalizeRequestSchema, ResultRequestSchema } from "../contracts/index.js";
+import type { ResultRequest } from "../contracts/types.js";
 import { PrepareRequestSchema, RuntimeFailureSchema, RuntimeStatusSchema, StatusRequestSchema } from "../contracts/runtime.js";
 import { RepositoryRuntime } from "../core/repository-runtime.js";
 import { diagnosticInfo } from "../core/errors.js";
@@ -100,7 +101,14 @@ export function createMcpServer(runtime: RepositoryRuntime) {
     inputSchema: ResultRequestSchema, annotations: { readOnlyHint: true },
   }, async (request) => {
     try {
-      const { task_id, resource, buffer } = await runtime.retained(request);
+      const retainedRequest: ResultRequest = {
+        encoding: request.encoding, offset: request.offset, limit: request.limit,
+        ...(request.task_id !== undefined ? { task_id: request.task_id } : {}),
+        ...(request.request_key !== undefined ? { request_key: request.request_key } : {}),
+        ...(request.section !== undefined ? { section: request.section } : {}),
+        ...(request.artifact_id !== undefined ? { artifact_id: request.artifact_id } : {}),
+      };
+      const { task_id, resource, buffer } = await runtime.retained(retainedRequest);
       let length = buffer.length;
       while (true) {
         const chunk = textChunk(buffer, length, request.encoding);

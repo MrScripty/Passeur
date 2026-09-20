@@ -9,6 +9,7 @@ import { BridgeError, diagnosticInfo, nativeCode } from "./core/errors.js";
 import type { AgentProfile } from "./contracts/agents.js";
 import type { LaunchIntent } from "./core/repository-runtime.js";
 import type { CodexMcpRegistration } from "./codex/config.js";
+import { startupRequirementFromFlags } from "./codex/startup-policy.js";
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const help = `Passeur — repository-scoped agent coordination
@@ -16,7 +17,7 @@ const help = `Passeur — repository-scoped agent coordination
 Usage: passeur <action> [options]
   serve|start --project PATH [--profile FILE] [--state-root PATH]
   setup|configure --project PATH [--profile FILE] [--server-name NAME]
-  register-codex --project PATH --server-name NAME [--runtime DIRECTORY]
+  register-codex --project PATH --server-name NAME [--runtime DIRECTORY] [--required|--optional]
   doctor --project PATH [--prepare --yes]
   agents --project PATH [--offset NUMBER] [--limit 1..4]
   configure-agent --project PATH --agent-file FILE --yes [--replace-agent FINGERPRINT]
@@ -36,6 +37,12 @@ Registration supports --config-path FILE, --verify-readiness --yes,
 and --tool-timeout-sec SECONDS (default 2100). Normal registration requires
 an installed runtime. --adopt-unmanaged explicitly permits TOML formatting
 and comment loss; the original configuration is backed up.
+--required makes this server required for Codex startup/resume; --optional
+explicitly restores optional startup. Omission preserves an existing policy
+and makes new registrations optional. Required servers use their startup
+budget rather than the host's optional-catalog grace, and initialization
+failure blocks host startup. These options change only the named server;
+no global grace, approval or sandbox setting is changed.
 
 serve never builds, installs or edits configuration. Normal run/setup use
 HOME or XDG_CONFIG_HOME/XDG_STATE_HOME unless paths are explicit. Registration
@@ -61,6 +68,7 @@ const options = {
   "muse-bin": { type: "string" }, model: { type: "string" }, "worktree-root": { type: "string" }, "confirm-subscription": { type: "boolean" },
   "max-workers": { type: "string" }, "max-queued-tasks": { type: "string" }, operations: { type: "string" },
   "install-codex": { type: "boolean" }, "confirm-worker-stopped": { type: "boolean" }, owner: { type: "string" }, reason: { type: "string" },
+  required: { type: "boolean" }, optional: { type: "boolean" },
   "server-name": { type: "string" }, runtime: { type: "string" }, "config-path": { type: "string" }, "replace-binding": { type: "string" },
   "adopt-unmanaged": { type: "boolean" }, "development-runtime": { type: "boolean" }, "verify-readiness": { type: "boolean" },
   "tool-timeout-sec": { type: "string" }, prepare: { type: "boolean" }, artifact: { type: "string" }, "install-root": { type: "string" },
@@ -104,7 +112,9 @@ async function registration(intent: LaunchIntent, values: Values): Promise<Codex
   }
   const timeout = integer(values["tool-timeout-sec"], "--tool-timeout-sec") ?? 2100;
   if (timeout < 1) throw new BridgeError("ARGUMENT_INVALID", "--tool-timeout-sec must be positive");
+  const startupRequired = startupRequirementFromFlags(values.required, values.optional);
   return {
+    ...(startupRequired === undefined ? {} : { required: startupRequired }),
     server_name: serverName, command: process.execPath,
     args: [cli, "serve", "--project", binding.project, "--profile", profilePath, "--state-root", binding.stateRoot, "--expected-repository-id", binding.repositoryId],
     cwd: root, env: {}, startup_timeout_sec: 10, tool_timeout_sec: timeout, enabled_tools: CODEX_ENABLED_TOOLS,
@@ -124,7 +134,7 @@ async function register(intent: LaunchIntent, values: Values): Promise<void> {
   const { probeRegistration } = await import("./codex/probe.js");
   const probe = await probeRegistration(descriptor, Boolean(values["verify-readiness"]));
   console.log(JSON.stringify({ ...installed, ...probe, configuration: { status: "passed", scope: "codex mcp get configuration inspection" },
-    next_action: "Start a new Codex session and verify its actual tool attachment. Installed agent workflow remains unverified until the opt-in live procedure passes." }, null, 2));
+    next_action: "After controlled shutdown of the old host, start a fresh Codex session and call this named server's passeur_status. Verify build identity and actual callable tools before preparation or delegation. Direct transport and saved startup policy do not prove host-to-model exposure." }, null, 2));
   if (probe.transport.status !== "passed" || (values["verify-readiness"] && probe.readiness.status !== "passed")) process.exitCode = 1;
 }
 async function setup(intent: LaunchIntent, values: Values): Promise<void> {
@@ -165,8 +175,9 @@ async function main(): Promise<void> {
   const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile"]);
   if (!actions.has(action)) throw new BridgeError("ACTION_UNSUPPORTED", `Unknown action: ${action}`);
   const { values } = decode(process.argv.slice(3));
+  startupRequirementFromFlags(values.required, values.optional);
   const bindingFlags = ["project", "profile", "state-root", "expected-repository-id"];
-  const registrationFlags = ["server-name", "runtime", "config-path", "replace-binding", "adopt-unmanaged", "development-runtime", "verify-readiness", "tool-timeout-sec", "yes"];
+  const registrationFlags = ["server-name", "runtime", "config-path", "replace-binding", "adopt-unmanaged", "development-runtime", "verify-readiness", "tool-timeout-sec", "required", "optional", "yes"];
   const configurationFlags = ["model", "muse-bin", "worktree-root", "confirm-subscription", "max-workers", "max-queued-tasks", "install-codex"];
   const actionFlags: Record<string, string[]> = {
     serve: bindingFlags, start: bindingFlags, inspect: bindingFlags,
@@ -182,6 +193,9 @@ async function main(): Promise<void> {
     install: ["artifact", "install-root", "yes"],
   };
   for (const key of Object.keys(values)) if (!actionFlags[action]!.includes(key)) throw new BridgeError("ARGUMENT_INAPPLICABLE", `--${key} does not apply to ${action}`);
+  if (action === "configure" && !values["install-codex"] && (values.required !== undefined || values.optional !== undefined)) {
+    throw new BridgeError("ARGUMENT_INAPPLICABLE", "--required/--optional on configure requires --install-codex");
+  }
   if (action === "install") {
     if (!values.yes) throw new BridgeError("INSTALL_AUTHORITY_REQUIRED", "install requires --yes");
     const { installRuntime } = await import("./install/runtime.js");

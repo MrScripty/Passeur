@@ -2,7 +2,7 @@
 
 ## Availability and coordination
 
-Passeur connects its fixed six-tool MCP interface before it resolves the project, reads the execution profile, accesses task state, or loads Muse. A functioning Node/MCP installation is still required. A broken executable or missing essential dependency cannot expose its own tools.
+Passeur connects its fixed eleven-tool MCP interface before it resolves the project, reads the execution profile, accesses task state, or loads Muse. A functioning Node/MCP installation is still required. A broken executable or missing essential dependency cannot expose its own tools.
 
 `passeur_status` is read-only. It returns the running identity, configured binding and observed coordination/profile/approval state. `not_checked` is not success. Provider compatibility is deliberately not inferred from versions, configuration or a readiness check.
 
@@ -53,10 +53,20 @@ For an existing profile:
 ```sh
 node /absolute/installed/runtime/dist/src/cli.js register-codex \
   --project /absolute/Pumas-Library --profile /absolute/pumas-profile.json \
-  --state-root "$HOME/.local/state" --server-name passeur_pumas
+  --state-root "$HOME/.local/state" --server-name passeur_pumas --required
 ```
 
 Use `passeur_tuldok` for a distinct project's registration. The generator pins Node, the installed CLI, working directory, project, profile, state namespace and expected repository identity. `muse_bridge` is supported when explicitly supplied as a registration name; the unrelated Muse SDK client identifier remains `muse_bridge`.
+
+### Required versus optional host startup
+
+Use `--required` when this named Passeur connection is a prerequisite for the intended Codex session. It writes `required = true` only for that server. Initialization failure then blocks Codex startup/resume rather than allowing the session to proceed without this connection. Use `--optional` to choose optional startup explicitly. Omitting both flags preserves the existing selected server's boolean policy; a new registration defaults to optional. The flags are mutually exclusive. On `configure`, they require `--install-codex`; interactive `setup` applies the choice only if registration is requested.
+
+Codex's [MCP documentation](https://developers.openai.com/codex/mcp/) distinguishes the initial optional-server catalog grace (documented default: 1000 ms) from each server's startup timeout. Required servers use their startup timeout. Merely setting `startup_timeout_sec = 10` does not opt an optional server out of that grace. Passeur does not change `mcp_optional_startup_grace_ms`, global approvals, sandbox policy, or unrelated server tables. Re-registration also preserves existing per-server approval/denial settings; a denial conflicting with the requested catalog is reported, not silently removed.
+
+Registration output includes `startup_policy`: the required/optional value observed in the written configuration, the available host-inspection evidence, and `host_attachment: not_run`. Codex versions that omit `required` from `mcp get --json` produce `inspection.status: not_reported`, not invented success or an assumed false value. A reported contradictory value fails verification. Neither a matched field nor a successful standalone MCP probe proves the model received the tools in the actual host.
+
+For a running server whose tools are not callable, follow [attached-tool recovery](troubleshooting/attached-tools.md). Reconcile the exact installed runtime and registration offline before attempting another session; this does not require the missing MCP tools.
 
 For first-time configuration, `setup` is interactive. `configure --model EXACT_ID` creates a new profile and refuses to overwrite an existing one. `--confirm-subscription` records the operator's confirmation, not provider billing proof. `--worktree-root` enables implementation tasks with a root outside the source checkout.
 

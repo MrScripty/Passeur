@@ -1,3 +1,11 @@
+# Attached-tool registration correction — September 20, 2026
+
+Baseline: `68c3e455ec35061c04b13a27d1ca9e438ec81f95`. This bounded correction adds explicit per-server `--required`/`--optional` registration, preserves existing startup and approval/denial policy during updates, and distinguishes written policy from host-reported policy and actual model-tool exposure. No task, profile, status, result, registry or resource schema changes; no package or lockfile change.
+
+Evidence and exact limits: [attached-tool correction report](reports/attached-tool-registration-fix.md). The incident in Pumas-Library `d436ee6d09b07eafd2fe6ec259c4e3d9a648dbf5` remains operationally blocked until [the host recovery procedure](troubleshooting/attached-tools.md) records successful actual status calls for both named servers. Source changes and standalone test results do not close Pumas TIPC-I10, RA-07/RA-11, or the startup plan's installed-host claims.
+
+---
+
 # Registered-agent implementation candidate — September 20, 2026
 
 Baseline: `49724a8b65bf7540622934e4f25cc3178f9c00dc`. New neutral execution/result v3, profile v2 and paged catalog v1; unchanged status/preparation and resource disposition versions. Existing Muse v2 tools and supported old profile/history reads remain explicit compatibility paths. The reserved Muse client identifier is `muse_bridge`.
@@ -14,7 +22,7 @@ The records below are historical observations with their original limits. They a
 
 Source implementation and test sources are provided, but full pinned-dependency, real MCP, installed-artifact and actual Codex/Muse acceptance have not run in the preparation environment. The focused lifecycle/error checks passed with controlled dependency boundaries; they do not upgrade the historical observations below. See [implementation evidence](plans/discoverable-startup-and-installed-runtime/reports/implementation-evidence.md) and [installed acceptance](installed-acceptance.md).
 
-Runtime pins remain MCP SDK 1.30.0, Muse SDK 1.3.0, proper-lockfile 4.1.2 and Zod 4.1.11. The source update adds smol-toml 1.6.1 for grammar-aware configuration. Its npm resolution/integrity must be confirmed by npm ci. A version pin or successful registration is not actual host/provider compatibility evidence.
+Runtime pins remain MCP SDK 1.30.0, Muse SDK 1.3.0, proper-lockfile 4.1.2 and Zod 4.1.11. Grammar-aware configuration uses smol-toml 1.8.0; the pinned npm resolution, integrity and zero-advisory audit were verified during integration. A version pin or successful registration is not actual host/provider compatibility evidence.
 
 ## Parallel-worker implementation — September 20, 2026
 

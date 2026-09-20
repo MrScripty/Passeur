@@ -90,3 +90,95 @@ it("preserves a newer external edit instead of restoring an old whole-file backu
     expect(await readFile(path, "utf8")).toBe(newer);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+it("renders required startup only for the selected server and preserves the global grace", () => {
+  const prefix = '# user policy\nmcp_optional_startup_grace_ms = 750\n';
+  const first = mergeCodexMcpToml(prefix, registration("passeur_tuldok"));
+  const before = TOML.parse(first).mcp_servers as TOML.TomlTable;
+  const updated = mergeCodexMcpToml(first, { ...registration(), required: true });
+  const parsed = TOML.parse(updated);
+  expect(updated.startsWith(prefix)).toBe(true);
+  expect(parsed.mcp_optional_startup_grace_ms).toBe(750);
+  const tables = parsed.mcp_servers as TOML.TomlTable;
+  expect(tables.passeur_pumas).toMatchObject({ required: true, startup_timeout_sec: 10 });
+  expect(tables.passeur_tuldok).toEqual(before.passeur_tuldok);
+});
+it("an ordinary re-registration preserves required startup until explicitly made optional", () => {
+  const source = renderCodexMcpToml({ ...registration(), required: true });
+  const changed = { ...registration(), tool_timeout_sec: 2200 };
+  const preserved = mergeCodexMcpToml(source, changed);
+  expect(TOML.parse(preserved).mcp_servers).toMatchObject({ passeur_pumas: { required: true, tool_timeout_sec: 2200 } });
+  expect(mergeCodexMcpToml(preserved, changed)).toBe(preserved);
+  const optional = mergeCodexMcpToml(preserved, { ...changed, required: false });
+  expect(TOML.parse(optional).mcp_servers).toMatchObject({ passeur_pumas: { required: false } });
+});
+it("preserves an adopted legacy required flag and adds an explicit false for an absent flag", () => {
+  const requiredSource = TOML.stringify({ mcp_servers: { passeur_pumas: {
+    command: "/old-node", args: ["/old-dist/cli.js"], required: true,
+  } } });
+  const table = (TOML.parse(requiredSource).mcp_servers as TOML.TomlTable).passeur_pumas;
+  const updated = mergeCodexMcpToml(requiredSource, registration(), { adoptUnmanaged: true, replaceBinding: registrationFingerprint(table) });
+  expect(TOML.parse(updated).mcp_servers).toMatchObject({ passeur_pumas: { required: true } });
+  expect(TOML.parse(renderCodexMcpToml(registration())).mcp_servers).toMatchObject({ passeur_pumas: { required: false } });
+});
+it("does not reinterpret malformed required values as a disabled policy", () => {
+  const source = renderCodexMcpToml(registration()).replace("required = false", 'required = "false"');
+  expect(() => mergeCodexMcpToml(source, registration())).toThrowError(expect.objectContaining({ code: "CODEX_CONFIG_INVALID" }));
+});
+it("configuration inspection distinguishes unreported, matched and conflicting required settings", async () => {
+  const { verifyInspection } = await import("../../src/codex/config.js");
+  const r = { ...registration(), required: true };
+  const response = { name: r.server_name, enabled: true, disabled_reason: null,
+    transport: { type: "stdio", command: r.command, args: r.args, cwd: r.cwd, env: {}, env_vars: [] },
+    enabled_tools: [...r.enabled_tools], disabled_tools: [], startup_timeout_sec: 10, tool_timeout_sec: 2100 };
+  expect(verifyInspection(response, r)).toEqual({ status: "not_reported" });
+  expect(verifyInspection({ ...response, required: true }, r)).toEqual({ status: "matched", required: true });
+  expect(() => verifyInspection({ ...response, required: false }, r)).toThrowError(expect.objectContaining({ code: "CODEX_REGISTRATION_MISMATCH" }));
+  expect(() => verifyInspection({ ...response, required: "true" }, r)).toThrowError(expect.objectContaining({ code: "CODEX_INSPECTION_UNSUPPORTED" }));
+});
+it("installation reports saved policy without claiming host-to-model attachment", async () => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const { installCodexMcpRegistration } = await import("../../src/codex/config.js");
+  const root = await mkdtemp(join(tmpdir(), "passeur-startup-policy-")), path = join(root, "config.toml");
+  try {
+    const saved = await installCodexMcpRegistration({ ...registration(), required: true }, { configPath: path,
+      verify: async () => ({ status: "not_reported" }) });
+    expect(saved.startup_policy).toEqual({ required: true, configuration: "passed", inspection: { status: "not_reported" }, host_attachment: "not_run" });
+    const again = await installCodexMcpRegistration(registration(), { configPath: path,
+      verify: async () => ({ status: "not_reported" }) });
+    expect(again.changed).toBe(false);
+    expect(again.startup_policy.required).toBe(true);
+    expect(TOML.parse(await readFile(path, "utf8")).mcp_servers).toMatchObject({ passeur_pumas: { required: true } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+it("a successful inspector cannot certify a configuration edited during its run", async () => {
+  const { mkdtemp, writeFile, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const { installCodexMcpRegistration } = await import("../../src/codex/config.js");
+  const root = await mkdtemp(join(tmpdir(), "passeur-startup-race-")), path = join(root, "config.toml");
+  const external = 'model = "newer-owner-edit"\n';
+  try {
+    await writeFile(path, 'model = "original"\n');
+    await expect(installCodexMcpRegistration({ ...registration(), required: true }, { configPath: path,
+      verify: async () => { await writeFile(path, external); return { status: "not_reported" }; },
+    })).rejects.toMatchObject({ code: "CONFIG_ROLLBACK_CONFLICT" });
+    expect(await readFile(path, "utf8")).toBe(external);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("required-startup repair preserves existing per-server approval and denial policy", () => {
+  const r = registration();
+  const raw = renderCodexMcpToml(r).replace("# passeur:end passeur_pumas", `
+enabled = true
+disabled_tools = ["passeur_delegate"]
+default_tools_approval_mode = "prompt"
+[mcp_servers.passeur_pumas.tools.passeur_prepare]
+approval_mode = "prompt"
+# passeur:end passeur_pumas`);
+  const before = (TOML.parse(raw).mcp_servers as TOML.TomlTable).passeur_pumas as TOML.TomlTable;
+  const updated = mergeCodexMcpToml(raw, { ...r, required: true });
+  const after = (TOML.parse(updated).mcp_servers as TOML.TomlTable).passeur_pumas as TOML.TomlTable;
+  expect(after.required).toBe(true);
+  for (const key of ["enabled", "disabled_tools", "default_tools_approval_mode", "tools"]) expect(after[key]).toEqual(before[key]);
+});
