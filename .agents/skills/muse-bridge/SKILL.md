@@ -1,35 +1,34 @@
 ---
 name: muse-bridge
-description: Set up and use this repository's Muse MCP bridge when an agent needs to configure Codex delegation, delegate a bounded review or implementation task to Muse, recover a retained Muse result, or diagnose bridge setup.
+description: Delegate independent tasks to parallel Muse CLI workers, locate committed results, and account for Passeur-owned resources without mandatory per-worker primary-model review.
 ---
 
-# Muse Bridge
+# Passeur / Muse Bridge
 
-Use the real Codex conversation as the owner of the work. Muse receives one bounded assignment through `delegate_to_muse`; await that tool call until it returns, review its evidence, and integrate accepted changes through the normal repository workflow.
+Codex owns decomposition, dependencies, base selection, integration, broader testing and acceptance. Muse owns its scoped implementation, verification and ordinary standards-compliant commits. Passeur manages execution and deliverable resources; it does not test, repair, merge or create PRs.
 
-## Choose the path
-
-- For installation, MCP registration, version checks, or setup failures, read [references/setup.md](references/setup.md).
-- For an ordinary assignment, follow the delegation workflow below.
-- For interrupted work or evidence beyond the compact response, use `muse_result` once or the local `inspect`, `result`, and `logs` commands. Read `docs/recovery.md` when shutdown is unconfirmed or a task record is incomplete.
+Read [setup](references/setup.md) for installation or migration. Use schema version 2 for execution.
 
 ## Delegate
 
-Delegate when a self-contained task benefits from an independent worker. Keep responsibility for planning, acceptance, and integration in Codex.
+Supply a stable unique request key, bounded objective, self-contained context, scoped acceptance criteria and useful relative file references. Implementation requires an exact base commit and a full local target ref. The target is metadata, not permission for Passeur to modify it.
 
-Build `delegate_to_muse` input with:
+Use `delegate_to_muse` for one assignment or `delegate_to_muse_batch` for up to eight independent assignments. Concurrent tasks need not be related. A batch groups only submission/waiting, not feature acceptance or testing. Requests remain pending until their tasks finish. Do not poll; request retained evidence only when needed.
 
-- a unique, stable `request_key`; reuse it only for the identical request;
-- `review` for inspection and analysis, or `implement` for changes in an isolated worktree;
-- a bounded objective and the decisions Muse cannot infer from this conversation;
-- concrete acceptance criteria;
-- project-relative `context_files` and `allowed_paths` where they sharpen scope;
-- the full commit object ID for `implement` mode.
+Muse should read repository instructions, perform appropriate scoped checks, respect Git hooks, stage intentionally and commit on its owned branch. Unfinished surrounding work is not a requirement to complete another task. Failed required scoped checks are repaired within the assignment or reported as blockers. Passeur adds no verification or automatic repair loop.
 
-The call remains pending through Muse execution and human permission prompts. Await it. Do not start a polling loop. A human approval form authorizes only the exact live choice returned by Muse.
+## Consume results
 
-Treat `execution_status: completed` as the end of the worker run. `worker_assessment` and `worker_reported` checks are Muse's constrained report; runtime-observed checks carry stronger evidence. Assess changed files, artifacts, staleness, and stop evidence independently. Inspect the retained worktree before integrating implementation results. Preserve failed or partial work when it is useful.
+Use the returned commit/ref/worktree references. The files can be tested or integrated without loading the entire diff into context. There is no mandatory primary-model review at each worker completion; decide when larger review or testing is useful.
 
-Use `muse_result` for recovery or a bounded artifact read by `artifact_id` after a task has ended. Request `base64` encoding for binary file artifacts. An active task returning `RESULT_NOT_READY` is a state report, not a reason to poll.
+Distinguish execution status, delivery status, reported checks and current resource state. `committed` is a Git identity claim, not proof of hooks, correctness or standards compliance. A failed run can leave useful committed work. Uncommitted residue is incomplete delivery. A no-change result needs a worker explanation and matching Git facts.
 
-When `worker_stop` is `unconfirmed`, reconcile the process and workspace before attempting another assignment. The bridge intentionally blocks replacement work until that task record is explicitly cleaned up.
+## Integrate and account for resources
+
+Integrate through the repository's normal Git workflow when appropriate. Passeur does not choose the mechanism or combine contributions automatically.
+
+Then use `muse_finalize` with explicit expected task head/ref and a stable operation key to acknowledge integrated work, retain it with an owner/reason/next action, or archive it under explicit authority. Integrated retirement requires full-tip ancestry into the accepted target. Merely claiming integration or matching patches is insufficient.
+
+Passeur removes only its clean, stopped, accounted-for resources. Resolve ignored build outputs through repository cleanup policy first. Unknown shutdown freezes replacement execution until manual reconciliation. Healthy unrelated workers need not be cancelled for ordinary task failure or retirement.
+
+Read `docs/recovery.md` for legacy history, partial retirement and offline reconciliation. `cleanup` now collects bulky evidence only after resources are accounted for; it preserves identity and disposition receipts.

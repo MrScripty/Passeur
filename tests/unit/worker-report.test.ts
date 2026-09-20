@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { parseWorkerReport } from "../../src/muse/adapter.js";
-
-describe("parseWorkerReport", () => {
-  it("extracts bounded assessment, questions, blockers, and worker-reported checks", () => {
-    const report = parseWorkerReport('prefix\nMUSE_BRIDGE_RESULT {"summary":"done","assessment":"partial","blockers":["blocked"],"questions":["which?"],"checks":[{"command":"npm test","cwd":"/work","exit_code":1}]}', "/fallback");
-    expect(report).toEqual({ summary: "done", worker_assessment: "partial", blockers: ["blocked"], questions: ["which?"], checks: [{ command: "npm test", cwd: "/work", exit_code: 1, evidence: "worker_reported" }] });
-  });
-  it("keeps an honest unknown assessment for invalid output", () => { expect(parseWorkerReport("plain report", "/work")).toMatchObject({ summary: "plain report", worker_assessment: "unknown", checks: [] }); });
+import { expect, it } from "vitest";
+import { parseWorkerReport } from "../../src/muse/report.js";
+it("labels parsed checks as worker claims, not independently proven compliance", () => {
+  const result = parseWorkerReport('MUSE_BRIDGE_RESULT {"summary":"done","assessment":"met","checks":[{"command":"unit-test","exit_code":0}],"no_changes_reason":"already implemented"}', "/work");
+  expect(result.worker_assessment).toBe("met"); expect(result.checks[0]?.evidence).toBe("worker_reported");
+  expect(result.no_changes_reason).toBe("already implemented");
+});
+it("keeps malformed reports unknown without a repair model call", () => {
+  expect(parseWorkerReport("not structured", "/work").worker_assessment).toBe("unknown");
 });

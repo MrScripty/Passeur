@@ -1,56 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { MuseSdkAdapter } from "../../src/muse/adapter.js";
-import type { DelegateRequest, Profile } from "../../src/contracts/index.js";
-
-const request: DelegateRequest = { schema_version: 1, request_key: "cancel", mode: "review", objective: "Review", context: "Context", acceptance_criteria: ["Done"] };
+import { MuseSdkAdapter, type ClientStarter } from "../../src/muse/adapter.js";
+import type { DelegateRequest, Profile } from "../../src/contracts/types.js";
+const request: DelegateRequest = { schema_version: 2, request_key: "cancel", mode: "review", objective: "Review", context: "Context", acceptance_criteria: ["Done"] };
 const profile: Profile = { schema_version: 1, muse_bin: "muse", model: "model", review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" }, implementation: { enabled: false, sandbox_network: "restricted" }, task_timeout_ms: 60_000, stop_grace_ms: 1_000, subscription: { provenance: "user_confirmed" } };
-
-describe("MuseSdkAdapter lifecycle", () => {
-  const input = (adapter: MuseSdkAdapter, controller: AbortController, selectedProfile = profile) => adapter.run({ request, profile: selectedProfile, workspace: "/work", prompt: "prompt", signal: controller.signal, approve: async () => ({ choice_id: "deny" }), onEvent: async () => {} });
-  const starts = (client: unknown) => () => ({ ready: Promise.resolve(client as never), close: async () => {} });
-  it("does not spawn for an already-cancelled assignment", async () => {
-    let spawns = 0; const adapter = new MuseSdkAdapter(() => { spawns++; throw new Error("must not spawn"); }); const controller = new AbortController(); controller.abort(new Error("cancelled"));
-    const result = await input(adapter, controller);
-    expect(result.status).toBe("cancelled"); expect(spawns).toBe(0); expect(result.worker_stop).toBe("not_started");
+const input = (adapter: MuseSdkAdapter, controller: AbortController, selectedProfile = profile) => adapter.run({ request, profile: selectedProfile, workspace: "/work", prompt: "prompt", task_id: "task", signal: controller.signal, approve: async () => ({ choice_id: "deny" }), onEvent: async () => {} });
+const starts = (client: unknown): ClientStarter => () => ({ ready: Promise.resolve(client as never), close: async () => {} });
+describe("owned Muse startup and cancellation", () => {
+  it("does not start an already-cancelled assignment", async () => {
+    let spawns = 0; const controller = new AbortController(); controller.abort(new Error("cancelled"));
+    const result = await input(new MuseSdkAdapter(() => { spawns++; throw new Error("must not spawn"); }), controller);
+    expect(spawns).toBe(0); expect(result.worker_stop).toBe("not_started");
   });
-  it("cancels blocked session startup and closes the host", async () => {
-    let closeCalls = 0; let spawned!: () => void; const didSpawn = new Promise<void>((resolve) => { spawned = resolve; });
-    const client = { startSession: async () => new Promise<never>(() => {}), close: async () => { closeCalls++; } };
-    const adapter = new MuseSdkAdapter(() => { spawned(); return { ready: Promise.resolve(client as never), close: async () => {} }; }); const controller = new AbortController(); const running = input(adapter, controller); await didSpawn; controller.abort(new Error("cancelled"));
-    const result = await Promise.race([running, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100))]);
-    expect(result).not.toBe("timeout"); expect(result).toMatchObject({ status: "cancelled" }); expect(closeCalls).toBe(1);
+  it("closes pending host initialization on cancellation", async () => {
+    let closes = 0; const controller = new AbortController();
+    const adapter = new MuseSdkAdapter(() => ({ ready: new Promise<never>(() => {}), close: async () => { closes++; } }));
+    const running = input(adapter, controller); controller.abort(new Error("cancelled"));
+    expect(await running).toMatchObject({ status: "cancelled", worker_stop: "confirmed" }); expect(closes).toBe(1);
   });
-  it("cancels blocked output draining after the terminal outcome", async () => {
-    let closeCalls = 0; let release!: () => void; const closed = new Promise<void>((resolve) => { release = resolve; });
-    const turn = { turnId: "turn", observedStart: true, completed: Promise.resolve({ kind: "completed", observedStart: true, params: { terminal: "completed" } }), items: async function* () { await closed; }, deltas: async function* () {} };
-    const session = { opening: { result: { session: { modelId: "model" } } }, onApproval() {}, onApprovalError() {}, sendUserTurn: async () => turn };
-    const client = { startSession: async () => session, close: async () => { closeCalls++; release(); } };
-    const adapter = new MuseSdkAdapter(starts(client)); const controller = new AbortController(); const running = input(adapter, controller); await new Promise((resolve) => setImmediate(resolve)); controller.abort(new Error("cancelled"));
-    const result = await Promise.race([running, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100))]);
-    expect(result).not.toBe("timeout"); expect(result).toMatchObject({ status: "cancelled" }); expect(closeCalls).toBe(1);
+  it("bounds an unresponsive startup close and preserves uncertainty", async () => {
+    const controller = new AbortController();
+    const adapter = new MuseSdkAdapter(() => ({ ready: new Promise<never>(() => {}), close: async () => new Promise<never>(() => {}) }));
+    const running = input(adapter, controller, { ...profile, stop_grace_ms: 10 }); controller.abort(new Error("cancelled"));
+    expect(await running).toMatchObject({ status: "cancelled", worker_stop: "unconfirmed" });
   });
-  it("settles a rejecting item iterator after cancellation without an unhandled rejection", async () => {
+  it("cancels a blocked session start and closes its client", async () => {
+    let closes = 0; let begun!: () => void; const started = new Promise<void>((resolve) => { begun = resolve; });
+    const client = { startSession: async () => { begun(); return new Promise<never>(() => {}); }, close: async () => { closes++; } };
+    const controller = new AbortController(); const running = input(new MuseSdkAdapter(starts(client)), controller);
+    await started; controller.abort(new Error("cancelled"));
+    expect((await running).status).toBe("cancelled"); expect(closes).toBe(1);
+  });
+  for (const rejectIterator of [false, true]) it(`settles output draining after cancellation (reject=${rejectIterator})`, async () => {
     let close!: () => void; const closed = new Promise<void>((resolve) => { close = resolve; });
-    const turn = { turnId: "turn", observedStart: true, completed: new Promise<never>(() => {}), items: async function* () { await closed; throw new Error("iterator closed"); }, deltas: async function* () {} };
-    let markStarted!: () => void; const started = new Promise<void>((resolve) => { markStarted = resolve; });
-    const session = { opening: { result: { session: { modelId: "model" } } }, onApproval() {}, onApprovalError() {}, sendUserTurn: async () => { markStarted(); return turn; } };
-    const client = { startSession: async () => session, close: async () => { close(); } };
-    const adapter = new MuseSdkAdapter(starts(client)); const controller = new AbortController();
+    let begun!: () => void; const started = new Promise<void>((resolve) => { begun = resolve; });
+    const turn = { completed: Promise.resolve({ kind: "completed", params: { terminal: "completed" } }), items: async function* () { begun(); await closed; if (rejectIterator) throw new Error("closed"); } };
+    const session = { opening: { result: { session: { modelId: "model" } } }, onApproval() {}, onApprovalError() {}, sendUserTurn: async () => turn };
+    const controller = new AbortController(); const adapter = new MuseSdkAdapter(starts({ startSession: async () => session, close: async () => { close(); } }));
     const unhandled: unknown[] = []; const handler = (error: unknown) => unhandled.push(error); process.on("unhandledRejection", handler);
     try {
-      const running = input(adapter, controller);
-      await started; controller.abort(new Error("cancelled")); const result = await running; await new Promise((resolve) => setImmediate(resolve));
-      expect(result.status).toBe("cancelled"); expect(unhandled).toEqual([]);
+      const running = input(adapter, controller); await started; controller.abort(new Error("cancelled"));
+      expect((await running).status).toBe("cancelled"); await new Promise((resolve) => setImmediate(resolve)); expect(unhandled).toEqual([]);
     } finally { process.off("unhandledRejection", handler); }
-  });
-  it("cancels owned host startup within the shutdown budget", async () => {
-    let closeCalls = 0; let started!: () => void; const didStart = new Promise<void>((resolve) => { started = resolve; });
-    const adapter = new MuseSdkAdapter(() => ({ ready: new Promise<never>(() => { started(); }), close: async () => { closeCalls++; } })); const controller = new AbortController(); const running = input(adapter, controller); await didStart; controller.abort(new Error("cancelled"));
-    const result = await Promise.race([running, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100))]);
-    expect(result).not.toBe("timeout"); expect(result).toMatchObject({ status: "cancelled", worker_stop: "confirmed" }); expect(closeCalls).toBe(1);
-  });
-  it("reports an unconfirmed stop when host startup cleanup exceeds its budget", async () => {
-    let started!: () => void; const didStart = new Promise<void>((resolve) => { started = resolve; }); const adapter = new MuseSdkAdapter(() => ({ ready: new Promise<never>(() => { started(); }), close: async () => new Promise<never>(() => {}) })); const controller = new AbortController(); const running = input(adapter, controller, { ...profile, stop_grace_ms: 10 }); await didStart; controller.abort(new Error("cancelled"));
-    const result = await running; expect(result).toMatchObject({ status: "cancelled", worker_stop: "unconfirmed" });
   });
 });

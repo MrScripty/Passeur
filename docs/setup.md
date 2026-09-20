@@ -1,34 +1,118 @@
-# Setup
+# Setup and version-2 usage
 
-Requirements are Node.js 20 or newer, Codex CLI, Muse Code CLI 1.3.0, and a Muse credential whose subscription billing path the user has verified. Task content is processed through Muse's normal provider connection.
-
-Build the bridge:
+Build with the pinned dependencies in a supported Node environment:
 
 ```sh
-npm install
+npm ci
+npm run check
+npm test
 npm run build
 ```
 
-Create a profile with the interactive setup. The project directory defaults to the current directory.
+`npm test` runs the dependency-light Node core tests followed by the Vitest schema/SDK/MCP-boundary tests. These validate Passeur itself. They are not tests Passeur invokes on delegated projects. `npm run test:core` runs only the production-core tests.
+
+## Configure
+
+Use a clean repository root, a Muse executable/model identifier verified against the installed runtime, and the normal subscription-linked credential. The confirmation is a dated user assertion, not provider billing proof.
+
+The interactive setup reads the installed Muse model catalog and creates a profile with the default capacity of two workers and eight queued tasks. The project directory defaults to the current directory.
 
 ```sh
 ./passeur setup /absolute/path/to/project
 ```
 
-Add the printed MCP entry to Codex. Ensure Codex permits tool-call MCP elicitation and routes it to the human reviewer. Set `tool_timeout_sec = 2100`. Then run the non-billable checks:
+For non-interactive configuration or explicit capacity limits, run:
 
 ```sh
-./passeur doctor /absolute/path/to/project
+node dist/src/cli.js configure \
+  --project /absolute/repository \
+  --profile /absolute/passeur-profile.json \
+  --muse-bin /absolute/path/to/muse \
+  --model VERIFIED_INSTALLED_MODEL_ID \
+  --worktree-root /absolute/task-worktrees \
+  --max-workers 2 --max-queued-tasks 8 \
+  --confirm-subscription
 ```
 
-Good review assignments name a narrow objective, relevant files and decisions, and observable acceptance criteria. For example: inspect `src/parser.ts` for unchecked bounds; cite exact locations; report only actionable correctness findings. Implementation assignments additionally require a clean source checkout, a full commit object ID, enabled implementation support, and a user-approved worktree root in the profile.
+The worktree root must be outside the source checkout. Existing profiles are not overwritten. They keep `schema_version: 1`; absent capacity fields resolve to two workers/eight queued tasks. Edit them deliberately and restart the coordinator to change the limit. Concurrency is not a claim about provider quota or entitlement.
 
-Real inference probes are opt-in and must use a disposable repository:
+The repository-local agent skill is in `.agents/skills/muse-bridge`. Copy the printed MCP entry into Codex while preserving unrelated settings. For example:
+
+```toml
+[mcp_servers.muse_bridge]
+command = "/absolute/path/to/node"
+args = ["/absolute/Passeur/dist/src/cli.js", "serve", "--project", "/absolute/repository", "--profile", "/absolute/passeur-profile.json"]
+startup_timeout_sec = 10
+tool_timeout_sec = 2100
+enabled_tools = ["delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize"]
+```
+
+The 35-minute tool timeout assumes the profile's 30-minute absolute task budget plus bounded shutdown/response allowance. A queued task's deadline is not restarted. Increase the client timeout deliberately if increasing the task budget.
+
+Allow MCP elicitation and route permissions to the human reviewer. Prompt serialization applies only to human prompts; authorized work by other tasks continues. Run `doctor` for non-inference diagnostics:
 
 ```sh
-MUSE_BRIDGE_LIVE=1 npm run probe:muse -- /absolute/disposable/project muse-spark-1.3
+node dist/src/cli.js doctor --project /absolute/repository --profile /absolute/passeur-profile.json
 ```
 
-The bridge never chooses a fallback model. Supply the exact model identifier supported by the installed runtime; a task fails if Muse reports a different identifier.
+Doctor reports versions, capacity and effective hook configuration; it neither executes tests/hooks nor proves billing, model availability, signing or sandbox behavior. Complete repository trust, dependency, hook and signing setup through its normal workflow. Passeur preserves that policy rather than installing a second hook suite.
 
-The wait probe is itself an MCP server. Register `dist/scripts/probe-wait.js`, call `wait_probe` with 70000 and then a several-minute delay, and inspect Codex traces to verify the same tool request remains pending without model polling.
+## Delegate independently or in a batch
+
+```json
+{
+  "schema_version": 2,
+  "assignments": [
+    {
+      "schema_version": 2,
+      "request_key": "parser-2026-01",
+      "mode": "implement",
+      "objective": "Implement the parser boundary change and commit it.",
+      "context": "Verify parser-specific behavior. The UI is not part of this task.",
+      "acceptance_criteria": ["Parser-focused checks pass", "An ordinary compliant commit is created"],
+      "allowed_paths": ["src/parser", "tests/parser"],
+      "base_commit": "REPLACE_WITH_EXACT_COMMIT_OID",
+      "target_ref": "refs/heads/work/parser"
+    }
+  ]
+}
+```
+
+The example is a template: replace the OID and target with real values. Add independent assignments with their own bases/targets to `delegate_to_muse_batch`, or use the single assignment with `delegate_to_muse`. Batch membership implies no common feature, broader test or integration barrier beyond awaiting those explicitly submitted tasks. Keep keys stable for identical retries; choose a new key for intentional rework.
+
+Worker completion does not trigger mandatory Codex review. Codex decides when to inspect code, integrate through Git, or run broader tests. A successful runtime with `delivery.status: incomplete` is not committed delivery. A `committed` result is a Git fact, not certification of test adequacy or standards compliance.
+
+## Disposition after external integration
+
+Use `muse_finalize` or the offline CLI with an operation file:
+
+```json
+{
+  "schema_version": 2,
+  "operations": [{
+    "operation_key": "retire-parser-01",
+    "task_id": "REPLACE_WITH_TASK_UUID",
+    "disposition": "integrated",
+    "expected_head": "REPLACE_WITH_TASK_HEAD",
+    "expected_branch_ref": "refs/heads/muse-bridge/REPLACE_WITH_TASK_UUID",
+    "target_ref": "refs/heads/work/parser",
+    "accepted_commit": "REPLACE_WITH_ACCEPTED_COMMIT",
+    "cleanup_authorized": true
+  }]
+}
+```
+
+Passeur verifies reachability before removing its clean stopped task resources. This is not a request to merge. Refer to [recovery](recovery.md) for retention, archive, incomplete cleanup and legacy history. Normal replies are bounded; `muse_result` gives paginated evidence and current resource state. Use base64 for binary artifacts and `next_offset` for subsequent byte ranges.
+
+## Live probes
+
+Only in a disposable project after confirming credential/model policy:
+
+```sh
+MUSE_BRIDGE_LIVE=1 npm run probe:parallel -- \
+  --project /absolute/disposable/repository \
+  --profile /absolute/passeur-profile.json \
+  --confirm-disposable
+```
+
+The probe launches the compiled production stdio server, requests two independent committed outputs, declines any permission requests, and leaves resources for explicit disposition. It does not certify concurrency at the provider backend. The real Codex checks must additionally demonstrate overlapping local worker sessions, correct human decisions, same-call waiting, cancellation during commits/hooks, descendant cleanup and subscription behavior. Keep these checks opt-in; do not run them on every commit.

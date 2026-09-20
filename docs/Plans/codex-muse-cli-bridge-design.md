@@ -1,3 +1,5 @@
+> **Supersession — September 20, 2026:** The [parallel-worker implementation plan](../plans/parallel-worker-commit-handoff/plan.md) replaces this document's serial-worker limit, uncommitted implementation handoff, mandatory per-worker Codex review and record-only cleanup. Passeur now manages independent parallel workers, committed Git references and explicit resource retirement. Repository hooks/workers still own scoped verification; Codex owns integration and broader acceptance. The remainder below is retained as historical design context.
+
 # Codex–Muse CLI Bridge
 ## Design and implementation plan
 

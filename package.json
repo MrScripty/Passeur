@@ -9,10 +9,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "npm run test:core && vitest run",
     "test:watch": "vitest",
+    "test:core": "tsc -p tsconfig.core.json && node --test --test-concurrency=1 tests/core/*.test.mjs",
     "probe:wait": "tsx scripts/probe-wait.ts",
-    "probe:muse": "tsx scripts/probe-muse.ts"
+    "probe:muse": "tsx scripts/probe-muse.ts",
+    "probe:parallel": "node dist/scripts/probe-parallel.js"
   },
   "engines": {
     "node": ">=20"
