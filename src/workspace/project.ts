@@ -28,12 +28,12 @@ export async function resolveProjectFile(root: string, input: string): Promise<s
 }
 
 export async function git(root: string, args: string[]): Promise<string> {
-  try { return (await exec("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })).stdout.trimEnd(); }
+  try { return (await exec("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })).stdout; }
   catch (error) { throw new BridgeError("GIT_ERROR", error instanceof Error ? error.message : String(error)); }
 }
 
-export async function currentRevision(root: string): Promise<string | undefined> { try { return await git(root, ["rev-parse", "HEAD^{commit}"]); } catch { return undefined; } }
-export async function sourceStatus(root: string): Promise<string[]> { try { const out = await git(root, ["status", "--porcelain=v1", "--untracked-files=all"]); return out ? out.split("\n") : []; } catch { return []; } }
+export async function currentRevision(root: string): Promise<string | undefined> { try { return (await git(root, ["rev-parse", "HEAD^{commit}"])).trim(); } catch { return undefined; } }
+export async function sourceStatus(root: string): Promise<string[]> { try { return (await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).split("\0").filter(Boolean); } catch { return []; } }
 
 export async function digestFiles(root: string, paths: string[]): Promise<Record<string, string>> {
   const result: Record<string, string> = {};

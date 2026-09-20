@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, unlink } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -60,5 +60,29 @@ describe("Coordinator", () => {
     const coordinator = new Coordinator(root, "project", profile, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
     const result = await coordinator.delegate({ ...request, request_key: "revision-drift" }, context);
     expect(result.workspace).toMatchObject({ base_commit: initial, stale: true });
+  });
+  it("does not admit an already-cancelled request", async () => {
+    const root = await mkdtemp(join(tmpdir(), "muse-cancelled-test-")); const store = new TaskStore(join(root, "state")); let runs = 0;
+    const worker: WorkerAdapter = { run: async () => { runs++; return completed(); } }; const coordinator = new Coordinator(root, "project", profile, store, worker); const controller = new AbortController(); controller.abort(new Error("cancelled"));
+    await expect(coordinator.delegate({ ...request, request_key: "cancelled" }, { signal: controller.signal, approve: async () => ({ choice_id: "deny" }) })).rejects.toMatchObject({ code: "REQUEST_CANCELLED" });
+    expect(runs).toBe(0); expect(await store.list()).toEqual([]);
+  });
+  it("preserves unconfirmed stop evidence when finalization fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "muse-finalize-test-")); await writeFile(join(root, "watched.txt"), "before"); const store = new TaskStore(join(root, "state"));
+    const worker: WorkerAdapter = { run: async () => { await unlink(join(root, "watched.txt")); return { ...completed(), worker_stop: "unconfirmed" }; } }; const coordinator = new Coordinator(root, "project", profile, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
+    const result = await coordinator.delegate({ ...request, request_key: "finalize", context_files: ["watched.txt"] }, context);
+    expect(result.worker_stop).toBe("unconfirmed"); expect(result.error?.code).toBe("FINALIZATION_FAILED");
+    await expect(coordinator.delegate({ ...request, request_key: "after-finalize" }, context)).rejects.toMatchObject({ code: "PROJECT_NEEDS_RECONCILIATION" });
+  });
+  it("compacts both fresh and cached delegation responses", async () => {
+    const root = await mkdtemp(join(tmpdir(), "muse-compact-test-")); const store = new TaskStore(join(root, "state")); const worker: WorkerAdapter = { run: async () => completed("x".repeat(100_000)) }; const coordinator = new Coordinator(root, "project", profile, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
+    const oversized = { ...request, request_key: "oversized" }; const first = await coordinator.delegate(oversized, context); const cached = await coordinator.delegate(oversized, context);
+    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThanOrEqual(24_576); expect(Buffer.byteLength(JSON.stringify(cached))).toBeLessThanOrEqual(24_576); expect(cached.output_truncated).toBe(true);
+  });
+  it("waits for active cleanup and terminal persistence before becoming idle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "muse-shutdown-test-")); const store = new TaskStore(join(root, "state")); let release!: () => void; const held = new Promise<void>((resolve) => { release = resolve; }); let started!: () => void; const didStart = new Promise<void>((resolve) => { started = resolve; });
+    const worker: WorkerAdapter = { run: async () => { started(); await held; return completed(); } }; const coordinator = new Coordinator(root, "project", profile, store, worker); const context = { signal: new AbortController().signal, approve: async () => ({ choice_id: "deny" }) };
+    const running = coordinator.delegate({ ...request, request_key: "shutdown" }, context); await didStart; let idle = false; const waiting = coordinator.waitForIdle().then(() => { idle = true; }); await Promise.resolve(); expect(idle).toBe(false); release(); const result = await running; await waiting;
+    expect(await store.readState(result.task_id)).toMatchObject({ phase: "terminal" }); expect(await store.readResult(result.task_id)).toBeDefined();
   });
 });

@@ -32,7 +32,10 @@ export class Coordinator {
   #admission: Promise<void> = Promise.resolve();
   constructor(readonly project: string, readonly projectId: string, readonly profile: Profile, readonly store: TaskStore, readonly worker: WorkerAdapter) {}
 
+  async waitForIdle(): Promise<void> { if (this.#active) await this.#active.promise.then(() => undefined, () => undefined); }
+
   async delegate(request: DelegateRequest, context: RunContext): Promise<DelegateResult> {
+    if (context.signal.aborted) throw new BridgeError("REQUEST_CANCELLED", "The delegation request was already cancelled");
     const hash = canonicalHash(request);
     let unlock!: () => void;
     const previous = this.#admission;
@@ -40,6 +43,7 @@ export class Coordinator {
     await previous;
     let execution: Promise<DelegateResult>;
     try {
+      if (context.signal.aborted) throw new BridgeError("REQUEST_CANCELLED", "The delegation request was cancelled during admission");
       if (this.#active) {
         if (this.#active.requestKey === request.request_key) {
           if (this.#active.hash !== hash) throw new BridgeError("REQUEST_KEY_CONFLICT", "The active request key belongs to a different assignment");
@@ -50,7 +54,7 @@ export class Coordinator {
         if (existing) {
           if (existing.canonical_hash !== hash) throw new BridgeError("REQUEST_KEY_CONFLICT", "The request key already belongs to a different assignment");
           const result = await this.store.readResult(existing.task_id);
-          if (result) execution = Promise.resolve(result);
+          if (result) execution = Promise.resolve(compactResult(result));
           else throw new BridgeError("TASK_ACTIVE", `Task ${existing.task_id} is active or was interrupted; it will not be launched again`);
         } else {
           for (const prior of await this.store.list()) {
@@ -75,10 +79,13 @@ export class Coordinator {
     let state = initialState();
     let workspace: Workspace | undefined;
     let result = baseResult(taskId, request, this.profile);
+    let workerSettled = false;
     const controller = new AbortController();
-    context.signal.addEventListener("abort", () => controller.abort(context.signal.reason ?? new Error("MCP request cancelled")), { once: true });
+    const cancel = () => controller.abort(context.signal.reason ?? new Error("MCP request cancelled"));
+    if (context.signal.aborted) cancel(); else context.signal.addEventListener("abort", cancel, { once: true });
     const timeout = setTimeout(() => controller.abort(Object.assign(new Error("Task deadline exceeded"), { code: "TASK_TIMEOUT" })), this.profile.task_timeout_ms);
     try {
+      if (controller.signal.aborted) throw controller.signal.reason;
       state = transition(state, "preparing"); await this.store.writeState(taskId, state); await context.progress?.("Preparing Muse workspace");
       workspace = await prepareWorkspace(this.project, request, this.profile, this.projectId, taskId);
       result = baseResult(taskId, request, this.profile, workspace);
@@ -90,23 +97,32 @@ export class Coordinator {
       if (request.mode === "review" && initialRevision) result.workspace.base_commit = initialRevision;
       state = transition(state, "running"); await this.store.writeState(taskId, state); await context.progress?.("Muse is working");
       const run = await this.worker.run({ request, prompt: promptFor(request, taskId, workspace, instructions), workspace: workspace.path, profile: this.profile, signal: controller.signal, approve: context.approve, onEvent: (event) => this.store.appendEvent(taskId, event) });
+      result = { ...result, execution_status: run.status, worker_stop: run.worker_stop, worker_assessment: run.worker_assessment, summary: run.summary, blockers: run.blockers, questions: run.questions, checks: run.checks, model: { requested: this.profile.model, ...(run.reported_model ? { reported: run.reported_model } : {}) }, ...(run.error ? { error: run.error } : {}) };
+      workerSettled = true;
       state = transition(state, "finalizing"); await this.store.writeState(taskId, state); await context.progress?.("Collecting Muse result");
       const after = await digestFiles(workspace.path, paths);
       const finalStatus = await sourceStatus(workspace.path);
       const finalRevision = await currentRevision(workspace.path);
       const stale = JSON.stringify(before) !== JSON.stringify(after) || (request.mode === "review" && (JSON.stringify(initialStatus) !== JSON.stringify(finalStatus) || initialRevision !== finalRevision));
       const files = await changedFiles(workspace);
-      result = { ...result, execution_status: run.status, worker_stop: run.worker_stop, worker_assessment: run.worker_assessment, summary: run.summary, blockers: run.blockers, questions: run.questions, checks: run.checks, model: { requested: this.profile.model, ...(run.reported_model ? { reported: run.reported_model } : {}) }, workspace: { ...result.workspace, stale }, changed_files: files, ...(run.error ? { error: run.error } : {}) };
+      result = { ...result, workspace: { ...result.workspace, stale }, changed_files: files };
       const outsideScope = request.allowed_paths ? files.filter((file) => !request.allowed_paths!.some((allowed) => file === allowed || file.startsWith(`${allowed.replace(/\/$/, "")}/`))) : [];
       if (outsideScope.length) result.blockers.push(`Changes outside allowed_paths require review: ${outsideScope.join(", ")}`);
       if (request.mode === "implement") await this.#artifacts(taskId, workspace, result);
       state = transition(state, "terminal", { outcome: result.execution_status });
     } catch (error) {
       const bridge = error instanceof BridgeError ? error : new BridgeError("BRIDGE_ERROR", error instanceof Error ? error.message : String(error));
-      const status = controller.signal.aborted ? (controller.signal.reason?.code === "TASK_TIMEOUT" ? "timed_out" : "cancelled") : bridge.code === "DIRTY_SOURCE" || bridge.code === "IMPLEMENTATION_DISABLED" ? "blocked" : "failed";
-      result = { ...result, execution_status: status, summary: bridge.message, blockers: status === "blocked" ? [bridge.message] : [], error: { code: bridge.code, message: bridge.message } };
-      if (state.phase !== "finalizing") { try { state = transition(state, "finalizing", { reason: bridge.code }); } catch {} }
-      state = transition(state, "terminal", { outcome: status, reason: bridge.code });
+      if (workerSettled) {
+        result.error = { code: "FINALIZATION_FAILED", message: bridge.message };
+        result.blockers.push(`Result finalization failed: ${bridge.message}`);
+        if (state.phase !== "finalizing") { try { state = transition(state, "finalizing", { reason: "FINALIZATION_FAILED" }); } catch {} }
+        state = transition(state, "terminal", { outcome: result.execution_status, reason: "FINALIZATION_FAILED" });
+      } else {
+        const status = controller.signal.aborted ? ((controller.signal.reason as { code?: string } | undefined)?.code === "TASK_TIMEOUT" ? "timed_out" : "cancelled") : bridge.code === "DIRTY_SOURCE" || bridge.code === "IMPLEMENTATION_DISABLED" ? "blocked" : "failed";
+        result = { ...result, execution_status: status, summary: bridge.message, blockers: status === "blocked" ? [bridge.message] : [], error: { code: bridge.code, message: bridge.message } };
+        if (state.phase !== "finalizing") { try { state = transition(state, "finalizing", { reason: bridge.code }); } catch {} }
+        state = transition(state, "terminal", { outcome: status, reason: bridge.code });
+      }
     } finally { clearTimeout(timeout); }
     await this.store.writeResult(taskId, result);
     await this.store.writeState(taskId, state);

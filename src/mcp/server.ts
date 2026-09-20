@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DelegateRequestSchema, ResultRequestSchema, type DelegateResult, type Profile } from "../contracts/index.js";
 import { Coordinator } from "../core/coordinator.js";
+import { reconcileStoredTasks } from "../core/recovery.js";
 import { BridgeError } from "../core/errors.js";
 import { nativeApprovalHandler } from "../approvals/native.js";
 import { MuseSdkAdapter, type WorkerAdapter } from "../muse/adapter.js";
@@ -20,21 +21,7 @@ export async function serve(options: { project: string; projectId: string; profi
   let release: (() => Promise<void>) | undefined;
   try { release = await lockfile.lock(options.lockPath, { realpath: false, stale: 0, retries: 0 }); }
   catch { throw new BridgeError("PROJECT_IN_USE", "Another bridge owns this project"); }
-  for (const record of await options.store.list()) {
-    const state = await options.store.readState(record.task_id);
-    if (state.phase === "terminal" || await options.store.readResult(record.task_id)) continue;
-    const interrupted: DelegateResult = {
-      schema_version: 1, task_id: record.task_id, request_key: record.request.request_key,
-      execution_status: "interrupted", worker_stop: state.phase === "accepted" ? "not_started" : "unconfirmed", worker_assessment: "unknown",
-      summary: "The bridge restarted before this task recorded a terminal result. The assignment was not replayed.",
-      blockers: ["Reconcile the previous worker and workspace before creating a new assignment."],
-      error: { code: "INTERRUPTED_ON_RESTART", message: `Recovered incomplete task from phase ${state.phase}` }, questions: [],
-      model: { requested: options.profile.model }, workspace: { kind: record.request.mode === "review" ? "source_read_only" : "task_worktree", ...(record.request.base_commit ? { base_commit: record.request.base_commit } : {}), stale: true },
-      changed_files: [], checks: [], artifacts: [], output_truncated: false,
-    };
-    await options.store.writeResult(record.task_id, interrupted);
-    await options.store.writeState(record.task_id, { phase: "terminal", outcome: "interrupted", updated_at: new Date().toISOString(), reason: "INTERRUPTED_ON_RESTART" });
-  }
+  await reconcileStoredTasks(options.store, options.profile.model);
   const mcp = new McpServer({ name: "muse-bridge", version: "0.1.0" }, { capabilities: { logging: {} }, instructions });
   const coordinator = new Coordinator(options.project, options.projectId, options.profile, options.store, options.worker ?? new MuseSdkAdapter());
   const lifecycle = new AbortController();
@@ -78,7 +65,12 @@ export async function serve(options: { project: string; projectId: string; profi
   });
 
   const transport = new StdioServerTransport();
-  const shutdown = async () => { lifecycle.abort(new Error("MCP transport closed")); try { await mcp.close(); } finally { await release?.(); } };
+  let shuttingDown: Promise<void> | undefined;
+  const shutdown = () => shuttingDown ??= (async () => {
+    lifecycle.abort(new Error("MCP transport closed"));
+    await coordinator.waitForIdle();
+    try { await mcp.close(); } finally { await release?.(); }
+  })();
   process.stdin.once("end", () => { void shutdown(); });
   process.once("SIGINT", () => { void shutdown().finally(() => process.exit(130)); });
   process.once("SIGTERM", () => { void shutdown().finally(() => process.exit(143)); });

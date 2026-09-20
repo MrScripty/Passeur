@@ -30,4 +30,19 @@ describe("implementation workspace artifacts", () => {
     const profile: Profile = { schema_version: 1, muse_bin: "muse", model: "model", review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" }, implementation: { enabled: true, worktree_root: nested, sandbox_network: "restricted" }, task_timeout_ms: 60_000, stop_grace_ms: 1_000, subscription: { provenance: "user_confirmed" } };
     await expect(prepareWorkspace(root, request, profile, "project", crypto.randomUUID())).rejects.toMatchObject({ code: "INVALID_WORKTREE_ROOT" });
   });
+  it("preserves byte-exact patch context that git can apply", async () => {
+    const root = await repository(); const base = (await exec("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim(); await writeFile(join(root, "tracked.txt"), "after\n\n");
+    const patch = await createDiff({ kind: "task_worktree", path: root, base_commit: base }); const patchPath = join(await mkdtemp(join(tmpdir(), "muse-patch-test-")), "change.patch"); await writeFile(patchPath, patch);
+    await exec("git", ["-C", root, "apply", "--check", "--reverse", patchPath]);
+  });
+  it("handles quoted and arrow-containing filenames without interpreting Git display text", async () => {
+    const root = await repository(); const base = (await exec("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim(); const odd = 'a" -> b.txt'; await writeFile(join(root, odd), "odd\n"); const artifacts = await mkdtemp(join(tmpdir(), "muse-artifacts-test-"));
+    const manifest = await createManifest({ kind: "task_worktree", path: root, base_commit: base }, artifacts);
+    expect(manifest).toContainEqual(expect.objectContaining({ path: odd, kind: "created" }));
+  });
+  it("reports worker changes committed after the assignment base", async () => {
+    const root = await repository(); const base = (await exec("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim(); await writeFile(join(root, "tracked.txt"), "committed\n"); await exec("git", ["-C", root, "add", "."]); await exec("git", ["-C", root, "commit", "-qm", "worker"]); const artifacts = await mkdtemp(join(tmpdir(), "muse-artifacts-test-"));
+    const workspace: Workspace = { kind: "task_worktree", path: root, base_commit: base }; const manifest = await createManifest(workspace, artifacts);
+    expect(manifest).toContainEqual(expect.objectContaining({ path: "tracked.txt", kind: "modified" }));
+  });
 });
