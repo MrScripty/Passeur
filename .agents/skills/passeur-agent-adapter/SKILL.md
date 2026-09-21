@@ -1,70 +1,38 @@
 ---
 name: passeur-agent-adapter
-description: Configure a registered agent or implement, update, and qualify a Passeur runtime adapter. Use for native protocol integration, capability mapping, lifecycle handling, migration impact, and conformance evidence. Ordinary task delegation belongs to the passeur-bridge usage skill.
+description: Configure a registered agent or implement and qualify a Passeur runtime adapter, including native lifecycle evidence, explicit input and same-session continuation, task-owned cancellation, and safe shutdown.
 ---
 
-# Passeur Agent Adapter
+# Passeur agent adapter
 
-Implement a runnable coding agent behind Passeur's existing worker interface. Start from [the provider dossier](references/provider-dossier.md) and use [the conformance reference](references/conformance.md) for the evidence relevant to the selected change.
+Read AGENTS.md and the adopted Coding-Standards Core/Router. Written-plan implementation requires the explicit canonical plan path and operation; use that plan's current owner, write set and evidence. This skill does not authorize installation, personal configuration changes, accounts, publication, destructive cleanup or bypassing hooks.
 
-## Establish the owned change
+Read [provider dossier](references/provider-dossier.md) and [conformance](references/conformance.md). Classify the request as configuration-only registration, a new adapter, or a shared-contract change. Another model behind an existing adapter is configuration, not a reason to duplicate runtime code.
 
-Read `AGENTS.md`, the adopted Coding-Standards Core and Router, `docs/agent-adapters.md`, and the relevant source owners. Written-plan work requires the explicitly supplied canonical repository-relative `plan.md` and operation (`start`, `continue` or `verify`). Consume the plan's current authority and write set; a delegated worker does not change shared plan lifecycle. Missing admission facts are a prerequisite to report, not permission to infer the newest plan.
+## Owners and native facts
 
-Inspect repository state before editing. Choose the smallest coherent outcome:
+Use the current [adapter contract](../../../docs/agent-adapters.md), [task lifecycle](../../../docs/task-lifecycle.md) and [shared service](../../../docs/shared-service.md). RepositoryRuntime owns preparation/lease/composition; Coordinator and TaskControls own accepted execution/control. The input broker owns pending identity and answer intent; the front end owns human presentation. Adapters do not create another scheduler, task database or repository lease.
 
-- **Registration:** an installed adapter already supports this runtime and controls. Reuse it with operator-approved configuration; another model is not automatically another adapter.
-- **Adapter:** materially different native protocol, controls or lifecycle require a new implementation and its decoder, tests and documentation.
-- **Shared contract:** the requested capability changes assignment modes, persistence, scheduling or public guarantees. Identify the owning decision and affected consumers before expanding core behavior.
+Verify the actual version-matched native SDK/protocol, flags, model reporting, credential route, permissions, turn/item/input observations, withdrawal, continuation and stop behavior. Types or a sample success are not runtime proof. Missing native facts block the relevant promise, not independent reversible implementation. Bound investigations to a decision and observable stopping condition.
 
-Confirm the exact write set and required evidence. Code authoring does not automatically authorize personal-configuration edits, dependency installation, native authentication, billable inference, publication or resource deletion. Keep unrelated work intact.
+Factory configuration is side-effect free. Optional SDK/process/authentication access belongs in execution, never MCP discovery. Keep provider semantics local and register once in builtins. Preserve the exact installed service dependency closure; frontend/server/agent/build identities are not interchangeable.
 
-## Locate the existing owners
+## One whole-assignment run
 
-`src/core/repository-runtime.ts` owns repository binding, lazy preparation, the coordination lease, execution composition and drain. `src/core/coordinator.ts` owns admitted tasks, retries, queueing, deadlines, cancellation subscribers and terminal results. `src/agents/registry.ts` owns static approved registration resolution; `src/agents/builtins.ts` is its narrow factory composition root. `src/agents/types.ts` owns the worker interface. `src/contracts/agents.ts` and `src/store/record-codecs.ts` own the affected public/persisted representations. Git delivery and disposition remain with the workspace/disposition owners.
+Own startup before awaiting it. The service task signal represents explicit stop or actual safety/failure authority, never frontend lifetime. No task/queue/approval/inactivity timer may kill work. Timers can bound observation or already-authorized cleanup only. Observe parent exit independently of pipe close and surviving descendants; a stale PID is not authority to signal.
 
-An adapter does not acquire the repository lease, create another scheduler, prepare the store or decide tests, repairs, integration and acceptance. Its worker performs the assigned implementation, scoped checks and ordinary commits under repository instructions.
+Emit authoritative correlated turn and known operation start/finish evidence. A successful native terminal notification cannot settle pending tools or input. Do not infer empty obligations when coverage is absent. Keep unknown observations explicit. Quiescence/shutdown and successful code acceptance are distinct.
 
-## Establish native facts before promising support
+Produce/consume the canonical version2 PASSEUR_MESSAGE variants. A native question after a completed turn keeps the assignment alive and requests explicit input. An exact reply continues the same session/thread; invalid final output exposes needs-attention rather than an autonomous repair prompt. The input callback accepts a native-scope AbortSignal: genuine native failure withdraws that invocation without leaving a waiter attached to the service indefinitely.
 
-Use official, version-matched protocol/SDK authority. Identify executable/client, authentication route, actual option names, consumed response fields, model reporting, approval correlation, terminal signals and process ownership. A successful example is not a protocol definition. Keep native types, model identifiers, billing facts and permission encodings inside the adapter.
+Keep permission and clarification separate. Present permission through the actual host-associated human channel; no model-issued approve field. Validate native IDs, run/turn/control generation, exact operation and offered once/deny choices. Timeout/dismissal is not denial. Native withdrawal is not answer acknowledgment. Persist answer intent before dispatch and retain delivery unknown until authoritative settlement. Do not blindly resend an ambiguous side effect.
 
-Declare precisely which modes are implementable. Review requires no writes **and no shell**; filesystem read-only alone is insufficient. A returned configuration flag is evidence about configuration, not complete proof of installed enforcement. Parent cancellation is not descendant termination. Missing real facts block the corresponding qualification claim, not independent deterministic implementation.
-
-For any investigation, name the uncertainty, the implementation decision it could change, consequence, least costly check and stopping condition. Once the admitted reversible design is sufficient, implement rather than growing a provider framework.
-
-## Preserve discovery and the installed runtime
-
-A definition's `configure(unknown)` validates local options and returns a configured worker without loading the native SDK, opening a process, discovering models or checking credentials. Load optional native code in the worker execution path. `passeur_status`, tool discovery, preparation, retained reads and administrative operations must remain usable with an unavailable provider.
-
-Before successful execution composition, corrected profile/configuration failures may be retried. Afterwards the runtime's registry is fixed. Agent discovery exposes configuration and `runtime_readiness: not_checked`; it does not authenticate or infer. A registration may restrict capabilities, never invent stronger ones.
-
-Keep the caller's MCP **server name**, Passeur **agent ID**, vendor **client identifier**, and installed **build identity** separate. Preserve Muse's `muse_bridge` native identifier. Register source adapters once at `builtins.ts`; preserve the existing build/install/named-registration workflow. Rebuilding source does not modify an already installed or running runtime. Verify dependency closure in the actual installed artifact, with no silent development fallback.
-
-## Implement one owned run
-
-Use an official client where it provides the required controls. Justify any narrow native transport against authoritative framing and schemas; do not invent flags, infer a schema from sample output, scrape a PTY or build another reasoning loop.
-
-Own startup before awaiting initialization. Keep all mutable session, output, approval and cancellation state local to the invocation. Decode consumed native fields before they authorize work; an SDK declaration or cast is not runtime proof. Emit only bounded, non-sensitive common events. Keep worker-reported checks separate from runtime observations and requested model distinct from actual reported evidence.
-
-Apply workspace, permission and credential policy with structured arguments and supported native controls. Preserve Git identity, hooks, signing and repository instructions. Native child configuration must prevent unintended inherited Passeur delegation; a prompt instruction alone is not proof. A dedicated CLI home is prepared/authenticated by the operator, not by silently copying the caller's credentials. No API-key, provider, model, permission or transport fallback is implicit.
-
-Bind approvals to the active task/session/request and offered one-operation choices. Reject stale/unknown decisions, session-wide grants and unsupported escalations. The worker does not supply its own human approval. Denial or absent elicitation remains explicit.
-
-Observe cancellation during startup, submission, output and approvals. Track completion/failure of all owned work and bounded stop. Return truthful `not_started`, `confirmed` or `unconfirmed` evidence. Interruption acknowledgement, closed output and a resolved top-level promise are not process-tree proof. Preserve uncertainty so the coordinator can freeze unsafe replacement work and retain resources.
-
-Use the common `PASSEUR_RESULT` report contract and existing Git observer. Do not manufacture successful checks, an empty commit or a successful result from malformed output. The adapter never assigns a task branch's delivery or cleanup authority from an agent's claim alone.
-
-## Preserve admitted identity and compatibility
-
-The registry factory supplies only non-secret primitive configuration for snapshots. New v3 canonical request/configuration identity uses `canonicalHash`; historical request and disposition contracts retain their original hash semantics. Do not hash secrets or infer immutable executable/model behavior from a configuration digest.
-
-Retries attach/read under the original admitted identity before current-agent prerequisites. Missing registrations must not force inference replay or block retained reads. Persisted decoding and recovery extend existing owners. Internal coordinated changes replace their consumers together; real historical/public compatibility is explicit, not an indefinite speculative shim.
+Use structured arguments, approved environment/credentials and native controls. Preserve ordinary Git hooks, signing, instructions and recursion isolation. No provider/model/API-key/permission fallback. A runtime unable to enforce no shell and no writes cannot advertise restrictive review.
 
 ## Verify and hand off
 
-Reuse `tests/fixtures/adapter-conformance.ts` for common pre-start cancellation. Add independent native fixtures for the particular approval, framing, terminal and stop contracts. Exercise the actual adapter with controlled peers, and use real installed runtime/account evidence for native guarantees. Do not treat two fake workers, typechecking or startup-only smoke as live multi-agent acceptance.
+Test actual adapter behavior with independent controlled peers, and separately qualify installed SDK/native permissions, long waits, session continuation, caller absence, actual crash and descendant stop. Include silence, outstanding background items, host death while awaiting input, stale human replies and explicit cancellation. Expected results come from canonical contracts, not copied producer output.
 
-Run affected checks, inspect the staged/material diff, and record exact versions, subject, commands, expected/observed outcomes and limits. Validate this skill's frontmatter, local references and discoverability. Fresh-session use of the skill is a separate behavioral claim; authoring or structural validation alone does not prove it.
+Reuse the existing test/compiler/store machinery; add only a focused helper with deciding value. A new adapter should normally change its module, configuration, tests, dossier, dependency record and one composition entry. Unexplained core changes require a shared-contract decision.
 
-Normally a new adapter changes its source/config decoder, tests, documentation, dependency records and one composition entry. An unexplained coordinator/workspace/disposition change is a reason to revisit the shared abstraction. Keep unavailable qualification visible and capabilities limited to the published support matrix. Finish with the changed owners, verification performed, remaining blockers, installed support status and next owned acceptance action.
+Update both skills when public behavior changes. Structural validation is not fresh-session usability evidence. Report exact tested versions, candidate paths, commands/results, unexecuted claims and remaining support restrictions. Never claim live qualification or whole-codebase compliance from substitutes or build success.

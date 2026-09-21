@@ -1,13 +1,14 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { RuntimeStatusSchema, type RuntimeFailure, type RuntimeStatus } from "../contracts/runtime.js";
+import type { RuntimeFailure } from "../contracts/runtime.js";
+import { FrontendStatusSchema, type FrontendStatus } from "../contracts/service.js";
 import { BridgeError, diagnosticInfo, safeText, type ErrorInfo } from "../core/errors.js";
 import type { CodexMcpRegistration } from "./config.js";
 
 export type VerificationCheck = { status: "passed" | "failed" | "blocked" | "not_run"; scope: string; error?: ErrorInfo };
 export type ProbeReport = {
   configuration: VerificationCheck; transport: VerificationCheck; readiness: VerificationCheck; installed_workflow: VerificationCheck;
-  server_name: string; status?: RuntimeStatus; stderr: string;
+  server_name: string; status?: FrontendStatus; stderr: string;
 };
 const CALL_TIMEOUT_MS = 10_000;
 const CLOSE_TIMEOUT_MS = 10_000;
@@ -23,6 +24,15 @@ function runtimeFailureInfo(failure: RuntimeFailure): ErrorInfo {
 }
 export function launchEnvironment(overrides: Record<string, string>): Record<string, string> {
   return { ...Object.fromEntries(ENVIRONMENT_KEYS.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]!]])), ...overrides };
+}
+function toolBody(reply: unknown): unknown {
+  if (!reply || typeof reply !== "object") throw new BridgeError("PROBE_STATUS_INVALID", "Missing structured status body");
+  const result = reply as Record<string, unknown>;
+  if (result.structuredContent !== undefined) return result.structuredContent;
+  if (!Array.isArray(result.content)) throw new BridgeError("PROBE_STATUS_INVALID", "Missing structured status body");
+  const block: unknown = result.content.find((item: unknown) => typeof item === "object" && item !== null && "type" in item && item.type === "text");
+  if (typeof block !== "object" || block === null || !("text" in block) || typeof block.text !== "string") throw new BridgeError("PROBE_STATUS_INVALID", "Missing status text");
+  try { return JSON.parse(block.text) as unknown; } catch { throw new BridgeError("PROBE_STATUS_INVALID", "Malformed status body"); }
 }
 async function boundedClose(client: Client): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
@@ -67,9 +77,9 @@ export async function probeRegistration(registration: CodexMcpRegistration, prep
     for (const expected of registration.enabled_tools) if (!names.has(expected)) throw new BridgeError("PROBE_TOOLS_MISSING", `Server did not advertise ${expected}`);
     const reply = await client.callTool({ name: "passeur_status", arguments: {} }, undefined, { timeout: CALL_TIMEOUT_MS });
     if (reply.isError) throw new BridgeError("PROBE_STATUS_FAILED", "Status tool returned an execution error");
-    report.status = RuntimeStatusSchema.parse(reply.structuredContent);
+    report.status = FrontendStatusSchema.parse(toolBody(reply));
     const status = report.status;
-    if (status.runtime.build_id !== registration.build_id || (!registration.development && status.runtime.mode !== "installed")
+    if (status.frontend.build_id !== registration.build_id || (!registration.development && status.frontend.mode !== "installed")
       || status.binding.project_input !== registration.project || status.binding.profile_path !== registration.profile
       || status.binding.state_root !== registration.state_root || status.binding.expected_repository_id !== registration.repository_id) {
       throw new BridgeError("PROBE_IDENTITY_MISMATCH", "Running artifact or configured binding differs from the exact registration", { stage: "probe.status" });
@@ -81,12 +91,13 @@ export async function probeRegistration(registration: CodexMcpRegistration, prep
         report.readiness.status = "blocked";
         const current = await client.callTool({ name: "passeur_status", arguments: {} }, undefined, { timeout: CALL_TIMEOUT_MS });
         if (!current.isError) {
-          report.status = RuntimeStatusSchema.parse(current.structuredContent);
-          if (report.status.coordination.failure) report.readiness.error = runtimeFailureInfo(report.status.coordination.failure);
+          report.status = FrontendStatusSchema.parse(toolBody(current));
+          if (report.status.service.state === "connected" && report.status.service.status.repository.coordination.failure) report.readiness.error = runtimeFailureInfo(report.status.service.status.repository.coordination.failure);
+          else if (report.status.service.state === "unavailable") report.readiness.error = { code: report.status.service.code, message: report.status.service.message };
         }
       } else {
-        report.status = RuntimeStatusSchema.parse(ready.structuredContent);
-        if (report.status.coordination.state !== "ready" || report.status.coordination.authority !== "held") throw new BridgeError("PROBE_READINESS_INVALID", "Preparation did not establish held coordination authority");
+        report.status = FrontendStatusSchema.parse(toolBody(ready));
+        if (report.status.service.state !== "connected" || report.status.service.status.repository.coordination.state !== "ready" || report.status.service.status.repository.coordination.authority !== "held") throw new BridgeError("PROBE_READINESS_INVALID", "Preparation did not establish held coordination authority");
         report.readiness.status = "passed";
       }
     }

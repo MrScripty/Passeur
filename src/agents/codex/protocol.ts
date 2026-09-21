@@ -81,3 +81,26 @@ export function approval(value: unknown, threadId: string, turnId: string, works
   if (method === "item/fileChange/requestApproval") return { itemId, command: "Review the pending file changes in the assigned worktree", cwd: workspace };
   throw new BridgeError("CODEX_REQUEST_UNSUPPORTED", "This native request has no supported approval contract");
 }
+
+/** Consumed request_user_input contract, pinned to the official v2 generated schema. */
+export function userQuestions(value: unknown, thread: string, turn: string): Array<{ id: string; prompt: string; options: string[]; free: boolean }> {
+  const request = correlate(value, thread, turn);
+  text(request.itemId, "itemId", 256);
+  if (typeof request.isBlocking !== "boolean" || request.autoResolutionMs !== null && (typeof request.autoResolutionMs !== "number" || !Number.isSafeInteger(request.autoResolutionMs) || request.autoResolutionMs < 0)) throw new BridgeError("CODEX_INPUT_INVALID", "Native question lifecycle is invalid");
+  if (!Array.isArray(request.questions) || !request.questions.length || request.questions.length > 16) throw new BridgeError("CODEX_INPUT_INVALID", "Native questions exceed their bound");
+  const questions = request.questions.map((raw) => {
+    const q = object(raw, "question"), id = text(q.id, "question.id", 128), header = text(q.header, "question.header", 512), question = text(q.question, "question.text", 4096);
+    if (typeof q.isOther !== "boolean" || typeof q.isSecret !== "boolean") throw new BridgeError("CODEX_INPUT_INVALID", "Native question controls are invalid");
+    if (q.isSecret) throw new BridgeError("CODEX_INPUT_UNSUPPORTED", "Secrets cannot be supplied through retained task input");
+    if (q.options !== null && (!Array.isArray(q.options) || q.options.length > 16)) throw new BridgeError("CODEX_INPUT_INVALID", "Native choice list is invalid");
+    const options = q.options === null ? [] : q.options.map((rawOption: unknown) => {
+      const option = object(rawOption, "question.option");
+      text(option.description, "option.description", 2048);
+      return text(option.label, "option.label", 256);
+    });
+    if (new Set(options).size !== options.length) throw new BridgeError("CODEX_INPUT_INVALID", "Duplicate native choice labels");
+    return { id, prompt: `${header}\n${question}${options.length ? `\nChoices: ${options.join(" | ")}` : ""}`, options, free: q.isOther || q.options === null };
+  });
+  if (new Set(questions.map((q) => q.id)).size !== questions.length) throw new BridgeError("CODEX_INPUT_INVALID", "Duplicate native question identities");
+  return questions;
+}

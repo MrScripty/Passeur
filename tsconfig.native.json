@@ -1,6 +1,19 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "outDir": ".passeur-native", "types": ["node"] },
+  "compilerOptions": {
+    "outDir": ".passeur-native",
+    "types": [
+      "node"
+    ]
+  },
   "include": [],
-  "files": ["src/agents/codex/transport.ts", "src/agents/codex/protocol.ts", "src/codex/startup-policy.ts"]
+  "files": [
+    "src/agents/codex/transport.ts",
+    "src/agents/codex/protocol.ts",
+    "src/codex/startup-policy.ts",
+    "src/service/transport.ts",
+    "src/service/process.ts",
+    "src/workspace/project.ts",
+    "src/approvals/native.ts"
+  ]
 }

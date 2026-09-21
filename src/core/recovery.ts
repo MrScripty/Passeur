@@ -1,3 +1,4 @@
+import { baseResult } from "./result.js";
 import type { AgentResult } from "../contracts/agents.js";
 import type { ResourceRecord, StoredResult } from "../contracts/types.js";
 import { BridgeError } from "./errors.js";
@@ -9,10 +10,37 @@ export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
   for (const record of await store.list()) {
     let state = await store.readState(record.task_id);
     let saved = await store.readResult(record.task_id);
+    if ("schema_version" in record && record.schema_version === 4) {
+      const control = await store.readControl(record.task_id);
+      const resource = await store.readResource(record.task_id);
+      if (saved?.schema_version === 4 && (saved.worker_stop !== "unconfirmed" || resource?.stop_reconciled) && (!control.inputs.some((i) => i.state === "delivery_unknown" || i.state === "answer_intent") || resource?.stop_reconciled)) {
+        if (control.cancel && saved.execution_status === "completed") { await store.freeze(`Task ${record.task_id} has conflicting completion and cancellation evidence`); continue; }
+        if (control.phase !== "terminal") {
+          control.phase = "terminal"; control.outcome = saved.execution_status;
+          for (const input of control.inputs) { delete input.claim; if (input.state !== "settled") input.state = "withdrawn"; }
+          control.revision++; control.updated_at = now(); await store.writeControl(record.task_id, control);
+        }
+        continue;
+      }
+      if (control.phase === "terminal" && !saved) { await store.freeze(`Task ${record.task_id} lost terminal evidence`); continue; }
+      const queued = control.native.state === "not_started" && (control.phase === "queued" || control.attention?.startsWith("Recovered queued")) && (!resource || resource.state === "not_applicable");
+      control.phase = "needs_attention";
+      control.attention = queued ? "Recovered queued work was not replayed. Explicitly cancel it before a deliberate resubmission with a new key."
+        : "Service interruption left native execution or publication uncertain; verify processes and reconcile before new work.";
+      for (const input of control.inputs) {
+        delete input.claim;
+        if (input.state === "answer_intent") input.state = "delivery_unknown";
+        else if (input.state === "pending") input.state = "withdrawn";
+      }
+      if (!queued) control.native.state = "unknown";
+      control.revision++; control.updated_at = now(); await store.writeControl(record.task_id, control);
+      if (!queued) await store.freeze(`Task ${record.task_id} requires native/publication reconciliation`);
+      continue;
+    }
     if (!saved && state.phase !== "terminal") {
       const result: AgentResult = {
         schema_version: 3,
-        identity: record.request.schema_version === 3 && record.execution
+        identity: record.request.schema_version === 3 && record.execution?.schema_version === 1
           ? { status: "admitted", snapshot: record.execution }
           : { status: "unavailable", source_schema_version: record.request.schema_version === 1 ? 1 : 2, reason: "The historical request did not retain execution identity" },
         task_id: record.task_id, request_key: record.request.request_key,
@@ -43,8 +71,27 @@ export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
 /** Explicit human assertion, recorded separately from immutable runtime evidence. Offline lease required. */
 export async function acknowledgeStoppedTask(store: TaskStore, taskId: string, owner: string, reason: string): Promise<void> {
   if (!owner.trim() || !reason.trim()) throw new BridgeError("RECONCILIATION_AUTHORITY_REQUIRED", "Supply the responsible owner and reconciliation evidence");
-  const result = await store.readResult(taskId);
-  const resource = await store.readResource(taskId);
+  let result = await store.readResult(taskId);
+  let resource = await store.readResource(taskId);
+  const request = await store.find({ task_id: taskId });
+  if (request && "schema_version" in request) {
+    const control = await store.readControl(taskId);
+    if (!resource) resource = { schema_version: 1, task_id: taskId, project_id: request.project_id, state: request.request.mode === "implement" ? "legacy_unclassified" : "not_applicable", updated_at: now() };
+    if (resource.state === "legacy_unclassified") throw new BridgeError("RESOURCE_CLASSIFICATION_REQUIRED", "Resolve the missing implementation resource intent before reconciliation");
+    if (!result) {
+      const priorSettlement = control.settled_outcome;
+      result = { ...baseResult(taskId, request.request, request.execution), execution_status: "interrupted", worker_stop: "unconfirmed",
+        summary: "Interrupted native execution; an operator separately reconciled stop evidence", native_evidence: control.native,
+        ...(priorSettlement ? { error: { code: "RESULT_PUBLICATION_INTERRUPTED", message: `The saved result was missing after ${priorSettlement} settlement; operator ${owner.slice(0, 256)} classified the publication interruption.` } } : {}) };
+      // This explicit recovery mutation preserves the displaced settlement in the resulting evidence.
+      control.settled_outcome = "interrupted"; control.revision++; control.updated_at = now(); await store.writeControl(taskId, control);
+      await store.writeResult(taskId, result);
+    }
+    await store.writeResource(taskId, { ...resource, stop_reconciled: { at: now(), owner, reason }, updated_at: now() });
+    control.phase = "terminal"; control.outcome = result.execution_status === "timed_out" ? "interrupted" : result.execution_status;
+    for (const input of control.inputs) { delete input.claim; if (input.state !== "settled") input.state = "withdrawn"; }
+    control.revision++; control.updated_at = now(); await store.writeControl(taskId, control);
+  }
   if (!result || !resource || (await store.readState(taskId)).phase !== "terminal") throw new BridgeError("RESULT_NOT_READY", "Reconcile stored task state first");
   if (resource.state === "legacy_unclassified") throw new BridgeError("LEGACY_UNCLASSIFIED", "Classify historical resources explicitly before changing their authority");
   await store.writeResource(taskId, { ...resource, stop_reconciled: { at: now(), owner, reason }, updated_at: now() });

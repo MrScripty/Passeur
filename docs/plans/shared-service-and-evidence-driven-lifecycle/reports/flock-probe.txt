@@ -1,0 +1,28 @@
+{
+  pid: 551,
+  locks: '1: FLOCK  ADVISORY  WRITE 551 00:1c:1573221 0 EOF\n',
+  fds: [
+    [ '0', 'pipe:[506]' ],
+    [ '1', '/mnt/data/work/flock-probe.txt' ],
+    [ '10', 'anon_inode:[eventfd]' ],
+    [ '11', 'anon_inode:[eventpoll]' ],
+    [ '12', 'anon_inode:[io_uring]' ],
+    [ '13', 'pipe:[3729]' ],
+    [ '14', 'pipe:[3729]' ],
+    [ '15', 'anon_inode:[eventfd]' ],
+    [ '16', 'anon_inode:[eventpoll]' ],
+    [ '17', 'anon_inode:[io_uring]' ],
+    [ '18', 'pipe:[1355]' ],
+    [ '19', 'pipe:[1355]' ],
+    [ '2', 'pipe:[508]' ],
+    [ '20', 'anon_inode:[eventfd]' ],
+    [ '21' ],
+    [ '3', '/mnt/data/work/election.lock' ],
+    [ '4', 'anon_inode:[eventpoll]' ],
+    [ '5', 'anon_inode:[io_uring]' ],
+    [ '6', 'pipe:[1352]' ],
+    [ '7', 'pipe:[1352]' ],
+    [ '8', 'pipe:[1353]' ],
+    [ '9', 'pipe:[1353]' ]
+  ]
+}

@@ -1,3 +1,15 @@
+# Shared-service lifecycle candidate — September 20, 2026
+
+Status: **Verifying; acceptance blocked.** This candidate replaces connection-owned delegation with one Linux repository service and durable tasks. It requires explicit profile3 migration and the submit/wait/input/cancel/attach API. Legacy delegation tools reject new execution; historical results remain readable.
+
+Executed: 42 selected controlled coordinator/runtime/registry tests; 40 native Node tests; selected native TypeScript5.8.3 compilation; source/test/script syntax checks. Full pinned5.9.3/MCP/Muse/Zod/Vitest application verification did not run. No native account, actual two-session Codex host, required-real permissions/continuation/descendants, installed artifact, external review or fresh-session skill qualification is implied.
+
+Read [the complete implementation evidence](plans/shared-service-and-evidence-driven-lifecycle/reports/implementation-evidence.md), [installed acceptance](installed-acceptance.md), and [lifecycle contract](task-lifecycle.md). Muse native in-turn input variants and the exact pinned exit/fold API need qualification before their support can be claimed. Do not replace a functioning production install without completing these gates and controlled migration.
+
+The preserved dependency pins are unchanged. The system runtime adds an explicit Linux/util-linux flock requirement; another platform needs a separately qualified equivalent, not silent fallback. Build/package version does not by itself identify a compatible service; compare the actual installed build and service protocol/generation.
+
+## Historical candidate evidence (not acceptance for this change)
+
 # Attached-tool registration correction — September 20, 2026
 
 Baseline: `68c3e455ec35061c04b13a27d1ca9e438ec81f95`. This bounded correction adds explicit per-server `--required`/`--optional` registration, preserves existing startup and approval/denial policy during updates, and distinguishes written policy from host-reported policy and actual model-tool exposure. No task, profile, status, result, registry or resource schema changes; no package or lockfile change.

@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { BridgeError, diagnosticInfo, nativeCode } from "./core/errors.js";
-import type { AgentProfile } from "./contracts/agents.js";
+import type { SharedProfile } from "./contracts/tasks.js";
 import type { LaunchIntent } from "./core/repository-runtime.js";
 import type { CodexMcpRegistration } from "./codex/config.js";
 import { startupRequirementFromFlags } from "./codex/startup-policy.js";
@@ -22,6 +22,14 @@ Usage: passeur <action> [options]
   agents --project PATH [--offset NUMBER] [--limit 1..4]
   configure-agent --project PATH --agent-file FILE --yes [--replace-agent FINGERPRINT]
   migrate-profile --project PATH --yes
+  service-start|service-status --project PATH
+  service-stop --project PATH --operation-key KEY --yes [--cancel-tasks UUID,UUID]
+  submit --project PATH --assignment FILE --yes
+  tasks --project PATH [--request-key KEY] [--offset N] [--limit N]
+  wait --project PATH --task UUID [--after-revision N] [--wait-ms N]
+  attach --project PATH (--task UUID | --request-key KEY) --operation-key KEY --yes
+  cancel --project PATH --task UUID --control-generation N --operation-key KEY --reason TEXT --yes
+  input --project PATH --task UUID --input-id UUID --control-generation N --operation-key KEY --answer TEXT --yes
   inspect --project PATH
   result|logs --project PATH --task UUID [--follow]
   finalize --project PATH --operations FILE --yes
@@ -48,8 +56,9 @@ serve never builds, installs or edits configuration. Normal run/setup use
 HOME or XDG_CONFIG_HOME/XDG_STATE_HOME unless paths are explicit. Registration
 pins project/profile/state paths. Close external config editors while registering.
 Exit 0 means the requested action passed; 1 means failure or blocked required
-verification; 130/143 represent interruption by SIGINT/SIGTERM. Live agent
-compatibility is reported separately and is never implied by registration.
+verification; 130/143 represent interruption by SIGINT/SIGTERM. Accepted assignments survive CLI/host closure. wait timeout cancels only observation.
+attach/input/cancel are explicit operator-control actions; never use them to bypass host human approvals.
+Live agent compatibility is reported separately and is never implied by registration.
 `;
 
 function required(value: string | undefined, flag: string): string {
@@ -62,6 +71,8 @@ function integer(value: string | undefined, flag: string): number | undefined {
   return Number(value);
 }
 const options = {
+  assignment: { type: "string" }, "request-key": { type: "string" }, "operation-key": { type: "string" }, "control-generation": { type: "string" },
+  "input-id": { type: "string" }, answer: { type: "string" }, "after-revision": { type: "string" }, "wait-ms": { type: "string" }, "cancel-tasks": { type: "string" },
   project: { type: "string" }, profile: { type: "string" }, "state-root": { type: "string" }, "expected-repository-id": { type: "string" },
   "agent-file": { type: "string" }, "replace-agent": { type: "string" }, offset: { type: "string" }, limit: { type: "string" },
   task: { type: "string" }, follow: { type: "boolean" }, yes: { type: "boolean" },
@@ -76,10 +87,10 @@ const options = {
 type Values = ReturnType<typeof decode>["values"];
 function decode(args: string[]) { return parseArgs({ args, options, strict: true, allowPositionals: false }); }
 
-async function saveProfile(path: string, values: Values): Promise<AgentProfile> {
-  const { normalizeProfile } = await import("./core/profile.js");
+async function saveProfile(path: string, values: Values): Promise<SharedProfile> {
+  const { migrateSharedProfile } = await import("./core/profile.js");
   const maxWorkers = integer(values["max-workers"], "--max-workers"), maxQueued = integer(values["max-queued-tasks"], "--max-queued-tasks");
-  const profile = normalizeProfile({
+  const profile = migrateSharedProfile({
     schema_version: 1, muse_bin: values["muse-bin"] ?? "muse", model: required(values.model, "--model"),
     review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" },
     implementation: { enabled: Boolean(values["worktree-root"]), ...(values["worktree-root"] ? { worktree_root: resolve(values["worktree-root"]) } : {}), sandbox_network: "proxy-only" },
@@ -172,7 +183,7 @@ async function main(): Promise<void> {
     const { runtimeIdentity } = await import("./install/runtime.js");
     console.log(JSON.stringify(await runtimeIdentity(runtimeRoot))); return;
   }
-  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile"]);
+  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile", "service-run", "service-start", "service-stop", "service-status", "submit", "tasks", "wait", "attach", "cancel", "input"]);
   if (!actions.has(action)) throw new BridgeError("ACTION_UNSUPPORTED", `Unknown action: ${action}`);
   const { values } = decode(process.argv.slice(3));
   startupRequirementFromFlags(values.required, values.optional);
@@ -180,7 +191,14 @@ async function main(): Promise<void> {
   const registrationFlags = ["server-name", "runtime", "config-path", "replace-binding", "adopt-unmanaged", "development-runtime", "verify-readiness", "tool-timeout-sec", "required", "optional", "yes"];
   const configurationFlags = ["model", "muse-bin", "worktree-root", "confirm-subscription", "max-workers", "max-queued-tasks", "install-codex"];
   const actionFlags: Record<string, string[]> = {
-    serve: bindingFlags, start: bindingFlags, inspect: bindingFlags,
+    serve: bindingFlags, start: bindingFlags, inspect: bindingFlags, "service-run": bindingFlags,
+    "service-start": bindingFlags, "service-status": bindingFlags,
+    "service-stop": [...bindingFlags, "operation-key", "cancel-tasks", "yes"],
+    submit: [...bindingFlags, "assignment", "yes"], tasks: [...bindingFlags, "offset", "limit", "request-key"],
+    wait: [...bindingFlags, "task", "after-revision", "wait-ms"],
+    attach: [...bindingFlags, "task", "request-key", "operation-key", "yes"],
+    cancel: [...bindingFlags, "task", "control-generation", "operation-key", "reason", "yes"],
+    input: [...bindingFlags, "task", "input-id", "control-generation", "operation-key", "answer", "yes"],
     agents: [...bindingFlags, "offset", "limit"],
     "configure-agent": [...bindingFlags, "agent-file", "replace-agent", "yes"],
     "migrate-profile": [...bindingFlags, "yes"],
@@ -210,10 +228,18 @@ async function main(): Promise<void> {
     ...(values["expected-repository-id"] ? { expectedRepositoryId: values["expected-repository-id"] } : {}) };
   // Transport bootstrap deliberately has no profile, repository, store or Muse prerequisites.
   if (action === "serve" || action === "start") {
-    const [{ RepositoryRuntime }, { runtimeIdentity }, { serve }] = await Promise.all([
-      import("./core/repository-runtime.js"), import("./install/runtime.js"), import("./mcp/server.js"),
+    const [{ PasseurFrontend }, { runtimeIdentity }, { serve }] = await Promise.all([
+      import("./service/client.js"), import("./install/runtime.js"), import("./mcp/server.js"),
     ]);
-    await serve(new RepositoryRuntime(intent, await runtimeIdentity(runtimeRoot))); return;
+    await serve(new PasseurFrontend(intent, await runtimeIdentity(runtimeRoot), fileURLToPath(import.meta.url))); return;
+  }
+  if (action === "service-run") {
+    const [{ RepositoryRuntime, resolveRepositoryBinding }, { runtimeIdentity }, { runRepositoryService }] = await Promise.all([
+      import("./core/repository-runtime.js"), import("./install/runtime.js"), import("./service/server.js"),
+    ]);
+    const binding = await resolveRepositoryBinding(intent, process.env, new AbortController().signal);
+    const identity = await runtimeIdentity(runtimeRoot);
+    await runRepositoryService(new RepositoryRuntime(intent, identity), binding, identity); return;
   }
   if (action === "setup") { await setup(intent, values); return; }
   if (action === "register-codex") { await register(intent, values); return; }
@@ -238,63 +264,79 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(await editProfile(required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME"), edit), null, 2));
     return;
   }
-  const [{ RepositoryRuntime }, { runtimeIdentity }] = await Promise.all([import("./core/repository-runtime.js"), import("./install/runtime.js")]);
-  const runtime = new RepositoryRuntime(intent, await runtimeIdentity(runtimeRoot));
+  const [{ RepositoryRuntime, resolveRepositoryBinding }, { runtimeIdentity }, { PasseurFrontend }, { operatorToken }] = await Promise.all([
+    import("./core/repository-runtime.js"), import("./install/runtime.js"), import("./service/client.js"), import("./service/bootstrap.js"),
+  ]);
+  const identity = await runtimeIdentity(runtimeRoot), runtime = new RepositoryRuntime(intent, identity);
   const stop = new AbortController();
-  const interrupt = () => { process.exitCode = 130; stop.abort(new BridgeError("REQUEST_CANCELLED", "Interrupted")); };
-  const terminate = () => { process.exitCode = 143; stop.abort(new BridgeError("REQUEST_CANCELLED", "Terminated")); };
+  const interrupt = () => { process.exitCode = 130; stop.abort(new BridgeError("REQUEST_CANCELLED", "Operator observation interrupted")); };
+  const terminate = () => { process.exitCode = 143; stop.abort(new BridgeError("REQUEST_CANCELLED", "Operator observation terminated")); };
   process.once("SIGINT", interrupt); process.once("SIGTERM", terminate);
-  let closing: Promise<void> | undefined;
-  const abortRuntime = () => { closing ??= runtime.shutdown(stop.signal.reason); void closing.catch(() => undefined); };
-  stop.signal.addEventListener("abort", abortRuntime, { once: true });
+  let frontend: InstanceType<typeof PasseurFrontend> | undefined;
+  const connected = async () => {
+    if (!frontend) {
+      const binding = await resolveRepositoryBinding(intent, process.env, stop.signal);
+      frontend = new PasseurFrontend(intent, identity, fileURLToPath(import.meta.url), await operatorToken(binding, Boolean(values.yes) || action === "service-start"));
+    }
+    return frontend;
+  };
+  const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
+  const mutation = () => { if (!values.yes) throw new BridgeError("MUTATION_AUTHORITY_REQUIRED", `${action} requires explicit operator --yes authority`); };
   try {
-    if (action === "agents") {
-      const { AgentCatalogRequestSchema, AgentCatalogSchema } = await import("./contracts/agents.js");
-      const range = AgentCatalogRequestSchema.parse({ offset: integer(values.offset, "--offset"), limit: integer(values.limit, "--limit") });
-      console.log(JSON.stringify(AgentCatalogSchema.parse(await runtime.agents(range.offset, range.limit)), null, 2));
-    } else if (action === "doctor") {
-      if (values.prepare && !values.yes) throw new BridgeError("READINESS_AUTHORITY_REQUIRED", "doctor --prepare requires --yes");
-      const { doctor } = await import("./diagnostics/doctor.js");
-      const report = await doctor(runtime, Boolean(values.prepare), stop.signal);
-      console.log(JSON.stringify(report, null, 2));
-      if (values.prepare && report.status.coordination.state !== "ready") process.exitCode = 1;
-    } else if (action === "inspect") console.log(JSON.stringify(await runtime.inspect(), null, 2));
-    else if (action === "result") console.log(JSON.stringify(await runtime.result(required(values.task, "--task")), null, 2));
+    if (action === "inspect") print(await runtime.inspect());
+    else if (action === "result") print(await runtime.result(required(values.task, "--task")));
     else if (action === "logs") {
       let offset = 0;
       do {
         stop.signal.throwIfAborted();
-        const buffer = await runtime.logs(required(values.task, "--task"), offset); offset += buffer.length;
-        if (buffer.length) {
-          if (!process.stdout.write(buffer)) await new Promise<void>((done, reject) => {
-            const clear = () => { process.stdout.removeListener("drain", drained); process.stdout.removeListener("error", failed); stop.signal.removeEventListener("abort", aborted); };
-            const drained = () => { clear(); done(); };
-            const failed = (error: Error) => { clear(); reject(error); };
-            const aborted = () => { clear(); reject(stop.signal.reason); };
-            process.stdout.once("drain", drained); process.stdout.once("error", failed); stop.signal.addEventListener("abort", aborted, { once: true });
-            if (stop.signal.aborted) aborted();
-          });
-        }
+        const bytes = await runtime.logs(required(values.task, "--task"), offset); offset += bytes.length;
+        if (bytes.length) await new Promise<void>((resolveWrite, reject) => process.stdout.write(bytes, (error) => error ? reject(error) : resolveWrite()));
         else if (values.follow) await delay(250, undefined, { signal: stop.signal }); else break;
       } while (true);
+    } else if (action === "agents") print(await runtime.agents(integer(values.offset, "--offset") ?? 0, integer(values.limit, "--limit") ?? 4));
+    else if (action === "doctor") {
+      const f = await connected();
+      if (values.prepare) mutation();
+      const { doctor } = await import("./diagnostics/doctor.js");
+      print(await doctor(f, Boolean(values.prepare), stop.signal));
+    } else if (action === "service-status") {
+      const { readDescriptor, existingOwner } = await import("./service/bootstrap.js");
+      const binding = await resolveRepositoryBinding(intent, process.env, stop.signal), descriptor = await readDescriptor(binding);
+      print(descriptor ? { state: await existingOwner(descriptor) ? "observed_live" : "observed_dead", generation: descriptor.generation, runtime: descriptor.runtime,
+        process: descriptor.process, note: "Process observation is not a readiness or native-worker proof" } : { state: "absent" });
     } else {
-      if (!values.yes) throw new BridgeError("MUTATION_AUTHORITY_REQUIRED", `${action} requires --yes`);
-      if (action === "finalize") {
-        const { FinalizeRequestSchema } = await import("./contracts/index.js");
-        const request = FinalizeRequestSchema.parse(JSON.parse(await readFile(required(values.operations, "--operations"), "utf8")));
-        const results = await runtime.finalize(request.operations, stop.signal);
-        console.log(JSON.stringify({ results }, null, 2)); if (results.some((entry) => entry.error)) process.exitCode = 1;
-      } else if (action === "cleanup") { await runtime.cleanup(required(values.task, "--task")); console.log("Collected eligible bulky evidence; retained identity and disposition receipts."); }
+      const f = await connected();
+      if (action === "service-start") print(await f.call("prepare", {}, stop.signal));
+      else if (action === "service-stop") {
+        mutation(); print(await f.call("stop", { operation_key: required(values["operation-key"], "--operation-key"), cancel_tasks: values["cancel-tasks"]?.split(",") ?? [] }, stop.signal));
+      } else if (action === "submit") {
+        mutation();
+        const { readProfileJson } = await import("./core/profile.js");
+        print(await f.call("submit", await readProfileJson(required(values.assignment, "--assignment")), stop.signal));
+      } else if (action === "tasks") print(await f.call("tasks", { schema_version: 1, offset: integer(values.offset, "--offset") ?? 0, limit: integer(values.limit, "--limit") ?? 8, ...(values["request-key"] ? { request_key: values["request-key"] } : {}) }, stop.signal));
+      else if (action === "wait") print(await f.call("wait", { schema_version: 1, task_id: required(values.task, "--task"), after_revision: integer(values["after-revision"], "--after-revision") ?? 0, wait_ms: integer(values["wait-ms"], "--wait-ms") ?? 20_000 }, stop.signal));
+      else if (action === "attach") {
+        mutation(); print(await f.call("attach", { schema_version: 1, ...(values.task ? { task_id: values.task } : {}), ...(values["request-key"] ? { request_key: values["request-key"] } : {}), operation_key: required(values["operation-key"], "--operation-key") }, stop.signal));
+      } else if (action === "cancel") {
+        mutation(); print(await f.call("cancel", { schema_version: 1, task_id: required(values.task, "--task"), control_generation: integer(values["control-generation"], "--control-generation"),
+          operation_key: required(values["operation-key"], "--operation-key"), reason: required(values.reason, "--reason") }, stop.signal));
+      } else if (action === "input") {
+        mutation();
+        const args = { task_id: required(values.task, "--task"), input_id: required(values["input-id"], "--input-id"), control_generation: integer(values["control-generation"], "--control-generation") };
+        const input = await f.call("input_claim", args, stop.signal);
+        try { print(await f.call("input_answer", { ...args, claim_id: input.claim!.id, operation_key: required(values["operation-key"], "--operation-key"), answer: required(values.answer, "--answer") }, stop.signal)); }
+        finally { await f.call("input_dismiss", { ...args, claim_id: input.claim!.id }).catch(() => undefined); }
+      } else if (action === "finalize") {
+        mutation(); const { readProfileJson } = await import("./core/profile.js"); print(await f.call("finalize", await readProfileJson(required(values.operations, "--operations")), stop.signal));
+      } else if (action === "cleanup") { mutation(); print(await f.call("cleanup", { task_id: required(values.task, "--task") }, stop.signal)); }
       else if (action === "reconcile") {
-        if (!values["confirm-worker-stopped"]) throw new BridgeError("RECONCILIATION_AUTHORITY_REQUIRED", "Reconcile requires --confirm-worker-stopped with process evidence");
-        await runtime.reconcile(required(values.task, "--task"), required(values.owner, "--owner"), required(values.reason, "--reason"));
-        console.log(JSON.stringify(await runtime.inspect(), null, 2));
+        mutation(); if (!values["confirm-worker-stopped"]) throw new BridgeError("RECONCILIATION_AUTHORITY_REQUIRED", "Reconciliation requires actual process evidence and --confirm-worker-stopped");
+        print(await f.call("reconcile", { task_id: required(values.task, "--task"), owner: required(values.owner, "--owner"), reason: required(values.reason, "--reason") }, stop.signal));
       }
     }
   } finally {
     process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
-    stop.signal.removeEventListener("abort", abortRuntime);
-    await (closing ?? runtime.shutdown());
+    await frontend?.shutdown(); await runtime.shutdown();
   }
 }
 main().catch((error: unknown) => {

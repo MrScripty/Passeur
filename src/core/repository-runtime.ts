@@ -2,15 +2,16 @@ import { join, resolve } from "node:path";
 import type { DelegateRequest, DelegateResult, FinalizeOperation, ResultRequest, StoredResult } from "../contracts/types.js";
 import type { RuntimeBinding, RuntimeIdentity, RuntimeStatus } from "../contracts/runtime.js";
 import type { TaskStore } from "../store/task-store.js";
-import type { Coordinator, RunContext } from "./coordinator.js";
+import type { Coordinator } from "./coordinator.js";
 import type { AdapterDefinition } from "../agents/types.js";
-import type { AgentProfile, Assignment, AgentResult, AgentCatalog } from "../contracts/agents.js";
+import type { Assignment, AgentCatalog } from "../contracts/agents.js";
 import type { AgentRegistry } from "../agents/registry.js";
-import { lookupPriorTask, terminalPriorTask } from "./prior-task.js";
-import { legacyMuseResult } from "./result.js";
+import { TaskControls, owns, type ClientActor } from "./task-control.js";
+import type { SharedProfile, TaskObservation, SubmissionIdentity } from "../contracts/tasks.js";
+
 import type { RepositoryLease } from "./lease.js";
 import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure } from "./errors.js";
-import { Mutex, withAbort, stableHash } from "./async.js";
+import { Mutex, withAbort, canonicalHash } from "./async.js";
 
 const PREPARATION_TIMEOUT_MS = 90_000;
 export type LaunchIntent = {
@@ -27,7 +28,7 @@ export type RuntimeDependencies = {
   store?: (root: string, authority: () => void) => TaskStore;
   recover?: (store: TaskStore) => Promise<void>;
   legacyRoots?: (binding: ResolvedBinding, signal: AbortSignal) => Promise<string[]>;
-  profile?: (path: string) => Promise<AgentProfile>;
+  profile?: (path: string) => Promise<SharedProfile>;
   definitions?: Readonly<Record<string, AdapterDefinition>>;
 };
 
@@ -55,7 +56,7 @@ export async function resolveRepositoryBinding(intent: LaunchIntent, environment
   };
 }
 
-/** Owns preparation, authority, lazy execution composition, and terminal drain for one connection. */
+/** Owns preparation, authority, lazy execution composition, and terminal drain for one repository service. */
 export class RepositoryRuntime {
   readonly #intent: LaunchIntent;
   readonly #identity: RuntimeIdentity;
@@ -72,13 +73,15 @@ export class RepositoryRuntime {
   #lease: RepositoryLease | undefined;
   #store: TaskStore | undefined;
   #preparation: Promise<void> | undefined;
-  #profile: AgentProfile | undefined;
+  #profile: SharedProfile | undefined;
   #registry: AgentRegistry | undefined;
-  #profileLoading: Promise<AgentProfile> | undefined;
+  #profileLoading: Promise<SharedProfile> | undefined;
   #coordinator: Coordinator | undefined;
+  #admissionClosed = false;
+  #controls: TaskControls | undefined;
+  onSettled?: () => void;
   #composition: Promise<Coordinator> | undefined;
   #shutdown: Promise<void> | undefined;
-  #approval: RuntimeStatus["execution"]["approval"] = "not_checked";
   #containment: Promise<void> | undefined;
 
   constructor(intent: LaunchIntent, identity: RuntimeIdentity, dependencies: RuntimeDependencies = {}, environment: Environment = process.env) {
@@ -87,8 +90,8 @@ export class RepositoryRuntime {
     this.#deps = dependencies;
     this.#environment = { HOME: environment.HOME, XDG_STATE_HOME: environment.XDG_STATE_HOME, XDG_CONFIG_HOME: environment.XDG_CONFIG_HOME };
   }
-  approvalTimeoutMs(): number { return this.#profile?.execution.task_timeout_ms ?? 1_800_000; }
-  observeApproval(available: boolean): void { this.#approval = available ? "available" : "unavailable"; }
+  get configuredProfile() { return this.#profile; }
+  get binding() { return this.#binding; }
   status(): RuntimeStatus {
     const resolved = this.#binding;
     const coordinatorFailure = this.#coordinator?.frozenReason;
@@ -106,7 +109,7 @@ export class RepositoryRuntime {
       coordination: { state: phase, authority: this.#lease?.state ?? "not_acquired",
         ...(this.#checkedAt ? { checked_at: this.#checkedAt } : {}), ...(this.#failure ? { failure: { ...this.#failure } } : coordinatorFailure ? { failure: diagnosticInfo(new BridgeError("PROJECT_NEEDS_RECONCILIATION", coordinatorFailure)) } : {}) },
       execution: { profile: this.#profile ? "valid" : this.#executionFailure ? "blocked" : "not_checked",
-        provider: "not_checked", approval: this.#approval,
+        provider: "not_checked", approval: "not_checked",
         ...(this.#executionFailure ? { failure: { ...this.#executionFailure } } : {}) },
     };
   }
@@ -151,7 +154,7 @@ export class RepositoryRuntime {
     this.#failure = diagnosticInfo(error);
     if (this.#phase !== "closing" && this.#phase !== "closed") this.#phase = "frozen";
     if (!this.#containment) {
-      this.#containment = this.#coordinator?.shutdown(error) ?? Promise.resolve();
+      this.#containment = this.#coordinator?.authorityLost(error) ?? Promise.resolve();
       void this.#containment.catch((failure: unknown) => { this.#failure = diagnosticInfo(failure); });
     }
   };
@@ -172,6 +175,7 @@ export class RepositoryRuntime {
       const authority = () => { this.#assertAuthority(); if (!complete) controller.signal.throwIfAborted(); };
       this.#store = this.#deps.store ? this.#deps.store(binding.storeRoot, authority) : new (await import("../store/task-store.js")).TaskStore(binding.storeRoot, authority);
       await this.#store.initialize();
+      this.#controls = new TaskControls(this.#store, 128, 512);
       for (const root of await this.#legacy(binding, controller.signal)) { authority(); await this.#store.importLegacy(root); }
       authority();
       if (this.#deps.recover) await this.#deps.recover(this.#store);
@@ -239,7 +243,7 @@ export class RepositoryRuntime {
         if (!profilePath) throw new BridgeError("PROFILE_PATH_UNAVAILABLE", "Execution requires an explicit profile path or configured HOME/XDG config root", { stage: "execution.profile" });
         if (!this.#profileLoading) {
           this.#profileLoading = this.#deps.profile ? this.#deps.profile(profilePath)
-            : import("./profile.js").then(({ loadAgentProfile }) => loadAgentProfile(profilePath));
+            : import("./profile.js").then(({ loadSharedProfile }) => loadSharedProfile(profilePath));
         }
         const profile = await this.#profileLoading;
         this.#assertOpen();
@@ -249,7 +253,9 @@ export class RepositoryRuntime {
         const definitions = this.#deps.definitions ?? (await import("../agents/builtins.js")).builtinAdapters;
         const registry = new AgentRegistry(profile, definitions);
         this.#assertOpen(); this.#assertAuthority();
-        this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority());
+        this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority(), this.#controls);
+        this.#coordinator.onSettled = () => this.onSettled?.();
+        this.#controls!.maxWaiters = profile.execution.max_waiters; this.#controls!.maxReceipts = profile.execution.max_control_receipts;
         this.#profile = profile; this.#registry = registry;
         this.#executionFailure = undefined;
         return this.#coordinator;
@@ -267,59 +273,106 @@ export class RepositoryRuntime {
       if (this.#registry) return this.#registry.catalog(true, offset, limit);
       const path = this.#intent.profilePath ?? (await this.#resolve(this.#lifetime.signal)).profilePath;
       if (!path) throw new BridgeError("PROFILE_PATH_UNAVAILABLE", "Agent discovery requires a profile path");
-      const profile = this.#deps.profile ? await this.#deps.profile(path) : await (await import("./profile.js")).loadAgentProfile(path);
+      const profile = this.#deps.profile ? await this.#deps.profile(path) : await (await import("./profile.js")).loadSharedProfile(path);
       const { AgentRegistry } = await import("../agents/registry.js");
       const definitions = this.#deps.definitions ?? (await import("../agents/builtins.js")).builtinAdapters;
       this.#assertOpen();
       return new AgentRegistry(profile, definitions).catalog(false, offset, limit);
     });
   }
-  delegate(request: Assignment, context: RunContext): Promise<AgentResult> {
+  async #taskControls(): Promise<TaskControls> {
+    await this.#ensurePrepared(undefined, true);
+    return this.#controls!;
+  }
+  async submit(request: Assignment, actor: ClientActor, sourceView: string, signal: AbortSignal): Promise<TaskObservation> {
     return this.#track(async () => {
-      context.signal.throwIfAborted();
-      if (!this.#coordinator) {
-        const prior = await lookupPriorTask(await this.#readStore(), request);
-        // Composition may have finished during the read. Its live-task map owns subscriber attachment.
-        if (!this.#coordinator) {
-          const result = terminalPriorTask(prior);
-          context.signal.throwIfAborted();
-          if (result) return result;
-          if (this.#approval !== "available") throw new BridgeError("ELICITATION_UNAVAILABLE", "New execution requires human approval capability");
-        }
+      const { canonicalProject, repositoryIdentity } = await import("../workspace/project.js");
+      const source = await canonicalProject(sourceView), binding = await this.#resolve(signal);
+      if ((await repositoryIdentity(source, signal)).id !== binding.repositoryId) throw new BridgeError("SOURCE_VIEW_CONFLICT", "Source view is not part of this repository");
+      const identity: SubmissionIdentity = { schema_version: 1, source_view: source, assignment: request };
+      const controls = await this.#taskControls();
+      const prior = await this.#store!.find({ request_key: request.request_key });
+      if (prior) {
+        if (!("schema_version" in prior)) throw new BridgeError("LEGACY_REQUEST_KEY", "This key names historical execution; read it without replay");
+        owns(await this.#store!.readControl(prior.task_id), actor);
+        if (prior.canonical_hash !== canonicalHash(identity)) throw new BridgeError("REQUEST_KEY_CONFLICT", "The key names a different assignment or source view");
+        return controls.read(prior.task_id, actor);
       }
-      const coordinator = this.#coordinator ?? await withAbort(this.#execution(), context.signal);
-      context.signal.throwIfAborted(); this.#assertOpen();
-      return coordinator.delegate(request, { ...context, approvalAvailable: this.#approval === "available" });
+      if (this.#admissionClosed) throw new BridgeError("SERVICE_DRAINING", "Service admission is closed");
+      const coordinator = await this.#execution();
+      if (this.#admissionClosed) { coordinator.closeAdmission(); throw new BridgeError("SERVICE_DRAINING", "Service admission closed during preparation"); }
+      return coordinator.submit(identity, actor, signal);
     });
   }
-  delegateBatch(assignments: Assignment[], context: RunContext): Promise<Array<{ request_key: string; result?: AgentResult; error?: { code: string; message: string } }>> {
-    return this.#track(async () => {
-      if (!assignments.length || assignments.length > 8 || new Set(assignments.map((item) => item.request_key)).size !== assignments.length) throw new BridgeError("INVALID_BATCH", "Supply one to eight unique request keys");
-      return Promise.all(assignments.map(async (request) => {
-        try { return { request_key: request.request_key, result: await this.delegate(request, context) }; }
-        catch (error) { return { request_key: request.request_key, error: errorInfo(error) }; }
-      }));
-    });
+  async retainedTaskId(requestKey: string): Promise<string> {
+    const record = await (await this.#readStore()).find({ request_key: requestKey });
+    if (!record) throw new BridgeError("RESULT_NOT_FOUND", "No matching retained request");
+    return record.task_id;
   }
-  /** Deployed Muse v2 calls preserve their original retry comparison and representable result contract. */
-  delegateMuse(request: DelegateRequest, context: RunContext): Promise<DelegateResult> {
-    return this.#track(async () => {
-      context.signal.throwIfAborted();
-      const store = await this.#readStore();
-      const previous = await store.find({ request_key: request.request_key });
-      if (previous && previous.request.schema_version !== 3) {
-        if (previous.request.schema_version !== 2) throw new BridgeError("LEGACY_REQUEST_KEY", "Read historical v1 work through passeur_result");
-        if (previous.canonical_hash !== stableHash(request)) throw new BridgeError("REQUEST_KEY_CONFLICT", "The key belongs to a different assignment");
-        const saved = await store.readResult(previous.task_id);
-        if (!saved) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", "Historical execution lacks terminal evidence");
-        if (saved.schema_version !== 2) throw new BridgeError("LEGACY_RESULT_UNREPRESENTABLE", "Read the versioned recovery evidence through passeur_result");
-        context.signal.throwIfAborted();
-        return saved;
-      }
-      const { museAssignment } = await import("../contracts/agents.js");
-      return legacyMuseResult(await this.delegate(museAssignment(request), context));
-    });
+  async taskObservation(id: string, actor: ClientActor): Promise<TaskObservation> { return (await this.#taskControls()).read(id, actor); }
+  async taskId(key: { task_id?: string | undefined; request_key?: string | undefined }): Promise<string> {
+    const record = await (await this.#readStore()).find(key.task_id ? { task_id: key.task_id } : { request_key: key.request_key! });
+    if (!record || !("schema_version" in record)) throw new BridgeError("TASK_NOT_FOUND", "No durable task matches; historical results use the retained-result tool");
+    return record.task_id;
   }
+  async tasks(actor: ClientActor, offset: number, limit: number, requestKey?: string): Promise<{ total: number; offset: number; tasks: TaskObservation[]; next_offset: number | null }> {
+    const controls = await this.#taskControls();
+    const records = (await this.#store!.list()).filter((r) => "schema_version" in r && (!requestKey || r.request.request_key === requestKey));
+    const visible: TaskObservation[] = [];
+    for (const r of records) {
+      if ((await this.#store!.readControl(r.task_id)).owner_id === actor.owner_id) visible.push(await controls.read(r.task_id, actor));
+    }
+    if (offset > visible.length) throw new BridgeError("INVALID_RANGE", "Task page offset is beyond the authorized inventory");
+    const tasks: TaskObservation[] = []; let bytes = 256;
+    for (const task of visible.slice(offset, offset + limit)) {
+      const size = Buffer.byteLength(JSON.stringify(task));
+      if (tasks.length && bytes + size > 16_384) break;
+      if (size > 20_000) throw new BridgeError("OBSERVATION_LIMIT", "A task observation exceeds its bounded projection");
+      tasks.push(task); bytes += size;
+    }
+    return { total: visible.length, offset, tasks, next_offset: offset + tasks.length < visible.length ? offset + tasks.length : null };
+  }
+  async waitTask(id: string, actor: ClientActor, after: number, budget: number, signal: AbortSignal) {
+    return (await this.#taskControls()).wait(id, actor, after, budget, signal);
+  }
+  async authorizeTask(id: string, actor: ClientActor): Promise<void> {
+    const store = await this.#readStore(), record = await store.find({ task_id: id });
+    if (record && "schema_version" in record) owns(await store.readControl(id), actor);
+  }
+  async attachTask(key: { task_id?: string | undefined; request_key?: string | undefined }, actor: ClientActor, operation: string) {
+    const controls = await this.#taskControls(), id = await this.taskId(key);
+    const receipt = await controls.adopt(id, actor, operation);
+    return { receipt, task: await controls.read(id, actor) };
+  }
+  async cancelTask(id: string, actor: ClientActor, generation: number, operation: string, reason: string) {
+    const controls = await this.#taskControls();
+    if (this.#coordinator) return this.#coordinator.cancel(id, actor, generation, operation, reason);
+    const receipt = await controls.cancel(id, actor, generation, operation, reason);
+    const state = await this.#store!.readControl(id);
+    if (state.native.state === "not_started" && state.attention?.startsWith("Recovered queued") && !await this.#store!.readResult(id)) {
+      const record = await this.#store!.durableRequest(id), { baseResult } = await import("./result.js");
+      const result = { ...baseResult(id, record.request, record.execution), execution_status: "cancelled" as const, summary: "Explicitly cancelled preserved never-started work", native_evidence: state.native };
+      await this.#store!.writeResult(id, result);
+      await controls.change(id, (s) => { s.phase = "terminal"; s.outcome = "cancelled"; delete s.attention; });
+    }
+    return receipt;
+  }
+  inputBroker() {
+    if (!this.#coordinator) throw new BridgeError("INPUT_RUNTIME_UNAVAILABLE", "No live native input callback exists; inspect/reconcile the retained task");
+    return this.#coordinator.inputs;
+  }
+  async detachClient(clientId: string): Promise<void> {
+    if (!this.#controls || !this.#store) return;
+    for (const record of await this.#store.list()) if ("schema_version" in record) await this.#controls.releaseClient(record.task_id, clientId);
+  }
+  async hasObligations(): Promise<boolean> {
+    if (this.#preparation || this.#composition && !this.#coordinator || this.#pending.size || this.#coordinator?.outstandingCount) return true;
+    if (!this.#store) return false;
+    for (const record of await this.#store.list()) if ((await this.#store.readState(record.task_id)).phase !== "terminal") return true;
+    return false;
+  }
+  async stopAdmission(): Promise<void> { this.#admissionClosed = true; this.#coordinator?.closeAdmission(); }
+  async drain(): Promise<void> { if (this.#coordinator) await this.#coordinator.shutdown(); }
   async #readStore(): Promise<TaskStore> {
     this.#assertOpen();
     if (this.#store) return this.#store;
@@ -395,6 +448,7 @@ export class RepositoryRuntime {
   }
   reconcile(taskId: string, owner: string, reason: string): Promise<void> {
     return this.#track(async () => {
+      if (this.#coordinator?.isActive(taskId)) throw new BridgeError("TASK_ACTIVE", "A live task cannot be reconciled as stopped");
       // Only the operator CLI exposes this explicitly authorized recovery operation.
       await this.#ensurePrepared(undefined, true); this.#assertOpen(); this.#assertAuthority();
       const { acknowledgeStoppedTask } = await import("./recovery.js");
@@ -413,7 +467,7 @@ export class RepositoryRuntime {
       if (this.#composition) startup.push(this.#composition);
       await Promise.allSettled(startup);
       const outcomes = await Promise.allSettled([
-        ...(this.#coordinator ? [this.#coordinator.shutdown(reason)] : []),
+        ...(this.#coordinator ? [this.#coordinator.shutdown()] : []),
         ...(this.#containment ? [this.#containment] : []),
       ]);
       await Promise.allSettled([...this.#pending]);

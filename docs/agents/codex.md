@@ -1,3 +1,11 @@
+# Codex lifecycle candidate
+
+Current lifecycle authority is [task lifecycle](../task-lifecycle.md) and [adapter contract](../agent-adapters.md). The adapter retains one app-server thread across explicit continuation replies, tracks native item obligations, handles documented question/permission requests and withdrawal, and distinguishes exit from inherited-pipe closure. No task deadline exists. The transport and native API remain Linux implementation-only, opt-in and not live-qualified by this source package.
+
+Pinned/native protocol compatibility, actual human approvals, permission enforcement, dedicated authenticated home, child recursion isolation and descendant cleanup require the installed acceptance procedure. Earlier adapter-auth/config details below remain useful; references to absolute task deadlines or connection-owned cancellation are historical and superseded.
+
+## Retained native integration reference
+
 # Codex implementation adapter — qualification candidate
 
 ## Authority and scope

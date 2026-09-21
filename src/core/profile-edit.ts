@@ -1,12 +1,13 @@
+import { SharedProfileSchema, type SharedProfile } from "../contracts/tasks.js";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, open, realpath } from "node:fs/promises";
-import { AgentProfileSchema, AgentRegistrationSchema, type AgentProfile } from "../contracts/agents.js";
+import { AgentRegistrationSchema } from "../contracts/agents.js";
 import { AgentRegistry } from "../agents/registry.js";
 import { builtinAdapters } from "../agents/builtins.js";
 import { atomicJson } from "../store/task-store.js";
 import { BridgeError, filesystemFailure } from "./errors.js";
 import { stableHash } from "./async.js";
-import { MAX_PROFILE_BYTES, decodeProfileJson, normalizeProfile, readProfileBytes } from "./profile.js";
+import { MAX_PROFILE_BYTES, decodeProfileJson, decodeSharedProfile, migrateSharedProfile, readProfileBytes } from "./profile.js";
 
 export type ProfileEdit = { kind: "migrate" } | { kind: "configure-agent"; registration: unknown; replace_fingerprint?: string };
 export type ProfileEditReceipt = { profile_path: string; changed: boolean; profile_fingerprint: string; backup_path?: string; restart_required: boolean };
@@ -25,8 +26,8 @@ export async function editProfile(path: string, edit: ProfileEdit): Promise<Prof
     authority();
     const original = await readProfileBytes(canonical);
     const value = decodeProfileJson(original);
-    const profile = normalizeProfile(value);
-    let candidate: AgentProfile = profile;
+    const profile = edit.kind === "migrate" ? migrateSharedProfile(value) : decodeSharedProfile(value);
+    let candidate: SharedProfile = profile;
     if (edit.kind === "configure-agent") {
       const parsed = AgentRegistrationSchema.safeParse(edit.registration);
       if (!parsed.success) throw new BridgeError("AGENT_CONFIGURATION_INVALID", "Registration violates its declared contract");
@@ -39,7 +40,7 @@ export async function editProfile(path: string, edit: ProfileEdit): Promise<Prof
         throw new BridgeError("AGENT_REPLACEMENT_REQUIRED", `Replacing this registration requires --replace-agent ${stableHash(existing)}`);
       }
       if (!existing && edit.replace_fingerprint) throw new BridgeError("AGENT_REPLACEMENT_CONFLICT", "The named replacement no longer exists");
-      const updated = AgentProfileSchema.safeParse({ ...profile, agents: existing
+      const updated = SharedProfileSchema.safeParse({ ...profile, agents: existing
         ? profile.agents.map((agent) => agent.agent_id === registration.agent_id ? registration : agent)
         : [...profile.agents, registration] });
       if (!updated.success) throw new BridgeError("PROFILE_INVALID", "Updated profile exceeds its declared contract");

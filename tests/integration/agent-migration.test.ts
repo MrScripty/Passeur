@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/prom
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { loadAgentProfile, normalizeProfile } from "../../src/core/profile.js";
+import { loadAgentProfile, loadSharedProfile, normalizeProfile } from "../../src/core/profile.js";
 import { editProfile } from "../../src/core/profile-edit.js";
 import { stableHash } from "../../src/core/async.js";
 
@@ -27,20 +27,21 @@ it("explicit migration retains exact original bytes and subsequent migration is 
     const receipt = await editProfile(path, { kind: "migrate" });
     expect(receipt.changed).toBe(true); expect(receipt.restart_required).toBe(true);
     expect(await readFile(receipt.backup_path!, "utf8")).toBe(original);
-    expect((await loadAgentProfile(path)).schema_version).toBe(2);
+    expect((await loadSharedProfile(path)).schema_version).toBe(3);
+    expect((await loadSharedProfile(path)).execution).not.toHaveProperty("task_timeout_ms");
     expect(await editProfile(path, { kind: "migrate" })).toMatchObject({ changed: false, restart_required: false });
   });
 });
 it("configuration-only registration changes require exact replacement authority", async () => {
   await profileCase(async (path) => {
     await editProfile(path, { kind: "migrate" });
-    const previous = (await loadAgentProfile(path)).agents[0]!;
+    const previous = (await loadSharedProfile(path)).agents[0]!;
     const replacement = { ...previous, description: "Updated approved registration" };
     const before = await readFile(path);
     await expect(editProfile(path, { kind: "configure-agent", registration: replacement })).rejects.toMatchObject({ code: "AGENT_REPLACEMENT_REQUIRED" });
     expect(await readFile(path)).toEqual(before);
     await editProfile(path, { kind: "configure-agent", registration: replacement, replace_fingerprint: stableHash(previous) });
-    expect((await loadAgentProfile(path)).agents[0]?.description).toBe(replacement.description);
+    expect((await loadSharedProfile(path)).agents[0]?.description).toBe(replacement.description);
   });
 });
 it("unknown versions and symlink edit targets cannot be rewritten by migration", async () => {

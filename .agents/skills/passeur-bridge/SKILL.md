@@ -1,20 +1,36 @@
 ---
 name: passeur-bridge
-description: Discover configured Passeur agents, delegate independent coding assignments, inspect retained evidence, diagnose startup, and account for owned worktrees. Use the adapter-authoring skill for implementing a new runtime.
+description: Set up and diagnose Passeur's shared service, submit durable registered-agent work, observe tasks, deliver human input, explicitly cancel or adopt tasks, and account for protected Git resources.
 ---
 
-# Use Passeur
+# Passeur durable task workflow
 
-The caller owns decomposition, dependency ordering, agent/base selection, broader verification, integration and acceptance. Each worker owns its scoped implementation, checks and ordinary commits. Passeur manages execution and Git-resource evidence; it does not run project tests, repair, merge or create PRs.
+Read [setup](references/setup.md) for installation or migration. Use the current [task contract](../../../docs/task-lifecycle.md) and [shared-service contract](../../../docs/shared-service.md). The caller owns decomposition, bases, scope, integration and broader acceptance. Passeur owns execution/resources, not project tests or review policy.
 
-Read [setup](references/setup.md) for the existing installed-runtime and named-registration procedure. Tool discovery, status, repository preparation and agent availability are distinct. Keep configuration edits, live account use and destructive disposition explicitly authorized.
+## Diagnose
 
-Use `passeur_status` for observed state and `passeur_prepare` for explicit coordination. Read `passeur_agents` in pages of at most four, following `next_offset`; configured does not prove login or native compatibility. Select an explicit `agent_id` for each assignment. Use v3 `passeur_delegate` or `passeur_delegate_batch` for one to eight independent tasks. Calls remain pending; retained-result reads are for evidence, not a polling loop.
+Tool discovery and frontend status do not need the repository/service/provider. `passeur_status` version2 distinguishes the frontend build from the connected service generation/build. `passeur_prepare` attaches to or starts the one repository service without inference. `passeur_agents` reads configured registrations; it does not certify native readiness or billing. Keep named server, agent ID, service generation and build identities distinct.
 
-Supply a stable unique request key, bounded self-contained objective/context, scoped acceptance criteria and useful relative paths. Implementation requires the exact full base commit and local target ref; the target is metadata, not permission for Passeur to modify it. The same key denotes the original admitted execution even after configuration changes. Use a new key to run under new configuration.
+Use the same repository state namespace and approved profile. Different linked worktrees can share coordination but preserve their source views. Do not delete a lease/socket, kill another client/service, change state roots or start a second coordinator as a recovery shortcut. An incompatible running service needs controlled handover.
 
-Consume bounded receipts and retrieve useful evidence with `passeur_result`. Execution status, worker assessment, observed delivery, checks and current resource state are separate. A committed result does not certify correctness, hook execution or standards compliance. Ordinary worker failure does not automatically cancel siblings. Unknown shutdown prevents replacement starts/unsafe retirement until explicit reconciliation.
+## Submit once and observe
 
-Integrate outside Passeur through the repository's accepted Git workflow, then use `passeur_finalize` with exact expected head/ref and an idempotent operation key. Acknowledge full-tip ancestry into an accepted target, retain with owner/reason/next action, or explicitly archive. Squash/cherry-pick equivalence does not satisfy ancestry by itself. Clean only disposable outputs under repository policy before retirement; do not force-remove unique, dirty, unknown or live resources.
+Use `passeur_submit` with envelope `schema_version:1` and an `assignment` using schema3 and explicit `agent_id`. Include a stable unique request key, objective, self-contained context, scoped acceptance criteria and exact implementation base/target. Batch submission owns no feature acceptance or sibling rollback. Receipt means durably accepted, not completed.
 
-Existing Muse tools remain v2 compatibility entrypoints selecting agent `muse`; they do not create a second coordinator. Never confuse a caller MCP server name, an agent ID, the vendor client identifier, or the installed build. Read `docs/recovery.md` for offline recovery and `docs/registered-agents.md` for migration and qualification limits.
+Lost acknowledgments are resolved by original key under valid control or human-confirmed attach. A different task/source view/agent under that key conflicts. Do not create new keys merely because a wait timed out.
+
+Use `passeur_tasks` to find authorized tasks and `passeur_wait` with the last revision for bounded observation. `wait_elapsed`, cancelled waits, host Stop on a wait and front-end exit do not cancel accepted work. Do not spin in a tight model polling loop or promise that notifications automatically cause a model turn. Return to an explicit wait/result call when observation is needed.
+
+## Input and cancellation
+
+When input is required, select the exact input ID/control generation and use `passeur_input`. Permission starts a fresh host-associated human prompt; never supply consent as an answer argument. Clarification may use an explicit factual answer without granting authority. Dismissed/timed-out presentations remain unanswered; only a selected denial is denial. A changed native request or adoption invalidates stale decisions.
+
+To stop work, call `passeur_cancel` with task ID, current control generation, unique operation key and reason. Acknowledgment records the stop intent; observe subsequent stop evidence. To regain control after losing the private connection credential, `passeur_attach` by task ID or original request key requires human confirmation. Another connected session is not automatically the owner.
+
+## Consume and account
+
+Working, awaiting input, known pending subprocesses, needs-attention, terminal execution and actual worker-stop evidence are different. Silence and elapsed time prove none of them. A completed native turn containing a question is not final delivery. Read retained reports/diffs only when useful.
+
+Integrate code outside Passeur under ordinary Git authority. Use `passeur_finalize` with the exact expected head/ref and explicit disposition. Full-tip ancestry or verified archive protects source commits. Refuse dirty/unknown/live resources; no force-remove or automatic prune. See [recovery](../../../docs/recovery.md).
+
+Missing required real evidence remains blocked. Configuration inspection, a direct MCP handshake, actual host attachment and native runtime acceptance are separate claims.

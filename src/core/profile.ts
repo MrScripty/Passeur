@@ -1,3 +1,4 @@
+import { SharedProfileSchema, type SharedProfile } from "../contracts/tasks.js";
 import { AgentProfileSchema } from "../contracts/agents.js";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -54,4 +55,20 @@ export function decodeProfileJson(bytes: Buffer): unknown {
 export async function readProfileJson(path: string): Promise<unknown> { return decodeProfileJson(await readProfileBytes(path)); }
 export async function loadAgentProfile(path: string): Promise<import("../contracts/agents.js").AgentProfile> {
   return normalizeProfile(await readProfileJson(path));
+}
+
+/** Admission is deliberately migration-gated. Merely reading old configuration never changes lifetime semantics. */
+export function decodeSharedProfile(value: unknown): SharedProfile {
+  if (typeof value === "object" && value !== null && "schema_version" in value && (value.schema_version === 1 || value.schema_version === 2)) throw new BridgeError("PROFILE_MIGRATION_REQUIRED", "Run migrate-profile with explicit authority; new tasks require profile version 3 without execution deadlines");
+  if (typeof value === "object" && value !== null && "schema_version" in value && Number.isInteger(value.schema_version) && value.schema_version !== 3) throw new BridgeError("PROFILE_VERSION_UNSUPPORTED", "Profile version is unsupported");
+  const parsed = SharedProfileSchema.safeParse(value);
+  if (!parsed.success) throw new BridgeError("PROFILE_INVALID", "Shared-service profile violates version 3");
+  return parsed.data;
+}
+export async function loadSharedProfile(path: string): Promise<SharedProfile> { return decodeSharedProfile(await readProfileJson(path)); }
+export function migrateSharedProfile(value: unknown): SharedProfile {
+  if (typeof value === "object" && value !== null && "schema_version" in value && value.schema_version === 3) return decodeSharedProfile(value);
+  const old = normalizeProfile(value);
+  const { task_timeout_ms: _historicalDeadline, ...execution } = old.execution;
+  return SharedProfileSchema.parse({ schema_version: 3, agents: old.agents, execution });
 }

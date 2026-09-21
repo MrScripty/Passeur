@@ -6,16 +6,20 @@ import { join } from 'node:path';
 const home = process.env.CODEX_HOME;
 const scenario = readFileSync(join(home, 'fixture-scenario'), 'utf8');
 const send = value => process.stdout.write(`${JSON.stringify(value)}\n`);
-let workspace, turn = 'turn-fixture';
+let workspace, turn = 'turn-fixture', turnCount = 0;
+const item = value => { send({method:'item/started',params:{threadId:'thread-fixture',turnId:turn,item:{id:value.id,type:value.type}}});send({method:'item/completed',params:{threadId:'thread-fixture',turnId:turn,item:value}}); };
 const complete = (decision) => {
   if (decision) writeFileSync(join(home, 'fixture-decision'), decision);
-  const report = { summary: decision === 'decline' ? 'Permission declined' : 'Scoped fixture complete',
+  const report = { schema_version:2, kind:'final', summary: decision === 'decline' ? 'Permission declined' : 'Scoped fixture complete',
     assessment: decision === 'decline' ? 'unmet' : 'met', blockers: [], questions: [], checks: [] };
-  const text = scenario === 'bad-report' ? 'no structured report' : `PASSEUR_RESULT ${JSON.stringify(report)}`;
-  send({ method: 'item/completed', params: { threadId: 'thread-fixture', turnId: turn,
-    item: { id: 'report-fixture', type: 'agentMessage', text } } });
+  const text = scenario === 'bad-report' && turnCount === 1 ? 'no structured report' : scenario === 'question' && turnCount === 1 ? 'PASSEUR_MESSAGE {"schema_version":2,"kind":"input_required","question":"Which format?"}' : `PASSEUR_MESSAGE ${JSON.stringify(report)}`;
+  if(scenario==='pending-item')send({method:'item/started',params:{threadId:'thread-fixture',turnId:turn,item:{id:'background',type:'commandExecution'}}});
+  item({id:`report-${turnCount}`,type:'agentMessage',text});
   send({ method: 'turn/completed', params: { threadId: 'thread-fixture', turn: { id: turn,
     status: scenario === 'native-failure' ? 'failed' : 'completed', error: scenario === 'native-failure' ? { message: 'failure fixture' } : null } } });
+  if(scenario==='pending-item')setTimeout(()=>{
+    writeFileSync(join(home,'background-settled'),'yes');send({method:'item/completed',params:{threadId:'thread-fixture',turnId:turn,item:{id:'background',type:'commandExecution',command:'fixture',cwd:workspace,status:'completed',exitCode:0}}});
+  },30);
 };
 const lines = createInterface({ input: process.stdin });
 lines.on('line', line => {
@@ -40,14 +44,15 @@ lines.on('line', line => {
     }
     case 'mcpServerStatus/list': reply({ data: [], nextCursor: null }); break;
     case 'turn/start': {
+      turnCount++; turn=`turn-${turnCount}`; writeFileSync(join(home,'fixture-turns'),String(turnCount));
+      if(message.params.threadId!=='thread-fixture')throw Error('Continuation must keep the same thread');
       if (scenario === 'approval' || scenario === 'amendment') {
         send({ id: 'approval-fixture', method: 'item/commandExecution/requestApproval', params: {
           threadId: 'thread-fixture', turnId: turn, itemId: 'command-fixture', cwd: workspace, command: 'fixture-operation',
           ...(scenario === 'amendment' ? { proposedExecpolicyAmendment: ['fixture-operation'] } : {}),
         } });
       } else if (scenario === 'cancel') {
-        send({ method: 'item/completed', params: { threadId: 'thread-fixture', turnId: turn,
-          item: { id: 'waiting-fixture', type: 'agentMessage', text: 'Waiting for owner cancellation' } } });
+        item({id:'waiting-fixture',type:'agentMessage',text:'Waiting for owner cancellation'});
       } else complete(); // Deliberately send events before the correlated turn/start response.
       reply({ turn: { id: turn, status: 'inProgress' } }); break;
     }

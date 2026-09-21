@@ -1,260 +1,249 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import type { ResourceRecord } from "../contracts/types.js";
-import type { Assignment, AgentResult, ExecutionPolicy } from "../contracts/agents.js";
+import type { Assignment } from "../contracts/agents.js";
+import type { LifecyclePolicy, LifecycleResult, SubmissionIdentity, DurableRequest, TaskObservation } from "../contracts/tasks.js";
+import { TaskControls, initialControl, owns, type ClientActor } from "./task-control.js";
+import { InputBroker } from "./input-broker.js";
 import type { AgentRegistry, SelectedAgent } from "../agents/registry.js";
-import { priorTaskResult } from "./prior-task.js";
+import type { WorkerEvent } from "../agents/types.js";
 import { BridgeError, errorInfo } from "./errors.js";
-import { Mutex, canonicalHash, throwIfAborted, withAbort } from "./async.js";
-import { transition, type TaskState } from "./state.js";
+import { Mutex, canonicalHash } from "./async.js";
 import { baseResult } from "./result.js";
-import type { ApprovalHandler } from "../agents/types.js";
-import type { TaskStore, StoredRequest } from "../store/task-store.js";
+import { workerMessageInstructions } from "../agents/report-format.js";
+import type { TaskStore } from "../store/task-store.js";
 import { collectChanges, createDiff, createManifest, observeDelivery, prepareWorkspace, type Workspace } from "../workspace/worktree.js";
 import { currentRevision, digestFiles, sourceStatus } from "../workspace/project.js";
-export type RunContext = { signal: AbortSignal; approve: ApprovalHandler; approvalAvailable?: boolean; progress?: (message: string) => Promise<void> };
-type Entry = {
-  selected: SelectedAgent; record: StoredRequest; request: Assignment; context: RunContext; hash: string;
-  controller: AbortController; promise: Promise<AgentResult>; resolve: (result: AgentResult) => void; reject: (error: unknown) => void;
-  stage: "queued" | "running" | "settling"; slot: boolean; timer: NodeJS.Timeout;
-  detachOwner: () => void;
-};
+
+type Entry = { selected: SelectedAgent; record: DurableRequest; controller: AbortController;
+  stage: "queued" | "running" | "settling"; done: Promise<void>; resolve: () => void };
 const now = () => new Date().toISOString();
-export function assignmentPrompt(request: Assignment, taskId: string, workspace: Workspace): string {
-  return `Complete one independent Passeur assignment.\nTask: ${taskId}\nMode: ${request.mode}\nWorkspace: ${workspace.path}\nObjective: ${request.objective}\n\nContext:\n${request.context}\n\nAcceptance criteria:\n${request.acceptance_criteria.map((item) => `- ${item}`).join("\n")}\n\nContext files:\n${request.context_files?.join("\n") ?? "none"}\nAllowed paths:\n${request.allowed_paths?.join("\n") ?? "follow the assignment scope"}\n\nRead applicable repository instructions in this workspace. Other workers may be implementing unrelated or unfinished components. Verify only what this assignment and the repository standards require; disclose deferred or unavailable checks.\n${request.mode === "implement" ? "Inspect and stage only your intended changes. Create standards-compliant commits on the assigned task branch through ordinary Git, preserving repository hooks and commit/signing policy. Do not update target refs, sibling workspaces, or shared Git configuration. Do not bypass hooks. Fix scoped check failures within this assignment or report the blocker. Commit all intended delivery files; leave no nonignored uncommitted work. Do not manufacture an empty commit. No end-to-end build or primary-model review is required merely because this worker finishes." : "Inspect only; no commit or repository modification is required."}\n\nFinish with PASSEUR_RESULT followed by one JSON object:\n{"summary":"short outcome","assessment":"met|partial|unmet|unknown","blockers":[],"questions":[],"checks":[{"command":"command actually run","cwd":"directory","exit_code":0}],"no_changes_reason":"include only when no changes were needed"}\nKeep verification claims truthful. Passeur will identify the actual Git deliverable; it will not run or select project tests for you.`;
+export function assignmentPrompt(request: Assignment, id: string, workspace: Workspace): string {
+  return `Complete one independent Passeur assignment.\nTask: ${id}\nMode: ${request.mode}\nWorkspace: ${workspace.path}\nObjective: ${request.objective}\nContext:\n${request.context}\nAcceptance criteria:\n${request.acceptance_criteria.join("\n")}\nContext files:\n${request.context_files?.join("\n") ?? "none"}\nAllowed paths:\n${request.allowed_paths?.join("\n") ?? "follow assignment scope"}\nRead applicable repository instructions. Perform the scoped checks those instructions require. Preserve hooks, signing, shared configuration and other workers. ${request.mode === "implement" ? "Stage only intended changes and create ordinary commits on this task branch. Do not modify target refs, integrate other work, bypass hooks or manufacture empty commits." : "Inspect only; do not write or run shell commands."}\n${workerMessageInstructions} Passeur observes Git; the caller owns broader acceptance and integration.`;
 }
 
-/** One owner, many independent executions. The lock covers admission, never inference. */
+/** One service owns admission and work. A request's signal can stop receipt delivery, never accepted execution. */
 export class Coordinator {
   readonly administration = new Mutex();
-  #admission = new Mutex();
-  #entries = new Map<string, Entry>();
+  readonly controls: TaskControls;
+  readonly inputs: InputBroker;
+  readonly #admission = new Mutex();
+  readonly #entries = new Map<string, Entry>();
   #queue: Entry[] = [];
   #active = 0;
   #closing = false;
   #frozen: string | undefined;
-  #pumping = false;
-  constructor(readonly project: string, readonly projectId: string, readonly policy: ExecutionPolicy, readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority?: () => void) {
+  #pump: Promise<void> | undefined;
+  onSettled?: () => void;
+  constructor(readonly project: string, readonly projectId: string, readonly policy: LifecyclePolicy,
+    readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority: () => void = () => {}, controls?: TaskControls) {
     this.policy = structuredClone(policy); Object.freeze(this.policy.implementation); Object.freeze(this.policy);
+    this.controls = controls ?? new TaskControls(store, policy.max_waiters, policy.max_control_receipts);
+    this.inputs = new InputBroker(this.controls, policy.max_pending_inputs);
   }
-  isActive(taskId: string): boolean { return [...this.#entries.values()].some((entry) => entry.record.task_id === taskId); }
+  isActive(id: string): boolean { return this.#entries.has(id); }
   get activeCount(): number { return this.#active; }
   get queuedCount(): number { return this.#queue.length; }
+  get outstandingCount(): number { return this.#entries.size; }
   get frozenReason(): string | undefined { return this.#frozen; }
   async assertMutationAllowed(): Promise<void> {
-    this.assertAuthority?.();
+    this.assertAuthority();
     const reason = this.#frozen ?? await this.store.frozenReason();
     if (reason) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", reason);
-    if (this.#closing) throw new BridgeError("BRIDGE_CLOSING", "The coordinator is shutting down");
+    if (this.#closing) throw new BridgeError("BRIDGE_CLOSING", "Service admission is closed");
   }
   async #freeze(reason: string): Promise<void> {
     this.#frozen ??= reason;
-    // An in-memory latch protects this process even when the disk failure prevents a sentinel write.
-    await this.store.freeze(this.#frozen).catch(() => undefined);
-    for (const entry of this.#queue) entry.controller.abort(new BridgeError("PROJECT_NEEDS_RECONCILIATION", this.#frozen));
-    this.#kick();
+    await this.store.freeze(reason).catch(() => undefined);
+    // Queued work remains durably accepted. Freezing admission is not cancellation authority.
   }
-  async delegate(request: Assignment, context: RunContext): Promise<AgentResult> {
-    throwIfAborted(context.signal);
-    if (request.schema_version !== 3) throw new BridgeError("CONTRACT_UPGRADE_REQUIRED", "Use schema_version 3 with agent_id");
-    let entry!: Entry;
-    let cached: AgentResult | undefined;
-    request = structuredClone(request);
-    Object.freeze(request.acceptance_criteria);
-    if (request.allowed_paths) Object.freeze(request.allowed_paths);
-    if (request.context_files) Object.freeze(request.context_files);
-    Object.freeze(request);
-    const hash = canonicalHash(request);
+  async submit(identity: SubmissionIdentity, actor: ClientActor, signal: AbortSignal): Promise<TaskObservation> {
+    signal.throwIfAborted();
+    identity = structuredClone(identity);
+    const hash = canonicalHash(identity);
+    let taskId = "";
     await this.#admission.run(async () => {
-      throwIfAborted(context.signal);
-      if (this.#closing) throw new BridgeError("BRIDGE_CLOSING", "The coordinator is shutting down");
-      const active = this.#entries.get(request.request_key);
-      if (active) {
-        if (active.hash !== hash) throw new BridgeError("REQUEST_KEY_CONFLICT", "The active key belongs to a different assignment");
-        entry = active; return;
+      signal.throwIfAborted();
+      const prior = await this.store.find({ request_key: identity.assignment.request_key });
+      if (prior) {
+        if (!("schema_version" in prior) || prior.schema_version !== 4) throw new BridgeError("LEGACY_REQUEST_KEY", "Use historical result access; this key cannot start a new execution");
+        owns(await this.store.readControl(prior.task_id), actor);
+        if (prior.canonical_hash !== hash) throw new BridgeError("REQUEST_KEY_CONFLICT", "Request key names different material intent or source view");
+        taskId = prior.task_id; return;
       }
-      cached = await priorTaskResult(this.store, request);
-      if (cached) return;
-      if (context.approvalAvailable === false) throw new BridgeError("ELICITATION_UNAVAILABLE", "New execution requires human approval capability");
-      const selected = this.registry.select(request, this.policy);
       await this.assertMutationAllowed();
-      // Known live siblings are not historical incomplete executions.
-      for (const prior of await this.store.list()) {
-        if (this.isActive(prior.task_id)) continue;
-        const result = await this.store.readResult(prior.task_id);
-        if (!result || (result.worker_stop === "unconfirmed" && !(await this.store.readResource(prior.task_id))?.stop_reconciled)) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", `Task ${prior.task_id} needs reconciliation before new starts`);
-      }
-      const workers = this.policy.max_workers ?? 2, queueLimit = this.policy.max_queued_tasks ?? 8;
-      const occupying = [...this.#entries.values()].filter((value) => value.stage !== "settling").length;
-      if (occupying >= workers + queueLimit) throw new BridgeError("CAPACITY_EXCEEDED", "The bounded worker pool and queue are full");
-      throwIfAborted(context.signal);
-      const acceptedAt = Date.now(), taskId = randomUUID();
-      const record: StoredRequest = { task_id: taskId, project_id: this.projectId, canonical_hash: hash, accepted_at: new Date(acceptedAt).toISOString(), deadline_at: new Date(acceptedAt + this.policy.task_timeout_ms).toISOString(), request, execution: selected.snapshot };
-      await this.store.create(record, { phase: "queued", updated_at: now() });
-      let resolve!: Entry["resolve"], reject!: Entry["reject"];
-      const promise = new Promise<AgentResult>((yes, no) => { resolve = yes; reject = no; });
-      promise.catch(() => undefined);
-      const controller = new AbortController();
-      const cancelOwner = () => controller.abort(context.signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Owning request cancelled"));
-      const timer = setTimeout(() => controller.abort(new BridgeError("TASK_TIMEOUT", "Absolute task deadline exceeded, including queue time")), Math.max(0, acceptedAt + this.policy.task_timeout_ms - Date.now()));
-      entry = { selected, record, request, context, hash, controller, promise, resolve, reject, stage: "queued", slot: false, timer, detachOwner: () => context.signal.removeEventListener("abort", cancelOwner) };
-      this.#entries.set(request.request_key, entry); this.#queue.push(entry);
-      controller.signal.addEventListener("abort", () => this.#kick(), { once: true });
-      if (this.#closing) controller.abort(new BridgeError("BRIDGE_CLOSING", "Coordinator closed during admission"));
-      if (context.signal.aborted) cancelOwner(); else context.signal.addEventListener("abort", cancelOwner, { once: true });
+      let unfinished = 0;
+      for (const record of await this.store.list()) if ((await this.store.readState(record.task_id)).phase !== "terminal") unfinished++;
+      if (unfinished >= this.policy.max_workers + this.policy.max_queued_tasks) throw new BridgeError("CAPACITY_EXCEEDED", "Repository worker and queue capacity is full");
+      const selected = this.registry.select(identity.assignment, this.policy);
+      signal.throwIfAborted();
+      const id = randomUUID();
+      const record: DurableRequest = { schema_version: 4, task_id: id, project_id: this.projectId, canonical_hash: hash,
+        accepted_at: now(), source_view: identity.source_view, initial_owner: actor.owner_id, request: identity.assignment, execution: selected.snapshot };
+      // The request and initial control share one publication boundary, before any native/Git effects.
+      await this.store.create(record, initialControl(id, actor.owner_id));
+      let resolve!: () => void; const done = new Promise<void>((yes) => { resolve = yes; });
+      const entry: Entry = { selected, record, controller: new AbortController(), stage: "queued", done, resolve };
+      this.#entries.set(id, entry); this.#queue.push(entry); taskId = id;
     });
-    if (cached) {
-      return cached;
-    }
     this.#kick();
-    // Only the first context is wired to entry.controller. Duplicate subscribers merely detach.
-    return withAbort(entry.promise, context.signal);
+    return this.controls.read(taskId, actor);
   }
-  async delegateBatch(assignments: Assignment[], context: RunContext): Promise<Array<{ request_key: string; result?: AgentResult; error?: { code: string; message: string } }>> {
-    if (!assignments.length || assignments.length > 8 || new Set(assignments.map((item) => item.request_key)).size !== assignments.length) throw new BridgeError("INVALID_BATCH", "Supply one to eight unique request keys");
-    return Promise.all(assignments.map(async (request) => {
-      try { return { request_key: request.request_key, result: await this.delegate(request, context) }; }
-      catch (error) { return { request_key: request.request_key, error: errorInfo(error) }; }
-    }));
-  }
-  #kick(): void {
-    if (this.#pumping) return;
-    this.#pumping = true;
-    void this.#admission.run(() => {
-      // Expired/cancelled queued tasks finalize immediately, without waiting for a host slot.
-      const observedAt = Date.now();
-      for (const entry of this.#queue) {
-        if (!entry.controller.signal.aborted && Date.parse(entry.record.deadline_at) <= observedAt) {
-          entry.controller.abort(new BridgeError("TASK_TIMEOUT", "Absolute task deadline exceeded, including queue time"));
-        }
-      }
-      const cancelled = this.#queue.filter((entry) => entry.controller.signal.aborted);
-      this.#queue = this.#queue.filter((entry) => !entry.controller.signal.aborted);
-      for (const entry of cancelled) { entry.stage = "settling"; void this.#run(entry); }
-      while (!this.#closing && !this.#frozen && this.#queue.length && this.#active < (this.policy.max_workers ?? 2)) {
-        const entry = this.#queue.shift()!;
-        entry.stage = "running"; entry.slot = true; this.#active++;
-        void this.#run(entry);
-      }
-    }).catch((error) => this.#freeze(errorInfo(error).message)).finally(() => {
-      this.#pumping = false;
-      if (this.#queue.some((entry) => entry.controller.signal.aborted) || (!this.#closing && !this.#frozen && this.#queue.length && this.#active < (this.policy.max_workers ?? 2))) this.#kick();
-    });
-  }
-  async #run(entry: Entry): Promise<void> {
-    let result: AgentResult | undefined, failure: unknown;
-    try {
-      result = await this.#execute(entry);
-      if (result.worker_stop === "unconfirmed") await this.#freeze(`Worker ${entry.record.task_id} did not confirm shutdown`);
-    } catch (error) {
-      failure = error;
-      await this.#freeze(`Task ${entry.record.task_id} could not preserve terminal evidence: ${errorInfo(error).message}`);
-    } finally {
-      clearTimeout(entry.timer); entry.detachOwner();
-      await this.#admission.run(() => {
-        if (entry.slot) this.#active--;
-        this.#entries.delete(entry.request.request_key);
-      });
-      if (result) entry.resolve(result); else entry.reject(failure);
+  async cancel(id: string, actor: ClientActor, generation: number, operation: string, reason: string) {
+    const receipt = await this.controls.cancel(id, actor, generation, operation, reason);
+    if (receipt.outcome === "accepted") {
+      const entry = this.#entries.get(id);
+      if (entry) entry.controller.abort(new BridgeError("TASK_CANCELLED", reason));
+      else await this.#cancelRecoveredQueue(id);
       this.#kick();
     }
+    return receipt;
   }
-  async #execute(entry: Entry): Promise<AgentResult> {
-    const { request, context, controller, record } = entry, id = record.task_id;
-    let state: TaskState = { phase: "queued", updated_at: now() }, workspace: Workspace | undefined;
-    let result = baseResult(id, request, entry.selected.snapshot), workerSettled = false, pendingApprovals = 0;
-    const phaseLock = new Mutex();
-    const phase = (next: TaskState["phase"]) => phaseLock.run(async () => {
-      state = transition(state, next); await this.store.writeState(id, state);
+  async #cancelRecoveredQueue(id: string): Promise<void> {
+    const state = await this.store.readControl(id);
+    if (state.native.state !== "not_started" || !state.attention?.startsWith("Recovered queued")) return;
+    const record = await this.store.durableRequest(id);
+    const result = { ...baseResult(id, record.request, record.execution), execution_status: "cancelled" as const,
+      summary: "Explicitly cancelled preserved never-started work", native_evidence: state.native };
+    await this.store.writeResult(id, result);
+    await this.controls.change(id, (s) => { s.phase = "terminal"; s.outcome = "cancelled"; delete s.attention; });
+  }
+  #kick(): void {
+    if (this.#pump) return;
+    this.#pump = this.#admission.run(() => {
+      const cancelled = this.#queue.filter((e) => e.controller.signal.aborted);
+      this.#queue = this.#queue.filter((e) => !e.controller.signal.aborted);
+      for (const entry of cancelled) { entry.stage = "settling"; void this.#run(entry, false); }
+      while (!this.#frozen && this.#queue.length && this.#active < this.policy.max_workers) {
+        const entry = this.#queue.shift()!; entry.stage = "running"; this.#active++; void this.#run(entry, true);
+      }
+    }).catch((error) => this.#freeze(errorInfo(error).message)).finally(() => {
+      this.#pump = undefined;
+      if (this.#queue.some((e) => e.controller.signal.aborted) || !this.#frozen && this.#queue.length && this.#active < this.policy.max_workers) this.#kick();
     });
-    const progress = async (message: string) => { await context.progress?.(message).catch(() => undefined); };
+  }
+  async #run(entry: Entry, slot: boolean): Promise<void> {
+    try { await this.#execute(entry); }
+    catch (error) { await this.#freeze(`Task ${entry.record.task_id} cannot preserve authoritative evidence: ${errorInfo(error).message}`); }
+    finally {
+      await this.#admission.run(() => { this.#entries.delete(entry.record.task_id); if (slot) this.#active--; });
+      entry.resolve(); this.#kick(); this.onSettled?.();
+    }
+  }
+  async #event(id: string, event: WorkerEvent): Promise<void> {
+    if (event.kind === "input_withdrawn") { await this.inputs.withdraw(id, event.native_id); return; }
+    if (event.kind === "turn_settled") await this.inputs.settleTurn(id, event.turn_id);
+    if (["turn_started", "turn_settled", "operation_started", "operation_finished", "process_observed", "runtime_unknown"].includes(event.kind)) {
+      await this.controls.change(id, (state) => {
+        if (state.phase === "terminal") throw new BridgeError("STALE_NATIVE_EVENT", "Native event arrived after terminal publication");
+        state.native.last_observed_at = now();
+        if (event.kind === "turn_started") {
+          if (state.native.obligations.length || state.inputs.some((i) => i.state === "pending")) throw new BridgeError("NATIVE_OBLIGATIONS_PENDING", "Prior native work has not settled");
+          state.native.turn_id = event.turn_id; state.native.state = "observed_live"; state.native.coverage = "unknown";
+          if (!state.cancel) state.phase = "active";
+        } else if (event.kind === "turn_settled") {
+          if (state.native.turn_id !== event.turn_id) throw new BridgeError("NATIVE_CORRELATION_INVALID", "Terminal event belongs to another turn");
+          state.native.coverage = "turn_scoped";
+        } else if (event.kind === "operation_started") {
+          if (state.native.obligations.some((o) => o.id === event.id) || state.native.obligations.length >= 256) throw new BridgeError("NATIVE_OBLIGATION_INVALID", "Duplicate or excessive native obligations");
+          state.native.obligations.push({ id: event.id, kind: event.operation });
+        } else if (event.kind === "operation_finished") {
+          const index = state.native.obligations.findIndex((o) => o.id === event.id);
+          if (index < 0) throw new BridgeError("NATIVE_OBLIGATION_INVALID", "Completion has no observed start");
+          state.native.obligations.splice(index, 1);
+        } else if (event.kind === "process_observed") {
+          state.native.process = { pid: event.pid, boot_id: event.boot_id, started: event.started }; state.native.state = "observed_live";
+        } else if (event.kind === "runtime_unknown") {
+          state.native.state = "unknown"; state.native.limitation = event.reason;
+          if (!state.cancel) state.phase = "needs_attention";
+        }
+      });
+    }
+    if (await this.store.appendEvent(id, event) === false) await this.controls.change(id, (s) => { s.telemetry_omitted = true; });
+  }
+  async #execute(entry: Entry): Promise<void> {
+    const { record, controller } = entry, id = record.task_id, request = record.request;
+    let workspace: Workspace | undefined;
+    let result = baseResult(id, request, record.execution), workerSettled = false;
+    const phase = async (next: "starting" | "active" | "finalizing") => this.controls.change(id, (s) => { if (!s.cancel) s.phase = next; });
     try {
-      throwIfAborted(controller.signal);
-      await phase("preparing"); await progress(`Preparing ${id}`);
-      await this.assertMutationAllowed();
-      // Unique task workspaces and Git's own locks isolate preparation; hooks run outside the administrative mutex.
-      workspace = await prepareWorkspace(this.project, request, this.policy, this.projectId, id, {
-          signal: controller.signal, ...(this.assertAuthority ? { assertAuthority: this.assertAuthority } : {}),
-          onIntent: async (intent) => this.store.writeResource(id, {
-            schema_version: 1, task_id: id, project_id: this.projectId, state: "creating", updated_at: now(),
-            worktree_path: intent.path, branch_ref: intent.branch!, base_commit: intent.base_commit!, target_ref: intent.target_ref!,
-          }),
-      });
-      result = baseResult(id, request, entry.selected.snapshot, workspace);
+      controller.signal.throwIfAborted(); this.assertAuthority(); await phase("starting");
+      workspace = await this.administration.run(() => prepareWorkspace(record.source_view, request, this.policy, this.projectId, id, {
+        signal: controller.signal, assertAuthority: this.assertAuthority,
+        onIntent: async (intent) => this.store.writeResource(id, { schema_version: 1, task_id: id, project_id: this.projectId,
+          state: "creating", updated_at: now(), worktree_path: intent.path, branch_ref: intent.branch!, base_commit: intent.base_commit!, target_ref: intent.target_ref! }),
+      }));
+      result = baseResult(id, request, record.execution, workspace);
       const resource = await this.store.readResource(id);
-      await this.store.writeResource(id, resource ? { ...resource, state: "pending", updated_at: now() } : {
-        schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now(),
-      });
-      const paths = request.context_files ?? [];
-      const before = await digestFiles(workspace.path, paths);
-      const initialStatus = await sourceStatus(workspace.path, false, controller.signal), initialRevision = await currentRevision(workspace.path, controller.signal);
-      if (request.mode === "review" && initialRevision) result.workspace.base_commit = initialRevision;
-      throwIfAborted(controller.signal);
-      await phase("running"); await progress(`Agent task ${id} is working`);
+      await this.store.writeResource(id, resource ? { ...resource, state: "pending", updated_at: now() }
+        : { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
+      const before = await digestFiles(workspace.path, request.context_files ?? []);
+      const beforeStatus = await sourceStatus(workspace.path, false, controller.signal), revision = await currentRevision(workspace.path, controller.signal);
+      if (request.mode === "review" && revision) result.workspace.base_commit = revision;
+      controller.signal.throwIfAborted(); this.assertAuthority();
+      // Persist the run intent before startup. A crash after this point cannot claim never-started safety.
+      await this.controls.change(id, (s) => { s.native.state = "unknown"; if (!s.cancel) s.phase = "active"; });
       result.worker_stop = "unconfirmed";
-      this.assertAuthority?.();
-      const run = await entry.selected.worker.run({
-        request, task_id: id, prompt: assignmentPrompt(request, id, workspace), workspace: workspace.path,
-        policy: this.policy, signal: controller.signal,
-        onEvent: (event) => this.store.appendEvent(id, event),
-        approve: async (approval, signal) => {
-          await phaseLock.run(async () => {
-            throwIfAborted(signal);
-            if (state.phase !== "running" && state.phase !== "awaiting_input") throw new BridgeError("STALE_APPROVAL", "Task is no longer accepting approvals");
-            if (++pendingApprovals === 1) { state = transition(state, "awaiting_input"); await this.store.writeState(id, state); }
-          });
-          try { return await context.approve({ ...approval, task_id: id, workspace: workspace!.path }, signal); }
-          finally {
-            await phaseLock.run(async () => {
-              pendingApprovals--;
-              if (!pendingApprovals && state.phase === "awaiting_input" && !signal.aborted) { state = transition(state, "running"); await this.store.writeState(id, state); }
-            });
-          }
-        },
+      const run = await entry.selected.worker.run({ request, task_id: id, workspace: workspace.path, policy: this.policy,
+        prompt: assignmentPrompt(request, id, workspace), signal: controller.signal,
+        onEvent: (event) => this.#event(id, event),
+        approve: async (approval, signal) => ({ choice_id: await this.inputs.request(id, { kind: "permission", approval: { ...approval, task_id: id, workspace: workspace!.path } }, approval.id, signal) }),
+        input: (question, attention = false, nativeId, choices, inputSignal) => this.inputs.request(id, { kind: "clarification", question, attention, ...(choices ? { choices: [...choices] } : {}) }, nativeId ?? `clarification:${randomUUID()}`, inputSignal ? AbortSignal.any([controller.signal, inputSignal]) : controller.signal),
       });
-      // Stop evidence must survive every optional finalization operation below.
-      result = { ...result, execution_status: run.status, worker_stop: run.worker_stop, worker_assessment: run.worker_assessment, summary: run.summary,
-        blockers: [...run.blockers], questions: run.questions, checks: run.checks,
-        model: { ...(entry.selected.snapshot.requested_model ? { requested: entry.selected.snapshot.requested_model } : {}), ...(run.reported_model ? { reported: run.reported_model } : {}) }, ...(run.error ? { error: run.error } : {}) };
       workerSettled = true;
-      if (run.worker_stop === "unconfirmed") await this.#freeze(`Worker ${id} did not confirm shutdown`);
-      await phase("finalizing"); await progress(`Collecting ${id}`);
+      result = { ...result, execution_status: run.status, worker_stop: run.worker_stop, worker_assessment: run.worker_assessment,
+        summary: run.summary, blockers: run.blockers, questions: run.questions, checks: run.checks,
+        model: { ...(record.execution.requested_model ? { requested: record.execution.requested_model } : {}), ...(run.reported_model ? { reported: run.reported_model } : {}) }, ...(run.error ? { error: run.error } : {}) };
+      const state = await this.store.readControl(id);
+      if (state.cancel) result.execution_status = "cancelled";
+      if (run.status === "completed" && !state.cancel && (state.native.coverage !== "turn_scoped" || state.native.obligations.length || state.inputs.some((i) => i.state === "pending" || i.state === "answer_intent" || i.state === "delivery_unknown"))) {
+        result.execution_status = "failed"; result.error = { code: "COMPLETION_EVIDENCE_MISSING", message: "Native completion did not account for required obligations" };
+      }
       if (run.worker_stop === "unconfirmed") {
-        result.delivery = { status: request.mode === "review" ? "not_applicable" : "incomplete", reason: "Cannot identify a stable deliverable until worker shutdown is reconciled" };
+        if (result.execution_status === "completed") result.execution_status = "interrupted";
+        await this.#freeze(`Task ${id} has unconfirmed native shutdown`);
       } else {
+        await phase("finalizing");
+        // Terminal collection has its own lifetime; a cancelled work signal cannot cancel evidence preservation.
         result.delivery = await observeDelivery(workspace, run.no_changes_reason);
-        const after = await digestFiles(workspace.path, paths, true);
-        result.workspace.stale = request.mode === "review" && (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(initialStatus) !== JSON.stringify(await sourceStatus(workspace.path, false, controller.signal)) || initialRevision !== await currentRevision(workspace.path, controller.signal));
-        const changes = await collectChanges(workspace);
-        result.changed_files = changes.map((change) => change.path).sort();
-        const scopePaths = [...new Set(changes.flatMap((change) => change.old_path ? [change.old_path, change.path] : [change.path]))];
-        const outside = request.allowed_paths ? scopePaths.filter((path) => !request.allowed_paths!.some((allowed) => path === allowed || path.startsWith(`${allowed.replace(/\/$/, "")}/`))) : [];
-        if (outside.length) result.blockers.push(`Changes outside allowed_paths require an orchestrator decision: ${outside.join(", ")}`);
+        result.workspace.stale = request.mode === "review" && (JSON.stringify(before) !== JSON.stringify(await digestFiles(workspace.path, request.context_files ?? [], true))
+          || JSON.stringify(beforeStatus) !== JSON.stringify(await sourceStatus(workspace.path)) || revision !== await currentRevision(workspace.path));
+        const changes = await collectChanges(workspace); result.changed_files = changes.map((c) => c.path).sort();
+        const paths = [...new Set(changes.flatMap((c) => c.old_path ? [c.old_path, c.path] : [c.path]))];
+        const outside = request.allowed_paths ? paths.filter((p) => !request.allowed_paths!.some((a) => p === a || p.startsWith(`${a.replace(/\/$/, "")}/`))) : [];
+        if (outside.length) result.blockers.push(`Changes outside allowed_paths require caller review: ${outside.join(", ").slice(0, 1800)}`);
         if (request.mode === "implement") await this.#artifacts(id, workspace, result, changes);
         const owned = await this.store.readResource(id);
         if (owned && result.delivery.head_commit) await this.store.writeResource(id, { ...owned, head_commit: result.delivery.head_commit, updated_at: now() });
       }
     } catch (error) {
       const detail = errorInfo(error);
-      if (detail.code === "GIT_STOP_UNCONFIRMED") { result.worker_stop = "unconfirmed"; await this.#freeze(detail.message); }
-      if (workerSettled) {
-        result.error = { code: "FINALIZATION_FAILED", message: detail.message };
-        result.blockers.push(`Result finalization failed: ${detail.message}`);
-      } else {
-        const reason = controller.signal.reason as { code?: string } | undefined;
-        const status = controller.signal.aborted ? (reason?.code === "TASK_TIMEOUT" ? "timed_out" : reason?.code === "PROJECT_NEEDS_RECONCILIATION" ? "blocked" : "cancelled") : ["DIRTY_SOURCE", "IMPLEMENTATION_DISABLED", "PROJECT_NEEDS_RECONCILIATION"].includes(detail.code) ? "blocked" : "failed";
-        result = { ...result, execution_status: status, summary: detail.message, error: detail, blockers: status === "blocked" ? [detail.message] : [] };
-      }
+      if (detail.code === "GIT_STOP_UNCONFIRMED") result.worker_stop = "unconfirmed";
+      result.error = workerSettled ? { code: "FINALIZATION_FAILED", message: detail.message } : detail; result.summary = detail.message;
+      result.execution_status = controller.signal.aborted ? "cancelled" : "failed";
+      if (workerSettled) result.blockers.push("Delivery collection failed; preserve the worktree and evidence");
     }
-    if (state.phase !== "finalizing") await phase("finalizing");
     if (!await this.store.readResource(id)) await this.store.writeResource(id, { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
-    // Persist immutable result before publishing terminal state. Recovery repairs the interrupted pair.
+    if (result.worker_stop === "unconfirmed" && result.execution_status === "completed") result.execution_status = "interrupted";
+    // Serialize cancellation versus successful settlement at the same state owner. No provider callback runs here.
+    await this.controls.change(id, (s) => { if (s.cancel) result.execution_status = "cancelled"; s.phase = "finalizing"; s.settled_outcome = result.execution_status; });
+    let state = await this.store.readControl(id);
+    result.native_evidence = structuredClone(state.native);
+    result.native_evidence.state = result.worker_stop === "confirmed" ? "stopped" : result.worker_stop === "not_started" ? "not_started" : "unknown";
     await this.store.writeResult(id, result);
-    await phaseLock.run(async () => { state = transition(state, "terminal", { outcome: result.execution_status }); await this.store.writeState(id, state); });
-    return result;
+    await this.controls.change(id, (s) => {
+      s.native = result.native_evidence;
+      for (const input of s.inputs) {
+        delete input.claim;
+        if (input.state === "pending") input.state = "withdrawn";
+        if (input.state === "answer_intent") input.state = "delivery_unknown";
+      }
+      if (result.worker_stop === "unconfirmed" || s.inputs.some((i) => i.state === "delivery_unknown")) { s.phase = "needs_attention"; s.attention = "Native shutdown or input delivery remains unconfirmed; explicit reconciliation is required"; }
+      else { s.phase = "terminal"; s.outcome = result.execution_status; }
+    });
+    if (result.worker_stop === "unconfirmed" || (await this.store.readControl(id)).inputs.some((i) => i.state === "delivery_unknown")) await this.#freeze(`Task ${id} has unconfirmed shutdown or input delivery`);
   }
-  async #artifacts(id: string, workspace: Workspace, result: AgentResult, changes: Awaited<ReturnType<typeof collectChanges>>): Promise<void> {
+  async #artifacts(id: string, workspace: Workspace, result: LifecycleResult, changes: Awaited<ReturnType<typeof collectChanges>>): Promise<void> {
     const dir = join(this.store.taskDir(id), "artifacts"); this.assertAuthority?.(); await mkdir(dir, { recursive: true, mode: 0o700 });
     const files = await createManifest(workspace, dir, changes, this.assertAuthority);
     const manifestPath = join(dir, "manifest.json"), diffPath = join(dir, "changes.diff");
@@ -269,17 +258,26 @@ export class Coordinator {
       result.artifacts.push({ id: file.artifact_id, kind: "report", path: relative(this.store.taskDir(id), path), bytes: (await stat(path)).size });
     }
   }
-  closeAdmission(reason: unknown = new BridgeError("BRIDGE_CLOSING", "Coordinator closed")): void {
-    this.#closing = true;
-    for (const entry of this.#entries.values()) entry.controller.abort(reason);
-    this.#kick();
-  }
+  closeAdmission(): void { this.#closing = true; }
   async waitForIdle(): Promise<void> {
-    do {
-      await this.#admission.idle();
-      await Promise.allSettled([...this.#entries.values()].map((entry) => entry.promise));
-      await this.#admission.idle();
-    } while (this.#entries.size);
+    do { await this.#admission.idle(); await Promise.all([...this.#entries.values()].map((e) => e.done)); await this.#admission.idle(); } while (this.#entries.size);
+    await this.administration.idle();
   }
-  async shutdown(reason?: unknown): Promise<void> { this.closeAdmission(reason); await this.waitForIdle(); await this.administration.idle(); }
+  async shutdown(): Promise<void> {
+    this.closeAdmission();
+    if (this.#frozen) {
+      const queued = await this.#admission.run(() => { const q = this.#queue; this.#queue = []; for (const e of q) this.#entries.delete(e.record.task_id); return q; });
+      for (const e of queued) {
+        await this.controls.change(e.record.task_id, (s) => { s.phase = "needs_attention"; s.attention = "Recovered queued work: retained during explicit frozen-service shutdown; cancel explicitly before resubmitting"; });
+        e.resolve();
+      }
+    }
+    await this.waitForIdle();
+  }
+  async authorityLost(reason: unknown): Promise<void> {
+    this.closeAdmission(); this.#frozen = errorInfo(reason).message;
+    // Lease compromise is independent failure/containment authority, not a caller timeout.
+    for (const entry of this.#entries.values()) entry.controller.abort(reason);
+    this.#kick(); await this.waitForIdle();
+  }
 }

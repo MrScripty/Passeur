@@ -6,9 +6,10 @@ import { z } from "zod";
 import { parseArgs } from "node:util";
 import { isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
-import { RuntimeStatusSchema } from "../src/contracts/runtime.js";
+import { FrontendStatusSchema } from "../src/contracts/service.js";
+import { TaskReceiptSchema } from "../src/contracts/tasks.js";
 import { AgentCatalogSchema, AgentIdSchema, type AgentCatalog } from "../src/contracts/agents.js";
-import { loadAgentProfile } from "../src/core/profile.js";
+import { loadSharedProfile } from "../src/core/profile.js";
 import { canonicalProject, currentRevision, git, repositoryIdentity, sourceStatus } from "../src/workspace/project.js";
 
 if (process.env.PASSEUR_LIVE_AGENTS !== "1") throw new Error("Set PASSEUR_LIVE_AGENTS=1 only after authorizing account use for this disposable probe");
@@ -19,7 +20,7 @@ const { values } = parseArgs({ options: {
 for (const key of ["project", "profile", "runtime", "state-root"] as const) if (!values[key] || !isAbsolute(values[key]!)) throw new Error(`--${key} requires an explicit absolute path`);
 if (!values["confirm-disposable"]) throw new Error("--confirm-disposable is required; the probe creates retained Git worktrees and commits");
 const agents = z.array(AgentIdSchema).min(2).max(8).parse(values.agents?.split(","));
-const project = await canonicalProject(values.project!), profile = await loadAgentProfile(values.profile!);
+const project = await canonicalProject(values.project!), profile = await loadSharedProfile(values.profile!);
 if (!profile.execution.implementation.enabled || profile.execution.max_workers < 2) throw new Error("The profile must allow implementation with at least two workers");
 if ((await sourceStatus(project, true)).length) throw new Error("The disposable repository must be clean");
 const base = await currentRevision(project), target = (await git(project, ["symbolic-ref", "HEAD"])).trim();
@@ -36,8 +37,8 @@ const body = (value: unknown): unknown => {
 };
 try {
   await client.connect(transport);
-  const status = RuntimeStatusSchema.parse(body(await client.callTool({ name: "passeur_status", arguments: {} })));
-  if (status.runtime.mode !== "installed" || status.binding.project_input !== project) throw new Error("This probe requires the exact installed runtime and expected project binding");
+  const status = FrontendStatusSchema.parse(body(await client.callTool({ name: "passeur_status", arguments: {} })));
+  if (status.frontend.mode !== "installed" || status.binding.project_input !== project) throw new Error("This probe requires the exact installed runtime and expected project binding");
   const known = new Map<string, z.output<typeof AgentCatalogSchema>["agents"][number]>();
   let offset: number | null = 0;
   do {
@@ -54,9 +55,13 @@ try {
       context: "Explicitly authorized disposable system probe. Preserve repository instructions, hooks, signing and permissions. Report blockers rather than bypassing them.",
       acceptance_criteria: ["Only the named file changes", "Actual file contents are checked", "An ordinary commit is created"], allowed_paths: [path] };
   });
-  const response = await client.callTool({ name: "passeur_delegate_batch", arguments: { schema_version: 3, assignments } }, undefined,
-    { timeout: profile.execution.task_timeout_ms + profile.execution.stop_grace_ms + 60_000 });
-  console.log(JSON.stringify({ observed_at: new Date().toISOString(), runtime: status.runtime, repository_id: identity.id, agents, response }, null, 2));
+  const response = await client.callTool({ name: "passeur_submit_batch", arguments: { schema_version: 1, assignments } });
+  const receipts = z.object({ results: z.array(z.union([z.object({ request_key: z.string(), task: TaskReceiptSchema }).strict(), z.object({ request_key: z.string(), error: z.object({ code: z.string(), message: z.string() }).strict() }).strict()])) }).strict().parse(body(response));
+  console.log(JSON.stringify({ kind: "durable_receipts", receipts }));
+  // One bounded observation per accepted task; ending this probe never cancels work.
+  const observations = await Promise.all(receipts.results.map(async (entry) => "task" in entry
+    ? client.callTool({ name: "passeur_wait", arguments: { schema_version: 1, task_id: entry.task.task_id, after_revision: entry.task.revision, wait_ms: 10000 } }, undefined, { timeout: 20000 }) : entry));
+  console.log(JSON.stringify({ observed_at: new Date().toISOString(), runtime: status.frontend, repository_id: identity.id, agents, response, observations }, null, 2));
   if (response.isError) process.exitCode = 1;
-  console.error("This probe never grants human approvals, integrates commits, deletes worktrees, or certifies billing/native permissions. Inspect retained tasks and explicitly account for their resources. Actual host attachment and human approval require separate operator evidence.");
+  console.error("This probe never grants human approvals, integrates commits, deletes worktrees, or certifies billing/native permissions. Tasks may still be running or awaiting input. Use human-confirmed passeur_attach by task ID/request key from the actual host before input/control; explicitly account for their resources. Actual host attachment and human approval require separate operator evidence.");
 } finally { await client.close(); }

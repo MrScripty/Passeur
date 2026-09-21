@@ -1,19 +1,7 @@
-# Provider dossier
+# Native provider dossier
 
-Record these facts in the new adapter's durable documentation; link code and evidence instead of copying policy into several owners.
+Record the selected provider/version and exact primary protocol/SDK source; executable invocation; credential/profile authority; supported modes and actual permission enforcement; native session/turn/item/input identities; explicit completion/blocker/question representations; pending-operation settlement guarantee and gaps; native input withdrawal and answer acknowledgment; same-session continuation; actual exit versus stream closure; descendant/stop evidence; recursion/environment isolation; installed artifact dependencies and platform support.
 
-| Question | Required record |
-| --- | --- |
-| Native authority | Official protocol/SDK source, exact revision/version, consumed operations and generated-schema identities when relevant. |
-| Agent versus registration | Existing adapter reuse or a genuinely different native boundary; exact supported assignment modes. |
-| Configuration | Adapter decoder, executable selection, native options, defaults, unsupported variants, and safe snapshot projection. |
-| Startup | Resources owned before initialization, lazy native loading, missing-executable/dependency behavior, and initialization correlation. |
-| Credentials | Operator-prepared route, deliberate environment, prohibited fallback, sensitive fields excluded from ordinary evidence, billing provenance limits. |
-| Tools and permissions | Effective no-write/no-shell controls when claiming review, sandbox/network meanings, child MCP/agent/plugin isolation and real enforcement evidence. |
-| Approvals | Session/task/native IDs, offered choices, one-operation scope, denial, stale decisions, unavailable human interaction, and unsupported escalation. |
-| Completion | Native terminal outcomes versus worker assessment/report; actual requested and reported model facts. |
-| Shutdown | Cancellation across all native stages, outstanding callbacks/writes, parent and descendant observations, deadline owner and truthful uncertainty. |
-| Installation | Actual dependency closure, immutable build manifest, named caller registration, supported OS/filesystem/runtime matrix. |
-| Evidence | Controlled boundary tests versus required-real native observations; unresolved facts, owners and requalification triggers. |
+For each uncertain fact name the decision it changes and the least costly adequate qualification. A main-branch SDK document is not the pinned package. Unsupported variants stay unadvertised or explicitly unavailable. Explain any scoped observation interval; it must never expire into execution cancellation. Record real and substituted evidence separately with expected/observed result and limitations.
 
-Use `docs/agents/codex.md` as a current **qualification-candidate** example, not proof that its installed native controls have passed. A missing capability is documented and rejected, not emulated by silent permission or provider fallback. A new adapter need not introduce a separate API version, plugin loader or schema generator unless an actual independently changing contract requires it.
+Muse uses the SDK fold and host observations plus explicit post-turn messages. Its native in-turn user-input API and versioned settlement still require qualification. Codex uses app-server item/turn/request-user-input/resolved notifications; resolved does not necessarily mean a human answer was accepted. Keep these differences local.

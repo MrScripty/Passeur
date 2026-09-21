@@ -1,0 +1,252 @@
+TAP version 13
+# Subtest: account and tool isolation require explicit native facts
+ok 1 - account and tool isolation require explicit native facts
+  ---
+  duration_ms: 1.088221
+  type: 'test'
+  ...
+# Subtest: selected model, human approval and sandbox have independent postconditions
+ok 2 - selected model, human approval and sandbox have independent postconditions
+  ---
+  duration_ms: 1.161251
+  type: 'test'
+  ...
+# Subtest: approval rejects stale identity and persistent or broadened authority
+ok 3 - approval rejects stale identity and persistent or broadened authority
+  ---
+  duration_ms: 0.396658
+  type: 'test'
+  ...
+# Subtest: terminal status is never inferred from a report or arbitrary response
+ok 4 - terminal status is never inferred from a report or arbitrary response
+  ---
+  duration_ms: 0.315756
+  type: 'test'
+  ...
+# Subtest: startup flags select undefined without inferring host state
+ok 5 - startup flags select undefined without inferring host state
+  ---
+  duration_ms: 1.216895
+  type: 'test'
+  ...
+# Subtest: startup flags select true without inferring host state
+ok 6 - startup flags select true without inferring host state
+  ---
+  duration_ms: 0.19291
+  type: 'test'
+  ...
+# Subtest: startup flags select false without inferring host state
+ok 7 - startup flags select false without inferring host state
+  ---
+  duration_ms: 0.160812
+  type: 'test'
+  ...
+# Subtest: contradictory startup flags are rejected before configuration work
+ok 8 - contradictory startup flags are rejected before configuration work
+  ---
+  duration_ms: 0.872967
+  type: 'test'
+  ...
+# Subtest: an unspecified update preserves required=true
+ok 9 - an unspecified update preserves required=true
+  ---
+  duration_ms: 0.180171
+  type: 'test'
+  ...
+# Subtest: an unspecified update preserves required=false
+ok 10 - an unspecified update preserves required=false
+  ---
+  duration_ms: 0.116546
+  type: 'test'
+  ...
+# Subtest: new registrations remain optional unless explicitly required
+ok 11 - new registrations remain optional unless explicitly required
+  ---
+  duration_ms: 0.216376
+  type: 'test'
+  ...
+# Subtest: explicit operator choices override the selected server policy
+ok 12 - explicit operator choices override the selected server policy
+  ---
+  duration_ms: 0.168594
+  type: 'test'
+  ...
+# Subtest: malformed prior policy is rejected rather than coerced or repaired silently
+ok 13 - malformed prior policy is rejected rather than coerced or repaired silently
+  ---
+  duration_ms: 0.429277
+  type: 'test'
+  ...
+# Subtest: a dynamically invalid requested policy cannot cross the registration boundary
+ok 14 - a dynamically invalid requested policy cannot cross the registration boundary
+  ---
+  duration_ms: 0.540485
+  type: 'test'
+  ...
+# Subtest: missing get-json field remains not-reported even for a required registration
+ok 15 - missing get-json field remains not-reported even for a required registration
+  ---
+  duration_ms: 0.653515
+  type: 'test'
+  ...
+# Subtest: explicit host observations must match the selected policy
+ok 16 - explicit host observations must match the selected policy
+  ---
+  duration_ms: 0.24562
+  type: 'test'
+  ...
+# Subtest: malformed host evidence is not treated as absent or successful
+ok 17 - malformed host evidence is not treated as absent or successful
+  ---
+  duration_ms: 0.211268
+  type: 'test'
+  ...
+# Subtest: envelopes preserve ID domains and reject ambiguous authority
+ok 18 - envelopes preserve ID domains and reject ambiguous authority
+  ---
+  duration_ms: 1.682728
+  type: 'test'
+  ...
+# Subtest: real pipe reassembles split UTF-8 and correlates responses
+ok 19 - real pipe reassembles split UTF-8 and correlates responses
+  ---
+  duration_ms: 41.940765
+  type: 'test'
+  ...
+# Subtest: human callback does not block independent native response dispatch
+ok 20 - human callback does not block independent native response dispatch
+  ---
+  duration_ms: 42.670145
+  type: 'test'
+  ...
+# Subtest: real native malformed output terminates the request without a substitute result
+ok 21 - real native malformed output terminates the request without a substitute result
+  ---
+  duration_ms: 37.137522
+  type: 'test'
+  ...
+# Subtest: real native bad-utf8 output terminates the request without a substitute result
+ok 22 - real native bad-utf8 output terminates the request without a substitute result
+  ---
+  duration_ms: 36.506446
+  type: 'test'
+  ...
+# Subtest: real native oversize output terminates the request without a substitute result
+ok 23 - real native oversize output terminates the request without a substitute result
+  ---
+  duration_ms: 33.161125
+  type: 'test'
+  ...
+# Subtest: real native unmatched output terminates the request without a substitute result
+ok 24 - real native unmatched output terminates the request without a substitute result
+  ---
+  duration_ms: 28.797415
+  type: 'test'
+  ...
+# Subtest: duplicate outstanding native approval identity is rejected
+ok 25 - duplicate outstanding native approval identity is rejected
+  ---
+  duration_ms: 29.837128
+  type: 'test'
+  ...
+# Subtest: cancellation detaches a blocked pipe write and close drains the actual child
+ok 26 - cancellation detaches a blocked pipe write and close drains the actual child
+  ---
+  duration_ms: 293.497548
+  type: 'test'
+  ...
+# Subtest: spawn failure has no started worker and remains observable
+ok 27 - spawn failure has no started worker and remains observable
+  ---
+  duration_ms: 2.232527
+  type: 'test'
+  ...
+# Subtest: a descendant outliving its parent prevents confirmed shutdown
+ok 28 - a descendant outliving its parent prevents confirmed shutdown
+  ---
+  duration_ms: 35.527526
+  type: 'test'
+  ...
+# (node:5560) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a cancelled presentation releases only its connection queue, not a pending native decision
+ok 29 - a cancelled presentation releases only its connection queue, not a pending native decision
+  ---
+  duration_ms: 4.058891
+  type: 'test'
+  ...
+# Subtest: an unanswered presentation remains pending beyond the former expiry
+ok 30 - an unanswered presentation remains pending beyond the former expiry
+  ---
+  duration_ms: 1.533873
+  type: 'test'
+  ...
+# Subtest: task-owned Git hook has no implicit ninety-second execution timer
+ok 31 - task-owned Git hook has no implicit ninety-second execution timer
+  ---
+  duration_ms: 46.64599
+  type: 'test'
+  ...
+# Subtest: IPC decodes fragmented Unicode frames through a real Unix socket
+ok 32 - IPC decodes fragmented Unicode frames through a real Unix socket
+  ---
+  duration_ms: 11.881576
+  type: 'test'
+  ...
+# Subtest: IPC rejects unknown envelope fields instead of handing them to an operation
+ok 33 - IPC rejects unknown envelope fields instead of handing them to an operation
+  ---
+  duration_ms: 2.381731
+  type: 'test'
+  ...
+# Subtest: IPC closes oversized unterminated input before accumulating more than its frame limit
+ok 34 - IPC closes oversized unterminated input before accumulating more than its frame limit
+  ---
+  duration_ms: 9.67555
+  type: 'test'
+  ...
+# Subtest: IPC EOF with a partial frame retains a framing failure
+ok 35 - IPC EOF with a partial frame retains a framing failure
+  ---
+  duration_ms: 3.033695
+  type: 'test'
+  ...
+# Subtest: closing one connection does not interrupt another connection or its owned callback
+ok 36 - closing one connection does not interrupt another connection or its owned callback
+  ---
+  duration_ms: 5.948299
+  type: 'test'
+  ...
+# Subtest: IPC correlation and direction metadata are required for all response variants
+ok 37 - IPC correlation and direction metadata are required for all response variants
+  ---
+  duration_ms: 0.482447
+  type: 'test'
+  ...
+# Subtest: private control directory rejects permissive modes and symlink aliases
+ok 38 - private control directory rejects permissive modes and symlink aliases
+  ---
+  duration_ms: 2.638914
+  type: 'test'
+  ...
+# Subtest: Linux process birth evidence rejects changed start identity and lockless entry
+ok 39 - Linux process birth evidence rejects changed start identity and lockless entry
+  ---
+  duration_ms: 31.964971
+  type: 'test'
+  ...
+# Subtest: a paused elected process keeps the same guard; owner exit permits a new owner
+ok 40 - a paused elected process keeps the same guard; owner exit permits a new owner
+  ---
+  duration_ms: 54.818729
+  type: 'test'
+  ...
+1..40
+# tests 40
+# suites 0
+# pass 40
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 644.411602

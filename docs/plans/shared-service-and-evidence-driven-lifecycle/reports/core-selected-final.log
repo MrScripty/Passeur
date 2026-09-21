@@ -1,0 +1,262 @@
+TAP version 13
+# Subtest: accepted task survives cancellation of submit acknowledgement and observation wait
+ok 1 - accepted task survives cancellation of submit acknowledgement and observation wait
+  ---
+  duration_ms: 51.135801
+  type: 'test'
+  ...
+# Subtest: lost receipt is resolved by key and owner without another execution
+ok 2 - lost receipt is resolved by key and owner without another execution
+  ---
+  duration_ms: 37.733289
+  type: 'test'
+  ...
+# Subtest: two clients share capacity while draining does not cancel their work
+ok 3 - two clients share capacity while draining does not cancel their work
+  ---
+  duration_ms: 47.878384
+  type: 'test'
+  ...
+# Subtest: queued task has no elapsed deadline and explicit cancellation never starts it
+ok 4 - queued task has no elapsed deadline and explicit cancellation never starts it
+  ---
+  duration_ms: 49.085634
+  type: 'test'
+  ...
+# Subtest: input stays pending across presentation dismissal and owner adoption invalidates old claims
+ok 5 - input stays pending across presentation dismissal and owner adoption invalidates old claims
+  ---
+  duration_ms: 37.16644
+  type: 'test'
+  ...
+# Subtest: permission accepts only an offered decision and survives wait budget expiration
+ok 6 - permission accepts only an offered decision and survives wait budget expiration
+  ---
+  duration_ms: 36.030366
+  type: 'test'
+  ...
+# Subtest: native cancellation wins over a late reported successful turn
+ok 7 - native cancellation wins over a late reported successful turn
+  ---
+  duration_ms: 32.4783
+  type: 'test'
+  ...
+# Subtest: unsettled native obligations cannot be reported as successful and unknown stop freezes replacements
+ok 8 - unsettled native obligations cannot be reported as successful and unknown stop freezes replacements
+  ---
+  duration_ms: 30.242688
+  type: 'test'
+  ...
+# Subtest: recovery preserves queued identity, classifies submitted uncertainty and never replays work
+ok 9 - recovery preserves queued identity, classifies submitted uncertainty and never replays work
+  ---
+  duration_ms: 21.407845
+  type: 'test'
+  ...
+# Subtest: source view is part of idempotency and implementation delivers observed real commits
+ok 10 - source view is part of idempotency and implementation delivers observed real commits
+  ---
+  duration_ms: 78.67036
+  type: 'test'
+  ...
+# Subtest: registry isolates unsupported entries and only configured modes can be selected
+ok 11 - registry isolates unsupported entries and only configured modes can be selected
+  ---
+  duration_ms: 31.120342
+  type: 'test'
+  ...
+# Subtest: mixed agents share capacity and produce independently observed Git commits
+ok 12 - mixed agents share capacity and produce independently observed Git commits
+  ---
+  duration_ms: 123.703138
+  type: 'test'
+  ...
+# Subtest: changed agent under an existing key conflicts; equivalent retry ignores current registry
+ok 13 - changed agent under an existing key conflicts; equivalent retry ignores current registry
+  ---
+  duration_ms: 52.197908
+  type: 'test'
+  ...
+# Subtest: a duplicate subscriber detaches without cancelling the owner
+ok 14 - a duplicate subscriber detaches without cancelling the owner
+  ---
+  duration_ms: 41.115441
+  type: 'test'
+  ...
+# Subtest: mutating the caller assignment after admission cannot rewrite execution identity
+ok 15 - mutating the caller assignment after admission cannot rewrite execution identity
+  ---
+  duration_ms: 36.153862
+  type: 'test'
+  ...
+# Subtest: an unavailable agent does not start or invalidate a healthy registration
+ok 16 - an unavailable agent does not start or invalidate a healthy registration
+  ---
+  duration_ms: 35.200836
+  type: 'test'
+  ...
+# Subtest: unconfirmed stop freezes future agents instead of silently routing around uncertainty
+ok 17 - unconfirmed stop freezes future agents instead of silently routing around uncertainty
+  ---
+  duration_ms: 32.101631
+  type: 'test'
+  ...
+# Subtest: retained result retrieval bypasses missing profile, approval, adapter and lease
+ok 18 - retained result retrieval bypasses missing profile, approval, adapter and lease
+  ---
+  duration_ms: 37.100811
+  type: 'test'
+  ...
+# Subtest: failed pre-admission config can be repaired without poisoning the diagnostic runtime
+ok 19 - failed pre-admission config can be repaired without poisoning the diagnostic runtime
+  ---
+  duration_ms: 40.247996
+  type: 'test'
+  ...
+# Subtest: agent discovery and preparation neither start a worker nor fix a provisional catalog
+ok 20 - agent discovery and preparation neither start a worker nor fix a provisional catalog
+  ---
+  duration_ms: 35.672096
+  type: 'test'
+  ...
+# Subtest: historical recovery preserves unavailable identity rather than using current configuration
+ok 21 - historical recovery preserves unavailable identity rather than using current configuration
+  ---
+  duration_ms: 20.418352
+  type: 'test'
+  ...
+# Subtest: diagnostics preserve native cause and do not label domain codes as native
+ok 22 - diagnostics preserve native cause and do not label domain codes as native
+  ---
+  duration_ms: 1.614936
+  type: 'test'
+  ...
+# Subtest: diagnostic projection bounds and redacts credentials
+ok 23 - diagnostic projection bounds and redacts credentials
+  ---
+  duration_ms: 0.190768
+  type: 'test'
+  ...
+# Subtest: lease reports actual lock contention separately from permission failure
+ok 24 - lease reports actual lock contention separately from permission failure
+  ---
+  duration_ms: 8.279406
+  type: 'test'
+  ...
+# Subtest: lease directory failure never masquerades as another coordinator
+ok 25 - lease directory failure never masquerades as another coordinator
+  ---
+  duration_ms: 5.030237
+  type: 'test'
+  ...
+# Subtest: lease retains shared heartbeat policy and releases exactly once
+ok 26 - lease retains shared heartbeat policy and releases exactly once
+  ---
+  duration_ms: 1.278358
+  type: 'test'
+  ...
+# Subtest: compromise invalidates authority before notifying and never releases a foreign lock
+ok 27 - compromise invalidates authority before notifying and never releases a foreign lock
+  ---
+  duration_ms: 1.418709
+  type: 'test'
+  ...
+# Subtest: failed release invalidates local authority instead of pretending heartbeats continue
+ok 28 - failed release invalidates local authority instead of pretending heartbeats continue
+  ---
+  duration_ms: 1.278768
+  type: 'test'
+  ...
+# Subtest: late lease acquisition after cancellation is released before rejection
+ok 29 - late lease acquisition after cancellation is released before rejection
+  ---
+  duration_ms: 1.244216
+  type: 'test'
+  ...
+# Subtest: read-only status performs no preparation and reports unchecked execution
+ok 30 - read-only status performs no preparation and reports unchecked execution
+  ---
+  duration_ms: 0.750111
+  type: 'test'
+  ...
+# Subtest: coordination preparation does not load profile or provider
+ok 31 - coordination preparation does not load profile or provider
+  ---
+  duration_ms: 1.113089
+  type: 'test'
+  ...
+# Subtest: concurrent first callers share one owned preparation
+ok 32 - concurrent first callers share one owned preparation
+  ---
+  duration_ms: 0.517781
+  type: 'test'
+  ...
+# Subtest: one cancelled waiter cannot cancel shared preparation
+ok 33 - one cancelled waiter cannot cancel shared preparation
+  ---
+  duration_ms: 0.612644
+  type: 'test'
+  ...
+# Subtest: a corrected pre-admission failure can retry in the same runtime
+ok 34 - a corrected pre-admission failure can retry in the same runtime
+  ---
+  duration_ms: 0.523129
+  type: 'test'
+  ...
+# Subtest: frozen stored execution releases provisional ownership and does not report ready
+ok 35 - frozen stored execution releases provisional ownership and does not report ready
+  ---
+  duration_ms: 0.431961
+  type: 'test'
+  ...
+# Subtest: successful preparation retains the lease while idle and repeat preparation is no-op
+ok 36 - successful preparation retains the lease while idle and repeat preparation is no-op
+  ---
+  duration_ms: 0.369908
+  type: 'test'
+  ...
+# Subtest: shutdown waits for late acquisition and never publishes stale readiness
+ok 37 - shutdown waits for late acquisition and never publishes stale readiness
+  ---
+  duration_ms: 0.575819
+  type: 'test'
+  ...
+# Subtest: shutdown observes an uncancellable recovery completion before releasing
+ok 38 - shutdown observes an uncancellable recovery completion before releasing
+  ---
+  duration_ms: 1.010254
+  type: 'test'
+  ...
+# Subtest: compromised prepared runtime refuses future preparation and mutations without reacquisition
+ok 39 - compromised prepared runtime refuses future preparation and mutations without reacquisition
+  ---
+  duration_ms: 0.80937
+  type: 'test'
+  ...
+# Subtest: runtime shutdown is idempotent and rejects new admission
+ok 40 - runtime shutdown is idempotent and rejects new admission
+  ---
+  duration_ms: 0.606474
+  type: 'test'
+  ...
+# Subtest: repository preparation retains no ambient per-client approval authority
+ok 41 - repository preparation retains no ambient per-client approval authority
+  ---
+  duration_ms: 0.432503
+  type: 'test'
+  ...
+# Subtest: history access has no lease or execution prerequisite and denies accidental writes
+ok 42 - history access has no lease or execution prerequisite and denies accidental writes
+  ---
+  duration_ms: 0.360704
+  type: 'test'
+  ...
+1..42
+# tests 42
+# suites 0
+# pass 42
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1104.557911

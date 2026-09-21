@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -104,7 +104,11 @@ async function validateArtifact(root: string, manifest: RuntimeManifest): Promis
   await verifyDependencyTree(root);
   const paths = (await run("npm", ["ls", "--all", "--omit=dev", "--parseable"], root)).trim().split(/\r?\n/).filter((path) => path && resolve(path) !== root);
   const observed = [...new Set(paths.map((path) => relative(root, path).split(sep).join("/")))].sort();
-  if (!isDeepStrictEqual(observed, [...locations].sort())) throw new BridgeError("RUNTIME_DEPENDENCY_MISMATCH", "Dependency inventory does not match the complete runtime closure");
+  const expected = [...locations].sort();
+  if (!isDeepStrictEqual(observed, expected)) {
+    const difference = observed.find((path, index) => path !== expected[index]) ?? expected[observed.length] ?? "none";
+    throw new BridgeError("RUNTIME_DEPENDENCY_MISMATCH", `Dependency inventory does not match the complete runtime closure (${observed.length} observed, ${expected.length} declared; first difference: ${difference})`);
+  }
   const bom = await json(join(root, manifest.sbom));
   if (bom.bomFormat !== "CycloneDX") throw new BridgeError("SBOM_INVALID", "Runtime has no valid CycloneDX inventory");
   const facts = { source_revision: manifest.source_revision, source_dirty: manifest.source_dirty, source_sha256: manifest.source_sha256,
@@ -194,7 +198,8 @@ export async function installRuntime(candidatePath: string, installRootPath: str
   const release = await lockfile.lock(installRoot, { realpath: true, stale: 30_000, update: 10_000, retries: 0,
     onCompromised: (error: Error) => { compromised = error; } });
   const authority = () => { if (compromised) throw new BridgeError("INSTALL_LEASE_COMPROMISED", "Installer publication authority was lost", { cause: compromised }); };
-  const destination = join(installRoot, manifest.build_id), stage = join(installRoot, `.install-${randomUUID()}`);
+  // npm redacts UUID-shaped directory components in parseable output, which would corrupt dependency-location checks.
+  const destination = join(installRoot, manifest.build_id), stage = join(installRoot, `.install-${randomBytes(16).toString("hex")}`);
   let published = false;
   try {
     try {

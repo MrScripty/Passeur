@@ -1,3 +1,22 @@
+# Shared-service installation and cutover
+
+This candidate targets the existing `18c8eb9` layout. It is not yet live-qualified. Read [compatibility](compatibility.md) and [shared service](shared-service.md) first.
+
+1. Apply/review the source patch in the complete checkout, then run `npm ci`, `npm run check`, `npm test`, and `npm run build:runtime`. No dependency pins were changed. Linux and util-linux flock are required for service execution.
+2. Follow the existing exact-artifact installation procedure below. Do not overwrite an installed build or redirect a running process. The same installed CLI now supplies the stdio front end and guarded `service-run` child; distribution already includes the complete compiled source tree.
+3. Account for tasks and close old connection-owned servers normally. Do not delete their leases or select another state root.
+4. From the selected installed CLI, run `migrate-profile --project ABSOLUTE_PROJECT --profile ABSOLUTE_PROFILE --yes`. It writes a validated profile3 and exact backup. Do not restore an old profile and assume the new store can be downgraded.
+5. Update the existing named registration using `register-codex` with its unchanged project/profile/state/server-name binding and explicit `--runtime`. Required/optional policy and existing permission settings are preserved unless an authorized flag changes them. Use the existing fingerprint/adoption procedure for conflicting unmanaged entries.
+6. Start fresh Codex clients. Call `passeur_status` (frontend and service identities differ), `passeur_prepare`, then the new submit/wait tools. Two compatible linked worktree clients share one service; materially different profiles/builds conflict visibly.
+
+The old four delegation entrypoints now reject execution and direct clients to submit/wait/input/cancel. Registration probes enumerate this catalog and inspect status2 without creating tasks. `probe:service -- --project PATH --profile FILE --state-root ROOT --runtime ABSOLUTE_INSTALLED_CLI --yes` exercises two real local front ends/one service without inference after building. `probe:agents` is separately opt-in live work and leaves accepted tasks alive when its observation finishes; retain the returned IDs and explicitly adopt/control them from the real host.
+
+`service-stop --project PATH --profile FILE --state-root ROOT --operation-key KEY --yes` closes service admission and drains without a task deadline. To explicitly cancel named tasks, use `--cancel-tasks ID[,ID...] --yes --operation-key KEY` only with the required task-control authority. Ordinary front-end exit never forwards a service-stop request.
+
+## Historical installation reference
+
+The artifact installation, named-registration edit and backup mechanics below remain the reference. References below to task schema3/profile2, single-connection ownership or indefinite delegation are superseded by [task lifecycle](task-lifecycle.md), not a second supported execution path.
+
 # Discoverable startup and installed runtime
 
 ## Availability and coordination

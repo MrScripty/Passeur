@@ -17,6 +17,9 @@ export class MemoryStore {
   }
   async find(query) { return clone(query.task_id ? this.records.requests.get(query.task_id) : [...this.records.requests.values()].find((r) => r.request.request_key === query.request_key)); }
   async list() { return clone([...this.records.requests.values()]); }
+  async durableRequest(id) { const value = await this.find({ task_id: id }); assert.equal(value?.schema_version, 4); return value; }
+  async readControl(id) { const value = await this.readState(id); assert.equal(value?.schema_version, 2); return value; }
+  async writeControl(id, value) { return this.writeState(id, value); }
   async writeState(id, value) { this.authority(); this.records.states.set(id, clone(value)); }
   async readState(id) { return clone(this.records.states.get(id)); }
   async writeResult(id, value) { this.authority(); const old = this.records.results.get(id); if (old) assert.deepEqual(value, old); this.records.results.set(id, clone(value)); }

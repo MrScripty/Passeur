@@ -7,6 +7,7 @@ export type PriorTask = { kind: "absent" } | { kind: "pending"; task_id: string 
 export async function lookupPriorTask(store: TaskStore, request: Assignment): Promise<PriorTask> {
   const prior = await store.find({ request_key: request.request_key });
   if (!prior) return { kind: "absent" };
+  if ("schema_version" in prior) throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "This key belongs to durable execution; use task observations");
   if (prior.request.schema_version !== 3) throw new BridgeError("LEGACY_REQUEST_KEY", "Read this historical task through passeur_result; use a new key for a new assignment");
   if (prior.canonical_hash !== canonicalHash(request)) throw new BridgeError("REQUEST_KEY_CONFLICT", "The key belongs to a different assignment");
   const result = await store.readResult(prior.task_id);

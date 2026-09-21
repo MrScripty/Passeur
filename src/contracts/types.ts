@@ -64,7 +64,7 @@ export type DelegateResult = {
 };
 /** Legacy results remain historical, not permission to retire a workspace. */
 export type LegacyResult = Omit<DelegateResult, "schema_version" | "delivery"> & { schema_version: 1 };
-export type StoredResult = DelegateResult | LegacyResult | import("./agents.js").AgentResult;
+export type StoredResult = DelegateResult | LegacyResult | import("./agents.js").AgentResult | import("./tasks.js").LifecycleResult;
 export type HistoricalRequest = (Omit<DelegateRequest, "schema_version"> & { schema_version: 1 | 2 }) | import("./agents.js").Assignment;
 export type ResultRequest = {
   task_id?: string; request_key?: string; section?: "result" | "log";

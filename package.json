@@ -20,7 +20,8 @@
     "probe:installed": "tsx scripts/probe-installed.ts",
     "test:installed": "npm run build && vitest run tests/integration/mcp-startup.test.ts tests/integration/installed-runtime.test.ts tests/integration/registration-probe.test.ts",
     "test:native": "tsc -p tsconfig.native.json && node --test tests/native/*.test.mjs",
-    "probe:agents": "node dist/scripts/probe-agents.js"
+    "probe:agents": "node dist/scripts/probe-agents.js",
+    "probe:service": "node dist/scripts/probe-service.js"
   },
   "engines": {
     "node": ">=20"

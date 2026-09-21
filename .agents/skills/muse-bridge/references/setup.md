@@ -1,3 +1,3 @@
 # Existing Muse users
 
-Follow [the current setup route](../../passeur-bridge/references/setup.md). Preserve your named caller registration and existing profile/state binding. Legacy profile v1 remains readable without mutation; explicit migration writes v2 with an exact backup. The reserved `muse` registration retains the existing v2 execution entrypoints. Vendor client identifier `muse_bridge` is distinct from your named MCP server and agent registration IDs.
+Follow [current setup](../../passeur-bridge/references/setup.md). Explicit profile3 migration, controlled service cutover and submit/wait/input/cancel replace connection-owned delegation. Preserve historical records and the existing state namespace. Changing a caller's connection does not change native process or task ownership.

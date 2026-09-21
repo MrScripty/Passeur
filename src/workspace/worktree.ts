@@ -1,15 +1,16 @@
+import type { LifecyclePolicy } from "../contracts/tasks.js";
 import { copyFile, lstat, mkdir, readFile, readlink, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Delivery } from "../contracts/types.js";
-import type { Assignment, ExecutionPolicy } from "../contracts/agents.js";
+import type { Assignment } from "../contracts/agents.js";
 import { BridgeError } from "../core/errors.js";
 import { throwIfAborted } from "../core/async.js";
 import { exactCommit, git, isAncestor, isWithin, refHead, sourceStatus, validateBranchRef } from "./project.js";
 export type Workspace = { kind: "source_read_only" | "task_worktree"; path: string; base_commit?: string; branch?: string; target_ref?: string; signal?: AbortSignal };
 export type WorkspaceOptions = { signal?: AbortSignal; assertAuthority?: () => void; onIntent?: (workspace: Workspace) => Promise<void> };
 
-export async function prepareWorkspace(root: string, request: Assignment, profile: ExecutionPolicy, projectId: string, taskId: string, options: WorkspaceOptions = {}): Promise<Workspace> {
+export async function prepareWorkspace(root: string, request: Assignment, profile: LifecyclePolicy, projectId: string, taskId: string, options: WorkspaceOptions = {}): Promise<Workspace> {
   throwIfAborted(options.signal);
   if (request.mode === "review") return { kind: "source_read_only", path: root, ...(options.signal ? { signal: options.signal } : {}) };
   if (!profile.implementation.enabled || !profile.implementation.worktree_root) throw new BridgeError("IMPLEMENTATION_DISABLED", "Implementation workspaces are disabled in this profile");

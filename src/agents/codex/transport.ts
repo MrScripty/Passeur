@@ -60,6 +60,7 @@ export class CodexStdio {
   #sequence = 0;
   #closing: Promise<boolean> | undefined;
   #closed = false;
+  #exited: { code: number | null; signal: NodeJS.Signals | null } | undefined;
   #accepting = true;
   constructor(options: TransportOptions) {
     if (process.platform !== "linux") throw new BridgeError("CODEX_PLATFORM_UNSUPPORTED", "Codex process-group supervision is currently implemented for Linux");
@@ -72,6 +73,11 @@ export class CodexStdio {
       this.#child.once("error", () => reject(new BridgeError("CODEX_START_FAILED", "Codex could not start from the configured executable and workspace")));
     });
     this.#ready.catch(() => undefined);
+    this.#child.once("exit", (code, signal) => {
+      this.#exited = { code, signal };
+      // Descendants can keep stdout open. Parent exit must be observed without waiting for stream close.
+      if (this.#accepting) this.#failAll(new BridgeError("CODEX_RUNTIME_EXITED", "The native process exited before assignment settlement"));
+    });
     this.#exit = new Promise<void>((resolve) => {
       this.#child.once("close", () => {
         this.#closed = true;
@@ -88,6 +94,7 @@ export class CodexStdio {
     this.#child.stderr.on("data", () => undefined);
     this.#child.stderr.on("error", () => this.#failAll(new BridgeError("CODEX_READ_FAILED", "Native diagnostic stream failed")));
   }
+  get exitEvidence() { return this.#exited; }
   get operationFailure(): unknown { return this.#operationFault; }
   get started(): boolean { return this.#child.pid !== undefined; }
   get pid(): number | undefined { return this.#child.pid; }
@@ -142,7 +149,7 @@ export class CodexStdio {
           if (this.#accepting) await this.#write({ id: requestId, result });
         } catch (error) {
           if (this.#accepting) await this.#write({ id: requestId, error: { code: -32602, message: "Passeur refused this native request" } });
-          throw error;
+          if (!(error instanceof BridgeError) || error.code !== "NATIVE_INPUT_WITHDRAWN") throw error;
         }
       }
     }).catch((error) => this.#failAll(error)).finally(() => {

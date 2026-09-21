@@ -1,21 +1,7 @@
-# Adapter conformance evidence
+# Lifecycle conformance
 
-Select checks from the admitted adapter's actual claims. Expected outcomes come from the common contract or native authority, not a copy of the implementation's answer.
+Use `tests/fixtures/adapter-conformance.ts` for pre-start cancellation. Add independent native peers for initialization, pending operations, completion versus question/blocker, exact human permission, denial, withdrawal, reply continuation, host death during input, explicit cancellation, actual exit with inherited pipes and unconfirmed descendants. A snapshot or heartbeat is an observation, never a crash/finish heuristic.
 
-| Boundary | Evidence to preserve |
-| --- | --- |
-| Factory/discovery | Invalid options, unsupported modes, isolated unavailable entries, no startup/model/auth side effects, bounded catalog pages. |
-| Before startup | Both owner cancellation and timeout produce not-started evidence; use `tests/fixtures/adapter-conformance.ts`. |
-| Native initialization | Actual request/response spelling, consumed fields, missing executable/client, authentication mismatch and unsupported version behavior. |
-| Task execution | Distinct concurrent invocations, native failure versus reported success, model mismatch, malformed/missing reports and observed check provenance. |
-| Approval | Exact correlation, only offered once choices, denial, stale/cancelled decisions, unavailable elicitation, persistent-amendment rejection. |
-| Cancellation/close | Startup, submission, output, human callback and write backpressure; all owned async work observed; surviving descendants remain unconfirmed. |
-| Shared owner | Same-key attachment without current registration, different agent conflict, global capacity/deadline, sibling-local failure and shared safety freeze. |
-| Persistence | Real codecs/store reopening, immutable snapshot, supported old bytes, unknown versions, exact backup/atomic migration and non-fabricating restart. |
-| Installed workflow | Correct build/binding, named MCP catalog, actual host call, native permission/tool enforcement, ordinary hooks/commits, explicit final resource disposition. |
+At the service boundary prove durable publication before acknowledgment, no execution replay after loss, source-view identity, multi-client owner isolation, same-key conflict, input/cancel/completion races, answered-intent interruption, no task-killing helper deadlines, paused election ownership and safe resource retirement. Slow observers and cancelled presentation calls cannot strand native waiters or block another client indefinitely.
 
-Controlled protocol peers exercise the real adapter and transport but do not prove native runtime implementation. Actual Node subprocesses prove the selected Node/process mechanisms, not a remote inference service. Billing and permission claims need their own evidence. Unavailable dependencies, credentials or platform leave the affected acceptance claim blocked.
-
-## Skill evaluation cases
-
-A fresh skill-aware session should handle: another model through an existing adapter; a new runtime without scheduler changes; an implementation-only runtime that cannot enforce review; missing explicit plan admission; pending live evidence; and an unavailable SDK that must not hide Passeur's catalog. Save the session's resulting write set, dossier and verification record. Structural frontmatter/reference checks are separately useful but are not substitutes for this behavioral evaluation.
+Run full pinned checks and the exact installed-host workflow separately from unit/substitute tests. Record fake clock coverage as bridge timing logic, not a real multi-hour native run. A fresh session must apply this skill to an adapter change and record its actual dossier, scope and evidence. Frontmatter/link tests are a separate structural claim.

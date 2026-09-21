@@ -1,0 +1,206 @@
+scripts/probe-agents.ts(2,24): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/index.js' or its corresponding type declarations.
+scripts/probe-agents.ts(3,38): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/stdio.js' or its corresponding type declarations.
+scripts/probe-agents.ts(4,37): error TS2307: Cannot find module '@modelcontextprotocol/sdk/types.js' or its corresponding type declarations.
+scripts/probe-agents.ts(5,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+scripts/probe-agents.ts(51,35): error TS7006: Parameter 'agent_id' implicitly has an 'any' type.
+scripts/probe-agents.ts(51,45): error TS7006: Parameter 'index' implicitly has an 'any' type.
+scripts/probe-agents.ts(62,70): error TS7006: Parameter 'entry' implicitly has an 'any' type.
+scripts/probe-installed.ts(6,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+scripts/probe-service.ts(2,24): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/index.js' or its corresponding type declarations.
+scripts/probe-service.ts(3,38): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/stdio.js' or its corresponding type declarations.
+scripts/probe-service.ts(23,57): error TS7006: Parameter 'item' implicitly has an 'any' type.
+src/agents/codex/config.ts(1,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/agents/codex/config.ts(6,50): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/agents/codex/config.ts(6,163): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/agents/registry.ts(27,25): error TS7006: Parameter 'mode' implicitly has an 'any' type.
+src/agents/report.ts(1,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/agents/report.ts(33,33): error TS7006: Parameter 'check' implicitly has an 'any' type.
+src/codex/config.ts(3,23): error TS2307: Cannot find module 'smol-toml' or its corresponding type declarations.
+src/codex/config.ts(4,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/codex/config.ts(206,34): error TS2307: Cannot find module 'proper-lockfile' or its corresponding type declarations.
+src/codex/probe.ts(1,24): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/index.js' or its corresponding type declarations.
+src/codex/probe.ts(2,38): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/stdio.js' or its corresponding type declarations.
+src/contracts/agents.ts(1,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/contracts/agents.ts(9,12): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/agents.ts(9,53): error TS7006: Parameter 'item' implicitly has an 'any' type.
+src/contracts/agents.ts(10,12): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/agents.ts(19,21): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/contracts/agents.ts(20,12): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/contracts/agents.ts(24,21): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/contracts/agents.ts(24,49): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/contracts/agents.ts(25,12): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/contracts/agents.ts(30,12): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/contracts/agents.ts(61,21): error TS7006: Parameter 'page' implicitly has an 'any' type.
+src/contracts/index.ts(1,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/contracts/index.ts(7,44): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/index.ts(14,26): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/index.ts(14,33): error TS7006: Parameter 'context' implicitly has an 'any' type.
+src/contracts/index.ts(21,159): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/index.ts(21,166): error TS7006: Parameter 'context' implicitly has an 'any' type.
+src/contracts/index.ts(22,38): error TS7006: Parameter 'item' implicitly has an 'any' type.
+src/contracts/index.ts(29,21): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/index.ts(30,12): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/index.ts(36,26): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/index.ts(36,33): error TS7006: Parameter 'context' implicitly has an 'any' type.
+src/contracts/runtime.ts(1,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/contracts/runtime.ts(40,26): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/contracts/runtime.ts(40,33): error TS7006: Parameter 'ctx' implicitly has an 'any' type.
+src/contracts/service.ts(1,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/contracts/service.ts(7,54): error TS7006: Parameter 's' implicitly has an 'any' type.
+src/contracts/tasks.ts(1,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/contracts/tasks.ts(8,50): error TS7006: Parameter 's' implicitly has an 'any' type.
+src/contracts/tasks.ts(25,21): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/contracts/tasks.ts(25,49): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/contracts/tasks.ts(26,12): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/contracts/tasks.ts(37,12): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/contracts/tasks.ts(37,45): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/contracts/tasks.ts(38,12): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/contracts/tasks.ts(40,12): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/contracts/tasks.ts(40,40): error TS7006: Parameter 'n' implicitly has an 'any' type.
+src/contracts/tasks.ts(40,43): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/contracts/tasks.ts(55,54): error TS7006: Parameter 'v' implicitly has an 'any' type.
+src/contracts/tasks.ts(59,21): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/contracts/tasks.ts(59,50): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/contracts/tasks.ts(71,26): error TS7006: Parameter 'v' implicitly has an 'any' type.
+src/contracts/tasks.ts(71,29): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/contracts/tasks.ts(101,26): error TS7006: Parameter 'v' implicitly has an 'any' type.
+src/contracts/tasks.ts(101,29): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/contracts/tasks.ts(104,29): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/contracts/tasks.ts(104,100): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/contracts/tasks.ts(105,22): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/contracts/tasks.ts(106,48): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/contracts/tasks.ts(133,12): error TS7006: Parameter 'v' implicitly has an 'any' type.
+src/contracts/tasks.ts(139,12): error TS7006: Parameter 'v' implicitly has an 'any' type.
+src/contracts/tasks.ts(144,26): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/contracts/tasks.ts(144,29): error TS7006: Parameter 'context' implicitly has an 'any' type.
+src/core/coordinator.ts(141,69): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/coordinator.ts(148,46): error TS7006: Parameter 'o' implicitly has an 'any' type.
+src/core/coordinator.ts(151,61): error TS7006: Parameter 'o' implicitly has an 'any' type.
+src/core/coordinator.ts(199,156): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/coordinator.ts(213,99): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/core/coordinator.ts(241,66): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/coordinator.ts(244,97): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/input-broker.ts(29,42): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/input-broker.ts(37,40): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/input-broker.ts(47,40): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/input-broker.ts(57,40): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/input-broker.ts(61,82): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/core/input-broker.ts(66,58): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/input-broker.ts(74,90): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/lease.ts(43,48): error TS2307: Cannot find module 'proper-lockfile' or its corresponding type declarations.
+src/core/profile-edit.ts(21,46): error TS2307: Cannot find module 'proper-lockfile' or its corresponding type declarations.
+src/core/profile-edit.ts(23,19): error TS7006: Parameter 'error' implicitly has an 'any' type.
+src/core/profile-edit.ts(38,45): error TS7006: Parameter 'agent' implicitly has an 'any' type.
+src/core/profile-edit.ts(44,31): error TS7006: Parameter 'agent' implicitly has an 'any' type.
+src/core/recovery.ts(16,135): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/task-control.ts(30,34): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/task-control.ts(31,14): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/core/task-control.ts(31,17): error TS7006: Parameter 'b' implicitly has an 'any' type.
+src/core/task-control.ts(31,103): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/task-control.ts(32,40): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/task-control.ts(55,43): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/core/task-control.ts(70,42): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/core/task-control.ts(74,46): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/core/task-control.ts(115,87): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/task-control.ts(128,81): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/core/task-control.ts(140,30): error TS7006: Parameter 'i' implicitly has an 'any' type.
+src/install/runtime.ts(192,34): error TS2307: Cannot find module 'proper-lockfile' or its corresponding type declarations.
+src/mcp/server.ts(1,27): error TS2307: Cannot find module '@modelcontextprotocol/sdk/server/mcp.js' or its corresponding type declarations.
+src/mcp/server.ts(2,38): error TS2307: Cannot find module '@modelcontextprotocol/sdk/server/stdio.js' or its corresponding type declarations.
+src/mcp/server.ts(3,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/mcp/server.ts(26,219): error TS7006: Parameter '_r' implicitly has an 'any' type.
+src/mcp/server.ts(26,223): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(29,170): error TS7006: Parameter '_r' implicitly has an 'any' type.
+src/mcp/server.ts(29,174): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(32,204): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(32,207): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(35,205): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(35,208): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(38,215): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(38,218): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(41,246): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(41,249): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(44,238): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(44,241): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(47,204): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(47,207): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(50,213): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(50,216): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(58,11): error TS18046: 'answer' is of type 'unknown'.
+src/mcp/server.ts(58,41): error TS18046: 'answer' is of type 'unknown'.
+src/mcp/server.ts(62,256): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(62,259): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/mcp/server.ts(79,50): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/mcp/server.ts(83,129): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/mcp/server.ts(85,13): error TS18046: 'result' is of type 'unknown'.
+src/mcp/server.ts(86,20): error TS18046: 'result' is of type 'unknown'.
+src/mcp/server.ts(86,76): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/mcp/server.ts(86,91): error TS18046: 'result' is of type 'unknown'.
+src/mcp/server.ts(87,18): error TS18046: 'result' is of type 'unknown'.
+src/mcp/server.ts(95,287): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(102,261): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/mcp/server.ts(102,264): error TS7006: Parameter 'extra' implicitly has an 'any' type.
+src/muse/adapter.ts(1,146): error TS2307: Cannot find module '@muse-code/sdk' or its corresponding type declarations.
+src/muse/adapter.ts(2,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/muse/adapter.ts(26,12): error TS7006: Parameter 'spawned' implicitly has an 'any' type.
+src/muse/adapter.ts(56,54): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/muse/adapter.ts(59,12): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/muse/adapter.ts(59,58): error TS7006: Parameter 'choice' implicitly has an 'any' type.
+src/muse/adapter.ts(104,24): error TS18046: 'session' is of type 'unknown'.
+src/muse/adapter.ts(107,20): error TS18046: 'session' is of type 'unknown'.
+src/muse/adapter.ts(139,7): error TS18046: 'session' is of type 'unknown'.
+src/muse/adapter.ts(139,27): error TS7006: Parameter 'raw' implicitly has an 'any' type.
+src/muse/adapter.ts(150,62): error TS7006: Parameter 'choice' implicitly has an 'any' type.
+src/muse/adapter.ts(154,37): error TS7006: Parameter 'choice' implicitly has an 'any' type.
+src/muse/adapter.ts(157,32): error TS7006: Parameter 'choice' implicitly has an 'any' type.
+src/muse/adapter.ts(165,7): error TS18046: 'session' is of type 'unknown'.
+src/muse/adapter.ts(173,33): error TS18046: 'session' is of type 'unknown'.
+src/muse/adapter.ts(177,36): error TS18046: 'turn' is of type 'unknown'.
+src/muse/adapter.ts(192,49): error TS18046: 'turn' is of type 'unknown'.
+src/muse/config.ts(5,60): error TS7006: Parameter 'value' implicitly has an 'any' type.
+src/muse/config.ts(6,34): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/store/record-codecs.ts(4,19): error TS2307: Cannot find module 'zod' or its corresponding type declarations.
+src/store/record-codecs.ts(29,21): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/store/record-codecs.ts(29,128): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/store/record-codecs.ts(29,131): error TS7006: Parameter 'context' implicitly has an 'any' type.
+src/store/record-codecs.ts(40,21): error TS7006: Parameter 's' implicitly has an 'any' type.
+src/store/record-codecs.ts(67,28): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/store/record-codecs.ts(67,31): error TS7006: Parameter 'context' implicitly has an 'any' type.
+src/store/record-codecs.ts(87,28): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/store/record-codecs.ts(87,31): error TS7006: Parameter 'c' implicitly has an 'any' type.
+src/store/record-codecs.ts(107,21): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/store/record-codecs.ts(108,12): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/store/record-codecs.ts(124,58): error TS7006: Parameter 'issue' implicitly has an 'any' type.
+tests/fixtures/adapter-conformance.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/agent-migration.test.ts(4,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/cleanup.test.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/cli-startup-policy.test.ts(4,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/coordinator.test.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/durable-store.test.ts(3,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/installed-runtime.test.ts(5,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/mcp-startup.test.ts(1,24): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/index.js' or its corresponding type declarations.
+tests/integration/mcp-startup.test.ts(2,38): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/stdio.js' or its corresponding type declarations.
+tests/integration/mcp-startup.test.ts(9,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/mcp-startup.test.ts(55,50): error TS7006: Parameter 'tool' implicitly has an 'any' type.
+tests/integration/mcp-startup.test.ts(73,50): error TS7006: Parameter 't' implicitly has an 'any' type.
+tests/integration/parallel-mcp.test.ts(1,24): error TS2307: Cannot find module '@modelcontextprotocol/sdk/client/index.js' or its corresponding type declarations.
+tests/integration/parallel-mcp.test.ts(2,35): error TS2307: Cannot find module '@modelcontextprotocol/sdk/inMemory.js' or its corresponding type declarations.
+tests/integration/parallel-mcp.test.ts(3,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/parallel-mcp.test.ts(14,49): error TS7006: Parameter 't' implicitly has an 'any' type.
+tests/integration/recovery.test.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/registration-probe.test.ts(4,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/task-store.test.ts(3,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/integration/workspace.test.ts(3,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/adapter-lifecycle.test.ts(1,38): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/adapter-skill.test.ts(3,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/agent-records.test.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/approvals.test.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/codex-adapter.test.ts(5,38): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/codex-config.test.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/codex-config.test.ts(2,23): error TS2307: Cannot find module 'smol-toml' or its corresponding type declarations.
+tests/unit/compact-result.test.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/contracts.test.ts(1,38): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/persisted-records.test.ts(5,43): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.
+tests/unit/persisted-records.test.ts(9,36): error TS7006: Parameter 'original' implicitly has an 'any' type.
+tests/unit/persisted-records.test.ts(10,20): error TS2347: Untyped function calls may not accept type arguments.
+tests/unit/worker-report.test.ts(1,28): error TS2307: Cannot find module 'vitest' or its corresponding type declarations.

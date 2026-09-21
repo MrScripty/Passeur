@@ -4,14 +4,17 @@ import { randomUUID } from "node:crypto";
 import type { FinalizeReceipt, HistoricalRequest, ResourceRecord, StoredResult } from "../contracts/types.js";
 import { KeyedMutex, stableHash } from "../core/async.js";
 import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
+import type { DurableRequest, TaskControl } from "../contracts/tasks.js";
+import { TaskControlSchema } from "../contracts/tasks.js";
 import type { TaskState } from "../core/state.js";
 import { decodeRequest, decodeState, decodeResult, decodeResource, decodeReceipt, decodeSafety, assertResultAdmission } from "./record-codecs.js";
 
-export type StoredRequest = {
+export type LegacyStoredRequest = {
   task_id: string; project_id: string; canonical_hash: string;
   accepted_at: string; deadline_at: string; request: HistoricalRequest;
   execution?: import("../contracts/agents.js").ExecutionSnapshot;
 };
+export type StoredRequest = LegacyStoredRequest | DurableRequest;
 export type MutationAuthority = () => void;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A bounded read rejects oversized authoritative records without labeling or quarantining them as corrupt.
@@ -84,6 +87,8 @@ export class TaskStore {
   }
   async create(record: StoredRequest, state: TaskState): Promise<void> {
     decodeRequest(record, record.task_id); decodeState(state);
+    if (("schema_version" in record) !== ("schema_version" in state)) throw new BridgeError("STORE_CORRUPT", "Admission and control versions disagree");
+    if ("schema_version" in state && (state.task_id !== record.task_id || !("initial_owner" in record) || state.owner_id !== record.initial_owner)) throw new BridgeError("STORE_CORRUPT", "Initial control identity differs from admission");
     await this.initialize();
     const temporary = join(this.root, "tasks", `.creating-${record.task_id}-${randomUUID()}`);
     this.authority?.();
@@ -95,14 +100,32 @@ export class TaskStore {
     const directory = await open(join(this.root, "tasks"), "r");
     try { await directory.sync(); } finally { await directory.close(); }
   }
+  async durableRequest(id: string): Promise<DurableRequest> {
+    const record = await this.find({ task_id: id });
+    if (!record || !("schema_version" in record) || record.schema_version !== 4) throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "Use historical result access for this record");
+    return record;
+  }
+  async readControl(id: string): Promise<TaskControl> {
+    const state = await this.readState(id);
+    if (!("schema_version" in state) || state.schema_version !== 2) throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "Historical state has no durable task control");
+    return state;
+  }
+  async writeControl(id: string, state: TaskControl): Promise<void> {
+    await this.writeState(id, state);
+  }
   async writeState(id: string, state: TaskState): Promise<void> {
-    decodeState(state);
-    await this.#writes.run(id, () => this.#write(join(this.taskDir(id), "state.json"), state));
+    const validated = decodeState(state);
+    await this.#assertStateAdmission(id, validated);
+    await this.#writes.run(id, () => this.#write(join(this.taskDir(id), "state.json"), validated));
   }
   async writeResult(id: string, result: StoredResult): Promise<void> {
     decodeResult(result, id);
     const admission = decodeRequest(await this.#required(join(this.taskDir(id), "request.json")), id);
     assertResultAdmission(result, admission);
+    if (result.schema_version === 4) {
+      const control = await this.readControl(id);
+      if (result.native_evidence.run_id !== control.native.run_id || control.settled_outcome && result.execution_status !== control.settled_outcome) throw new BridgeError("STORE_CORRUPT", "Result contradicts its native run or accepted settlement");
+    }
     await this.#writes.run(id, async () => {
       const existing = await this.readResult(id);
       if (existing) {
@@ -128,17 +151,18 @@ export class TaskStore {
     const value = await this.#json(join(this.taskDir(id), "operations", `${stableHash(key)}.json`));
     return value === undefined ? undefined : decodeReceipt(value, id, key);
   }
-  async appendEvent(id: string, event: unknown): Promise<void> {
-    await this.#writes.run(id, async () => {
+  async appendEvent(id: string, event: unknown): Promise<boolean> {
+    return this.#writes.run(id, async () => {
       const line = `${JSON.stringify({ at: new Date().toISOString(), event })}\n`;
-      if (Buffer.byteLength(line) > 262_144) return;
+      if (Buffer.byteLength(line) > 262_144) return false;
       const path = join(this.taskDir(id), "events.ndjson");
       let bytes = 0;
       try { bytes = (await stat(path)).size; } catch (error) { if (!absent(error)) throw filesystemFailure(error, "store.log.stat", path); }
-      if (bytes + Buffer.byteLength(line) > 20 * 1024 * 1024) return;
+      if (bytes + Buffer.byteLength(line) > 20 * 1024 * 1024) return false;
       this.authority?.();
       const handle = await open(path, "a", 0o600);
       try { this.authority?.(); await handle.writeFile(line); } finally { await handle.close(); }
+      return true;
     });
   }
   async list(): Promise<StoredRequest[]> {
@@ -159,8 +183,16 @@ export class TaskStore {
     catch (error) { if (absent(error)) return undefined; throw filesystemFailure(error, "store.task.stat", path); }
     throw new BridgeError("STORE_INCOMPLETE", "Existing task has no request record", { stage: "store.request", path });
   }
+  async #assertStateAdmission(id: string, state: TaskState): Promise<void> {
+    const admission = decodeRequest(await this.#required(join(this.taskDir(id), "request.json")), id);
+    if (("schema_version" in admission) !== ("schema_version" in state) || "schema_version" in state && state.task_id !== id) {
+      throw new BridgeError("STORE_CORRUPT", "Task control version or identity differs from its admission");
+    }
+  }
   async readState(id: string): Promise<TaskState> {
-    return decodeState(await this.#required(join(this.taskDir(id), "state.json")));
+    const state = decodeState(await this.#required(join(this.taskDir(id), "state.json")));
+    await this.#assertStateAdmission(id, state);
+    return state;
   }
   async readResult(id: string): Promise<StoredResult | undefined> {
     const value = await this.#json(join(this.taskDir(id), "result.json"));
@@ -168,6 +200,10 @@ export class TaskStore {
     const result = decodeResult(value, id);
     const admission = decodeRequest(await this.#required(join(this.taskDir(id), "request.json")), id);
     assertResultAdmission(result, admission);
+    if (result.schema_version === 4) {
+      const control = await this.readControl(id);
+      if (result.native_evidence.run_id !== control.native.run_id || control.settled_outcome && result.execution_status !== control.settled_outcome) throw new BridgeError("STORE_CORRUPT", "Reopened result contradicts its admitted run or settlement");
+    }
     return result;
   }
   async readSlice(id: string, section: "result" | "log", offset: number, limit: number): Promise<Buffer> {

@@ -36,7 +36,6 @@ export function isWithin(root: string, candidate: string): boolean {
 
 /** Git subprocesses, including hooks spawned during worktree creation, remain owned on POSIX. */
 export async function git(root: string, args: string[], signal?: AbortSignal, input?: string): Promise<string> {
-  signal ??= AbortSignal.timeout(90_000);
   throwIfAborted(signal);
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn("git", ["-C", root, ...args], { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], detached: process.platform !== "win32" });

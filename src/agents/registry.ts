@@ -1,14 +1,15 @@
-import type { AgentCatalog, AgentProfile, Assignment, ExecutionPolicy, ExecutionSnapshot } from "../contracts/agents.js";
+import type { SharedProfile, LifecyclePolicy, LifecycleSnapshot } from "../contracts/tasks.js";
+import type { AgentCatalog, Assignment } from "../contracts/agents.js";
 import { canonicalHash } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
 import type { AdapterDefinition, ConfiguredAdapter, WorkerAdapter } from "./types.js";
 
 type Entry = { description: AgentCatalog["agents"][number]; adapter?: ConfiguredAdapter };
-export type SelectedAgent = { worker: WorkerAdapter; snapshot: ExecutionSnapshot };
+export type SelectedAgent = { worker: WorkerAdapter; snapshot: LifecycleSnapshot };
 /** An immutable local resolver. Factories decode configuration only; they never start/probe a runtime. */
 export class AgentRegistry {
   readonly #entries = new Map<string, Entry>();
-  constructor(profile: AgentProfile, definitions: Readonly<Record<string, AdapterDefinition>>) {
+  constructor(profile: SharedProfile, definitions: Readonly<Record<string, AdapterDefinition>>) {
     for (const registration of profile.agents) {
       const description: Entry["description"] = { agent_id: registration.agent_id, adapter_id: registration.adapter_id,
         description: registration.description, modes: [], state: "configured", runtime_readiness: "not_checked" };
@@ -41,14 +42,14 @@ export class AgentRegistry {
     return structuredClone({ schema_version: 1, checked_at: new Date().toISOString(),
       configuration: fixed ? "fixed_for_runtime" : "observed", total: all.length, offset, next_offset: offset + limit < all.length ? offset + limit : null, agents: all.slice(offset, offset + limit).map((e) => e.description) });
   }
-  select(request: Assignment, policy: ExecutionPolicy): SelectedAgent {
+  select(request: Assignment, policy: LifecyclePolicy): SelectedAgent {
     const entry = this.#entries.get(request.agent_id);
     if (!entry) throw new BridgeError("AGENT_NOT_FOUND", "The selected agent is not registered");
     if (!entry.adapter || entry.description.state !== "configured") throw new BridgeError(`AGENT_${entry.description.state.toUpperCase()}`, entry.description.limitation ?? "The selected agent cannot execute");
     if (!entry.description.modes.includes(request.mode)) throw new BridgeError("AGENT_MODE_UNSUPPORTED", "The selected agent does not provide this assignment mode");
     const adapter = entry.adapter;
     const configuration = structuredClone(adapter.configuration);
-    const snapshot: ExecutionSnapshot = { schema_version: 1, agent_id: request.agent_id,
+    const snapshot: LifecycleSnapshot = { schema_version: 2, agent_id: request.agent_id,
       adapter_id: entry.description.adapter_id, adapter_contract: adapter.contract,
       configuration, configuration_fingerprint: canonicalHash(configuration), policy: structuredClone(policy),
       ...(adapter.requested_model ? { requested_model: adapter.requested_model } : {}) };

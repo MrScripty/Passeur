@@ -4,9 +4,9 @@ it("uses the same worker for matching concurrent requests and rejects changed co
   const f = await fixture(), held = deferred(), started = deferred(); let runs = 0;
   const coordinator = f.coordinator({ run: async () => { runs++; started.resolve(); await held.promise; return completed(); } });
   try {
-    const a = coordinator.delegate(f.request("key"), context()), b = coordinator.delegate(f.request("key"), context());
+    const a = coordinator.execute(f.request("key"), context()), b = coordinator.execute(f.request("key"), context());
     await started.promise;
-    await expect(coordinator.delegate({ ...f.request("key"), objective: "Changed" }, context())).rejects.toMatchObject({ code: "REQUEST_KEY_CONFLICT" });
+    await expect(coordinator.execute({ ...f.request("key"), objective: "Changed" }, context())).rejects.toMatchObject({ code: "REQUEST_KEY_CONFLICT" });
     held.resolve(); const [first, second] = await Promise.all([a, b]);
     expect(first.task_id).toBe(second.task_id); expect(runs).toBe(1);
     expect(await f.store.readResult(first.task_id)).toBeDefined();
@@ -19,8 +19,10 @@ it("drains every running sibling before declaring shutdown complete", async () =
     return { ...completed(), status: "cancelled" };
   } });
   try {
-    const a = coordinator.delegate(f.request("a"), context()), b = coordinator.delegate(f.request("b"), context());
-    await starts.promise; await coordinator.shutdown();
+    const a = coordinator.execute(f.request("a"), context()), b = coordinator.execute(f.request("b"), context());
+    await starts.promise;
+    for (const record of await f.store.list()) await coordinator.cancel(record.task_id, f.owner, 1, `cancel-${record.task_id}`, "Fixture explicit cancellation");
+    await coordinator.shutdown();
     for (const result of await Promise.all([a, b])) expect((await f.store.readState(result.task_id)).phase).toBe("terminal");
   } finally { await coordinator.shutdown(); await f.dispose(); }
 });

@@ -1,12 +1,17 @@
 import { MuseClient, readSessionDurability, spawnMspConnection, type ApprovalDecisionInput, type MuseClientSpawnOptions, type TurnOutcome } from "@muse-code/sdk";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
+import { setTimeout as observeAgain } from "node:timers/promises";
 import { BridgeError, errorInfo, safeText } from "../core/errors.js";
-import type { ExecutionStatus } from "../contracts/types.js";
 import { settlesWithin, throwIfAborted, withAbort } from "../core/async.js";
-import { parseWorkerReport } from "../agents/report.js";
+import { parseWorkerMessage, finalReport } from "../agents/report.js";
 import type { WorkerAdapter, WorkerRun } from "../agents/types.js";
 import type { MuseOptions } from "./config.js";
-export type ClientStartup = { ready: Promise<MuseClient>; close: () => Promise<unknown> };
+export type ClientStartup = {
+  ready: Promise<MuseClient>; close: () => Promise<unknown>;
+  /** The production starter observes host exit and connection closure independently of a turn. */
+  failure?: Promise<never>;
+};
 export type ClientStarter = (options: MuseClientSpawnOptions) => ClientStartup;
 function startOwnedClient(options: MuseClientSpawnOptions): ClientStartup {
   const handshake = spawnMspConnection({ command: options.museBin,
@@ -14,16 +19,28 @@ function startOwnedClient(options: MuseClientSpawnOptions): ClientStartup {
     ...(options.env ? { env: options.env } : {}), ...(options.onStderr ? { onStderr: options.onStderr } : {}),
     ...(options.shutdownTimeoutMs === undefined ? {} : { shutdownTimeoutMs: options.shutdownTimeoutMs }),
   });
+  let failed!: (error: unknown) => void;
+  const failure = new Promise<never>((_resolve, reject) => { failed = reject; });
+  failure.catch(() => undefined);
   const ready = handshake.initialize({ clientInfo: options.clientInfo, ...(options.capabilities ? { capabilities: options.capabilities } : {}) })
-    .then((spawned) => new MuseClient(spawned.connection, { durability: readSessionDurability(spawned.initializeResult), host: spawned }));
+    .then((spawned) => {
+      const client = new MuseClient(spawned.connection, { durability: readSessionDurability(spawned.initializeResult), host: spawned });
+      // These are documented SDK lifecycle observations, not an inactivity heuristic.
+      // A successful close/exit is still unexpected while an assignment owns this host.
+      void client.exit.then(() => failed(new BridgeError("MUSE_HOST_EXITED", "The owned Muse host exited")),
+        () => failed(new BridgeError("MUSE_HOST_EXIT_UNKNOWN", "Muse host exit observation failed")));
+      void spawned.connection.closed.then(() => failed(new BridgeError("MUSE_CONNECTION_CLOSED", "Muse communication ended; descendant state is not inferred")),
+        () => failed(new BridgeError("MUSE_CONNECTION_FAILED", "Muse communication failed; descendant state is not inferred")));
+      return client;
+    });
   ready.catch(() => undefined);
-  return { ready, close: () => handshake.close() };
+  return { ready, failure, close: () => handshake.close() };
 }
 function childEnvironment(): NodeJS.ProcessEnv {
   const allow = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR", "TERM"];
   return Object.fromEntries(allow.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]]])) as NodeJS.ProcessEnv;
 }
-function outcomeStatus(outcome: TurnOutcome): ExecutionStatus {
+function outcomeStatus(outcome: TurnOutcome): WorkerRun["status"] {
   if (outcome.kind === "terminalUnknown") return "interrupted";
   if (outcome.kind === "unqueued") return "cancelled";
   if (outcome.params.terminal === "completed") return "completed";
@@ -31,8 +48,8 @@ function outcomeStatus(outcome: TurnOutcome): ExecutionStatus {
   return outcome.params.error?.kind === "authRequired" ? "blocked" : "failed";
 }
 function cancelledRun(signal: AbortSignal, workerStop: WorkerRun["worker_stop"]): WorkerRun {
-  return { status: (signal.reason as { code?: string } | undefined)?.code === "TASK_TIMEOUT" ? "timed_out" : "cancelled",
-    summary: "Task cancelled or timed out", worker_assessment: "unknown", blockers: [], questions: [], checks: [], worker_stop: workerStop };
+  return { status: "cancelled",
+    summary: "Task explicitly cancelled", worker_assessment: "unknown", blockers: [], questions: [], checks: [], worker_stop: workerStop };
 }
 const approvalSchema = z.object({
   approvalId: z.string().min(1).max(256), toolName: z.string().min(1).max(256), rawArgs: z.string().max(16_384),
@@ -57,10 +74,11 @@ export class MuseSdkAdapter implements WorkerAdapter {
     const remaining = () => Math.max(1, cleanupDeadline - Date.now());
     const events = new Set<Promise<void>>(), native = new Set<Promise<unknown>>(), approvals = new Set<Promise<ApprovalDecisionInput>>();
     const approvalIds = new Set<string>();
+    let nativeFailure: Promise<never> | undefined;
     const wait = <T>(work: Promise<T>): Promise<T> => {
       native.add(work);
       void work.then(() => native.delete(work), () => native.delete(work));
-      return withAbort(work, signal);
+      return withAbort(nativeFailure ? Promise.race([work, nativeFailure]) : work, signal);
     };
     const emit = (event: import("../agents/types.js").WorkerEvent): Promise<void> => {
       if (signal.aborted) return Promise.resolve();
@@ -79,12 +97,45 @@ export class MuseSdkAdapter implements WorkerAdapter {
         clientInfo: { name: "muse_bridge", version: "0.1.0" }, shutdownTimeoutMs: input.policy.stop_grace_ms,
         onStderr: () => { if (!stderrNoted) { stderrNoted = true; void emit({ kind: "evidence_omitted", reason: "Native stderr excluded from persisted diagnostics" }); } },
       });
+      nativeFailure = startup.failure;
       client = await wait(startup.ready); startup = undefined;
       throwIfAborted(signal);
       const session = await wait(client.startSession({ workspaceRoot: input.workspace, modelId: this.options.model, approvalMode: "onRequest" }));
       const reported = session.opening?.result.session.modelId;
       if (typeof reported !== "string" || reported !== this.options.model) throw new BridgeError("MUSE_MODEL_MISMATCH", "Muse did not report the requested model");
       reportedModel = reported;
+      const fold = session.fold;
+      if (!fold || typeof fold.items?.list !== "function" || typeof fold.items?.isTerminalUnknown !== "function") {
+        throw new BridgeError("MUSE_OBSERVATION_UNSUPPORTED", "The installed SDK cannot expose the required native item settlement evidence");
+      }
+      const outstanding = new Map<string, string>();
+      let uncertainNoted = false;
+      const observeItems = async (): Promise<boolean> => {
+        if (!fold.current) {
+          if (!uncertainNoted) { uncertainNoted = true; await emit({ kind: "runtime_unknown", reason: "Muse's native view has an unresolved delivery gap" }); }
+          return false;
+        }
+        let unknown = false;
+        for (const item of fold.items.list()) {
+          if (typeof item.itemId !== "string" || !item.itemId || item.itemId.length > 256 || typeof item.kind !== "string" || !item.kind || item.kind.length > 128 || typeof item.status !== "string") {
+            throw new BridgeError("MUSE_EVENT_INVALID", "Native item settlement identity is invalid");
+          }
+          if (fold.items.isTerminalUnknown(item.itemId)) { unknown = true; continue; }
+          if (item.status === "inProgress") {
+            if (!outstanding.has(item.itemId)) {
+              if (outstanding.size >= 256) throw new BridgeError("MUSE_EVENT_OVERLOAD", "Too many native item obligations");
+              outstanding.set(item.itemId, item.kind);
+              await emit({ kind: "operation_started", id: item.itemId, operation: item.kind });
+            }
+          } else if (outstanding.delete(item.itemId)) {
+            // A terminal item is settled, not necessarily successful. The native turn owns success.
+            await emit({ kind: "operation_finished", id: item.itemId });
+          }
+        }
+        if (unknown && !uncertainNoted) { uncertainNoted = true; await emit({ kind: "runtime_unknown", reason: "Muse reports an item with unknown terminal state" }); }
+        if (!unknown) uncertainNoted = false;
+        return !unknown && outstanding.size === 0;
+      };
       session.onApproval((raw): Promise<ApprovalDecisionInput> => {
         const pending = (async (): Promise<ApprovalDecisionInput> => {
           throwIfAborted(signal);
@@ -113,32 +164,70 @@ export class MuseSdkAdapter implements WorkerAdapter {
       });
       session.onApprovalError(() => { void emit({ kind: "evidence_omitted", reason: "Native approval error excluded from diagnostics" }); });
       throwIfAborted(signal);
-      const turn = await wait(session.sendUserTurn({ input: [{ type: "text", text: input.prompt }], displayText: `Passeur task ${input.task_id}` }));
-      let lastText: string | undefined;
-      consume = (async () => {
-        for await (const item of turn.items()) {
-          throwIfAborted(signal);
-          if (typeof item.kind !== "string" || item.kind.length > 128) throw new BridgeError("MUSE_EVENT_INVALID", "Native item kind is invalid");
-          if (item.kind === "agentMessage" && item.text) {
-            if (typeof item.text !== "string" || Buffer.byteLength(item.text) > 131_072) throw new BridgeError("WORKER_REPORT_INVALID", "Native report exceeds the consumed text contract");
-            lastText = item.text;
+      let prompt = input.prompt;
+      while (true) {
+        throwIfAborted(signal);
+        // Muse's SDK owns native correlation. This ID scopes Passeur observations to this invocation.
+        const turnId = randomUUID();
+        await emit({ kind: "turn_started", turn_id: turnId });
+        const turn = await wait(session.sendUserTurn({ input: [{ type: "text", text: prompt }], displayText: `Passeur task ${input.task_id}` }));
+        let lastText: string | undefined;
+        consumeError = undefined;
+        consume = (async () => {
+          for await (const item of turn.items()) {
+            throwIfAborted(signal);
+            if (typeof item.kind !== "string" || item.kind.length > 128) throw new BridgeError("MUSE_EVENT_INVALID", "Native item kind is invalid");
+            if (item.kind === "agentMessage" && item.text) {
+              if (typeof item.text !== "string" || Buffer.byteLength(item.text) > 131_072) throw new BridgeError("WORKER_MESSAGE_INVALID", "Native report exceeds the consumed text contract");
+              lastText = item.text;
+            }
+            if (item.kind === "userShell" && item.commandText && item.exitCode !== undefined && item.exitCode !== null) {
+              if (typeof item.commandText !== "string" || typeof item.exitCode !== "number" || !Number.isSafeInteger(item.exitCode)) throw new BridgeError("MUSE_EVENT_INVALID", "Native command evidence is invalid");
+              if (checks.length < 100) checks.push({ command: safeText(item.commandText, 4096), cwd: input.workspace, exit_code: item.exitCode, evidence: "runtime_observed" });
+            }
+            await observeItems();
+            await emit({ kind: "item", item_kind: item.kind, ...(item.status ? { status: String(item.status).slice(0, 128) } : {}) });
           }
-          if (item.kind === "userShell" && item.commandText && item.exitCode !== undefined && item.exitCode !== null) {
-            if (typeof item.commandText !== "string" || typeof item.exitCode !== "number" || !Number.isSafeInteger(item.exitCode)) throw new BridgeError("MUSE_EVENT_INVALID", "Native command evidence is invalid");
-            if (checks.length < 100) checks.push({ command: safeText(item.commandText, 4096), cwd: input.workspace, exit_code: item.exitCode, evidence: "runtime_observed" });
-          }
-          await emit({ kind: "item", item_kind: item.kind, ...(item.status ? { status: String(item.status).slice(0, 128) } : {}) });
+        })().catch((error: unknown) => { consumeError = error; });
+        const outcome = await wait(Promise.all([turn.completed, consume]).then(([terminal]) => terminal));
+        if (consumeError) throw consumeError;
+        if (eventError) throw eventError;
+        const status = outcomeStatus(outcome);
+        // A native turn may end before known background items settle. Snapshot checks are
+        // observations only: this interval has no expiry and cannot cancel the assignment.
+        if (status === "completed") while (!await observeItems()) {
+          await wait(observeAgain(200, undefined, { signal }));
         }
-      })().catch((error: unknown) => { consumeError = error; });
-      const outcome = await wait(Promise.all([turn.completed, consume]).then(([terminal]) => terminal));
-      if (consumeError) throw consumeError;
-      if (eventError) throw eventError;
-      const status = outcomeStatus(outcome);
-      if (status === "completed") {
-        const report = parseWorkerReport(lastText);
-        result = { status, ...report, checks: [...checks, ...report.checks], reported_model: reported, worker_stop: stopped };
-      } else result = { status, summary: `Muse execution ${status}`, worker_assessment: "unknown", blockers: [], questions: [], checks,
-        reported_model: reported, worker_stop: stopped };
+        // Withdraw only at native turn settlement, never because presentation timed out.
+        if (approvals.size) {
+          for (const id of approvalIds) await emit({ kind: "input_withdrawn", native_id: id });
+          await Promise.allSettled([...approvals]);
+        }
+        await emit({ kind: "turn_settled", turn_id: turnId, terminal: status === "completed" ? "completed" : status === "cancelled" ? "cancelled" : "failed" });
+        if (status !== "completed") {
+          result = { status, summary: `Muse execution ${status}`, worker_assessment: "unknown", blockers: [], questions: [], checks,
+            reported_model: reported, worker_stop: stopped }; break;
+        }
+        let message;
+        try { message = parseWorkerMessage(lastText); }
+        catch (error) {
+          if (!(error instanceof BridgeError) || error.code !== "WORKER_MESSAGE_INVALID") throw error;
+          prompt = await wait(input.input("The completed native turn has no valid assignment disposition. Supply an explicit continuation instruction, or cancel the task.", true, undefined, undefined, signal));
+          await emit({ kind: "turn_settled", turn_id: turnId, terminal: "completed" });
+          continue;
+        }
+        if (message.kind === "input_required") {
+          prompt = await wait(input.input(message.question, false, undefined, undefined, signal));
+          await emit({ kind: "turn_settled", turn_id: turnId, terminal: "completed" });
+          continue;
+        }
+        if (message.kind === "blocked") {
+          result = { status: "blocked", summary: message.reason, worker_assessment: "unmet", blockers: [message.reason], questions: [], checks,
+            reported_model: reported, worker_stop: stopped }; break;
+        }
+        const report = finalReport(message);
+        result = { status: "completed", ...report, checks: [...checks, ...report.checks].slice(0, 200), reported_model: reported, worker_stop: stopped }; break;
+      }
     } catch (error) {
       const detail = error instanceof BridgeError ? errorInfo(error) : { code: "MUSE_RUNTIME_ERROR", message: "Muse runtime failed; native error details are excluded from persisted diagnostics" };
       result = input.signal.aborted ? { ...cancelledRun(input.signal, stopped), checks } : {

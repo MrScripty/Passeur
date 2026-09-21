@@ -13,7 +13,7 @@ it("v3 assignment proof includes the selected agent and implementation base/targ
   expect(AssignmentSchema.safeParse({ ...request, agent_id: "" }).success).toBe(false);
   expect(AgentBatchSchema.safeParse({ schema_version: 3, assignments: [request, request] }).success).toBe(false);
 });
-it("v3 admitted records reject altered fingerprints, deadlines and selected identities", async () => {
+it("v4 admitted records reject altered fingerprints, deadlines and selected identities", async () => {
   const f = await fixture();
   try {
     const record = f.admission(f.request("identity"));
@@ -30,13 +30,13 @@ it("real store reads bind a result to its original admission even when both shap
   const f = await fixture();
   try {
     const assignment = f.request("cross-record"), record = f.admission(assignment);
-    await f.store.create(record, { phase: "queued", updated_at: record.accepted_at });
+    await f.store.create(record, f.initial(record.task_id));
     const result = baseResult(record.task_id, assignment, record.execution!);
     if (result.identity.status !== "admitted") throw new Error("Fixture identity is admitted");
     result.identity.snapshot.configuration = { model: "changed" };
     result.identity.snapshot.configuration_fingerprint = canonicalHash(result.identity.snapshot.configuration);
     // Standalone shape proof passes. The store must additionally reject cross-record substitution.
-    expect(decodeResult(result, record.task_id).schema_version).toBe(3);
+    expect(decodeResult(result, record.task_id).schema_version).toBe(4);
     await expect(f.store.writeResult(record.task_id, result)).rejects.toMatchObject({ code: "STORE_CORRUPT" });
     expect(await f.store.readResult(record.task_id)).toBeUndefined();
   } finally { await f.dispose(); }
@@ -45,7 +45,8 @@ it("historical recovery cannot invent a model or confirmed worker stop", async (
   const f = await fixture();
   try {
     const assignment = f.request("history"), id = crypto.randomUUID();
-    const result = { ...baseResult(id, assignment, f.snapshot(assignment)), execution_status: "interrupted",
+    const { native_evidence: _native, ...legacyFields } = baseResult(id, assignment, f.snapshot(assignment));
+    const result = { ...legacyFields, schema_version: 3, execution_status: "interrupted",
       identity: { status: "unavailable", source_schema_version: 2, reason: "Not recorded by the prior contract" }, model: {} };
     expect(decodeResult(result, id).schema_version).toBe(3);
     expect(() => decodeResult({ ...result, model: { requested: "current-model" } }, id)).toThrowError(expect.objectContaining({ code: "STORE_CORRUPT" }));

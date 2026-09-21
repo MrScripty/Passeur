@@ -1,3 +1,15 @@
+# Shared-service recovery
+
+## Current authority
+
+Client loss is not service loss. First inspect front-end status2 and the service generation/process-birth identity. Never delete a lock, signal a stale PID, start an alternate state namespace, or replay a task because a wait timed out. Use a surviving authorized connection, or explicitly human-adopt by task ID/original key.
+
+A restarted service keeps never-started queued work needs-attention; explicitly cancel that preserved task before a new-key resubmission. Possibly started work is not automatically resumed. Verify the exact native process and descendant state, retain worktrees/refs, then use the explicit operator `reconcile` path with evidence. Input delivery intent without native acknowledgment remains unknown even if the process stopped. Shutdown confirmation and answer acknowledgment are different claims.
+
+All online mutations use the service and its ordered election/legacy guards. CLI read-only history remains available without an agent or running service. Existing safety freeze, archive and protection rules below remain; old prose about connection-owned cancellation/deadlines is superseded by [task lifecycle](task-lifecycle.md). A new store cannot be made old-reader compatible by deleting or rebuilding records.
+
+## Retained historical recovery reference
+
 # Registered-agent recovery additions
 
 New v3 records retain their original non-secret execution snapshot. Recovery never consults the current registration/model to describe them. An interrupted v1/v2 task without a snapshot receives explicitly unavailable historical identity and an empty model representation, while prior immutable results remain unchanged. Read/result operations and equivalent v3 retries have no live-agent prerequisite. Preparing or reconciling incomplete work never restarts inference.

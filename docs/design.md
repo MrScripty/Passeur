@@ -1,53 +1,13 @@
-# Parallel workers and committed handoffs
+# Passeur architecture
 
-## Current startup and deployment boundary
+The [shared-service plan](plans/shared-service-and-evidence-driven-lifecycle/plan.md) owns the current implementation effort. Durable authority is documented in [shared service](shared-service.md), [task lifecycle](task-lifecycle.md), and [adapter authoring](agent-adapters.md). Earlier connection-owned/absolute-deadline sections are superseded, not alternative execution modes.
 
-The discoverable-startup implementation replaces eager startup prerequisites described in older sections below. MCP discovery/status are composed before project, profile, state, recovery and provider access. RepositoryRuntime owns one lazy, single-flight preparation lifecycle and a lease retained through safe shutdown. Read-only history and administrative recovery do not depend on inference credentials or a working provider. Lease loss blocks new mutations and preserves unresolved in-flight outcomes; it is not process fencing.
+One local service per canonical repository/state namespace owns `RepositoryRuntime`, its legacy lease, registry, coordinator, TaskStore and DispositionManager. Multiple stdio front ends attach as authenticated connection actors. A front end neither starts independent native inference nor owns the service's lifetime. Each accepted assignment captures the actual client source view, exact base and non-secret agent snapshot.
 
-The runtime composes the existing task coordinator, TaskStore and DispositionManager; it introduces neither a daemon nor another task authority. Execution/delivery/disposition contracts below remain. The caller supplies validated operations, not a replaceable project/state binding or preparation ordering.
+The caller owns task decomposition, selection, integration, broader testing and acceptance. A worker owns scoped changes, applicable instructions/checks and ordinary commits. Passeur owns admission, explicit control, execution evidence and its own resources. A batch introduces neither a shared acceptance boundary nor sibling cancellation.
 
-Version-specific artifacts own build identity and production dependency closure; the Codex adapter owns named configuration and resolved launch verification. Operational procedures are in [startup-and-installation.md](startup-and-installation.md); evidence is in the [implementation report](plans/discoverable-startup-and-installed-runtime/reports/implementation-evidence.md). Configuration, direct MCP transport, coordination readiness and actual host/provider acceptance remain separate claims.
+Execution results are immutable. Resource records independently account for pending delivery, retention, archive and retirement. Full-tip ancestry into the accepted reachable target proves integrated retirement. Squash/cherry-pick similarity does not: retain or explicitly archive source commits. Retirement refuses changed heads, dirty/untracked/ignored content, active/unknown workers, ambiguous ownership and unprotected commits. Passeur does not force-remove, automatically prune or discard unique work.
 
-The current agent extension is governed by [the registered-agent plan](plans/registered-agents/plan.md), on the discoverable-startup runtime. The [parallel-worker plan](plans/parallel-worker-commit-handoff/plan.md) supplies the preserved task/Git lifecycle. The original CLI plan remains historical for the earlier serial release. Its serial limit, uncommitted handoff, mandatory per-worker review language and record-only cleanup are superseded.
+Worktrees isolate edits, not OS authority or shared Git administration. Processes outside Passeur can still edit files or refs. Loss of the service lease is not process fencing. An uncertain native stop or publication freezes unsafe replacement work until explicit reconciliation.
 
-## Responsibility
-
-The caller supplies independent assignments, exact bases, target refs and scoped acceptance criteria. The selected worker reads applicable repository instructions, implements the assignment, performs scoped checks and commits through ordinary Git. Repository scripts and hooks own mechanical checks. The caller decides integration and broader review/testing.
-
-Passeur owns capacity, pending MCP calls, approvals, deadlines, cancellation, delivery identity and its own Git-resource lifecycle. It does not run project tests, rewrite a worker's report with a model, infer dependencies or features, automatically repair, or merge. Concurrency is an execution property, not a shared acceptance boundary.
-
-## Owner and scheduler
-
-A single coordinator leases the canonical Git common-directory identity. Different linked worktrees of the same repository cannot run competing coordinators. Profiles still belong to configured project paths. The common repository task store lives outside the source checkout.
-
-One registry and bounded FIFO queue serve both individual and batch calls. Defaults are two active tasks plus eight queued tasks; batches contain at most eight assignments. The first admitting request owns a task's cancellation. Duplicate same-key subscribers attach to the original execution and can detach without cancelling it. Conflicting input under the same key is rejected. Batch cancellation affects newly owned tasks, not an earlier task to which it merely attached.
-
-Deadlines are absolute from acceptance and include queue time, preparation, approvals and hooks. Closing admission precedes cancellation of queued/running tasks and draining in-flight admission, resource creation, runtime cleanup and terminal persistence. Ordinary task failures do not cancel siblings. Missing terminal persistence or unconfirmed process shutdown freezes replacement starts and retirement; healthy known siblings may finish saving results.
-
-## Runtime and hooks
-
-Each task owns an adapter startup handle before initialization completes, then a client/session/turn. Cancellation and bounded stop handling cover startup, submission and output consumption. Native adapters own their respective production runtime boundaries; configuration-only factories do not load native SDKs during discovery.
-
-The runtime inherits a deliberate environment without alternate API keys or hook-bypass variables. Passeur does not alter Git identity, signing, `core.hooksPath`, test scripts or package dependencies. A hook failure is handled by the worker within its task or reported as a blocker. Commit success does not prove a hook ran or the task is semantically correct.
-
-A worktree is edit isolation, not an OS security boundary. In particular, Git administration and refs are shared. Installed-runtime permission/descendant tests remain required; a local lease does not stop arbitrary same-user shell processes.
-
-## Delivery
-
-After the runtime stops, Passeur observes Git rather than trusting a claimed commit ID. A committed delivery requires an exact task ref/HEAD, ancestry from the admitted base, at least one new commit, and no staged, unstaged or nonignored untracked residue. The complete base-to-head range and tree OID are retained. A task may legitimately produce multiple coherent commits.
-
-No-change delivery requires an explicit worker explanation and unchanged Git facts. A failed execution may still contain committed work without becoming a successful execution. Review tasks have no commit requirement. Full reports and artifacts stay on disk; normal tool results contain bounded references and short limitations.
-
-## Resource lifecycle
-
-Execution results are immutable. Separate resource records track creation intent, pending delivery, explicit retention, cleanup in progress and retirement. Creation intent is saved before `git worktree add`.
-
-`passeur_finalize` acknowledges integration already performed by the caller, retains a task with owner/reason/next action, or archives the exact head under explicit authority. It never integrates code. Every operation supplies an idempotency key, exact expected task ref and head. Receipts survive retries.
-
-For integrated retirement, the full task tip must be an ancestor of the accepted commit, which must remain reachable through the named target. Squash or cherry-pick equivalence does not establish this; retain or explicitly archive the source instead. Archive refs use `refs/passeur/archive/<task-id>` and are created and verified before removal.
-
-Retirement refuses changed heads, unknown ownership, live or uncertain workers, locked worktrees, in-progress Git operations and dirty/untracked/ignored content. There is no force-remove, automatic prune or permanent discard of unique work. Repository-approved cleanup of disposable build outputs happens outside Passeur before retrying retirement. Passeur removes only its owned worktree and redundant branch, conditionally deletes the expected ref, verifies protection and saves the receipt. Partial retirement resumes bookkeeping on retry, not inference or integration.
-
-## Registered-agent ownership
-
-[The adapter contract](agent-adapters.md) owns the current registry, worker boundary and native lifecycle. RepositoryRuntime remains the preparation/lease/composition owner; Coordinator remains the single task scheduler. New v3 admitted snapshots preserve historical identity independently of current profiles. Existing store decoders own persistence, and MCP receipts summarize full results without altering evidence. See [registered agents](registered-agents.md) for public versions and migration.
+Build identity, front-end identity and service generation remain separate. Installed artifacts include the compiled service modules and the locked production dependency closure. Rebuilding a checkout does not replace installed/running code. Named caller registration ownership and required/optional policy remain in the existing Codex configuration adapter.

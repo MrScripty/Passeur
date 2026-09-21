@@ -5,11 +5,13 @@ import { expect, it } from "vitest";
 import { probeRegistration } from "../../src/codex/probe.js";
 import { CODEX_ENABLED_TOOLS, type CodexMcpRegistration } from "../../src/codex/config.js";
 import { runtimeIdentity } from "../../src/install/runtime.js";
+import { readDescriptor, existingOwner } from "../../src/service/bootstrap.js";
 import { resolveRepositoryBinding } from "../../src/core/repository-runtime.js";
 it("probes the exact compiled registration and keeps provider compatibility unverified", async () => {
   const root = await mkdtemp(join(tmpdir(), "passeur-probe-")), project = join(root, "project"); await mkdir(project);
+  let binding: Awaited<ReturnType<typeof resolveRepositoryBinding>> | undefined;
   try {
-    const binding = await resolveRepositoryBinding({ project, stateRoot: join(root, "state"), profilePath: join(root, "missing.json") }, {}, new AbortController().signal);
+    binding = await resolveRepositoryBinding({ project, stateRoot: join(root, "state"), profilePath: join(root, "missing.json") }, {}, new AbortController().signal);
     const identity = await runtimeIdentity(process.cwd());
     const registration: CodexMcpRegistration = {
       server_name: "fixture", command: process.execPath, args: [resolve("dist/src/cli.js"), "serve", "--project", project,
@@ -24,5 +26,12 @@ it("probes the exact compiled registration and keeps provider compatibility unve
     expect(wrong.transport.status).toBe("failed"); expect(wrong.transport.error?.code).toBe("PROBE_IDENTITY_MISMATCH");
     const missing = await probeRegistration({ ...registration, command: join(root, "missing-node") });
     expect(missing.transport.status).toBe("failed");
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    // Do not remove the synthetic store while its service still owns coordination.
+    if (binding) { const descriptor=await readDescriptor(binding);if(descriptor){
+      let stopped=false;for(let n=0;n<1000;n++){if(!await existingOwner(descriptor)){stopped=true;break;}await new Promise(r=>setTimeout(r,5));}
+      expect(stopped).toBe(true);
+    }}
+    await rm(root, { recursive: true, force: true });
+  }
 }, 45000);

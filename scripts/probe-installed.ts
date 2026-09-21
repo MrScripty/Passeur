@@ -34,7 +34,7 @@ async function main(): Promise<void> {
     const base = await git(root, ["rev-parse", "HEAD"]);
     report = { fixture: root, base_commit: base, target_ref: "refs/heads/main", nonce: marker.nonce,
       installed_workflow: "not_run", inference_launched: false,
-      assignment: `Through the actual installed Codex namespace, delegate one implementation task with base_commit ${base}, target_ref refs/heads/main, and allowed_paths [probe-output.txt]. Create probe-output.txt containing exactly ${marker.nonce} followed by a newline. Verify that content and commit through ordinary Git. Return the real Passeur receipt.`,
+      assignment: `Through the actual installed Codex namespace, submit one implementation task through passeur_submit, then observe it with passeur_wait with base_commit ${base}, target_ref refs/heads/main, and allowed_paths [probe-output.txt]. Create probe-output.txt containing exactly ${marker.nonce} followed by a newline. Verify that content and commit through ordinary Git. Retain the accepted task ID and report the terminal evidence separately.`,
       next_action: "Record actual Codex attachment, approvals, cancellation, worker stop and receipt evidence using docs/installed-acceptance.md; this fixture command proves none of those claims." };
   } else {
     const marker = markerSchema.parse(JSON.parse(await readFile(join(root, ".passeur-fixture.json"), "utf8")));

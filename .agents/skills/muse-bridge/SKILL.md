@@ -1,10 +1,8 @@
 ---
 name: muse-bridge
-description: Compatibility route for existing Passeur Muse delegation and setup users. Follow the passeur-bridge skill for current neutral tools, migration, diagnosis and resource accounting.
+description: Migration route for existing Passeur Muse bridge users. Use the durable-task skill for shared service setup, submit/wait/input/cancel and resource accounting.
 ---
 
-# Muse bridge compatibility
+# Muse bridge migration
 
-Read [the current Passeur usage skill](../passeur-bridge/SKILL.md). The existing v2 tools `delegate_to_muse`, `delegate_to_muse_batch`, `muse_result` and `muse_finalize` remain supported entrypoints for agent `muse`. They share the neutral execution path, task store and resource owner.
-
-Use [setup](references/setup.md) for the installed-runtime migration route. For a new agent runtime implementation, use [the adapter-authoring skill](../passeur-agent-adapter/SKILL.md), not this compatibility entrypoint.
+Follow [the current usage skill](../passeur-bridge/SKILL.md). Legacy delegation tools remain discoverable but reject new execution with TASK_API_UPGRADE_REQUIRED. They do not return a task receipt as an old terminal result. Historical evidence readers remain available. Preserve named server/profile/state binding while following [setup](references/setup.md). Native Muse client identifier muse_bridge is not an MCP server name or task owner.

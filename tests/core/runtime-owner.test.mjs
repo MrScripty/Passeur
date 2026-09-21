@@ -117,8 +117,8 @@ test('runtime shutdown is idempotent and rejects new admission',async t=>{
   const f=runtimeFixture(t);await f.runtime.prepare();const a=f.runtime.shutdown(),b=f.runtime.shutdown();assert.equal(a,b);await a;
   assert.throws(()=>f.runtime.prepare(),{code:'BRIDGE_CLOSING'});assert.equal(f.releases,1);
 });
-test('missing client approval capability is rejected before execution composition',async t=>{
-  const f=runtimeFixture(t);await assert.rejects(f.runtime.delegate({schema_version:3,agent_id:'muse',request_key:'new',mode:'review',objective:'review',context:'',acceptance_criteria:['Report']}, {signal:new AbortController().signal,approve:async()=>({choice_id:'deny'})}),{code:'ELICITATION_UNAVAILABLE'});assert.equal(f.acquired,0);
+test('repository preparation retains no ambient per-client approval authority',async t=>{
+  const f=runtimeFixture(t);await f.runtime.prepare();assert.equal(f.runtime.status().execution.approval,'not_checked');assert.equal(f.acquired,1);
 });
 test('history access has no lease or execution prerequisite and denies accidental writes',async t=>{
   const f=runtimeFixture(t,{profile:async()=>{throw Error('must not load')}});const result=await f.runtime.inspect();assert.deepEqual(result.tasks,[]);assert.equal(f.acquired,0);assert.throws(()=>f.authority(),{code:'READ_ONLY_STORE'});

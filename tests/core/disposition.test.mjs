@@ -8,7 +8,7 @@ import { cleanupTask } from '../../.passeur-core/src/core/cleanup.js';
 import { refHead } from '../../.passeur-core/src/workspace/project.js';
 import { worktreeEntries } from '../../.passeur-core/src/workspace/worktree.js';
 const op=(result,extra={})=>({operation_key:'retire-'+result.task_id,task_id:result.task_id,expected_head:result.delivery.head_commit,expected_branch_ref:result.delivery.branch_ref,disposition:'archived',archive_authorized:true,cleanup_authorized:true,...extra});
-async function committed(t){const f=await fixture(t),c=f.coordinator({run:input=>commitFile(input)}),result=await c.delegate(f.implementation('work'),context());return {...f,c,result,manager:new DispositionManager(f.root,'project',f.store,c)};}
+async function committed(t){const f=await fixture(t),c=f.coordinator({run:input=>commitFile(input)}),result=await c.execute(f.implementation('work'),context());return {...f,c,result,manager:new DispositionManager(f.root,'project',f.store,c)};}
 
 test('external fast-forward followed by retirement preserves commits',async t=>{
   const f=await committed(t);await git(f.root,'merge','--ff-only',f.result.delivery.head_commit);
@@ -50,7 +50,7 @@ test('false integration claim cannot authorize removal',async t=>{
 test('retiring one completed worker does not interrupt an active sibling',async t=>{
   const f=await fixture(t),gate=hold();let running=false;
   const c=f.coordinator({run:async input=>{if(input.request.request_key==='b'){running=true;await gate.promise;}return commitFile(input,input.request.request_key+'.txt');}});
-  const a=await c.delegate(f.implementation('a'),context()),b=c.delegate(f.implementation('b'),context());await until(()=>running);
+  const a=await c.execute(f.implementation('a'),context()),b=c.execute(f.implementation('b'),context());await until(()=>running);
   const manager=new DispositionManager(f.root,'project',f.store,c);await manager.finalize(op(a));assert.equal(c.activeCount,1);gate.release();assert.equal((await b).delivery.status,'committed');
 });
 test('interrupted receipt persistence converges on retry without redoing work',async t=>{

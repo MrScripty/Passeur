@@ -1,37 +1,34 @@
-import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import type { ApprovalHandler } from "../agents/types.js";
+import { withAbort } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
-import { Mutex, throwIfAborted, withAbort } from "../core/async.js";
 
-/** One arbiter per MCP connection. It serializes human prompts, not worker execution. */
+type Job = { signal: AbortSignal; execute: () => Promise<void>; abandon: () => void };
+/** A connection-scoped presentation actor. No task/store/admission lock is held during external prompts. */
 export class ApprovalQueue {
-  #mutex = new Mutex();
+  #queue: Job[] = [];
+  #running = false;
+  readonly #presentations = new Set<Promise<unknown>>();
   run<T>(signal: AbortSignal, prompt: () => Promise<T>): Promise<T> {
-    return withAbort(this.#mutex.run(async () => { throwIfAborted(signal); return withAbort(prompt(), signal); }), signal);
+    signal.throwIfAborted();
+    if (this.#queue.length + this.#presentations.size >= 32) return Promise.reject(new BridgeError("PRESENTATION_CAPACITY", "Too many queued human presentations"));
+    let resolve!: (v: T) => void, reject!: (e: unknown) => void;
+    const result = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    const abort = () => { const index = this.#queue.indexOf(job); if (index >= 0) this.#queue.splice(index, 1); reject(signal.reason); };
+    const job: Job = { signal, abandon: () => { signal.removeEventListener("abort", abort); }, execute: async () => {
+      try {
+        signal.throwIfAborted(); const native = Promise.resolve().then(prompt); this.#presentations.add(native);
+        void native.then(() => this.#presentations.delete(native), () => this.#presentations.delete(native));
+        const value = await withAbort(native, signal); signal.throwIfAborted(); resolve(value);
+      }
+      catch (error) { reject(error); }
+    } };
+    signal.addEventListener("abort", abort, { once: true });
+    this.#queue.push(job); this.#pump();
+    return result.finally(() => job.abandon());
   }
-}
-export function nativeApprovalHandler(server: Pick<Server, "elicitInput">, timeoutMs: () => number, queue = new ApprovalQueue()): ApprovalHandler {
-  return async (request, signal) => {
-    const controller = new AbortController();
-    const cancel = () => controller.abort(signal.reason);
-    if (signal.aborted) cancel(); else signal.addEventListener("abort", cancel, { once: true });
-    const timer = setTimeout(() => controller.abort(new Error("Approval expired")), Math.max(1, Math.min(300_000, timeoutMs())));
-    try {
-      return await queue.run(controller.signal, async () => {
-        const once = request.choices.filter((choice) => choice.scope === "once" || choice.decision.startsWith("denied"));
-        if (!once.length) throw new BridgeError("APPROVAL_UNSUPPORTED", "The runtime offered no single-operation or denial choice");
-        const choices = once;
-        const result = await server.elicitInput({
-          mode: "form",
-          message: `Worker requests permission\nTask: ${request.task_id ?? "unknown"}\nWorkspace: ${request.workspace ?? "unknown"}\nRequest: ${request.id}\nTool: ${request.tool}\nOperation: ${request.raw_args}\nScope: ${JSON.stringify(request.subject)}`,
-          requestedSchema: { type: "object", properties: {
-            decision: { type: "string", title: "Decision", oneOf: choices.map((choice) => ({ const: choice.id, title: `${choice.label} (${choice.scope})` })) },
-          }, required: ["decision"] },
-        }, { signal: controller.signal });
-        throwIfAborted(controller.signal);
-        if (result.action !== "accept" || typeof result.content?.decision !== "string" || !choices.some((choice) => choice.id === result.content!.decision)) throw new Error("Approval declined, dismissed, expired, or invalid");
-        return { choice_id: result.content.decision };
-      });
-    } finally { clearTimeout(timer); signal.removeEventListener("abort", cancel); }
-  };
+  #pump(): void {
+    if (this.#running) return;
+    const job = this.#queue.shift(); if (!job) return;
+    this.#running = true;
+    void job.execute().finally(() => { job.abandon(); this.#running = false; this.#pump(); });
+  }
 }

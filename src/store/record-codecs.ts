@@ -1,3 +1,4 @@
+import { DurableRequestSchema, LifecycleSnapshotSchema, NativeEvidenceSchema, TaskControlSchema, SubmissionIdentitySchema } from "../contracts/tasks.js";
 import { AssignmentSchema, ExecutionSnapshotSchema, ExecutionIdentitySchema } from "../contracts/agents.js";
 import { canonicalHash, stableHash } from "../core/async.js";
 import { z } from "zod";
@@ -58,7 +59,7 @@ const resultFields = {
     path: nonempty, bytes: z.number().int().nonnegative() }).strict()),
   output_truncated: z.boolean(),
 };
-const storedResult = z.discriminatedUnion("schema_version", [
+export const storedResult = z.discriminatedUnion("schema_version", [
   z.object({ ...resultFields, schema_version: z.literal(1) }).strict(),
   z.object({ ...resultFields, schema_version: z.literal(2), delivery }).strict(),
   z.object({ ...resultFields, schema_version: z.literal(3), delivery, identity: ExecutionIdentitySchema,
@@ -77,6 +78,16 @@ const storedResult = z.discriminatedUnion("schema_version", [
         !r.delivery.worktree_path || !r.delivery.commits?.length || r.delivery.commits.at(-1) !== r.delivery.head_commit)) {
       context.addIssue({ code: "custom", message: "incomplete committed delivery" });
     }
+  }),
+  z.object({ ...resultFields, schema_version: z.literal(4), delivery,
+    execution_status: z.enum(["completed", "blocked", "failed", "cancelled", "interrupted"]),
+    identity: z.object({ status: z.literal("admitted"), snapshot: LifecycleSnapshotSchema }).strict(),
+    native_evidence: NativeEvidenceSchema,
+    model: z.object({ requested: nonempty.optional(), reported: nonempty.optional() }).strict(),
+  }).strict().superRefine((r, c) => {
+    if (r.model.requested !== r.identity.snapshot.requested_model || r.identity.snapshot.configuration_fingerprint !== canonicalHash(r.identity.snapshot.configuration)) c.addIssue({ code: "custom", message: "result identity mismatch" });
+    if (r.execution_status === "completed" && (r.worker_stop !== "confirmed" || r.native_evidence.state !== "stopped" || r.native_evidence.coverage !== "turn_scoped" || r.native_evidence.obligations.length)) c.addIssue({ code: "custom", message: "completion lacks stop/settlement evidence" });
+    if (r.delivery.status === "committed" && (r.worker_stop !== "confirmed" || !r.delivery.base_commit || !r.delivery.head_commit || !r.delivery.tree_oid || !r.delivery.branch_ref || !r.delivery.target_ref || !r.delivery.worktree_path || !r.delivery.commits?.length || r.delivery.commits.at(-1) !== r.delivery.head_commit)) c.addIssue({ code: "custom", message: "incomplete committed delivery" });
   }),
 ]);
 const resourceRecord = z.object({
@@ -120,6 +131,14 @@ function identity(actual: string, expected: string, stage: string): void {
 }
 
 export function decodeRequest(value: unknown, id: string): StoredRequest {
+  if (recordObject(value) && value.schema_version !== undefined) {
+    version(value, [4], "store.request");
+    const r = parse(DurableRequestSchema, value, "store.request");
+    identity(r.task_id, id, "store.request");
+    const intent = SubmissionIdentitySchema.parse({ schema_version: 1, source_view: r.source_view, assignment: r.request });
+    if (r.canonical_hash !== canonicalHash(intent) || r.execution.agent_id !== r.request.agent_id || r.execution.configuration_fingerprint !== canonicalHash(r.execution.configuration)) throw new BridgeError("STORE_CORRUPT", "Durable admission identity mismatch");
+    return r;
+  }
   if (recordObject(value)) version(value.request, [1, 2, 3], "store.request");
   const result = parse(requestRecord, value, "store.request");
   identity(result.task_id, id, "store.request");
@@ -127,11 +146,14 @@ export function decodeRequest(value: unknown, id: string): StoredRequest {
   return result as StoredRequest;
 }
 export function decodeState(value: unknown): TaskState {
+  if (recordObject(value) && value.schema_version !== undefined) {
+    version(value, [2], "store.state"); return parse(TaskControlSchema, value, "store.state");
+  }
   version(value, [], "store.state");
   return parse(taskState, value, "store.state") as TaskState;
 }
 export function decodeResult(value: unknown, id: string): StoredResult {
-  version(value, [1, 2, 3], "store.result");
+  version(value, [1, 2, 3, 4], "store.result");
   const result = parse(storedResult, value, "store.result");
   identity(result.task_id, id, "store.result");
   return result as StoredResult;
@@ -159,6 +181,12 @@ export function decodeSafety(value: unknown): { reason: string; at: string } {
 export function assertResultAdmission(result: StoredResult, admission: StoredRequest): void {
   identity(result.task_id, admission.task_id, "store.result.admission");
   identity(result.request_key, admission.request.request_key, "store.result.request_key");
+  if ("schema_version" in admission && admission.schema_version === 4) {
+    if (result.schema_version !== 4 || canonicalHash(result.identity.snapshot) !== canonicalHash(admission.execution)) throw new BridgeError("STORE_CORRUPT", "Result differs from durable admission");
+    if (admission.request.mode === "review" && result.delivery.status !== "not_applicable" || result.delivery.base_commit && admission.request.mode === "implement" && result.delivery.base_commit !== admission.request.base_commit || result.delivery.target_ref && result.delivery.target_ref !== admission.request.target_ref) throw new BridgeError("STORE_CORRUPT", "Result delivery contradicts admission");
+    return;
+  }
+  if (result.schema_version === 4) throw new BridgeError("STORE_CORRUPT", "New result cannot replace legacy admission");
   if (admission.request.schema_version === 3) {
     if (result.schema_version !== 3 || result.identity.status !== "admitted" || !admission.execution ||
         canonicalHash(result.identity.snapshot) !== canonicalHash(admission.execution)) {

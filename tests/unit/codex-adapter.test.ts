@@ -12,8 +12,8 @@ const input: Omit<WorkerInput, "signal"> = {
   task_id: "codex-conformance", workspace: "/unused/pre-cancelled", prompt: "Bounded fixture assignment",
   request: { schema_version: 3, agent_id: "codex-worker", request_key: "codex-test", mode: "implement", objective: "Fixture",
     context: "", acceptance_criteria: ["Fixture report"], base_commit: "a".repeat(40), target_ref: "refs/heads/main" },
-  policy: { implementation: { enabled: true }, max_workers: 2, max_queued_tasks: 8, task_timeout_ms: 60_000, stop_grace_ms: 1_000 },
-  approve: async () => ({ choice_id: "decline" }), onEvent: async () => {},
+  policy: { implementation: { enabled: true }, max_workers: 2, max_queued_tasks: 8, max_clients: 32, max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512, stop_grace_ms: 1_000 },
+  approve: async () => ({ choice_id: "decline" }), input: async () => { throw new Error("Unexpected clarification in this fixture"); }, onEvent: async () => {},
 };
 const options: CodexOptions = { codex_bin: "/missing/codex", codex_home: "/unused/pre-cancelled-home", model: "fixture-model",
   network_access: false, allow_command_escalation: false, subscription_confirmed: true, experimental_opt_in: true };
@@ -37,10 +37,22 @@ describe.runIf(process.platform === "linux")("Codex adapter through an actual co
     });
   });
   for (const [name, status, code] of [
-    ["bad-report", "failed", "WORKER_REPORT_INVALID"], ["api-key", "blocked", "CODEX_AUTH_UNAVAILABLE"],
+    ["api-key", "blocked", "CODEX_AUTH_UNAVAILABLE"],
     ["recursive", "blocked", "CODEX_ISOLATION_UNAVAILABLE"], ["wrong-model", "blocked", "CODEX_CONFIGURATION_MISMATCH"],
   ] as const) it(`${name} preserves a distinct failure without provider fallback`, async () => {
     await scenario(name, async (adapter, run) => expect(await adapter.run(run)).toMatchObject({ status, worker_stop: "confirmed", error: { code } }));
+  });
+  for (const name of ["bad-report", "question"]) it(`${name} waits for explicit input and continues the same native session`, async () => {
+    await scenario(name, async (adapter, run, home) => {
+      let asked=0; run.input=async(question,attention)=>{asked++;expect(question.length).toBeGreaterThan(0);expect(attention??false).toBe(name==="bad-report");return "Continue using JSON";};
+      expect(await adapter.run(run)).toMatchObject({status:"completed",worker_stop:"confirmed"}); expect(asked).toBe(1);expect(await readFile(join(home,"fixture-turns"),"utf8")).toBe("2");
+    });
+  });
+  it("does not close a successful turn before known background work settles", async () => {
+    await scenario("pending-item",async(adapter,run,home)=>{
+      expect(await adapter.run(run)).toMatchObject({status:"completed",worker_stop:"confirmed"});
+      expect(await readFile(join(home,"background-settled"),"utf8")).toBe("yes");
+    });
   });
   it("native failure cannot be converted to success by the agent report", async () => {
     await scenario("native-failure", async (adapter, run) => expect(await adapter.run(run)).toMatchObject({ status: "failed", worker_stop: "confirmed" }));

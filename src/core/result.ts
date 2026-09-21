@@ -1,11 +1,12 @@
+import type { LifecycleSnapshot, LifecycleResult } from "../contracts/tasks.js";
 import type { Assignment, AgentResult, ExecutionSnapshot } from "../contracts/agents.js";
 import type { DelegateResult, ResourceRecord, StoredResult } from "../contracts/types.js";
 import type { Workspace } from "../workspace/worktree.js";
 import { BridgeError } from "./errors.js";
 
-export function baseResult(taskId: string, request: Assignment, snapshot: ExecutionSnapshot, workspace?: Workspace): AgentResult {
+export function baseResult(taskId: string, request: Assignment, snapshot: LifecycleSnapshot, workspace?: Workspace): LifecycleResult {
   return {
-    schema_version: 3, identity: { status: "admitted", snapshot: structuredClone(snapshot) }, task_id: taskId, request_key: request.request_key, execution_status: "failed", worker_stop: "not_started",
+    schema_version: 4, native_evidence: { run_id: taskId, state: "not_started", obligations: [], coverage: "unknown" }, identity: { status: "admitted", snapshot: structuredClone(snapshot) }, task_id: taskId, request_key: request.request_key, execution_status: "failed", worker_stop: "not_started",
     worker_assessment: "unknown", summary: "", blockers: [], questions: [], model: snapshot.requested_model ? { requested: snapshot.requested_model } : {},
     workspace: workspace?.kind === "task_worktree"
       ? { kind: "task_worktree", base_commit: workspace.base_commit!, worktree_path: workspace.path, stale: false }
@@ -30,11 +31,11 @@ export function resultReceipt(result: StoredResult, resource?: ResourceRecord): 
       commit_count: result.delivery.commits?.length,
       reason: result.delivery.reason?.slice(0, 300),
     } } : { delivery: { status: "legacy_unclassified" } }),
-    ...(result.schema_version === 3 ? { agent: result.identity.status === "admitted"
+    ...((result.schema_version === 3 || result.schema_version === 4) ? { agent: result.identity.status === "admitted"
       ? { agent_id: result.identity.snapshot.agent_id, adapter_id: result.identity.snapshot.adapter_id,
         configuration_fingerprint: result.identity.snapshot.configuration_fingerprint, model: result.model }
       : result.identity } : {}),
-    resource_state: resource?.state ?? "legacy_unclassified", details: result.schema_version === 3 ? "passeur_result" : "muse_result", output_truncated: true,
+    resource_state: resource?.state ?? "legacy_unclassified", details: result.schema_version !== 1 && result.schema_version !== 2 ? "passeur_result" : "muse_result", output_truncated: true,
   };
 }
 /** Bounds the actual serialized MCP result, rather than only the inner data. No duplicated structured content. */
