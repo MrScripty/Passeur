@@ -1,0 +1,313 @@
+# Passeur: evaluator-assisted structural coordination
+
+## Current authority
+
+| Field | Value |
+|---|---|
+| Plan status | `Planned` |
+| Plan revision | `2B` — standalone evaluator-assisted target |
+| Acceptance status | `pending` |
+| Current phase | M0 — admission and boundary qualification |
+| Exactly one next integration slice | **M0-S1 — reconcile the baseline, qualify the parser packaging path, and admit M1** |
+| Canonical plan path | `docs/plans/evaluator-assisted-coordination/plan.md` |
+| Implementation invocation | Explicit `start`; subsequent `continue` or `verify` only in the states allowed by Planning |
+| Examined implementation | Passeur `f9a7c5d2d314580e5f7849982cf158397f9c11de` |
+| Adopted standards | MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
+| Prepared | September 21, 2026, America/Vancouver |
+| Product and acceptance owner | Passeur maintainer |
+| Shared-source integration owner | One lead implementer named on admission |
+| Composed-design review | Applicable; all eight probes in [design admission](reports/design-admission.md) |
+
+[Execution ledger](execution-ledger.md) owns dated work/evidence. [Issues](issues.md) owns findings. [Contracts and workflow](reports/contracts-and-workflow.md) refines D1–D12. [Language qualification](reports/language-qualification.md) owns the required grammar/extraction matrix. [Implementation map](reports/implementation-map.md) owns exact slice write sets. [Verification](reports/verification.md) owns scenario procedures and oracle boundaries. [Sources and routing](reports/sources-and-routing.md) records examined sources and standards. [Evaluator design](reports/evaluator-design.md), [provider qualification](reports/evaluator-provider.md), and [evaluator verification](reports/evaluator-verification.md) own the additional probabilistic advisory contract and its evidence. None duplicates task-lifecycle authority.
+
+This is a prospective implementation plan. No production code, installed configuration, account, task, or branch has been changed by preparing it. At the examined commit, the shared-service lifecycle effort remains `Verifying`, with acceptance `blocked`. Its required claims remain with that effort. This plan does not certify the entire existing codebase or close an inherited claim using lower-fidelity evidence.
+
+This is a standalone implementation target. The implemented shared-service lifecycle retains its own authority and pending acceptance evidence. Before editing, inspect actual source, installed readers and durable state; choose explicit preservation, migration or rejection for any incompatible state. Plan selection grants no authority to erase records or rewrite history.
+
+## 1. Objective and boundary
+
+Enable two or more parent/orchestrators and their workers to work in one repository with isolated inputs, early factual visibility into overlapping work, compact task-attributed structural differences, and one clearly identified parent coordinating a given integration target. Add a qualified decision model to identify likely intent interactions, contextual relevance, and possible behavioral disagreements in bounded evidence. These are probabilistic advice to parents, not execution or code-acceptance authority.
+
+The normal path is **submit → work independently → obtain exact Git result → parent integrates → account for resources**. Additional coordination is entered only for observed relevance or an explicit parent request:
+
+**announce/register → compare declared areas → observe exact versions → extract syntax → filter relevance → parent retrieves bounded evidence → parent decides → coordinate reconciliation ownership → integrate externally**.
+
+Git owns code versions. Parents own interpretation, worker instructions, task decomposition, checks, reconciliation choices, integration, and acceptance. Passeur owns its shared execution service, source observations, deterministic formatting, authorized coordination records, delivery of selected notices, and safe disposition of its own resources.
+
+### Required outcome
+
+A parent sees the exact structural report and, when an authorized qualified evaluation is available, a separately attributed typed judgment about its coordination value. Model output cannot alter source roles, syntax fragments, declaration correspondence or factual coverage. Reports remain useful when evaluation is disabled, unavailable or uncertain. Evaluate declared intent before work and bounded changes during work without asking coding agents to narrate their activity.
+
+### In scope
+
+Git-identified handoffs; registered managed/external work; reused assignment intent and declared work areas; pre-start advisory overlap; explicit syntax watches; capture of relevant in-progress file buffers; syntax-level declaration extraction and conservative matching; compact deterministic reporting; bounded observations and notifications to parents; scoped attributed notes; non-expiring cooperative reconciliation leadership; historical compatibility, installed packaging, tests, and skills. Also in scope are bounded semantic candidate assessment, evaluator policy, disclosed context collection, cost control, provider adaptation, task-specific calibration, and probabilistic parent-notice ranking.
+
+**Required structural coverage:** Rust, TypeScript, JavaScript, Python, Lua, Kotlin, Zig, C#, C, C++, Odin, Svelte 5, and React through JSX/TSX. Every entry is an acceptance requirement. A partial language rollout is an implementation checkpoint, not completion of this objective.
+
+Qualify modern stable syntax selected as of admission, including relevant versions/features introduced since January 2025. Record exact supported dialects and tool versions. Older syntax supported by the same grammar is welcome; dedicated pre-January-2025 compatibility work is not required. This is not a promise to support unknown future language versions.
+
+### Excluded mechanisms
+
+Compiler/type-checker/LSP integration; referenced-type expansion or compiler-equivalent inferred types; macro execution; an authoritative resolved call graph; generated prose or code; unrestricted per-save inference; autonomous reasoning loops; model-controlled tools, authority, or task state; a rich proposal-family database; managed publication refs or acceptance policy engine; code-writing/merging/retasking by Passeur; automatic project tests or builds; live shared-source/CRDT editing; exclusive per-file edit leases; arbitrary plugins; remote/multi-user operation; machine-wide build scheduling; protection from malicious same-user programs.
+
+Reconciliation *leadership* is in scope; executing a merge is not. Exact Git references plus existing task results are the handoff, not a parallel source-history authority. A syntax occurrence index is evidence routing, not a dependency claim. Optional parent-authored notes remain attributed statements.
+
+## 2. Binding decisions
+
+### D1. Preserve execution authority; add a distinct observation owner
+
+Retain one elected repository service, `RepositoryRuntime`, `Coordinator`, `TaskControls`, `InputBroker`, registered-agent adapters, TaskStore, and DispositionManager. Native tasks remain service-owned; disconnects and observation waits cannot cancel them. Parents alone choose development instructions.
+
+Add a narrow structural-observation owner, a coordination-control owner, and a separately bounded EvaluationOwner inside that service. EvaluationOwner owns eligible requests, reservations of evaluation budgets, observed provider outcomes and typed advice. It does not own worker scheduling or parent decisions. Parser work runs in a service-owned helper process, not in a second service or task scheduler. CLI/MCP remain projections. The parser receives captured bytes, never provider credentials or the authority to modify a workspace. Ordinary model execution and observation do not share a cancellation signal.
+
+All online **Passeur administrative** mutations use the existing service authority. This does not claim that all Git commands or file edits from external tools are intercepted.
+
+### D2. Reuse task identity and Git, rather than create proposal versions
+
+A managed work record references its durable task/parent identity and admitted commit. An external writer has a verified workspace registration and parent; it does not acquire fictional native liveness. Use a small work identity for announced/external activity where no task exists yet. A task or registration is not proof of sole authorship of every observed edit.
+
+Every report contains independent pairs: `TASK A: INPUT A0 → OBSERVED A7`; `TASK B: INPUT B0 → OBSERVED B4`. Display a common input only when it really is the same identified input. A current integration target, if shown, is a separate role. Never compare line coordinates from unrelated bases as though they shared one coordinate system.
+
+Full OIDs and object-format identity are retained; display abbreviations are unambiguous within the report. `git blame` is not attribution authority. The handoff identity is the full existing Git commit associated with its task or registered work. Captured working bytes remain separately identified observations.
+
+### D3. Separate exact commits from advisory working captures
+
+Commit observations read exact tree/blob objects. A working capture identifies the registered workspace generation, observed HEAD anchor, captured file bytes and content digest, path/mode, capture sequence, and limitations. It is not a commit or an atomic repository snapshot. Its captured bytes, not the live path, are parsed and used for any returned excerpt.
+
+Distinguish absent-in-commit, missing-during-capture, unreadable, unsupported representation, parse-incomplete, and present. A concurrent save or rename can make capture unavailable; bounded retry is permissible only for this read-only observation. A stable-looking stat or two matching reads is not a transaction proof.
+
+Use qualified Linux handle-based reads, verify the opened object's type and containment before reading contents, and retain the descriptor through capture. Symlink targets are not followed for source analysis. Committed symlink and submodule entries are reported as mode/object changes. No implicit object fetch, textconv, external diff, merge driver, project preprocessing, or build script executes during observation.
+
+### D4. Report written declarations, not inferred meanings
+
+Extract native-language declaration fragments: names and enclosing syntax, parameter order/names/patterns, explicit type annotations, explicit result declarations, receivers, visibility/modifiers, generics/constraints, directly changed named fields/types, imports/exports, and supported template regions.
+
+Use `not_declared` for missing annotations. Do not expand a named type. If that type's declaration changed, report its own direct difference separately. Literal syntax within a type is retained as syntax; argument values, computed runtime values, body values, and default-expression values are not included by default. Changed default expressions receive a marker; exact source is available only through authorized detail retrieval.
+
+Body-only changes and unmapped source changes remain visible as `body_changed`, `region_changed`, or incomplete coverage. A signature-only projection must not hide an edited implementation. Direct child changes do not automatically become a claim that every enclosing class/module was directly edited. Factual structural output makes no semantic compatibility claim. A separate model-advice record may report a calibrated hypothesis such as `possible_behavioral_disagreement`, with the exact evidence/model/rubric and an abstention state. It never relabels that hypothesis as a parser-established fact, safe merge or proven breaking change.
+
+### D5. Conservative correspondence, not universal symbol identity
+
+Use per-source declaration keys and deterministic matching within explicitly paired files. Match unchanged unique declarations first, then unambiguous same-name/kind/enclosing-syntax candidates. Handle overloads, forward declarations, duplicate names, nested/anonymous functions and changed containers explicitly.
+
+A match is `unique_syntax_correspondence`, not semantic identity. When correspondence is uncertain, show additions/removals and an ambiguity marker. Cross-file movement or renaming is a candidate relationship unless established by the selected exact-content/lineage rule. Parent scope names, line numbers, or fuzzy scores alone never establish identity.
+
+The report remains useful without forcing every change into a function. Parse `ERROR`/missing-node coverage and unrecognized changed regions are propagated. A temporarily unparseable declaration is not reported as certainly deleted.
+
+### D6. Tree-sitter is the parsing mechanism; extraction is a qualified product contract
+
+Use the established Tree-sitter engine and pinned upstream grammars. The preferred production backend is the official native Node binding in a dedicated helper, with grammar modules packaged for the admitted Linux/Node target. M0 must qualify native loading for the required grammar set and representative extraction. Grammars without a usable package may use the upstream-generated parser/scanner and a reviewed build-time binding; this is packaging, not a new handwritten parser.
+
+The selected production path is native Node Tree-sitter in a local helper process. Package native grammars/scanners for the admitted Linux/Node ABI. Runtime operation needs neither a browser nor a web application. A native packaging failure is a named qualification issue; resolve it through the qualified native binding/build path or re-plan the affected support claim. No second parser backend is shipped.
+
+One built-in language catalog maps dialects to packaged parser/query/extractor artifacts. A manifest binds upstream commit, integrity, license, runtime ABI, generated artifact identity, extraction version and fixtures. Grammar existence, a successful parse, or a tags query alone does not satisfy argument/return extraction. No runtime downloads or compilation. Compiler APIs and language servers remain excluded even if they would fill a coverage gap.
+
+### D7. Changed-content monitoring with explicit coverage
+
+Monitor registered work, including qualified managed work while all clients are absent. Use filesystem notifications as invalidation hints plus bounded inventory reconciliation at attach, explicit refresh and lifecycle/checkpoint boundaries. Dirty roots with incomplete event coverage receive a qualified low-frequency sweep. Debounce and scan intervals schedule observations; they never govern task life, ownership, or release.
+
+Use Git change discovery first, then parse changed or explicitly watched contents. Share immutable extraction caches across identical content/dialect/parser/query inputs; keep workspace-specific scopes and matching outside that cache. Use one analysis slot initially with a bounded queue; coalesce superseded file jobs and record their completion class. Add parallel slots only against an admitted measured budget.
+
+Late results cannot overwrite a newer workspace generation or observation. Event loss yields a coverage gap and rescan, not a clean bill of health. Intermediate edits between samples may be missed; the guarantee is qualified observation of captured states, not audit of every keystroke. No repeated whole-repository compilation, quadratic all-agent comparison, or unbounded full graph reconstruction.
+
+### D8. Explicit relevance and quiet-by-default delivery
+
+Index declared areas, changed paths, declaration anchors and explicit watches. The default rules surface new declared file overlap during preflight; runtime notices require a watched declaration/region or both tasks changing a corresponding declaration/region. Broad directory overlap and unresolved name matches are queryable context, not repeated interrupts. Optional lexical reference hints are labelled unresolved and do not imply a compiler-resolved dependency.
+
+A changed observation updates stored evidence first. Delivery happens to authorized parents through a pull cursor and bounded notices on the new coordination-aware response surface. No autonomous coding-agent wake-up, subagent broadcast, explanation request or test invocation. Evaluation occurs only under D13–D16 policy, using a dedicated decision provider; it is not an agent-to-agent chat. Parent-requested notes may explicitly address another parent; the service merely routes attributed text.
+
+Coalesce by work/subject/recipient, notify once per materially changed compact evidence revision, and permit suppression/snooze through explicit parent settings without deleting evidence. Returning to the input state creates a resolved/reverted observation where relevant. Cursor gaps and service/index generations are explicit; absent notifications never imply no relevant work.
+
+### D9. Announce before starting without mandatory bookkeeping
+
+A direct submit reuses its assignment for an announcement; the new default remains advisory and does not require a second model-authored description. A parent wanting pre-start coordination can announce once, inspect overlap, then submit by announcement reference without repeating the prompt. The service atomically registers the announcement and snapshots relevant existing activity. New relevant overlap before a gated submit produces an unadmitted `coordination_changed` response; unrelated board changes do not force reapproval.
+
+Expected areas, context files, watches and allowed write paths retain separate meanings. Preserve existing allowed-path checking and report its actual enforcement level. This plan adds no file-permission or exclusive-write grant machinery. One independent registered writer per physical workspace; other writers use other worktrees. External workspace registration does not start, stop, sandbox or clean up its host.
+
+Announcements are not tasks and hold no inference slot. They survive disconnect as explicit records until withdrawn, linked, or owner/operator-retired. A stale announcement may be marked owner-unobserved, never silently deleted by age.
+
+### D10. Scoped notes and one reconciliation lead per target
+
+Support small attributed notes attached to work, a structural subject or a reconciliation case. Reuse assignment intent verbatim; a qualified evaluator may separately flag a possible tension between an explicit agreement and supplied evidence, without rewriting the note or manufacturing acknowledgment. An agreed constraint is a parent-authored statement with explicit acknowledgments from named parties, not an inferred contract. Source comments and notes are untrusted content, not executable instructions or permission.
+
+Maintain at most one active reconciliation case per canonical repository/full target ref. One parent holds its leadership generation. Input commits and target observation are revisioned fields of that case, not its identity: changing A7 to A8 cannot create a competing ownership slot. Work continues in other worktrees. No timer releases the claim.
+
+Claim/update/release are atomic, authorized, idempotent operations. Handoff requires current-owner consent or explicit operator adoption with expected generation. A losing claimant sees only authorized owner/case metadata. Leadership does not grant control over another task or permission to modify any ref. Target changes stale the selected input set; they do not silently create a new case or stop workers. Parents perform reconciliation and integration externally.
+
+### D11. Keep persistence proportional to the selected invariants
+
+Extend the existing store's atomic-publication mechanism. Use one bounded repository coordination-control aggregate for the coherent admission/registration/claim/acknowledgment invariant, with revision-checked serialized updates. It contains small control metadata and bounded attributed notes, not syntax trees, whole diffs, duplicate task histories or Git source versions. Immutable report artifacts and disposable parser/index caches are separate.
+
+This selects atomic JSON publication, not SQLite. Each authoritative control transition fits one atomic record replacement; there are no cross-record SQL-like transactions to emulate. If real cardinality/latency or independently required transactions invalidate that contract, re-plan this storage decision rather than invent a transaction engine. Every started write is owned and observed through its publication outcome.
+
+Announcement-to-task linkage is recorded in the new durable request before native startup; interrupted linkage is reconciled by exact work ID/request key and existing accepted task, never duplicate submission. Metadata changes do not rewrite old task requests or results. Notes/claims/receipts are not disposable caches. Cache eviction may lose detailed working-buffer history only under the declared availability contract and must return `detail_unavailable` or a cursor gap.
+
+Existing task refs/disposition protect task work. An active case that names a task result prevents Passeur-owned retirement until the case releases it or another exact protecting ref is verified. This is a case-to-resource check, not a transitive proposal pin graph. External edits/ref deletions remain outside Passeur's prevention guarantee.
+
+### D12. Failure, resource and compatibility behavior
+
+Analysis failures degrade observation only. They do not cancel accepted inference, grant permission, become semantic success, or trigger the native-stop safety freeze. Genuine loss of control-store authority blocks dependent coordination mutations; known healthy tasks can continue saving execution evidence through their existing owner.
+
+Analysis is pure disposable computation: explicit cancellation/supersession or a declared analysis-only resource limit may stop its helper job, with an incomplete/superseded result. No such condition stops a coding worker. Capture buffers, parser allocations, queue entries, helper processes, watchers, waiters and notifications have bounds and disposal owners. Required controls remain available under observation saturation.
+
+Introduce independently versioned coordination contracts and new submit/observation projections where semantics change. Retain baseline submit v1 and historical request/result bytes as uncoordinated/legacy-readable behavior; do not add fields to strict old responses. Use explicit coordinated request v5 only for the new linkage, retaining unchanged assignment v3 and result v4 meaning unless the implementation proves another actual contract change. Update all affected decoders and admission/result checks together.
+
+Installed/runtime status states parser-bundle identity and per-language qualification separately from service/task readiness. Failure to load grammars does not hide the MCP catalog or disable task result retrieval. Controlled cutover uses compatible builds and the same repository/state binding; old binaries cannot be assumed safe writers of new authority. Unexpected durable records require an explicit supported-state decision; they are not deleted or treated as an empty store.
+
+### D13. Narrow probabilistic decisions from identified evidence
+
+Evaluation is advisory and opt-in. The first implementation adapts the documented TypeSafe Jev decision API; it uses a pinned, explicitly qualified model and SDK. A model such as `jev-1.13.0` is a documented candidate, not an executed compatibility result. A future provider requires its own conformance and workload evidence, not substitution by name.
+
+Use a closed question catalog: relation between declared intents; relevance of a change to a named task; possible behavioral disagreement in supplied snippets; and possible tension with an explicit agreement. Each decision is atomic, has explicit insufficient-context options, and maps to fixed output labels rather than generated explanations. Ranking is performed in deterministic policy from retained distributions.
+
+The native parser remains the authority for exact syntax. The evaluator adds semantic hypotheses but cannot infer authoritative symbol identity, expand referenced types, determine native completion, or select acceptable code. It cannot start/stop/retask a worker, grant rights, take a reconciliation claim, execute a command, select a new recipient, or update a Git ref.
+
+### D14. Bounded context and predictable cost
+
+Build candidate pairs from authorized task metadata, exact watches, observed paths/declarations and bounded same-target intent retrieval. The retrieval boundary is measured; unexamined pairs remain unexamined. Evaluate announcements once per material intent revision and relevant changes once per immutable evidence/rubric/model context. Repeated polling or another save is not itself a paid request.
+
+Context tiers are operator/parent-approved: existing intent text and compact syntax; optionally bounded captured body hunks or supplied agreement text. The parser provides source spans; a model never requests arbitrary files or follows an import. Absence, redaction, truncation, capture inconsistency and missing bodies are explicit. Different tasks retain separate input/observed endpoints. Raw bodies/literals remain absent from the default parent report even when an explicitly permitted evaluation packet contains selected source.
+
+Reserve request, token/spend and concurrency capacity before dispatch. Limits belong to independent evaluator policy, not task deadlines. Cache the exact authorized packet/model/question result; recheck access and qualification on reuse. At most one policy-authorized context expansion is permitted for a decision; there is no model-driven repair loop. Unknown usage or billing retains a conservative reservation until reconciliation.
+
+### D15. Separate uncertainty from facts and permissions
+
+Decode exact typed outcomes and probability distributions. Retain provider confidence separately from answer probability and measured application calibration. Select thresholds per question, context tier and supported workload using held-out labeled cases; a number such as 0.9 is not accepted because it looks cautious.
+
+Keep explicit watches, direct structural notices, input obligations and control conflicts on a non-suppressible deterministic lane. Qualified model advice can add or prioritize a notice and coalesce optional semantic suggestions. A low relevance score can withhold an optional model-only suggestion; it cannot erase factual evidence, suppress an explicit watch, or imply compatibility. Uncertainty remains queryable without automatically waking another model.
+
+Modes are `disabled`, `shadow`, and `advisory`. Shadow consumes only explicitly authorized evaluation budget and cannot alter parent delivery. Advisory is enabled only for qualified scopes. Errors/abstention return an explicit evaluator-unavailable/insufficient state while deterministic reporting continues. This is a declared degraded contract, not simulated semantic success.
+
+### D16. Disclosure, failure and release gates
+
+A hosted evaluator is an outbound data boundary even though Passeur remains a local service. Before dispatch, each source's policy must authorize the chosen provider, recipient scope and content tier; local access and cross-parent sharing alone do not authorize external transfer. Select credentials/endpoints through private operator configuration, never task text, notes, shell arguments or model outputs. Keep parser/coding-worker environments free of evaluator credentials.
+
+Source comments, task prompts and notes are untrusted data. Fixed questions cannot be overwritten by their contents. Prompt-injection screening is not a security guarantee; only deterministic authority and data-flow restrictions authorize effects. Post-dispatch revocation cannot recall data already sent. It blocks future requests and unauthorized delivery; late results never mutate current authority.
+
+Observe provider calls independently of native worker lifetime. Time/size budgets may end an evaluation observation, not a coding task. Persist dispatch intent and budget reservation before the paid call; an uncertain response is not replayed automatically. On restart recover receipts, retained uncertainty and exact sources without re-running accepted inference.
+
+Full acceptance requires actual evaluator evidence for the admitted question/language/context scopes, including deliberate wrong/confident answers, insufficient context, adversarial inputs, drift, and cost-quality tradeoffs. Fake providers establish protocol behavior only. A missing account may block EA acceptance while reversible source work continues.
+
+## 3. Required foundation corrections
+
+Before accepting the end-to-end path, remove the unrelated dirty-source precondition for exact-base isolated work; reproduce and correct cancelled execution signals leaking into stable delivery/artifact collection; and replace broad administrative locking around Git hooks with durable resource intent plus narrow state transitions. Preserve authority checks and confirmed-stop requirements.
+
+Also ensure analysis and observer saturation cannot block existing input/cancellation/recovery. These are bounded invariant families, not opportunistic repository cleanup. The inspected source supports the first finding and the cancellation path; runtime reproduction is still required. The shared-service plan retains its native/installed acceptance ownership.
+
+## 4. Milestones
+
+All milestones start `Planned`. [Implementation map](reports/implementation-map.md) supplies each exact write set and shared-file owner. New directly affected paths are recorded before editing; re-plan only when they change scope, authority, risk, composition or evidence, not merely file count.
+
+### M0 / M0-S1 — Baseline and boundary admission
+
+**Goal:** establish sufficient concrete facts for the selected design. **Writes:** plan package; `AGENTS.md`; only affected status/authority/ledger/issues sections of the shared-service plan. Production read-only.
+
+Confirm source/status, source/consumer inventory, modern dialect matrix, package licenses/ABI, parser child loading for all candidate grammars, Svelte snippet argument extraction path, descriptor capture safety and native host constraints. Reproduce the foundation paths with disposable resources. Qualify the selected native binding and generated scanner path; dependency installation and build-time provisioning remain explicitly authorized. Select exact parser/runtime/artifact pins and initial performance budgets; admit evaluator request/response semantics, a fixed candidate model, operator-controlled disclosure, question scopes and a labeled evaluation procedure; do not leave the production manifest with placeholders. Missing live accounts block their acceptance claims, not independent deterministic work.
+
+**Gate:** no unresolved ownership/schema/capture contradiction; M1 paths, parser/backend decision and source identities are concrete. **Re-plan:** unsafe capture, unavailable required grammar packaging, compiler required for the selected extraction, materially changed source, incompatible existing new-plan state.
+
+### M1 / M1-S1 — Git-to-structural-report vertical path
+
+**Goal:** real CLI/MCP clients retrieve exact per-task structural reports through the shared service/helper using Rust and TypeScript first. Implement source identity/capture contracts, helper protocol, declaration matching/reporting, basic work linkage, report storage, versioned public projection and the directly affected foundation corrections. Keep unfinished language coverage visibly unqualified.
+
+**Gate:** real Git/source buffers → real helper parser → validated report → actual transport consumer; common/different bases, add/add, body-only edits, ambiguous matches and cancelled collection scenarios pass. **Re-plan:** source identity lost at a boundary, parser work blocks supervision, attribution inferred from blame, result changes with mutable paths.
+
+### M2 / M2-S1 — Complete required language surface
+
+**Goal:** all thirteen requested entries satisfy the qualification matrix, including Svelte 5 embedded scripts/snippets and JSX/TSX. Add language-specific extraction, source-offset mapping, default-value masking, error coverage and fixtures through the same parser contract. Share JS/TS machinery where it owns the same syntax; preserve dialect differences.
+
+**Gate:** every required row and its named modern constructs passes independent source-to-output checks; missing coverage remains a failed required claim, not file-level acceptance. **Re-plan:** source-to-output oracle is derived from the extractor, syntax requires semantic evaluation, or a new backend/grammar fork changes packaging ownership.
+
+### M3 / M3-S1 — Preflight and low-noise live observations
+
+**Goal:** parents see relevant pre-start overlap and runtime structural changes without additional worker/model calls. Implement announcement reference submission, watcher/inventory reconciliation, changed-content cache, generations, inverted routing index, explicit watches, durable snapshots/cursors, coalescing and query-first delivery.
+
+**Gate:** concurrent announce races, differing source views, delayed parse, event loss, repeat saves, unparseable edits, disconnected parents, and observer saturation produce the specified results. Demonstrate zero coding-agent requests and zero evaluator calls on the deterministic-only path. Keep evaluator dispatch unreachable until M5 adds its complete authorization/budget boundary. **Re-plan:** all-agent scans or whole-repository reparse is required on every edit; notification requires a fabricated host wake-up; monitoring changes task outcomes.
+
+### M4 / M4-S1 — Parent notes and reconciliation ownership
+
+**Goal:** two independent parents can coordinate one target without competing reconciliations. Add authorized scoped notes, explicit acknowledgment, one lead per target, generation-checked transfer/recovery and exact-input case updates. Support external writers without claiming process supervision. Add case-aware resource-retirement checks.
+
+**Gate:** simultaneous claims yield one lead; new input commits stay in the same case; stale/disconnected owners cannot silently regain authority; ordinary tasks keep running; private details remain private; no merge or code-writing effect occurs. **Re-plan:** task adoption grants target privileges; claim identity is input-hash-only; authorship is inferred; source rewrite required to update a case.
+
+### M5 / M5-S1 — Controlled evaluator path
+
+**Goal:** a real parent receives a separately labeled typed judgment over identified, authorized evidence without new coding-agent narration. Add the provider boundary, fixed question catalog, candidate retrieval, immutable context packet, egress policy, budget reservation, single-flight cache and verdict projection. Initially use shadow mode; advisory delivery remains disabled until M6 qualification.
+
+**Gate:** EA01–EA04, EA06–EA08 at their selected fidelity; real SDK/HTTP through an independently specified controlled peer plus one explicitly authorized live semantic sample when access exists. Core structural, privacy and lifecycle claims remain intact. **Re-plan:** undocumented provider identity, unsupported closed answer contract, non-disableable paid retry, insufficient privacy authority, or synchronous inference in the control path.
+
+### M6 / M6-S1 — Calibration and advisory integration
+
+**Goal:** establish whether the four admitted question families improve coordination on the actual workload at an accepted cost. Curate independent labels before threshold selection; measure retrieval coverage, intent interaction, change relevance, body-level disagreement and agreement-tension hypotheses. Cover every required language's admitted core forms and measure uncertainty rather than converting it to confidence.
+
+Run held-out shadow evaluation; approve model/rubric/language/context qualification records and then enable advisory only for those records. Compare combined model cost plus additional parent context against deterministic operation and a parent-owned correctness oracle. No suppression of explicit watches or mandatory controls.
+
+**Gate:** EA05, EA09, EA10 and the changed delivery portions of SC08/SC15/SC16. An unsupported semantic row remains visibly unqualified and blocks the associated full assisted claim; structural support remains complete on its own terms. **Re-plan:** false-negative/false-positive cost misses the agreed budget, lexical shortlisting misses required interactions, concentration of probabilities is substituted for accuracy, or uncertain inputs provoke repeated model calls.
+
+### M7 / M7-S1 — Installed workflow, performance and acceptance
+
+**Goal:** complete two-parent and three-or-more-worker workflows on the qualified installed runtime, with all languages packaged and accurate skills. Finish explicit version/configuration migration, actual host retrieval/reconnect, parser isolation and resource evidence, independent review and final resource accounting.
+
+**Gate:** SC01–SC17 and EA01–EA10 satisfied; affected inherited lifecycle claims have their required evidence; full pinned checks and installed artifact tests pass; final material candidate reviewed independently before merge; every plan-created resource accounted for. **Re-plan:** representative workload exceeds admitted budgets, native/installed evidence contradicts simulations, or required consumers still use rejected representations.
+
+## 5. Objective acceptance
+
+All statuses are initially `pending`; evidence links are procedures in [verification](reports/verification.md), not results. Compound claims require every part. Source completeness alone yields `Implemented`; execution/awaiting environment yields `Verifying`, never premature `Accepted`.
+
+| ID | Observable criterion | Kind | Environment | Mode | Status | Procedure |
+|---|---|---|---|---|---|---|
+| SC01 | Independent inputs/observed versions and target roles remain exact across common/different bases, adds and retries | contract + integration | representative real Git/store | automated | pending | V01 |
+| SC02 | Attribution identifies observed work/task and parent, including imported commits and external writers, without invented authorship | contract + integration | representative | automated | pending | V02 |
+| SC03 | Parameters/results/modifiers/direct types are extracted as written; named types and runtime values are not inferred | contract | representative pinned parsers | automated | pending | V03 |
+| SC04 | Every required language/framework row, including modern Svelte 5 and React syntax, passes its independent qualification cases | contract + release-artifact | representative selected dialects/bundle | automated | pending | V04 |
+| SC05 | Bodies, unmapped regions, parse errors and ambiguous correspondence remain visible and bounded | contract + integration | representative parsers | automated | pending | V05 |
+| SC06 | Captured bytes/ranges are coherent for that observation; unsafe paths and mutable-source substitution are rejected | system + contract | representative Linux/filesystem | automated | pending | V06 |
+| SC07 | Monitoring is incremental/bounded; late results and event loss cannot produce false current/complete reports | system | representative real helper/watchers | automated | pending | V07 |
+| SC08 | Structural extraction and deterministic notice delivery make zero inference calls; every optional evaluator request is isolated and coding-agent broadcasts remain absent | integration + system | representative process boundary | automated | pending | V08 |
+| SC09 | Announce and gated start handle concurrent parents without a check/register race or duplicate task execution | integration + contract | representative real store/Git | automated | pending | V09 |
+| SC10 | Notes and structural details obey sharing policy; statements/acknowledgments cannot manufacture permission or agreement | contract + user-workflow | representative plus required-real host for adoption | either | pending | V10 |
+| SC11 | One target case has one lead; input revision changes do not bypass it; explicit transfer and restart preserve ownership | system + contract | representative real processes/store | automated | pending | V11 |
+| SC12 | Analysis failure, silence/disconnection, overload and long hooks preserve task lifetime, controls and final evidence | system | representative plus inherited required-real adapters | either | pending | V12 |
+| SC13 | Exact commits needed by active cases remain protected during Passeur-owned retirement; external workspaces are not deleted | integration | representative real Git | automated | pending | V13 |
+| SC14 | Old task/result semantics remain readable; new operation decoders, installed cutover and rollback limits are truthful | contract + release-artifact | representative historic fixtures/artifact | automated | pending | V14 |
+| SC15 | End-to-end two-parent/three-worker workflow is usable with updated skills and no required routine coordination narration | user-workflow | required-real installed host and qualified adapters | either | pending | V15 |
+| SC16 | Measured cold/warm, multi-worktree, memory, IPC and model-context budgets meet the admitted performance contract | system | representative named machine/corpus | automated | pending | V16 |
+| SC17 | Staged scope, routed standards, full pinned checks, independent final review and plan-resource disposition are complete | contract + release-artifact + user-workflow | representative plus required-real independent reviewer | either | pending | V17 |
+
+
+### Evaluator acceptance claims
+
+These additional claims are required for the complete evaluator-assisted objective. The [evaluator verification procedures](reports/evaluator-verification.md) define independent oracles, environments and the decision boundary for each.
+
+| ID | Observable criterion | Kind | Environment | Mode | Status | Procedure |
+|---|---|---|---|---|---|---|
+| EA01 | Exact model/questions/state/answer and usage contracts are decoded; unknown/malformed responses cannot become judgments | contract + integration | representative HTTP/SDK plus required-real provider | automated | pending | EV01 |
+| EA02 | Candidate retrieval and context assembly preserve per-task source identity and expose omissions without self-authorizing file expansion | contract + system | representative Git/captures | automated | pending | EV02 |
+| EA03 | Egress, cross-parent sharing, credentials and revocation remain deterministic even for hostile prompts or high-confidence responses | security contract + system | representative transport; approved live boundary | either | pending | EV03 |
+| EA04 | Budgets/cache/single-flight/retries/lost responses are bounded and keep an accurate request/uncertain-cost record | system + persistence | representative real processes/storage/HTTP | automated | pending | EV04 |
+| EA05 | Independent held-out evidence qualifies each required question/language/context row and abstention behavior | contract + user-workflow | required-real pinned model and labeled corpus | either | pending | EV05 |
+| EA06 | Model advice remains separate from exact structural facts and cannot acquire executable or task-control authority | contract + system | representative adversarial outputs | automated | pending | EV06 |
+| EA07 | Errors, stale replies, service loss and evaluation time budgets preserve worker lifetime and deterministic reporting | system | representative native tasks and HTTP faults | automated | pending | EV07 |
+| EA08 | Only bounded qualified advice affects optional notice ranking; factual watches and control obligations remain visible | integration + user-workflow | representative delivery; required-real parent host | either | pending | EV08 |
+| EA09 | Measured cost/latency/attention and missed-interaction budgets justify the admitted advisory policy | system + user-workflow | required-real provider; representative device/workload | either | pending | EV09 |
+| EA10 | Installed provider disablement/upgrade/rollback, new model qualification and fresh-session use preserve all admitted limits | release-artifact + user-workflow | required-real installed host/provider | either | pending | EV10 |
+
+## 6. Standards, implementation discipline and stopping rules
+
+Read Core then Router at the adopted revision and follow selected `Requires`; the exact route and exclusions are in sources/routing. Keep each invariant with its owner, fully decode incoming/outgoing/persisted variants, preserve historical meanings, and update the affected producer/consumer family with its tests. Select independent test oracles for extraction and disclosure rather than snapshots regenerated from the implementation being tested.
+
+One lead owns schemas, shared store/service code, package locks, parser-bundle manifest, generated contract inputs, active plan state and integration. Language extraction/fixture work can be delegated after the common contract is stable, with nonoverlapping primary write sets and serial integration. Product concurrency does not automatically select the Concurrent Plan Integration workflow profile; select it if the actual development workflow admits outstanding authorizing proposals against mutable shared plan state.
+
+Use a branch such as `feat/evaluator-assisted-coordination`, with the lead integrating to `main`. This isolation is justified by IPC/persistence/native packaging risk. The request to write this plan is not permission to execute it, use accounts, provision dependencies, edit host configuration, push, delete worktrees, bypass hooks or rewrite history. An implementation invocation names this canonical path and `start` explicitly.
+
+Each slice inspects repository status, states exact writes and tests, protects unrelated changes, verifies its coherent outcome, reviews the staged diff, then uses ordinary conventional commits. No prescribed commit count. Independent review is at the completed candidate/final PR boundary, not every worker completion or commit.
+
+Re-plan only for a material design/authority/support/consumer/evidence change, a repeated invariant-family defect, or measured propagation/cost contradicting admission. Investigate only a named decision-changing uncertainty with a cheapest adequate method and observable stop. Passing a parser smoke is not adequate language coverage; passing tests is not evidence of semantic compatibility outside the stated claims.
+
+**Current blockers:** no global planning blocker. Exact native parser pins/build qualification, safe capture proof, modern grammar fixtures, measured budgets, real host/native workflows, provider access, data-handling approval, model/rubric qualification, and inherited acceptance are unexecuted gates. Public evaluator documentation does not establish account access, calibrated performance on code, local weights, or acceptable source-code disclosure. Missing required facts block their claim/slice, not unrelated reversible implementation. Mandatory violations in affected families cannot be left unresolved while claiming acceptance.
+
+## 7. Final acceptance and compaction
+
+Accept only after all non-deferred milestones are `Accepted` or explicitly superseded, SC01–SC17 and EA01–EA10 are satisfied, required inherited claims are proved, changed meanings receive affected re-review, and plan-created branches/worktrees/processes/artifacts have recorded disposition. Retain exact head reachability and protection evidence for cleanup; inspect only plan-created resources.
+
+Move durable reporting/coordination contracts into `docs/structural-reporting.md` and `docs/coordination.md` under their admitted write owner, then compact this plan to a decision/evidence index. The design provides factual structural evidence and separately attributed probabilistic coordination advice. Neither is certification of delivered project code.

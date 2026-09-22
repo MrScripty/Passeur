@@ -17,8 +17,7 @@ export async function prepareWorkspace(root: string, request: Assignment, profil
   if (!request.target_ref || !request.base_commit) throw new BridgeError("INVALID_ASSIGNMENT", "Implementation requires base_commit and target_ref");
   await validateBranchRef(root, request.target_ref, options.signal);
   if (!await refHead(root, request.target_ref)) throw new BridgeError("TARGET_NOT_FOUND", "The intended local target branch does not exist");
-  const status = await sourceStatus(root, true, options.signal);
-  if (status.length) throw new BridgeError("DIRTY_SOURCE", "Implementation requires a clean source checkout; Passeur will not stash or commit it");
+  // The admitted commit owns the input; unrelated parent index/worktree bytes remain untouched.
   const base = await exactCommit(root, request.base_commit, options.signal);
   // Check lexical containment before mkdir, then resolve symlinks before creating a task.
   const sourceRoot = await realpath(root);

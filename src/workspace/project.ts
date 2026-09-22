@@ -34,11 +34,13 @@ export function isWithin(root: string, candidate: string): boolean {
   return value !== ".." && !value.startsWith(`..${sep}`) && !isAbsolute(value);
 }
 
-/** Git subprocesses, including hooks spawned during worktree creation, remain owned on POSIX. */
-export async function git(root: string, args: string[], signal?: AbortSignal, input?: string): Promise<string> {
+async function runGit(root: string, args: string[], signal?: AbortSignal, input?: string, environment?: Readonly<Record<string, string>>): Promise<string> {
   throwIfAborted(signal);
   return new Promise<string>((resolvePromise, reject) => {
-    const child = spawn("git", ["-C", root, ...args], { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+    const child = spawn("git", ["-C", root, ...args], {
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], detached: process.platform !== "win32",
+      ...(environment ? { env: { ...process.env, ...environment } } : {}),
+    });
     const stdout: Buffer[] = [], stderr: Buffer[] = [];
     let bytes = 0, failure: unknown, killTimer: NodeJS.Timeout | undefined, lastTimer: NodeJS.Timeout | undefined;
     const sendSignal = (name: NodeJS.Signals) => {
@@ -73,6 +75,14 @@ export async function git(root: string, args: string[], signal?: AbortSignal, in
       else resolvePromise(Buffer.concat(stdout).toString("utf8"));
     });
   });
+}
+/** Git subprocesses, including hooks spawned during worktree creation, remain owned on POSIX. */
+export async function git(root: string, args: string[], signal?: AbortSignal, input?: string): Promise<string> {
+  return runGit(root, args, signal, input);
+}
+/** Object inspection must fail locally instead of contacting a configured promisor remote. */
+export async function gitWithoutLazyFetch(root: string, args: string[], signal?: AbortSignal): Promise<string> {
+  return runGit(root, args, signal, undefined, { GIT_NO_LAZY_FETCH: "1" });
 }
 export function validateOid(value: string): void {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value)) throw new BridgeError("INVALID_COMMIT", "Expected a full Git object ID");

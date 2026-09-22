@@ -168,11 +168,15 @@ export class Coordinator {
     const phase = async (next: "starting" | "active" | "finalizing") => this.controls.change(id, (s) => { if (!s.cancel) s.phase = next; });
     try {
       controller.signal.throwIfAborted(); this.assertAuthority(); await phase("starting");
-      workspace = await this.administration.run(() => prepareWorkspace(record.source_view, request, this.policy, this.projectId, id, {
+      // Active-task ownership protects this unique workspace; hooks run outside repository administration.
+      workspace = await prepareWorkspace(record.source_view, request, this.policy, this.projectId, id, {
         signal: controller.signal, assertAuthority: this.assertAuthority,
-        onIntent: async (intent) => this.store.writeResource(id, { schema_version: 1, task_id: id, project_id: this.projectId,
-          state: "creating", updated_at: now(), worktree_path: intent.path, branch_ref: intent.branch!, base_commit: intent.base_commit!, target_ref: intent.target_ref! }),
-      }));
+        onIntent: (intent) => this.administration.run(async () => {
+          this.assertAuthority();
+          await this.store.writeResource(id, { schema_version: 1, task_id: id, project_id: this.projectId,
+            state: "creating", updated_at: now(), worktree_path: intent.path, branch_ref: intent.branch!, base_commit: intent.base_commit!, target_ref: intent.target_ref! });
+        }),
+      });
       result = baseResult(id, request, record.execution, workspace);
       const resource = await this.store.readResource(id);
       await this.store.writeResource(id, resource ? { ...resource, state: "pending", updated_at: now() }
@@ -204,15 +208,18 @@ export class Coordinator {
         await this.#freeze(`Task ${id} has unconfirmed native shutdown`);
       } else {
         await phase("finalizing");
-        // Terminal collection has its own lifetime; a cancelled work signal cannot cancel evidence preservation.
-        result.delivery = await observeDelivery(workspace, run.no_changes_reason);
+        // Accounted-for native stop permits collection independent of execution cancellation.
+        const collection = { ...workspace };
+        delete collection.signal;
+        this.assertAuthority();
+        result.delivery = await observeDelivery(collection, run.no_changes_reason);
         result.workspace.stale = request.mode === "review" && (JSON.stringify(before) !== JSON.stringify(await digestFiles(workspace.path, request.context_files ?? [], true))
           || JSON.stringify(beforeStatus) !== JSON.stringify(await sourceStatus(workspace.path)) || revision !== await currentRevision(workspace.path));
-        const changes = await collectChanges(workspace); result.changed_files = changes.map((c) => c.path).sort();
+        const changes = await collectChanges(collection); result.changed_files = changes.map((c) => c.path).sort();
         const paths = [...new Set(changes.flatMap((c) => c.old_path ? [c.old_path, c.path] : [c.path]))];
         const outside = request.allowed_paths ? paths.filter((p) => !request.allowed_paths!.some((a) => p === a || p.startsWith(`${a.replace(/\/$/, "")}/`))) : [];
         if (outside.length) result.blockers.push(`Changes outside allowed_paths require caller review: ${outside.join(", ").slice(0, 1800)}`);
-        if (request.mode === "implement") await this.#artifacts(id, workspace, result, changes);
+        if (request.mode === "implement") await this.#artifacts(id, collection, result, changes);
         const owned = await this.store.readResource(id);
         if (owned && result.delivery.head_commit) await this.store.writeResource(id, { ...owned, head_commit: result.delivery.head_commit, updated_at: now() });
       }

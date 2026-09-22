@@ -1,0 +1,6 @@
+Scope: new observation/materiality modules and their actual source dependencies only.
+Compiler: Version 5.8.3
+Node declarations: 25.1.0
+Command: tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --types node --typeRoots <available-node-types> --noEmit src/observation/source.ts src/observation/match.ts src/observation/report.ts src/coordination/notices.ts
+Exit status: 0
+[3JTERM environment variable not set.

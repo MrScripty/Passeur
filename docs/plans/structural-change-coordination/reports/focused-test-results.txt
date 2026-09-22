@@ -1,0 +1,208 @@
+TAP version 13
+# Subtest: exact-base delegation preserves a dirty parent worktree and its index
+ok 1 - exact-base delegation preserves a dirty parent worktree and its index
+  ---
+  duration_ms: 111.9159
+  type: 'test'
+  ...
+# Subtest: explicit cancellation retains committed delivery and actual diff/manifest after confirmed stop
+ok 2 - explicit cancellation retains committed delivery and actual diff/manifest after confirmed stop
+  ---
+  duration_ms: 85.693108
+  type: 'test'
+  ...
+# Subtest: unconfirmed native stop still refuses stable collection and freezes replacement work
+ok 3 - unconfirmed native stop still refuses stable collection and freezes replacement work
+  ---
+  duration_ms: 51.925525
+  type: 'test'
+  ...
+# Subtest: a waiting checkout hook holds its task, not the repository administration mutex or sibling start
+ok 4 - a waiting checkout hook holds its task, not the repository administration mutex or sibling start
+  ---
+  duration_ms: 167.057148
+  type: 'test'
+  ...
+# Subtest: preparation cancellation remains effective even though final collection is independent
+ok 5 - preparation cancellation remains effective even though final collection is independent
+  ---
+  duration_ms: 27.924077
+  type: 'test'
+  ...
+# Subtest: authority loss during creation intent prevents the Git worktree effect
+ok 6 - authority loss during creation intent prevents the Git worktree effect
+  ---
+  duration_ms: 35.61262
+  type: 'test'
+  ...
+# Subtest: live review workspaces keep their explicit source view
+ok 7 - live review workspaces keep their explicit source view
+  ---
+  duration_ms: 32.560313
+  type: 'test'
+  ...
+# Subtest: exact sha1 commit bytes are independent of dirty checkout and current HEAD
+ok 8 - exact sha1 commit bytes are independent of dirty checkout and current HEAD
+  ---
+  duration_ms: 72.413932
+  type: 'test'
+  ...
+# Subtest: exact sha256 commit bytes are independent of dirty checkout and current HEAD
+ok 9 - exact sha256 commit bytes are independent of dirty checkout and current HEAD
+  ---
+  duration_ms: 54.861877
+  type: 'test'
+  ...
+# Subtest: working captures retain their own bytes and context after another edit
+ok 10 - working captures retain their own bytes and context after another edit
+  ---
+  duration_ms: 39.804738
+  type: 'test'
+  ...
+# Subtest: commit absence and missing live source have different observations
+ok 11 - commit absence and missing live source have different observations
+  ---
+  duration_ms: 55.511164
+  type: 'test'
+  ...
+# Subtest: source sampling does not follow final symlinks or intermediate directory symlinks
+ok 12 - source sampling does not follow final symlinks or intermediate directory symlinks
+  ---
+  duration_ms: 74.737864
+  type: 'test'
+  ...
+# Subtest: directories and nonblocking special-file observations expose no source bytes
+ok 13 - directories and nonblocking special-file observations expose no source bytes
+  ---
+  duration_ms: 84.245535
+  type: 'test'
+  ...
+# Subtest: invalid paths are rejected before access, while literal Git pathspec characters remain literal
+ok 14 - invalid paths are rejected before access, while literal Git pathspec characters remain literal
+  ---
+  duration_ms: 55.533607
+  type: 'test'
+  ...
+# Subtest: UTF-8 byte identity survives Git reads; invalid encodings are not lossy source observations
+ok 15 - UTF-8 byte identity survives Git reads; invalid encodings are not lossy source observations
+  ---
+  duration_ms: 90.15205
+  type: 'test'
+  ...
+# Subtest: source budgets and explicit cancellation reject without starting a usable observation
+ok 16 - source budgets and explicit cancellation reject without starting a usable observation
+  ---
+  duration_ms: 49.776832
+  type: 'test'
+  ...
+# Subtest: commit observation rejects annotated tag objects and ignores Git replacement refs
+ok 17 - commit observation rejects annotated tag objects and ignores Git replacement refs
+  ---
+  duration_ms: 62.945634
+  type: 'test'
+  ...
+# Subtest: direct blob observation invokes no configured text converter or external diff
+ok 18 - direct blob observation invokes no configured text converter or external diff
+  ---
+  duration_ms: 59.763613
+  type: 'test'
+  ...
+# Subtest: matching shows written parameter/result changes against independently identified versions
+ok 19 - matching shows written parameter/result changes against independently identified versions
+  ---
+  duration_ms: 1.022791
+  type: 'test'
+  ...
+# Subtest: body-only changes remain visible without literal body/default source
+ok 20 - body-only changes remain visible without literal body/default source
+  ---
+  duration_ms: 0.776424
+  type: 'test'
+  ...
+# Subtest: default-only changes keep the marker but not default literals or hashes in the report
+ok 21 - default-only changes keep the marker but not default literals or hashes in the report
+  ---
+  duration_ms: 0.345364
+  type: 'test'
+  ...
+# Subtest: unwritten return types stay not_declared rather than acquiring inferred annotations
+ok 22 - unwritten return types stay not_declared rather than acquiring inferred annotations
+  ---
+  duration_ms: 0.432603
+  type: 'test'
+  ...
+# Subtest: unique unchanged overloads match before a remaining changed overload
+ok 23 - unique unchanged overloads match before a remaining changed overload
+  ---
+  duration_ms: 0.415177
+  type: 'test'
+  ...
+# Subtest: duplicate signatures are ambiguous rather than paired by occurrence order
+ok 24 - duplicate signatures are ambiguous rather than paired by occurrence order
+  ---
+  duration_ms: 0.325063
+  type: 'test'
+  ...
+# Subtest: absent input supports additions while incomplete and missing observations never prove deletion
+ok 25 - absent input supports additions while incomplete and missing observations never prove deletion
+  ---
+  duration_ms: 0.362659
+  type: 'test'
+  ...
+# Subtest: an incomplete declaration header is not claimed as a confirmed header change
+ok 26 - an incomplete declaration header is not claimed as a confirmed header change
+  ---
+  duration_ms: 0.331133
+  type: 'test'
+  ...
+# Subtest: unmapped edits and executable mode changes remain visible
+ok 27 - unmapped edits and executable mode changes remain visible
+  ---
+  duration_ms: 0.308939
+  type: 'test'
+  ...
+# Subtest: different repositories, paths or extraction identities are rejected as comparison pairs
+ok 28 - different repositories, paths or extraction identities are rejected as comparison pairs
+  ---
+  duration_ms: 0.282039
+  type: 'test'
+  ...
+# Subtest: three tasks keep their own input/observed labels and report attribution rather than blame
+ok 29 - three tasks keep their own input/observed labels and report attribution rather than blame
+  ---
+  duration_ms: 0.784786
+  type: 'test'
+  ...
+# Subtest: page budgets count serialized escaping bytes and make forward progress
+ok 30 - page budgets count serialized escaping bytes and make forward progress
+  ---
+  duration_ms: 0.460755
+  type: 'test'
+  ...
+# Subtest: untrusted source labels cannot add terminal control sequences or spoof line-oriented headings
+ok 31 - untrusted source labels cannot add terminal control sequences or spoof line-oriented headings
+  ---
+  duration_ms: 0.381887
+  type: 'test'
+  ...
+# Subtest: notice materiality ignores OID/position/body-digest churn but changes for new structure or reversion
+ok 32 - notice materiality ignores OID/position/body-digest churn but changes for new structure or reversion
+  ---
+  duration_ms: 0.576016
+  type: 'test'
+  ...
+# Subtest: source operations reject a subdirectory as an ambiguous registered worktree root
+ok 33 - source operations reject a subdirectory as an ambiguous registered worktree root
+  ---
+  duration_ms: 37.549638
+  type: 'test'
+  ...
+1..33
+# tests 33
+# suites 0
+# pass 33
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 807.60852

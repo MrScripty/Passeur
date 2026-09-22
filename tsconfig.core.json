@@ -20,6 +20,10 @@
     "src/core/recovery.ts",
     "src/agents/report.ts",
     "src/core/repository-runtime.ts",
-    "src/core/lease.ts"
+    "src/core/lease.ts",
+    "src/observation/source.ts",
+    "src/observation/match.ts",
+    "src/observation/report.ts",
+    "src/coordination/notices.ts"
   ]
 }
