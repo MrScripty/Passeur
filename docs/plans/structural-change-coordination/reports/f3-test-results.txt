@@ -1,0 +1,730 @@
+TAP version 13
+# Subtest: repository decoder rejects raw physical identity and actor/source injection
+ok 1 - repository decoder rejects raw physical identity and actor/source injection
+  ---
+  duration_ms: 94.948625
+  type: 'test'
+  ...
+# Subtest: registration derives source identity, preserves dirty work and keeps allowed input separate from current HEAD
+ok 2 - registration derives source identity, preserves dirty work and keeps allowed input separate from current HEAD
+  ---
+  duration_ms: 198.354973
+  type: 'test'
+  ...
+# Subtest: simultaneous parents cannot register different aliases of one workspace
+ok 3 - simultaneous parents cannot register different aliases of one workspace
+  ---
+  duration_ms: 154.280975
+  type: 'test'
+  ...
+# Subtest: the resource authority can reject external enrollment before any coordination publication
+ok 4 - the resource authority can reject external enrollment before any coordination publication
+  ---
+  duration_ms: 105.987859
+  type: 'test'
+  ...
+# Subtest: a missing resource authority cannot silently grant external enrollment
+ok 5 - a missing resource authority cannot silently grant external enrollment
+  ---
+  duration_ms: 63.356627
+  type: 'test'
+  ...
+# Subtest: registration refuses unavailable or non-commit bases without publishing a work record
+ok 6 - registration refuses unavailable or non-commit bases without publishing a work record
+  ---
+  duration_ms: 135.218579
+  type: 'test'
+  ...
+# Subtest: expected areas cannot direct later source analysis into Git administrative paths
+ok 7 - expected areas cannot direct later source analysis into Git administrative paths
+  ---
+  duration_ms: 89.897373
+  type: 'test'
+  ...
+# Subtest: decoded command and actor values cannot be changed during an external authority check
+ok 8 - decoded command and actor values cannot be changed during an external authority check
+  ---
+  duration_ms: 113.753433
+  type: 'test'
+  ...
+# Subtest: independent worktrees and different admitted bases retain their own identities
+ok 9 - independent worktrees and different admitted bases retain their own identities
+  ---
+  duration_ms: 189.090683
+  type: 'test'
+  ...
+# Subtest: two parent principals coordinate exact real Git inputs without advancing any Git ref
+ok 10 - two parent principals coordinate exact real Git inputs without advancing any Git ref
+  ---
+  duration_ms: 407.292933
+  type: 'test'
+  ...
+# Subtest: invalid and symbolic targets cannot create independent leadership records
+ok 11 - invalid and symbolic targets cannot create independent leadership records
+  ---
+  duration_ms: 134.84506
+  type: 'test'
+  ...
+# Subtest: target drift refuses a new external-operation marker and preserves source/control records
+ok 12 - target drift refuses a new external-operation marker and preserves source/control records
+  ---
+  duration_ms: 284.06637
+  type: 'test'
+  ...
+# Subtest: selecting an unrelated sibling commit cannot relabel it as this workspace result
+ok 13 - selecting an unrelated sibling commit cannot relabel it as this workspace result
+  ---
+  duration_ms: 366.426193
+  type: 'test'
+  ...
+# Subtest: permission checks precede source lookup for a non-lead input-selection request
+ok 14 - permission checks precede source lookup for a non-lead input-selection request
+  ---
+  duration_ms: 246.685366
+  type: 'test'
+  ...
+# Subtest: a sharing revocation during real Git preflight is rechecked before source-dependent publication
+ok 15 - a sharing revocation during real Git preflight is rechecked before source-dependent publication
+  ---
+  duration_ms: 330.396368
+  type: 'test'
+  ...
+# Subtest: a case revision changing during real source inspection rejects the stale preparation
+ok 16 - a case revision changing during real source inspection rejects the stale preparation
+  ---
+  duration_ms: 288.846958
+  type: 'test'
+  ...
+# Subtest: source-operation saturation does not block work revocation, closure or receipt lookup
+ok 17 - source-operation saturation does not block work revocation, closure or receipt lookup
+  ---
+  duration_ms: 140.95497
+  type: 'test'
+  ...
+# Subtest: explicit source cancellation before publication does not create a partial work registration
+ok 18 - explicit source cancellation before publication does not create a partial work registration
+  ---
+  duration_ms: 73.214668
+  type: 'test'
+  ...
+# Subtest: metadata controls and retained receipts work after the bound source checkout is lost
+ok 19 - metadata controls and retained receipts work after the bound source checkout is lost
+  ---
+  duration_ms: 259.756726
+  type: 'test'
+  ...
+# Subtest: cold-process reopen recomputes the same workspace identity and preserves operation-key uniqueness
+ok 20 - cold-process reopen recomputes the same workspace identity and preserves operation-key uniqueness
+  ---
+  duration_ms: 204.579993
+  type: 'test'
+  ...
+# Subtest: a lost acceptance receipt does not replay integration intent after restart or target movement
+ok 21 - a lost acceptance receipt does not replay integration intent after restart or target movement
+  ---
+  duration_ms: 425.500823
+  type: 'test'
+  ...
+# Subtest: closing drains an accepted source operation and refuses new work without a task timer
+ok 22 - closing drains an accepted source operation and refuses new work without a task timer
+  ---
+  duration_ms: 83.274945
+  type: 'test'
+  ...
+# Subtest: source replacement during resource authorization cannot enroll the stale physical identity
+ok 23 - source replacement during resource authorization cannot enroll the stale physical identity
+  ---
+  duration_ms: 90.873791
+  type: 'test'
+  ...
+# Subtest: work registration retains exact input format and isolated returned values
+ok 24 - work registration retains exact input format and isolated returned values
+  ---
+  duration_ms: 25.239377
+  type: 'test'
+  ...
+# Subtest: simultaneous registration of one workspace has exactly one winner
+ok 25 - simultaneous registration of one workspace has exactly one winner
+  ---
+  duration_ms: 18.269069
+  type: 'test'
+  ...
+# Subtest: parallel independent commands preserve every admitted update
+ok 26 - parallel independent commands preserve every admitted update
+  ---
+  duration_ms: 55.687835
+  type: 'test'
+  ...
+# Subtest: lost receipt retry reuses its exact identity; changed intent conflicts
+ok 27 - lost receipt retry reuses its exact identity; changed intent conflicts
+  ---
+  duration_ms: 7.654872
+  type: 'test'
+  ...
+# Subtest: operation keys do not share results across distinct parent principals
+ok 28 - operation keys do not share results across distinct parent principals
+  ---
+  duration_ms: 14.461753
+  type: 'test'
+  ...
+# Subtest: read sharing permits attributed notes but not changing another work record
+ok 29 - read sharing permits attributed notes but not changing another work record
+  ---
+  duration_ms: 7.861693
+  type: 'test'
+  ...
+# Subtest: agreement requires separate exact-party acknowledgments; posting is not consent
+ok 30 - agreement requires separate exact-party acknowledgments; posting is not consent
+  ---
+  duration_ms: 14.487372
+  type: 'test'
+  ...
+# Subtest: withdrawal preserves text and prior acknowledgment and rejects late answers
+ok 31 - withdrawal preserves text and prior acknowledgment and rejects late answers
+  ---
+  duration_ms: 14.864987
+  type: 'test'
+  ...
+# Subtest: private and missing notes use the same disclosure-safe outcome
+ok 32 - private and missing notes use the same disclosure-safe outcome
+  ---
+  duration_ms: 8.619828
+  type: 'test'
+  ...
+# Subtest: agreement cannot name a party without current access
+ok 33 - agreement cannot name a party without current access
+  ---
+  duration_ms: 5.492308
+  type: 'test'
+  ...
+# Subtest: UTF-8 note capacity rejects a larger multibyte note before publication
+ok 34 - UTF-8 note capacity rejects a larger multibyte note before publication
+  ---
+  duration_ms: 8.625035
+  type: 'test'
+  ...
+# Subtest: stale work revision refuses mutation and preserves disk bytes
+ok 35 - stale work revision refuses mutation and preserves disk bytes
+  ---
+  duration_ms: 7.106073
+  type: 'test'
+  ...
+# Subtest: closing registration retains evidence and frees only its metadata writer slot
+ok 36 - closing registration retains evidence and frees only its metadata writer slot
+  ---
+  duration_ms: 20.525544
+  type: 'test'
+  ...
+# Subtest: overlap reports exact declared regions without prefix or privacy confusion
+ok 37 - overlap reports exact declared regions without prefix or privacy confusion
+  ---
+  duration_ms: 16.522113
+  type: 'test'
+  ...
+# Subtest: a command is captured before an asynchronous caller can mutate its inputs
+ok 38 - a command is captured before an asynchronous caller can mutate its inputs
+  ---
+  duration_ms: 7.204321
+  type: 'test'
+  ...
+# Subtest: target claim races have one owner; ordinary work still registers
+ok 39 - target claim races have one owner; ordinary work still registers
+  ---
+  duration_ms: 14.796619
+  type: 'test'
+  ...
+# Subtest: new selected commit advances the existing case, not its claim identity
+ok 40 - new selected commit advances the existing case, not its claim identity
+  ---
+  duration_ms: 22.299801
+  type: 'test'
+  ...
+# Subtest: case inputs are not disclosed to a participant without source sharing
+ok 41 - case inputs are not disclosed to a participant without source sharing
+  ---
+  duration_ms: 10.992247
+  type: 'test'
+  ...
+# Subtest: Git object format mismatch is rejected rather than silently normalized
+ok 42 - Git object format mismatch is rejected rather than silently normalized
+  ---
+  duration_ms: 11.43768
+  type: 'test'
+  ...
+# Subtest: handoff invalidates control; old receipt only acknowledges history
+ok 43 - handoff invalidates control; old receipt only acknowledges history
+  ---
+  duration_ms: 10.875272
+  type: 'test'
+  ...
+# Subtest: ABA leadership cannot revive an old generation
+ok 44 - ABA leadership cannot revive an old generation
+  ---
+  duration_ms: 13.615586
+  type: 'test'
+  ...
+# Subtest: reopening a released target increments generation without exposing the old case
+ok 45 - reopening a released target increments generation without exposing the old case
+  ---
+  duration_ms: 10.217498
+  type: 'test'
+  ...
+# Subtest: unmediated integration blocks transfer, new inputs and release until reported settlement
+ok 46 - unmediated integration blocks transfer, new inputs and release until reported settlement
+  ---
+  duration_ms: 19.22383
+  type: 'test'
+  ...
+# Subtest: revocation also protects prior case notes after an input is removed
+ok 47 - revocation also protects prior case notes after an input is removed
+  ---
+  duration_ms: 22.527064
+  type: 'test'
+  ...
+# Subtest: a lead losing source access can release without regaining source disclosure
+ok 48 - a lead losing source access can release without regaining source disclosure
+  ---
+  duration_ms: 38.82658
+  type: 'test'
+  ...
+# Subtest: capacity reserves complete revocation, withdrawal, close and release opportunities
+ok 49 - capacity reserves complete revocation, withdrawal, close and release opportunities
+  ---
+  duration_ms: 56.082486
+  type: 'test'
+  ...
+# Subtest: close drains already accepted commands and rejects new ones
+ok 50 - close drains already accepted commands and rejects new ones
+  ---
+  duration_ms: 4.707153
+  type: 'test'
+  ...
+# Subtest: note text remains attributed data and does not create a control grant
+ok 51 - note text remains attributed data and does not create a control grant
+  ---
+  duration_ms: 5.726612
+  type: 'test'
+  ...
+# Subtest: complete command decoding rejects extra authority fields, missing fields and malformed values
+ok 52 - complete command decoding rejects extra authority fields, missing fields and malformed values
+  ---
+  duration_ms: 0.53676
+  type: 'test'
+  ...
+# Subtest: corrupt cross-record identities are rejected independently of JSON parsing
+ok 53 - corrupt cross-record identities are rejected independently of JSON parsing
+  ---
+  duration_ms: 9.232332
+  type: 'test'
+  ...
+# Subtest: sha1: root and linked workspace share repository but have independent stable identities
+ok 54 - sha1: root and linked workspace share repository but have independent stable identities
+  ---
+  duration_ms: 197.069495
+  type: 'test'
+  ...
+# Subtest: sha1: exact object validation rejects wrong types and preserves missing-object failures
+ok 55 - sha1: exact object validation rejects wrong types and preserves missing-object failures
+  ---
+  duration_ms: 100.505341
+  type: 'test'
+  ...
+# Subtest: sha256: root and linked workspace share repository but have independent stable identities
+ok 56 - sha256: root and linked workspace share repository but have independent stable identities
+  ---
+  duration_ms: 158.11494
+  type: 'test'
+  ...
+# Subtest: sha256: exact object validation rejects wrong types and preserves missing-object failures
+ok 57 - sha256: exact object validation rejects wrong types and preserves missing-object failures
+  ---
+  duration_ms: 100.304538
+  type: 'test'
+  ...
+# Subtest: symlink aliases resolve to the same physical work identity
+ok 58 - symlink aliases resolve to the same physical work identity
+  ---
+  duration_ms: 116.442766
+  type: 'test'
+  ...
+# Subtest: paths with spaces, quotes, Unicode and embedded newlines are not trimmed or shell interpreted
+ok 59 - paths with spaces, quotes, Unicode and embedded newlines are not trimmed or shell interpreted
+  ---
+  duration_ms: 107.554593
+  type: 'test'
+  ...
+# Subtest: a subdirectory cannot masquerade as a whole workspace
+ok 60 - a subdirectory cannot masquerade as a whole workspace
+  ---
+  duration_ms: 75.199368
+  type: 'test'
+  ...
+# Subtest: a separate clone with the same commits is not this repository namespace
+ok 61 - a separate clone with the same commits is not this repository namespace
+  ---
+  duration_ms: 98.490625
+  type: 'test'
+  ...
+# Subtest: detached worktrees have valid physical identities without inventing a branch
+ok 62 - detached worktrees have valid physical identities without inventing a branch
+  ---
+  duration_ms: 81.142652
+  type: 'test'
+  ...
+# Subtest: moving a workspace does not silently retarget an existing physical registration
+ok 63 - moving a workspace does not silently retarget an existing physical registration
+  ---
+  duration_ms: 142.989286
+  type: 'test'
+  ...
+# Subtest: a replaced source root does not inherit the original work identity
+ok 64 - a replaced source root does not inherit the original work identity
+  ---
+  duration_ms: 141.195133
+  type: 'test'
+  ...
+# Subtest: old unverified metadata remains unavailable as a physical-workspace capability
+ok 65 - old unverified metadata remains unavailable as a physical-workspace capability
+  ---
+  duration_ms: 72.555012
+  type: 'test'
+  ...
+# Subtest: selected commits must lie between the admitted input and the observed work head
+ok 66 - selected commits must lie between the admitted input and the observed work head
+  ---
+  duration_ms: 161.09594
+  type: 'test'
+  ...
+# Subtest: direct target lookup refuses missing refs, malformed refs, aliases and stale expected heads
+ok 67 - direct target lookup refuses missing refs, malformed refs, aliases and stale expected heads
+  ---
+  duration_ms: 116.516061
+  type: 'test'
+  ...
+# Subtest: explicit worktree inventory bounds are honored without mutating registrations
+ok 68 - explicit worktree inventory bounds are honored without mutating registrations
+  ---
+  duration_ms: 73.217533
+  type: 'test'
+  ...
+# Subtest: inspection preserves dirty work, index and refs and does not call configured fsmonitor or hooks
+ok 69 - inspection preserves dirty work, index and refs and does not call configured fsmonitor or hooks
+  ---
+  duration_ms: 130.018942
+  type: 'test'
+  ...
+# Subtest: source validation respects explicit cancellation without changing control state
+ok 70 - source validation respects explicit cancellation without changing control state
+  ---
+  duration_ms: 58.08677
+  type: 'test'
+  ...
+# Subtest: repository inspection remains available after the worktree that opened it is removed
+ok 71 - repository inspection remains available after the worktree that opened it is removed
+  ---
+  duration_ms: 134.448923
+  type: 'test'
+  ...
+# Subtest: an unrelated unborn worktree does not block inspection of established workspaces
+ok 72 - an unrelated unborn worktree does not block inspection of established workspaces
+  ---
+  duration_ms: 116.50523
+  type: 'test'
+  ...
+# Subtest: read-only open never initializes absent authority
+ok 73 - read-only open never initializes absent authority
+  ---
+  duration_ms: 11.818064
+  type: 'test'
+  ...
+# Subtest: explicit initialization publishes complete state and exact matching marker
+ok 74 - explicit initialization publishes complete state and exact matching marker
+  ---
+  duration_ms: 28.330161
+  type: 'test'
+  ...
+# Subtest: different limits require migration rather than silently reinitializing
+ok 75 - different limits require migration rather than silently reinitializing
+  ---
+  duration_ms: 17.646409
+  type: 'test'
+  ...
+# Subtest: an empty existing coordination directory is incomplete, not a fresh store
+ok 76 - an empty existing coordination directory is incomplete, not a fresh store
+  ---
+  duration_ms: 2.880437
+  type: 'test'
+  ...
+# Subtest: missing control.json is preserved as incomplete state
+ok 77 - missing control.json is preserved as incomplete state
+  ---
+  duration_ms: 13.583538
+  type: 'test'
+  ...
+# Subtest: missing initialized.json is preserved as incomplete state
+ok 78 - missing initialized.json is preserved as incomplete state
+  ---
+  duration_ms: 7.862435
+  type: 'test'
+  ...
+# Subtest: corrupt, unsupported and foreign-repository states remain distinguishable and untouched
+ok 79 - corrupt, unsupported and foreign-repository states remain distinguishable and untouched
+  ---
+  duration_ms: 12.790061
+  type: 'test'
+  ...
+# Subtest: malformed cross-record state cannot be reopened or replaced by empty state
+ok 80 - malformed cross-record state cannot be reopened or replaced by empty state
+  ---
+  duration_ms: 25.755156
+  type: 'test'
+  ...
+# Subtest: symlink and hardlink records cannot redirect control reads
+ok 81 - symlink and hardlink records cannot redirect control reads
+  ---
+  duration_ms: 6.941285
+  type: 'test'
+  ...
+# Subtest: nonregular records and nonprivate paths are rejected without blocking
+ok 82 - nonregular records and nonprivate paths are rejected without blocking
+  ---
+  duration_ms: 5.624558
+  type: 'test'
+  ...
+# Subtest: replaced store directories and initialization epochs invalidate a live handle
+ok 83 - replaced store directories and initialization epochs invalidate a live handle
+  ---
+  duration_ms: 7.666599
+  type: 'test'
+  ...
+# Subtest: an authority failure before acceptance leaves the store unchanged
+ok 84 - an authority failure before acceptance leaves the store unchanged
+  ---
+  duration_ms: 3.416826
+  type: 'test'
+  ...
+# Subtest: publication failure blocks subsequent mutation until an explicit reopen
+ok 85 - publication failure blocks subsequent mutation until an explicit reopen
+  ---
+  duration_ms: 6.981205
+  type: 'test'
+  ...
+# Subtest: fresh process retry recovers a persisted receipt without duplicating a target claim
+ok 86 - fresh process retry recovers a persisted receipt without duplicating a target claim
+  ---
+  duration_ms: 132.023348
+  type: 'test'
+  ...
+# Subtest: process interruption before rename retains old state; a later attempt is explicit
+ok 87 - process interruption before rename retains old state; a later attempt is explicit
+  ---
+  duration_ms: 119.272345
+  type: 'test'
+  ...
+# Subtest: store snapshot is detached; unacknowledged in-memory edits do not mutate the file
+ok 88 - store snapshot is detached; unacknowledged in-memory edits do not mutate the file
+  ---
+  duration_ms: 6.907619
+  type: 'test'
+  ...
+# Subtest: revision-checked publication refuses a stale concurrent update
+ok 89 - revision-checked publication refuses a stale concurrent update
+  ---
+  duration_ms: 12.31269
+  type: 'test'
+  ...
+# Subtest: immutable notes and accepted receipts cannot be rewritten by a new publication
+ok 90 - immutable notes and accepted receipts cannot be rewritten by a new publication
+  ---
+  duration_ms: 32.510094
+  type: 'test'
+  ...
+# Subtest: the shared atomic writer preserves the old file until the rename boundary
+ok 91 - the shared atomic writer preserves the old file until the rename boundary
+  ---
+  duration_ms: 8.606678
+  type: 'test'
+  ...
+# Subtest: complete decoding distinguishes unsupported operation from malformed data
+ok 92 - complete decoding distinguishes unsupported operation from malformed data
+  ---
+  duration_ms: 0.222145
+  type: 'test'
+  ...
+# Subtest: byte capacity also preserves a future close receipt
+ok 93 - byte capacity also preserves a future close receipt
+  ---
+  duration_ms: 1986.151698
+  type: 'test'
+  ...
+# Subtest: a FIFO record is rejected before waiting for a writer
+ok 94 - a FIFO record is rejected before waiting for a writer
+  ---
+  duration_ms: 9.005049
+  type: 'test'
+  ...
+# Subtest: exact sha1 commit bytes are independent of dirty checkout and current HEAD
+ok 95 - exact sha1 commit bytes are independent of dirty checkout and current HEAD
+  ---
+  duration_ms: 80.036883
+  type: 'test'
+  ...
+# Subtest: exact sha256 commit bytes are independent of dirty checkout and current HEAD
+ok 96 - exact sha256 commit bytes are independent of dirty checkout and current HEAD
+  ---
+  duration_ms: 61.929699
+  type: 'test'
+  ...
+# Subtest: working captures retain their own bytes and context after another edit
+ok 97 - working captures retain their own bytes and context after another edit
+  ---
+  duration_ms: 49.063769
+  type: 'test'
+  ...
+# Subtest: commit absence and missing live source have different observations
+ok 98 - commit absence and missing live source have different observations
+  ---
+  duration_ms: 72.313273
+  type: 'test'
+  ...
+# Subtest: source sampling does not follow final symlinks or intermediate directory symlinks
+ok 99 - source sampling does not follow final symlinks or intermediate directory symlinks
+  ---
+  duration_ms: 70.705081
+  type: 'test'
+  ...
+# Subtest: directories and nonblocking special-file observations expose no source bytes
+ok 100 - directories and nonblocking special-file observations expose no source bytes
+  ---
+  duration_ms: 82.518118
+  type: 'test'
+  ...
+# Subtest: invalid paths are rejected before access, while literal Git pathspec characters remain literal
+ok 101 - invalid paths are rejected before access, while literal Git pathspec characters remain literal
+  ---
+  duration_ms: 62.757623
+  type: 'test'
+  ...
+# Subtest: UTF-8 byte identity survives Git reads; invalid encodings are not lossy source observations
+ok 102 - UTF-8 byte identity survives Git reads; invalid encodings are not lossy source observations
+  ---
+  duration_ms: 94.469142
+  type: 'test'
+  ...
+# Subtest: source budgets and explicit cancellation reject without starting a usable observation
+ok 103 - source budgets and explicit cancellation reject without starting a usable observation
+  ---
+  duration_ms: 70.408398
+  type: 'test'
+  ...
+# Subtest: commit observation rejects annotated tag objects and ignores Git replacement refs
+ok 104 - commit observation rejects annotated tag objects and ignores Git replacement refs
+  ---
+  duration_ms: 76.692001
+  type: 'test'
+  ...
+# Subtest: direct blob observation invokes no configured text converter or external diff
+ok 105 - direct blob observation invokes no configured text converter or external diff
+  ---
+  duration_ms: 60.264371
+  type: 'test'
+  ...
+# Subtest: matching shows written parameter/result changes against independently identified versions
+ok 106 - matching shows written parameter/result changes against independently identified versions
+  ---
+  duration_ms: 1.214123
+  type: 'test'
+  ...
+# Subtest: body-only changes remain visible without literal body/default source
+ok 107 - body-only changes remain visible without literal body/default source
+  ---
+  duration_ms: 0.767448
+  type: 'test'
+  ...
+# Subtest: default-only changes keep the marker but not default literals or hashes in the report
+ok 108 - default-only changes keep the marker but not default literals or hashes in the report
+  ---
+  duration_ms: 0.407575
+  type: 'test'
+  ...
+# Subtest: unwritten return types stay not_declared rather than acquiring inferred annotations
+ok 109 - unwritten return types stay not_declared rather than acquiring inferred annotations
+  ---
+  duration_ms: 0.333093
+  type: 'test'
+  ...
+# Subtest: unique unchanged overloads match before a remaining changed overload
+ok 110 - unique unchanged overloads match before a remaining changed overload
+  ---
+  duration_ms: 0.366944
+  type: 'test'
+  ...
+# Subtest: duplicate signatures are ambiguous rather than paired by occurrence order
+ok 111 - duplicate signatures are ambiguous rather than paired by occurrence order
+  ---
+  duration_ms: 0.320083
+  type: 'test'
+  ...
+# Subtest: absent input supports additions while incomplete and missing observations never prove deletion
+ok 112 - absent input supports additions while incomplete and missing observations never prove deletion
+  ---
+  duration_ms: 0.369468
+  type: 'test'
+  ...
+# Subtest: an incomplete declaration header is not claimed as a confirmed header change
+ok 113 - an incomplete declaration header is not claimed as a confirmed header change
+  ---
+  duration_ms: 0.209146
+  type: 'test'
+  ...
+# Subtest: unmapped edits and executable mode changes remain visible
+ok 114 - unmapped edits and executable mode changes remain visible
+  ---
+  duration_ms: 0.321045
+  type: 'test'
+  ...
+# Subtest: different repositories, paths or extraction identities are rejected as comparison pairs
+ok 115 - different repositories, paths or extraction identities are rejected as comparison pairs
+  ---
+  duration_ms: 0.264539
+  type: 'test'
+  ...
+# Subtest: three tasks keep their own input/observed labels and report attribution rather than blame
+ok 116 - three tasks keep their own input/observed labels and report attribution rather than blame
+  ---
+  duration_ms: 0.891375
+  type: 'test'
+  ...
+# Subtest: page budgets count serialized escaping bytes and make forward progress
+ok 117 - page budgets count serialized escaping bytes and make forward progress
+  ---
+  duration_ms: 0.391381
+  type: 'test'
+  ...
+# Subtest: untrusted source labels cannot add terminal control sequences or spoof line-oriented headings
+ok 118 - untrusted source labels cannot add terminal control sequences or spoof line-oriented headings
+  ---
+  duration_ms: 0.585123
+  type: 'test'
+  ...
+# Subtest: notice materiality ignores OID/position/body-digest churn but changes for new structure or reversion
+ok 119 - notice materiality ignores OID/position/body-digest churn but changes for new structure or reversion
+  ---
+  duration_ms: 0.912637
+  type: 'test'
+  ...
+# Subtest: source operations reject a subdirectory as an ambiguous registered worktree root
+ok 120 - source operations reject a subdirectory as an ambiguous registered worktree root
+  ---
+  duration_ms: 40.49603
+  type: 'test'
+  ...
+1..120
+# tests 120
+# suites 0
+# pass 120
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4555.631416

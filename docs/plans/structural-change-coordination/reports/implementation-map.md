@@ -113,3 +113,25 @@ The existing observation modules are read-only regression context. No change
 was made to package.json, dependency locks, service dispatch, CLI/MCP schemas,
 adapters or installed scripts. Those consumers remain pending rather than
 receiving an incomplete implementation.
+
+## F3-S1 — repository-bound internal coordination
+
+Source baseline `7ad16cf1c40a4522938d31a6e64f8e29b3cc15f7`.
+The lead owns all writes in [F3 admission](f3-admission.md).
+
+New production: `src/coordination/repository.ts`,
+`src/coordination/bound-control.ts`. Modified production:
+`src/contracts/coordination-control.ts`, `src/coordination/control.ts`.
+Compilation discovery: `tsconfig.core.json`.
+New evidence: `tests/core/coordination-repository.test.mjs`,
+`tests/core/coordination-bound.test.mjs`,
+`tests/fixtures/structural/repository-fixture.mjs`,
+`tests/fixtures/structural/bound-reopen.mjs`.
+Documentation/evidence writes are exactly enumerated in F3 admission.
+
+The gate is actual Git/source → permission-checked metadata publication →
+actual persisted reopen, plus explicit refusal for stale/missing/unverified
+sources. Source checks are not a public authenticated path, resource pinning,
+managed-task enrollment or native analysis. Runtime/transport/retirement
+consumers remain required work rather than production stubs. The existing
+workspace/project/source implementations are retained byte-for-byte.

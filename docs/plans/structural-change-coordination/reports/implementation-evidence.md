@@ -96,3 +96,18 @@ body was compared byte-for-byte with the verified original implementation.
 Plan 2B is unchanged reference material; no evaluator dependency or inference
 was added. Source integration remains the maintainer's action using the
 baseline-guarded patch. The complete Plan 2A remains Blocked.
+
+## F3 continuation — September 22, 2026
+
+The maintainer committed F2 as `7ad16cf1c40a4522938d31a6e64f8e29b3cc15f7`.
+[F3 admission](f3-admission.md) owns the independent repository-bound increment;
+[F3 verification](f3-verification.md) owns its executed evidence. Two new modules
+validate real Git/worktree facts before existing metadata controls. No public
+tool, parser, managed task linkage or integration effect is introduced.
+
+The selected five-file suite passes **120 tests** (42 new, 78 retained), with
+strict checking of the real import closure using the available non-pinned
+compiler. All 104 recorded test roots are absent after teardown. Three
+new-code review regressions failed before correction and pass afterward.
+These results do not alter historical F0/F1/F2 logs or close full objective
+claims. Plan 2B remains unchanged and unselected.

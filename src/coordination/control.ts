@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalHash, Mutex } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
 import { CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
-  type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
+  coordinationOperationKey, type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
 import type { CoordinationStore } from "../store/coordination-store.js";
 
 /** The caller is the authenticated service actor, never an actor field taken from a command. */
@@ -12,6 +12,40 @@ export class CoordinationControl {
   readonly #ordering = new Mutex();
   #closing = false;
   constructor(private readonly store: CoordinationStore) {}
+
+  get repositoryId(): string { return this.store.repositoryId; }
+
+  /** A receipt lookup never consults a workspace or restores old control authority. */
+  async receipt(actor: CoordinationActor, key: unknown): Promise<Receipt | undefined> {
+    const owner = parentId(actor.owner_id), operationKey = coordinationOperationKey(key);
+    return this.#ordering.run(async () => structuredClone((await this.store.snapshot()).receipts.find(r => r.owner === owner && r.key === operationKey)));
+  }
+
+  /** Capture permission-checked values for read-only Git validation, outside this owner's lock. */
+  async prepareSourceCommand(actor: CoordinationActor, raw: unknown): Promise<
+    { kind: "recorded"; receipt: Receipt } | { kind: "inspect"; target: Case | null; works: Work[] }
+  > {
+    const owner = parentId(actor.owner_id), command = decodeCommand(raw);
+    if (command.kind !== "claim_target" && command.kind !== "select_inputs" && command.kind !== "begin_external_integration") {
+      throw new BridgeError("COORDINATION_OPERATION_UNSUPPORTED", "This operation does not require a Git preflight");
+    }
+    const hash = canonicalHash({ owner, command });
+    return this.#ordering.run(async () => {
+      const state = await this.store.snapshot();
+      const prior = state.receipts.find(r => r.owner === owner && r.key === command.operation_key);
+      if (prior) {
+        if (prior.request_hash !== hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already names different intent");
+        return { kind: "recorded", receipt: structuredClone(prior) };
+      }
+      if (command.kind === "claim_target") return { kind: "inspect", target: null, works: [] };
+      const target = ownCase(state, owner, command.case_id, command.expected_revision, command.generation);
+      idle(target);
+      const inputs = command.kind === "select_inputs" ? command.inputs : target.inputs;
+      const works = inputs.map(i => visibleWork(state, owner, i.work_id));
+      for (const work of works) for (const member of target.members) visibleWork(state, member, work.id);
+      return { kind: "inspect", target: structuredClone(target), works: structuredClone(works) };
+    });
+  }
 
   async execute(actor: CoordinationActor, input: unknown): Promise<Receipt> {
     const owner = parentId(actor.owner_id), command = decodeCommand(input);

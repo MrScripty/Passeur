@@ -7,11 +7,11 @@
 | Plan status | `Blocked` |
 | Plan revision | `2A` — standalone code-only target |
 | Acceptance status | `blocked` |
-| Current phase | F2 internal control increment implemented; native M0 and end-to-end acceptance remain blocked |
-| Exactly one next integration slice | **M0-S1 — qualify the native parser/pinned checkout, then integrate the tested internal owners through M1** |
+| Current phase | F3 repository-binding increment implemented; native M0, public service composition and objective acceptance remain blocked |
+| Exactly one next integration slice | **M0-S1 — qualify the native parser/pinned checkout and integrate repository-bound controls through the actual M1 service path** |
 | Canonical plan path | `docs/plans/structural-change-coordination/plan.md` |
 | Implementation invocation | Explicit `start`; subsequent `continue` or `verify` only in the states allowed by Planning |
-| Examined implementation | Passeur `43e3a78a1736539e0fd565899c1bd1c52eae9b42` |
+| Examined implementation | Passeur `7ad16cf1c40a4522938d31a6e64f8e29b3cc15f7` |
 | Adopted standards | MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
 | Prepared | September 21, 2026, America/Vancouver |
 | Product and acceptance owner | Passeur maintainer |
@@ -20,7 +20,17 @@
 
 [Execution ledger](execution-ledger.md) owns dated work/evidence. [Issues](issues.md) owns findings. [Contracts and workflow](reports/contracts-and-workflow.md) refines D1–D12. [Language qualification](reports/language-qualification.md) owns the required grammar/extraction matrix. [Implementation map](reports/implementation-map.md) owns exact slice write sets. [Verification](reports/verification.md) owns scenario procedures and oracle boundaries. [Sources and routing](reports/sources-and-routing.md) records examined sources and standards. None duplicates task-lifecycle authority.
 
-This is a partially implemented plan. The user requested continuation after committing F0/F1. The [F2 admission](reports/f2-admission.md) records the owned transition from Blocked to Active for independent work; it does not waive native M0 or accept its blocked claims. The F0/F1 source increments and their limited evidence are documented in [implementation evidence](reports/implementation-evidence.md). The complete structural-coordination workflow remains unimplemented and acceptance is blocked. F2 adds internal durable coordination controls; its selected evidence and pending consumers are recorded in [F2 verification](reports/f2-verification.md). The shared-service lifecycle effort retains its own unsatisfied claims. No live installation, account, user worktree, or remote repository was modified.
+This is a partially implemented plan. The maintainer committed F2 as
+`7ad16cf1c40a4522938d31a6e64f8e29b3cc15f7` and requested continuation.
+[F3 admission](reports/f3-admission.md) records the owned Blocked-to-Active
+transition for independent source validation; it did not waive native M0.
+F3 is now implemented and locally verified at its real Git/control boundary;
+[F3 verification](reports/f3-verification.md) identifies the actual 120-test
+suite, source proof, three corrected review findings and incomplete consumers.
+The overall plan remains Blocked with no objective acceptance claim satisfied
+by this increment. Historical F0/F1/F2 evidence and the shared-service effort's
+unsatisfied claims retain their own authority. No live installation, account,
+user worktree or remote repository was modified.
 
 This is a standalone implementation target. The implemented shared-service lifecycle retains its own authority and pending acceptance evidence. Before editing, inspect actual source, installed readers and durable state; choose explicit preservation, migration or rejection for any incompatible state. Plan selection grants no authority to erase records or rewrite history.
 
@@ -238,7 +248,7 @@ Each slice inspects repository status, states exact writes and tests, protects u
 
 Re-plan only for a material design/authority/support/consumer/evidence change, a repeated invariant-family defect, or measured propagation/cost contradicting admission. Investigate only a named decision-changing uncertainty with a cheapest adequate method and observable stop. Passing a parser smoke is not adequate language coverage; passing tests is not evidence of semantic compatibility outside the stated claims.
 
-**Current blockers:** I-ENV-01 prevents native parser/dependency qualification and full application verification in this environment. The connected reader supplied a byte-verified source subset, not a complete Git checkout. Real native/host evidence, independent external review, and representative performance qualification also remain outstanding. These limits are not replaced by the focused F0/F1/F2 checks.
+**Current blockers:** I-ENV-01 prevents native parser/dependency qualification and full application verification in this environment. The connected reader supplied a byte-verified source subset, not a complete Git checkout. Real native/host evidence, independent external review, and representative performance qualification also remain outstanding. These limits are not replaced by the focused F0/F1/F2/F3 checks.
 
 ## 7. Final acceptance and compaction
 
@@ -269,7 +279,7 @@ The original ownership decomposition is retained: task lifecycle remains with th
 | F0-S1 | Implemented | Seven controlled coordinator/workspace tests pass; three reproduce failures against the verified baseline. Real Git and hooks execute; the native worker and store are test-controlled. Full pinned suites and external review remain required. |
 | F1-S1 | Implemented internally | Twenty-six source/matching/reporting/materiality tests pass. New modules and their real import closure pass strict TypeScript 5.8.3 checking with available Node declarations. This is not the pinned application check or parser/transport qualification. |
 | M0-S1 | Blocked | Native Node Tree-sitter/grammars and pinned dependency resolution unavailable. Source-to-output language evidence cannot be run. |
-| M1–M5 | Planned | Helper/parser, CLI/MCP path, full language coverage, watchers, verified admission/task linkage, public notes/claims, retirement guards, installation and acceptance remain. F2 implements only the internal coordination-control/store portion. |
+| M1–M5 | Planned | Helper/parser, CLI/MCP path, full language coverage, watchers, verified admission/task linkage, public notes/claims, retirement guards, installation and acceptance remain. F2 implements internal coordination controls/store; F3 adds the real-Git source gate. Actual service/task/retirement consumers and native analysis remain pending. |
 
 The native path resumes after M0 qualification and an owned transition back to `Active`. Independent work requires a bounded re-plan like F2, with exact source scope and evidence; a `continue` request alone does not erase a Blocked state. Review actual source drift before admitting further implementation. `verify` becomes applicable only after the complete objective has actually reached `Implemented` or `Verifying`. Plan 2B stays an unselected reference, not a second implementation authority.
 
@@ -303,3 +313,24 @@ See [internal coordination](../../coordination.md) for implemented behavior,
 for ownership and deletion analysis. SC09–SC15 remain unsatisfied: internal
 store tests do not establish the actual user workflow. No automatic parser
 substitute, evaluator, integration operation or public stub is introduced.
+
+## F3 delivered increment — September 22, 2026
+
+**Goal:** bind source-dependent coordination commands to real repository,
+worktree, commit/ancestry and target observations while preserving authority
+and metadata recovery. **State:** Implemented, scoped local verification;
+full objective remains Blocked. **Writes:** [F3 admission](reports/f3-admission.md).
+**Gate exercised:** 42 new real-Git/control tests plus 78 retained tests pass;
+strict actual-import-closure checking passes on the available non-pinned tools.
+**Changed contract:** new internal repository command projection; persisted
+v1, task/result meanings and public CLI/MCP/IPC remain unchanged.
+**Remaining gate:** trusted host/resource composition, managed task/announcement
+linkage, operator recovery, retirement reservation, native grammars/extractors,
+full pinned checks, live host workflow, performance and independent review.
+
+[F3 verification](reports/f3-verification.md) supplies the evidence limits;
+[the F3 design delta](reports/design-admission.md#f3-composed-design-delta)
+records all eight probes. Public tools remain unregistered. Git observations
+are not source pins, live-editor fences or a cross-store transaction. Source
+loss/saturation does not disable metadata closure, revocation, settlement or
+historical receipt lookup. Plan 2B is retained unchanged and unselected.

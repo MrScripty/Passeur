@@ -66,3 +66,34 @@ No remote commit/push, live accounts, dependency changes, user configuration,
 service installation or user-worktree cleanup occurred. Plan 2B remains unchanged
 and unselected. The changed-file patch is for maintainer integration; no fake
 upstream commit or claimed signed commit was created from the sparse mirror.
+
+## September 22, 2026 — F3 repository binding
+
+Baseline: `7ad16cf1c40a4522938d31a6e64f8e29b3cc15f7` confirmed through the
+repository connector after the maintainer committed F2. Seventeen selected
+preimage/context identities were checked against pinned Git blob identities;
+this is a sparse source mirror, not a complete checkout.
+
+The user's continuation request triggered [F3 admission](reports/f3-admission.md):
+Blocked → Active for independent repository/source validation only. Native M0,
+full pinned checks and installed acceptance remained blocked. Exact changes
+and the all-eight-probe design delta were recorded under the existing owners.
+
+Implemented two source-binding modules, one strict internal operation
+projection and source-preflight/receipt methods. Existing persisted meanings
+and source-capture/Git no-lazy-fetch behavior are preserved. Added real Git and
+real-store tests with fixture principals/resource authorization; no provider,
+parser, installed host, project build or external integration is invoked.
+
+Same-author review found three new-code defects. New cases failed before
+correction, then passed. Final selected suite: **120/120** (42 new, 78 retained),
+strict TypeScript 5.8.3 import-closure check exit 0. All **104** recorded
+per-test roots were absent. [F3 verification](reports/f3-verification.md)
+records commands, logs, outcomes, resource authority and fidelity limits.
+
+F3 is Implemented with local boundary evidence. The overall plan returns to
+Blocked because native qualification/public service integration/full acceptance
+remain unfinished. No objective claim is marked satisfied by these partial
+results. The delivery artifact contains a reviewed patch/overlay and both plan
+references. Repository integration remains with the maintainer: no remote
+commit, push, user-worktree removal or installed configuration change occurred.

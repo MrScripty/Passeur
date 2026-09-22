@@ -1,0 +1,7 @@
+F3 environment capability observation, September 22, 2026
+Native binding resolution:
+MODULE_NOT_FOUND
+native_resolution_exit=2
+Public registry HTTPS observation (no credentials):
+curl: (6) Could not resolve host: registry.npmjs.org
+registry_probe_exit=6

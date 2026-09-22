@@ -182,3 +182,24 @@ active-case resource retirement protection, notification delivery or structural
 analysis. The full prospective consumer obligations continue to apply before
 those paths can be advertised. Evidence and the scoped stopping decision are in
 [F2 verification](f2-verification.md).
+
+## F3 implemented source boundary (September 22, 2026)
+
+F3 implements external work registration and source checks through
+`RepositoryCoordination` and `CoordinationRepository`; the internal operation
+shape is owned by `decodeRepositoryCommand`. The durable v1 record retains its
+meaning. Existing `register_work` is internal verified-metadata admission, not a
+client operation. An authenticated service actor/source view and an actual
+resource-owner callback are still required at composition.
+
+Physical workspace identity and exact commit/target observations are checked
+outside the store lock; current permissions and expected case revision are
+checked again by the final transition. Exact source facts do not confer process
+control, authorship, managed-task ownership or ref publication authority. No
+cross-Git/JSON atomicity, pin or live-editor fencing is claimed. Scope paths are
+validated before registration; old metadata labels cannot become source proof.
+
+The parser and public consumers remain unfinished. Details live in
+[the durable contract](../../../coordination.md); evidence is
+[F3 verification](f3-verification.md). Earlier F2 statements describe that
+increment's source-proof boundary, not an alternative public registration API.

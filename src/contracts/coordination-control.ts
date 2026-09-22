@@ -98,7 +98,7 @@ export function entityId(value: unknown): string {
   const v = text(value, 36); if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v)) invalid("Expected an entity UUID"); return v;
 }
 function digest(value: unknown): string { const v = text(value, 64); if (!/^[a-f0-9]{64}$/.test(v)) invalid("Expected a SHA-256 identity"); return v; }
-function oid(value: unknown): string { const v = text(value, 64); if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(v)) invalid("Expected a full Git object identity"); return v; }
+export function coordinationOid(value: unknown): string { const v = text(value, 64); if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(v)) invalid("Expected a full Git object identity"); return v; }
 function formatOid(commit: string, format: Work["object_format"]): void { if (commit.length !== (format === "sha1" ? 40 : 64)) invalid("Object identity contradicts the Git object format"); }
 function parents(value: unknown): ParentId[] { return unique(list(value, MAX_PARTIES, parentId), x => x); }
 function path(value: unknown): string {
@@ -109,13 +109,13 @@ function path(value: unknown): string {
 function region(value: unknown): Region { const v = object(value); fields(v, ["kind", "path"]); return { kind: choice(v.kind, ["file", "subtree"]), path: path(v.path) }; }
 function regions(value: unknown): Region[] { return unique(list(value, MAX_REGIONS, region), x => `${x.kind}:${x.path}`); }
 function subject(value: unknown): Subject { const v = object(value); fields(v, ["kind", "id"]); return { kind: choice(v.kind, ["work", "case"]), id: entityId(v.id) }; }
-function target(value: unknown): string {
+export function coordinationTarget(value: unknown): string {
   // Logical target identity only. Git existence/legality is checked by its owner before integration.
   const v = text(value, 512); if (!v.startsWith("refs/heads/") || v.length === 11 || /[\r\n\0]/.test(v)) invalid("Expected a full local target ref"); return v;
 }
 function selections(value: unknown): Selection[] {
   return unique(list(value, MAX_REGIONS, item => {
-    const v = object(item); fields(v, ["work_id", "commit_oid"]); return { work_id: entityId(v.work_id), commit_oid: oid(v.commit_oid) };
+    const v = object(item); fields(v, ["work_id", "commit_oid"]); return { work_id: entityId(v.work_id), commit_oid: coordinationOid(v.commit_oid) };
   }), x => x.work_id);
 }
 export function decodeLimits(value: unknown): Limits {
@@ -130,7 +130,7 @@ export function decodeCommand(value: unknown): Command {
   switch (kind) {
     case "register_work": {
       fields(v, ["kind", "operation_key", "workspace_id", "input_oid", "object_format", "intent", "areas", "readers"]);
-      const object_format = choice(v.object_format, ["sha1", "sha256"]), input_oid = oid(v.input_oid); formatOid(input_oid, object_format);
+      const object_format = choice(v.object_format, ["sha1", "sha256"]), input_oid = coordinationOid(v.input_oid); formatOid(input_oid, object_format);
       return { kind, operation_key, workspace_id: text(v.workspace_id, 4096), input_oid, object_format, intent: text(v.intent, 4096, true), areas: regions(v.areas), readers: parents(v.readers) };
     }
     case "share_work": fields(v, ["kind", "operation_key", "work_id", "expected_revision", "readers"]);
@@ -146,9 +146,9 @@ export function decodeCommand(value: unknown): Command {
     case "ack_note": case "withdraw_note": fields(v, ["kind", "operation_key", "note_id"]);
       return { kind, operation_key, note_id: entityId(v.note_id) };
     case "claim_target": fields(v, ["kind", "operation_key", "target", "members"]);
-      return { kind, operation_key, target: target(v.target), members: parents(v.members) };
+      return { kind, operation_key, target: coordinationTarget(v.target), members: parents(v.members) };
     case "select_inputs": fields(v, ["kind", "operation_key", "case_id", "expected_revision", "generation", "target_oid", "inputs"]);
-      return { kind, operation_key, case_id: entityId(v.case_id), expected_revision: number(v.expected_revision, 1), generation: number(v.generation, 1), target_oid: oid(v.target_oid), inputs: selections(v.inputs) };
+      return { kind, operation_key, case_id: entityId(v.case_id), expected_revision: number(v.expected_revision, 1), generation: number(v.generation, 1), target_oid: coordinationOid(v.target_oid), inputs: selections(v.inputs) };
     case "transfer_case": fields(v, ["kind", "operation_key", "case_id", "expected_revision", "generation", "new_lead"]);
       return { kind, operation_key, case_id: entityId(v.case_id), expected_revision: number(v.expected_revision, 1), generation: number(v.generation, 1), new_lead: parentId(v.new_lead) };
     default: fields(v, ["kind", "operation_key", "case_id", "expected_revision", "generation"]);
@@ -157,15 +157,15 @@ export function decodeCommand(value: unknown): Command {
 }
 function work(value: unknown): Work {
   const v = object(value); fields(v, ["id", "owner", "workspace_id", "revision", "state", "input_oid", "object_format", "intent", "areas", "readers"]);
-  const object_format = choice(v.object_format, ["sha1", "sha256"]), input_oid = oid(v.input_oid); formatOid(input_oid, object_format);
+  const object_format = choice(v.object_format, ["sha1", "sha256"]), input_oid = coordinationOid(v.input_oid); formatOid(input_oid, object_format);
   return { id: entityId(v.id), owner: parentId(v.owner), workspace_id: text(v.workspace_id, 4096), revision: number(v.revision, 1),
     state: choice(v.state, ["active", "closed"]), input_oid, object_format, intent: text(v.intent, 4096, true), areas: regions(v.areas), readers: parents(v.readers) };
 }
 function caseRecord(value: unknown): Case {
   const v = object(value); fields(v, ["id", "target", "lead", "members", "revision", "generation", "state", "external_effect", "target_oid", "inputs"]);
-  return { id: entityId(v.id), target: target(v.target), lead: parentId(v.lead), members: parents(v.members), revision: number(v.revision, 1),
+  return { id: entityId(v.id), target: coordinationTarget(v.target), lead: parentId(v.lead), members: parents(v.members), revision: number(v.revision, 1),
     generation: number(v.generation, 1), state: choice(v.state, ["active", "closed"]), external_effect: choice(v.external_effect, ["not_started", "possible"]),
-    target_oid: v.target_oid === null ? null : oid(v.target_oid), inputs: selections(v.inputs) };
+    target_oid: v.target_oid === null ? null : coordinationOid(v.target_oid), inputs: selections(v.inputs) };
 }
 function note(value: unknown): Note {
   const v = object(value); fields(v, ["id", "subject", "author", "kind", "text", "work_refs", "parties", "acknowledged", "withdrawn"]);
@@ -242,3 +242,24 @@ export function assertControlTransition(before: ControlState, next: ControlState
     if (!same(oldText, newText) || oldWithdrawn && !withdrawn || oldAnswers.some((p, i) => answers[i] !== p)) invalid("Note text, context, parties or prior acknowledgment was rewritten");
   }
 }
+
+/** Repository-bound entrypoints derive physical identity and object format, never accept them from a model. */
+export type ExternalWorkRegistration = {
+  kind: "register_external_work"; operation_key: string; input_oid: string;
+  intent: string; areas: Region[]; readers: ParentId[];
+};
+export type RepositoryCommand = Exclude<Command, { kind: "register_work" }> | ExternalWorkRegistration;
+export function decodeRepositoryCommand(value: unknown): RepositoryCommand {
+  const v = object(value);
+  if (v.kind === "register_work") throw new BridgeError("COORDINATION_OPERATION_UNSUPPORTED", "Physical workspace metadata must be derived by the repository boundary");
+  if (v.kind !== "register_external_work") {
+    const command = decodeCommand(v);
+    if (command.kind === "register_work") invalid("Unreachable raw workspace registration");
+    return command;
+  }
+  fields(v, ["kind", "operation_key", "input_oid", "intent", "areas", "readers"]);
+  return { kind: "register_external_work", operation_key: text(v.operation_key, 256), input_oid: coordinationOid(v.input_oid),
+    intent: text(v.intent, 4096, true), areas: regions(v.areas), readers: parents(v.readers) };
+}
+/** The key names a retained acknowledgment, not a current authority token. */
+export function coordinationOperationKey(value: unknown): string { return text(value, 256); }

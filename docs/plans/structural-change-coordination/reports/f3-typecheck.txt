@@ -1,0 +1,7 @@
+F3 selected import-closure typecheck (not full pinned application checking)
+v22.16.0
+Version 5.8.3
+25.1.0
+git version 2.47.3
+Command: tsc --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --typeRoots /opt/nvm/versions/node/v22.16.0/lib/node_modules/ts-node/node_modules/@types --types node --rootDir . --outDir .passeur-core src/coordination/bound-control.ts src/observation/match.ts src/observation/report.ts src/coordination/notices.ts src/store/coordination-store.ts
+typecheck_exit=0

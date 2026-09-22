@@ -1,0 +1,6 @@
+{
+  "records": 104,
+  "unique_test_roots": 104,
+  "remaining_roots": [],
+  "authority": "Only disposable per-test fixture repositories/stores created by these tests were removed. Source snapshots and package evidence are retained under /mnt/data. No user worktrees were accessed."
+}

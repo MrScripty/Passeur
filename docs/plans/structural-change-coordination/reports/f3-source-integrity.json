@@ -1,0 +1,126 @@
+{
+  "baseline_commit": "7ad16cf1c40a4522938d31a6e64f8e29b3cc15f7",
+  "kind": "sparse-source-mirror-not-complete-checkout",
+  "provenance": "Pinned GitHub connector file/tree identity checked against local pre-edit bytes. Other unchanged context from prior supplied patch overlays is not treated as a complete checked-out tree.",
+  "files": [
+    {
+      "path": "docs/coordination.md",
+      "git_blob_sha1": "0d55dad8f7096f4088dde94cbb0a32ae4b19aa91",
+      "sha256": "5572249439ed671dbf6e4f135e9e5fa1fdd680bbbc65251e0fa53d0d7ce84d7d",
+      "bytes": 8694,
+      "verified": true
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/plan.md",
+      "git_blob_sha1": "0dfb2c9ce434d4e3aea2eb750f964a106b54fefc",
+      "sha256": "e5ef6da811c60db25c39c71f9a8eb1dcffe5ad17a893d1df5929111572c71472",
+      "bytes": 42873,
+      "verified": true
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/execution-ledger.md",
+      "git_blob_sha1": "bfad975e4acc0989523f46d1e94560d558733a1a",
+      "sha256": "3e0bd87eddeabb219b8bb9ecda80af6edcc90bd978843478978bd769d60423da",
+      "bytes": 6235,
+      "verified": true
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/issues.md",
+      "git_blob_sha1": "ec7ea1e53bfd2a01844e5eca4846a202cbbe50ed",
+      "sha256": "1938b41766801588bfb9c3fa31c1e1e8a779a8c2fddedbc1284b1b3ab1038394",
+      "bytes": 9848,
+      "verified": true
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/contracts-and-workflow.md",
+      "git_blob_sha1": "cfd6d301fdde44e6d6188bcecfd565416ebd3cb1",
+      "sha256": "884534b567f3aff53bc08b60ae76bdb0aa748a76d81c5e75eebec49163a931ef",
+      "bytes": 25091,
+      "verified": true
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/design-admission.md",
+      "git_blob_sha1": "ee359edb00e410496f21357a0eb07e4b285259e2",
+      "sha256": "00e6913b8d12ca06ebf0bbec6e8c1e7436aac2ccdba81ce09dff3329521d2709",
+      "bytes": 12930,
+      "verified": true
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/implementation-evidence.md",
+      "git_blob_sha1": "ab5df75b99cba4ef6dea40e65376bae39949f07a",
+      "sha256": "a9f48346dfe6bff366769a9a1617431caf882d2b584060aebc870c17ff335ce2",
+      "bytes": 9302,
+      "verified": true
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/implementation-map.md",
+      "git_blob_sha1": "bd50c9ae902d300ed75b9b875d9e2daf3b00f76f",
+      "sha256": "54dfc33310d5e83f8aaef89ba0e0ebeab34331aa74a81ab9efb93f90676e1c06",
+      "bytes": 13783,
+      "verified": true
+    },
+    {
+      "path": "src/contracts/coordination-control.ts",
+      "git_blob_sha1": "6ecd462c8168c7da037b39fecba8f0818617fff3",
+      "sha256": "ce602a595c5bf816c96fbff3367ee23f3337fdcb618ed1d2f7167a210e858ef6",
+      "bytes": 20363,
+      "verified": true
+    },
+    {
+      "path": "src/coordination/control.ts",
+      "git_blob_sha1": "b5345a78895a9c85a4ee483b7dac1bba36e9fa97",
+      "sha256": "04c000a7eb7109c719ff53ee71cb98ea68d417313255ba8ee23a54ed1623dc83",
+      "bytes": 14361,
+      "verified": true
+    },
+    {
+      "path": "src/core/async.ts",
+      "git_blob_sha1": "5bfde3a7289c046caf008bc1e38ddb2415708f00",
+      "sha256": "59fe78dadca2b12a618d20b8585588a4d0b3d26bcec22c195822b02a9b4f339a",
+      "bytes": 3280,
+      "verified": true
+    },
+    {
+      "path": "src/core/errors.ts",
+      "git_blob_sha1": "62d850ed2c883995b976f225a3530620aacab700",
+      "sha256": "2c2414a0f2a09eaf89016ea099ea68eed5b0a39ba61bd7b9595858d9395164a3",
+      "bytes": 3093,
+      "verified": true
+    },
+    {
+      "path": "src/workspace/project.ts",
+      "git_blob_sha1": "a2b0d1dd9d5be5bcbac5e9e84c2db86284b950b7",
+      "sha256": "f6ed566410bfb9ee091ca0e40c7373dd28fd71b917684efd30b7f3e3b991d8ce",
+      "bytes": 9317,
+      "verified": true
+    },
+    {
+      "path": "src/observation/source.ts",
+      "git_blob_sha1": "f811220613c41c0fb038b583230b5899a8fb0463",
+      "sha256": "e03a7a7620dac8422d9907f6400c165f55ef6c722b78275582b4dd13f6425a11",
+      "bytes": 13846,
+      "verified": true
+    },
+    {
+      "path": "src/coordination/notices.ts",
+      "git_blob_sha1": "c58293e635f0f40e2f4059f46e9f3a6c429f5e07",
+      "sha256": "84cffdf43d9a092833203ad2a074fb9a61c2cce71281d3177b70a8713ac94bde",
+      "bytes": 1708,
+      "verified": true
+    },
+    {
+      "path": "package.json",
+      "git_blob_sha1": "9513aa8b9d729c4ec17535420650a2e04b8424ed",
+      "sha256": "ff9b30175613b50d6da860953260e3ef05dbbd7066349fc72d676b5d926bfd94",
+      "bytes": 1530,
+      "verified": true
+    },
+    {
+      "path": "tsconfig.core.json",
+      "git_blob_sha1": "5ede17841c374bc5ee8daa181427d4e77ca94e0c",
+      "sha256": "5882edb1b8b9b3d6fd321d5aedf593cafe522654a94e1b1fcb4a11b8bff37d50",
+      "bytes": 758,
+      "verified": true
+    }
+  ]
+}

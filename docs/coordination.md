@@ -2,15 +2,17 @@
 
 ## Implementation status
 
-The F2 increment implements the internal coordination-control owner and its
-real-file store. No CLI/MCP operation is registered for these methods yet.
-The service composition, native parsing, task/announcement linkage, verified
-workspace registration, operator adoption and retirement guards remain
-unimplemented. The current implementation must not be described as a usable
-end-to-end multi-parent feature.
+F2 implements the internal coordination-control owner and real-file store.
+F3 adds a repository-bound operation facade that verifies physical worktrees,
+exact commits/ancestry and direct target refs before source-dependent controls.
+No CLI/MCP operation is registered for these methods yet. Actual service and
+resource-authority composition, native parsing, managed task/announcement
+linkage, operator adoption and retirement guards remain unimplemented.
+This is not yet a usable end-to-end multi-parent feature.
 
 Plan authority: [Plan 2A](plans/structural-change-coordination/plan.md).
-Evidence: [F2 verification](plans/structural-change-coordination/reports/f2-verification.md).
+Evidence: [F3 verification](plans/structural-change-coordination/reports/f3-verification.md)
+and retained [F2 verification](plans/structural-change-coordination/reports/f2-verification.md).
 The evaluator-assisted plan is an unselected reference.
 
 ## Responsibilities
@@ -35,14 +37,43 @@ The caller supplies an authenticated parent actor from the existing trusted
 service connection. A syntactically valid parent ID is not authentication.
 Command payloads contain no actor field that can override that identity.
 
-The caller must verify the repository and physical workspace identity, exact
-Git input and target identity, work ownership, and authorization to register it.
-At F2 those fields are validated metadata, not independently verified source or
-process facts. `workspace_id` equality can prevent two active metadata records
-for the same supplied identity; it does not resolve path aliases itself.
-`selectedCases` returns informational references, not Git pins or permission to
-retire a worktree. The future retirement owner must serialize reservation and
-Git-protection checks with registration/case updates before any resource effect.
+`RepositoryCoordination` is the service-facing source gate. The trusted
+connection supplies its authenticated actor and source view separately from the
+command. External-registration payloads cannot supply workspace/object-format
+or actor identity. `CoordinationRepository` derives the workspace identity from
+the canonical root/common/admin directories and their device/inode observations.
+It accepts complete main or linked worktree roots, resolves aliases, and refuses
+subdirectories, foreign clones, unavailable sources and unsupported metadata.
+Repository-only inspection uses the common directory so removal of the opening
+linked worktree does not break other workspaces.
+
+Exact input and selected revisions must be local commit objects in the repository
+object format. An input must be an ancestor of its selected result, and that
+result must be retained by the observed workspace HEAD. Target refs must be
+exact, direct local branches; symbolic aliases are rejected to avoid two names
+claiming independent leadership over the same target. Explicit target OIDs are
+rechecked. These are observations, not locks on changing Git state.
+
+The facade requires an `ExternalWorkspaceAuthority` supplied by the resource
+owner: repository membership alone does not permit enrollment of a managed
+worker's directory. Its callback runs outside control locks, followed by another
+physical-identity observation. The actual service/resource implementation is
+still pending. Low-level `register_work` accepts verified metadata only and
+must not be exposed directly to client payloads. Existing unverified metadata
+labels remain readable/closable but cannot be used as source proof.
+
+Permission-checked source snapshots are obtained under the control owner, then
+Git is inspected without retaining that lock, then the command rechecks the
+current authorization/revision/generation. An identical saved receipt is a
+historical acknowledgment, not new authority or a repeated Git action.
+Explicit receipt lookup, closure, access revocation and effect settlement remain
+available after a checkout disappears and under source-operation saturation.
+A missing or changed checkout does not silently close a registration.
+
+`selectedCases` remains informational, not a Git pin or permission to retire a
+worktree. The future resource owner must serialize case selection/retirement and
+verify exact retained protection before any resource effect. Git, TaskStore and
+coordination JSON are not one atomic transaction.
 
 The caller chooses the trusted, existing private state root. The current threat
 model excludes malicious same-user mutation of its ancestor directories during
@@ -101,7 +132,7 @@ may be in progress. While that marker is set, transfer, input replacement and
 release are refused. `record_external_settlement` is the current lead's report
 that its external operation settled; it is not native stop evidence or proof
 that Git integration succeeded. Passeur performs no Git effect here. Operator
-forced adoption and recovery after a lost lead are not implemented in F2.
+forced adoption and recovery after a lost lead are not implemented by these increments.
 
 ## Persistence and recovery
 
@@ -147,9 +178,15 @@ compiler, Git integration command or model scheduler.
 
 ## Verification boundary
 
-The current suite uses real private files, file replacement, child processes
-and fresh-process reopen for this store. Actors and work/commit descriptors are
-controlled fixture values. It therefore proves the selected control/persistence
-contracts, not host authentication, Git object existence, service election,
-resource protection, CLI/MCP workflow, performance qualification, or installed
-native-agent behavior. Those remain Plan 2A acceptance requirements.
+F2 tests use real private files and process reopening with fixture source
+metadata. F3 additionally creates and inspects actual Git repositories, SHA-1
+and SHA-256 commits, linked worktrees and targets, and uses the actual control
+store. Parent identities and resource-admission policy remain controlled
+fixture inputs. Evidence does not establish real host authentication, service
+election, managed workspace ownership, retirement safety, public CLI/MCP
+workflow, performance qualification or installed native-agent behavior.
+
+Native parsers, providers, evaluators, compilers and project tests are not called
+by these coordination operations. Test/toolchain commands are development
+verification, not application behavior. The selected suite and exact remaining
+gates are recorded in F3 verification.

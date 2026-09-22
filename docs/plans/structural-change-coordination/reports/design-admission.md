@@ -125,3 +125,60 @@ This delta answers all eight probes for the actual implemented increment.
 The same-author local review and tests above are not independent final review
 or objective acceptance. F0/F1 statements earlier in this report describe that
 previous increment, not the current existence of F2 records.
+
+## F3 composed-design delta
+
+Applicability: **applicable**. F3's actual artifact consists of the repository
+observer, source-gated control facade, canonical operation projection, and
+source-preparation/receipt methods on the existing control owner.
+
+1. **Independent concerns and dimensions.** Git owns source/ref facts;
+   repository observation establishes which current directory/commit is being
+   discussed; control owns authorization and state transitions; service/resource
+   owners establish actor and workspace permission. Source facts change with
+   Git/filesystem activity, while permissions and claims change through commands.
+2. **Required and accidental interleaving.** A source-dependent command requires
+   permission before disclosure, bounded read-only Git inspection, and a fresh
+   authorization/revision decision before metadata publication. Git runs outside
+   the control lock. A trusted workspace-admission callback runs outside both;
+   its source identity is re-observed afterward. Inputs and fingerprints are
+   values, not proof that filesystem state cannot change after inspection.
+3. **Caller and composition knowledge.** A caller supplies a trusted connection
+   actor/source, the real resource admission authority, and explicit capacity.
+   It uses typed operations/receipts, not shell command construction, path-to-ID
+   hashing or store formats. The eventual service still owns election, shutdown,
+   task linkage and resource-effect ordering; the facade does not hide these.
+4. **Representative change locality.** Git identity/format rules change in the
+   repository observer and its real-Git tests. New source-dependent command
+   meanings change their canonical decoder, facade and control owner together.
+   A store publication change stays in its store. Host authentication or resource
+   admission policy changes in the service/resource owner, not in the parser.
+5. **Stable interfaces versus hidden knowledge.** Workspace facts and exact OIDs
+   are explicit observations. The source-operation input cannot carry an actor,
+   root or precomputed physical identity. Prepared commands contain immutable
+   permission-checked snapshots, not mutable store aliases. Receipt replay is
+   historical and never a grant. Observation is explicitly not a ref pin.
+6. **Independent evolution/failure/evidence.** The new path runs with actual Git
+   and persistent control without native parsers or agents. Missing/changed
+   sources refuse only their dependent commands; revocation/settlement/closure
+   remain possible. Tests qualify this boundary but not the fixture principals'
+   real authentication or resource policy. There is no autonomous task action.
+7. **Deletion consequences.** Deleting the repository observer spreads canonical
+   path/worktree/ancestry and exact-ref interpretation into every handler.
+   Deleting the facade spreads source/permission sequencing and capacity/drain
+   behavior into future transports. Deleting source-preparation from Control
+   either exposes mutable authority or causes disclosure before permission.
+   The two modules and narrow projections therefore contain current required
+   behavior; no generic graph, parser replacement, plugin registry or RPC layer
+   is added.
+8. **Necessary and cumulative machinery.** Retained complexity is bounded Git
+   inspection, immutable snapshots, one source capacity counter, tracked operation
+   lifetime, and existing persisted authority. One helper/parser and one service
+   remain the target. The source-root lifetime fixes are inside the observer,
+   not a new migration subsystem. No schema version is bumped merely for new
+   internal methods. Actual runtime/task/resource/transport integrations remain
+   named unfinished consumers and cannot be represented as accepted by these
+   tests.
+
+This delta is supported by same-author code review and real-Git/control tests.
+Independent external review and full objective acceptance remain outstanding.

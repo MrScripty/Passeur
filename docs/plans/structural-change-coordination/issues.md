@@ -65,3 +65,22 @@ Severity: acceptance blocker; owner: the plan's acceptance owner. No real provid
 F2 implements the internal parts of SCC-I07 and SCC-I10; it does not close their
 full consumer/path claims. Notes and cases are not yet exposed or connected to
 retirement. None of these dispositions marks SC09–SC15 satisfied.
+
+## F3 current dispositions — September 22, 2026
+
+**I-ENV-01 remains blocked for native/full acceptance.** Direct registry access
+still fails and the pinned native dependency bundle/full checkout are absent.
+F3 is an explicitly scoped independent increment, not a parser substitute.
+
+| ID | Finding and bounded family | Disposition and deciding evidence |
+|---|---|---|
+| I-F3-01 | New registration could use stale physical identity if source changed while the resource-authority callback was pending. Owner: source-gated admission. | Corrected in F3: re-observe after the callback; reject physical replacement; recheck input retention after HEAD change. The explicit race failed before correction and passes in final tests. |
+| I-F3-02 | New repository observation initially depended on the opening linked checkout's continued existence. Owner: repository observation lifetime. | Corrected: use retained canonical common-directory identity for repository reads. Remove only the fixture's opening linked worktree and prove other-workspace operations continue. |
+| I-F3-03 | New inventory interpretation initially refused healthy work when an unrelated unborn worktree existed. Owner: selected-source qualification. | Corrected: inventory retains that entry; selected unborn source is unavailable; other valid source remains usable. Independent fixture fails before correction and passes after. |
+| I-F3-04 | Real host actor/resource authority, native analysis, public projections, task linkage and retirement ordering are unfinished consumers. Owner: M1/M3/M4 composition and resource integration. | Retain as required before advertisement/acceptance. Internal actors and resource policy are fixtures, not live proof; F3 exposes no public command. Revisit at next service integration. |
+| I-F3-05 | The cold-reopen fixture path used `URL.pathname`, which retained `%20` in this checkout's directory name. Node could not find the child fixture; two tests failed during repository integration. Owner: F3 test harness. | Replaced the pathname conversion with `fileURLToPath`. Both tests and the full repository suite pass in this checkout; no production behavior changed. |
+
+Source/ref validation never promises a transaction with external Git commands.
+A stale/missing source does not release ownership or authorize replay. F3
+failures above concern new code and are not claimed as baseline incidents.
+See [F3 evidence](reports/f3-verification.md) and its exact scenario logs.
