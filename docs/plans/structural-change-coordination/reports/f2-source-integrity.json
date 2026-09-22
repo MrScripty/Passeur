@@ -1,0 +1,100 @@
+{
+  "baseline_commit": "43e3a78a1736539e0fd565899c1bd1c52eae9b42",
+  "mirror": "sparse source subset plus previous delivered patch; not a complete clone",
+  "connected_reader_verified_baseline_blobs": {
+    "src/store/task-store.ts": "9a6f88772d5d4a401bc7556316025100d04f8cd0",
+    "src/core/async.ts": "5bfde3a7289c046caf008bc1e38ddb2415708f00",
+    "src/core/errors.ts": "62d850ed2c883995b976f225a3530620aacab700",
+    "src/workspace/project.ts": "b44995ee1d53ff5a53927b6542806cf4d990e1d3",
+    "package.json": "9513aa8b9d729c4ec17535420650a2e04b8424ed",
+    "tsconfig.core.json": "162dafef406f0aad0bdd9babd1fa92a320ed03f5",
+    "docs/plans/structural-change-coordination/plan.md": "8d517f05e6a1caf62b0db385db4d21b712e9c22d",
+    "docs/plans/structural-change-coordination/reports/contracts-and-workflow.md": "2971d351d8ddf602148f313584bf66bbe6b41b17",
+    "docs/plans/structural-change-coordination/reports/design-admission.md": "d198bb103b62a67f801d6ea7110b6909334cfd81",
+    "docs/plans/structural-change-coordination/reports/implementation-evidence.md": "6371331f8cd9c57c4c11b6ce69bd8d6a90a95047",
+    "docs/plans/structural-change-coordination/reports/implementation-map.md": "72689a33e8b104d768a52656fafcf0a6ef5fca99"
+  },
+  "atomic_json_body_unchanged": true,
+  "changed_source_and_tests": [
+    {
+      "path": "src/contracts/coordination-control.ts",
+      "sha256": "ce602a595c5bf816c96fbff3367ee23f3337fdcb618ed1d2f7167a210e858ef6",
+      "git_blob_sha1": "6ecd462c8168c7da037b39fecba8f0818617fff3",
+      "baseline_git_blob_sha1": null
+    },
+    {
+      "path": "src/coordination/control.ts",
+      "sha256": "04c000a7eb7109c719ff53ee71cb98ea68d417313255ba8ee23a54ed1623dc83",
+      "git_blob_sha1": "b5345a78895a9c85a4ee483b7dac1bba36e9fa97",
+      "baseline_git_blob_sha1": null
+    },
+    {
+      "path": "src/store/atomic-json.ts",
+      "sha256": "47883a0fc7c6cf8720ad8a92c8189fbf1f5cb5bc3af257cc80b5aefdfee29b77",
+      "git_blob_sha1": "ce47823d105e2d81e851629493fc7ccb42151f01",
+      "baseline_git_blob_sha1": null
+    },
+    {
+      "path": "src/store/coordination-store.ts",
+      "sha256": "b628e3a8c4b6c148b804aabd0571872592cf002225bab50da3eae8a456444dd0",
+      "git_blob_sha1": "aba0b65487d9915a0e5e47842e4d942f8b96b65e",
+      "baseline_git_blob_sha1": null
+    },
+    {
+      "path": "src/store/task-store.ts",
+      "sha256": "ba310b2f02db8b9a22dccfdc3c3afdcea6abcaacec7cc0891de17baa7c02aed5",
+      "git_blob_sha1": "5aa255d48fefe600165c94a45c5623d14b952cfb",
+      "baseline_git_blob_sha1": "9a6f88772d5d4a401bc7556316025100d04f8cd0"
+    },
+    {
+      "path": "tests/core/coordination-control.test.mjs",
+      "sha256": "137d455d9c80c7bc64aafe0864a338cea0625acd337106b562aa584c00f08926",
+      "git_blob_sha1": "d472ccee6ef69a82889aa2fd1ecdd52e919e9a9d",
+      "baseline_git_blob_sha1": null
+    },
+    {
+      "path": "tests/core/coordination-store.test.mjs",
+      "sha256": "7924824074b2c359c51a4d768b6a0cb934481abd04c017319c04ce344a8d82ec",
+      "git_blob_sha1": "3b9ef52e5f4dee2f64ee9b49f112af4f5684eb7e",
+      "baseline_git_blob_sha1": null
+    },
+    {
+      "path": "tests/fixtures/structural/coordination-fixture.mjs",
+      "sha256": "8720590f349c1392703b043966730db7882397d632ba7a373bcd85a862b3f195",
+      "git_blob_sha1": "a3c65509174cae3120579822d252e7c6efb12774",
+      "baseline_git_blob_sha1": null
+    },
+    {
+      "path": "tests/fixtures/structural/coordination-reopen.mjs",
+      "sha256": "144b8f53f1f4c8b7ec88089c4f502a7c9ef3cbfc821639ee8e79ad2e673143f6",
+      "git_blob_sha1": "bb2320968b23870fddbd604c304d52a92b48b286",
+      "baseline_git_blob_sha1": null
+    },
+    {
+      "path": "tsconfig.core.json",
+      "sha256": "5882edb1b8b9b3d6fd321d5aedf593cafe522654a94e1b1fcb4a11b8bff37d50",
+      "git_blob_sha1": "5ede17841c374bc5ee8daa181427d4e77ca94e0c",
+      "baseline_git_blob_sha1": "162dafef406f0aad0bdd9babd1fa92a320ed03f5"
+    }
+  ],
+  "verification_environment": {
+    "node": "22.16.0",
+    "typescript": "5.8.3",
+    "node_types": "25.1.0",
+    "git": "2.47.3",
+    "pinned_application_check": false
+  },
+  "test_results": {
+    "new_control_tests": 30,
+    "new_store_tests": 22,
+    "existing_observation_tests": 26,
+    "total_pass": 78,
+    "fail": 0,
+    "skip": 0
+  },
+  "test_resource_disposition": {
+    "recorded_roots": 62,
+    "remaining": 0,
+    "procedure": "test teardown verified removal; packaging rechecked the recorded exact paths"
+  }
+}

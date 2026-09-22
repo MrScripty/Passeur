@@ -24,6 +24,8 @@
     "src/observation/source.ts",
     "src/observation/match.ts",
     "src/observation/report.ts",
-    "src/coordination/notices.ts"
+    "src/coordination/notices.ts",
+    "src/coordination/control.ts",
+    "src/store/coordination-store.ts"
   ]
 }

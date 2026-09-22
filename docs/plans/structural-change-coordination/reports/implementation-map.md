@@ -98,3 +98,18 @@ M0 native dependency qualification is blocked. The independent F0/F1 re-plan own
 The foundation report's caller population is bounded to workspace preparation and coordinator-owned final collection. `DispositionManager` remains unchanged: it rejects active task resources before cleanup. Existing core delivery/pool tests were inspected but not executed; their actual TaskStore/vendor/package closure remains unavailable. Full integration review is required before acceptance.
 
 The final delivery includes both complete plan directories. The evaluator-assisted directory is copied unchanged from Plan 2B and is reference material only. No evaluator implementation, account access, or source transmission occurs.
+
+## F2-S1 — continuation admission
+
+The [F2 admission](f2-admission.md) owns the exact current write set and independent control increment. M0/native remains blocked. The work is internal, not advertised as a completed CLI/MCP capability.
+
+### F2 actual consumer closure and limits
+
+The extracted atomic primitive is re-exported from its original TaskStore path;
+existing consumers need no import migration. `tsconfig.core.json` discovers the
+new internal owner/store. The four new production modules and four test files
+are the complete F2 source/evidence write set listed in [admission](f2-admission.md).
+The existing observation modules are read-only regression context. No change
+was made to package.json, dependency locks, service dispatch, CLI/MCP schemas,
+adapters or installed scripts. Those consumers remain pending rather than
+receiving an incomplete implementation.

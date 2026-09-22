@@ -60,3 +60,68 @@ The plan keeps one service and scheduler, one analysis helper initially, one nar
 The eight-probe target admission remains prospective. This increment keeps its native-independent boundaries: exact source reads belong to observation; matching and rendering consume internal extracted values; materiality is a pure function, not another scheduler/store. The real parser/helper and all coordination protocol owners remain unimplemented. No parser package, new dependency, public command or persisted record is introduced. Future native integration must establish its current decoder/packaging contract rather than infer it from these test fixtures.
 
 The accepted task stays active during workspace-hook execution; its durable creation intent is published under the existing short administration guard. Only the hook-bearing Git operation leaves that guard. Stable collection receives a signal-free view after confirmed stop while preserving repository authority and the original execution result. These are lifetime corrections, not alternate execution modes.
+
+## F2 composed-design delta
+
+Current material artifact: the new coordination v1 decoder, domain control
+owner, real-file store, and extracted unchanged atomic publication primitive.
+The target-level probes above remain prospective for the unfinished consumers.
+This delta answers all eight probes for the actual implemented increment.
+
+1. **Independent concerns/dimensions.** The decoder owns what a valid command
+   and retained state mean; the control owner decides who may make which state
+   transition and in which order; the store decides how, where and when state
+   becomes durably observable. Native tasks, source verification and integration
+   decisions have existing/future distinct owners and are only referenced here.
+2. **Required interleavings.** A transition and its operation receipt share one
+   aggregate publication. Sharing, note context and case references share the
+   current-state check needed for disclosure. Case revision and lead generation
+   order updates/consent handoff. Silence/time are not authority. Parser jobs,
+   native task state, source bytes and Git effects are not inserted into this
+   aggregate. Schema version governs the persisted shape; epoch identifies an
+   enabled store; neither proves service election or external process stop.
+3. **Caller/root knowledge.** The composition root must supply one elected
+   authority, existing private state root, limits and authenticated actor. It
+   must verify source/target identities before a future public entry point.
+   Consumers use complete commands/read methods and typed failure outcomes;
+   they need not know marker filenames, temp publication or cross-record scans.
+   This precondition is real work for future integration, not claimed complete.
+4. **Representative change paths.** Changing note acknowledgment touches the
+   contract/domain and their tests, not native adapters. Changing a filename or
+   reopening mechanism touches the store/tests, not note semantics. Adding
+   source verification belongs at the workspace/composition boundary. A new
+   wire operation will need the contract and its actual transport producers and
+   consumers, not copied inline decoding. Changing the publication primitive
+   intentionally affects both store consumers and requires their tests.
+5. **Stable values versus hidden coupling.** Contracts expose logical IDs,
+   explicit revisions, full object IDs, note text and typed outcomes. They do
+   not expose parser trees, provider objects, mutable store aliases or hidden
+   thread lifetimes. selectedCases is explicitly informational; it does not
+   hide a pin/retirement guarantee. Same-process serialized ownership is visible
+   and is not advertised as a cross-process lock.
+6. **Independent evolution/failure/verification.** Real store tests run without
+   native agents or grammars. Record corruption/replacement blocks this store;
+   no code path cancels workers. Domain rules use actual files for acceptance
+   tests. The atomic primitive remains exactly shared; its earlier public export
+   is retained to avoid breaking existing source consumers. New serialized
+   consumers will require their own decoding evidence.
+7. **Deletion results.** Removing the decoder spreads invariant interpretation
+   to every mutation and reopen path. Removing the control owner spreads
+   authorization/idempotency ordering into callers. Removing the store spreads
+   initialization, partial-outcome handling and file checks into the domain.
+   Removing the extracted atomic module either duplicates the same persistence
+   mechanism or forces coordination to import task/vendor/schema dependencies.
+   All four contain current necessary responsibilities. No separate manager,
+   database, generic validator framework, lease or public command is added.
+8. **Cumulative retained cost.** F2 adds bounded control metadata, immutable
+   statements/receipts, explicit epoch/revision/lead generations, and one local
+   publication mechanism. Bounds and release reserve are checked at admission;
+   retained records are not silently pruned. Extra generality is declined:
+   operator forced takeover, authenticated host composition, task admission and
+   resource effects remain separate unfinished work. If their actual invariants
+   outgrow one bounded aggregate, re-plan the store rather than emulate arbitrary
+   transactions with file updates.
+
+The same-author local review and tests above are not independent final review
+or objective acceptance. F0/F1 statements earlier in this report describe that
+previous increment, not the current existence of F2 records.

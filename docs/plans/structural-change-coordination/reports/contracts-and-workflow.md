@@ -157,3 +157,28 @@ Parser caches and the inverted relevance index are derived and reconstructible; 
 Before applying a task-linked operation, publish the announcement intent. The task request records that work ID before native start. If the post-admission projection fails, discover the accepted task through its recorded identity; do not repeat native submission or mark never-started. Cross-store atomicity is not claimed. Recovery reports unknown effects and retains authority. First enable publishes a complete empty control record and a supported initialization marker through a staged directory publication under the elected owner; neither is visible as initialized until both are complete. Reopening an initialized directory with missing/corrupt control refuses fresh-empty initialization. Enable is explicit operator-owned state mutation, not a consequence of read-only discovery. A missing/corrupt control file after initialized coordination is not permission to start with an empty board. Retain receipts long enough for their explicitly supported key lifetime; reject additional allocation rather than silently reuse keys.
 
 Persistent limits use capacity, explicit closure and archival disposition. Silence/age never releases claims or tasks. Derived captures/notices can coalesce or expire under their advertised availability contract with a gap indicator. Service shutdown drains authoritative writes; report-only helper computation may be cancelled as disposable analysis. Durable closed cases/notes need not keep an otherwise empty service alive. Explicit unresolved claims remain durable across service restart without fabricating a running parent.
+
+## F2 implemented boundary (September 22, 2026)
+
+The surrounding workflow describes the full target. F2 implements only the
+internal/persisted coordination v1 boundary in
+`src/contracts/coordination-control.ts`, `src/coordination/control.ts` and
+`src/store/coordination-store.ts`. [docs/coordination.md](../../../coordination.md)
+is the durable explanation of this implemented contract; the source decoder is
+the representation authority. Full transport/task/retirement consumers are
+pending, so no public operation is registered and existing strict schema
+versions remain unchanged.
+
+A trusted future caller must establish actor authentication, physical source
+membership and Git identity before using the internal metadata operations.
+Note context is captured as exact work references independent of changing case
+inputs; each read checks current access to that context. Consent handoff changes
+case generation. Records of external-effect settlement remain parent reports,
+not execution/Git proof. Explicit initialization and record publication use the
+existing atomic primitive; multi-store transactions are not implied.
+
+F2 does not yet implement preflight-to-task atomic admission, operator adoption,
+active-case resource retirement protection, notification delivery or structural
+analysis. The full prospective consumer obligations continue to apply before
+those paths can be advertised. Evidence and the scoped stopping decision are in
+[F2 verification](f2-verification.md).

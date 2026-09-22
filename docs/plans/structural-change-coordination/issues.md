@@ -51,3 +51,17 @@ Severity: acceptance blocker; owner: maintainer/native qualification. Connected 
 ## I-ACC-01 — Real host, parser and external-review claims remain open
 
 Severity: acceptance blocker; owner: the plan's acceptance owner. No real provider/host accounts, parser extraction corpus, representative performance workload or independent reviewer was used. Disposition: preserve the original claim scope and require those gates before full acceptance. The controlled store does not prove persistence codecs or crash recovery.
+
+## F2 current dispositions — September 22, 2026
+
+| ID | Finding / evidence | Owner / disposition | Remaining evidence |
+|---|---|---|---|
+| I-F2-01 | A case input revision could otherwise detach an old note from revoked source access. Tests now retain original work_refs and recheck them on read/ack. | Coordination note owner; fixed in this increment. This is a bounded disclosure-invariant family, including current subject, historical context, parties and reads. | Public projections and real-host access still need conformance. |
+| I-F2-02 | Reserving only receipt counts can leave insufficient serialized bytes for required release/revocation. Capacity checks now reserve bytes as well as slots. | Control admission owner; fixed for declared release paths; count and byte tests pass. | Representative cardinality/performance and eventual retention migration remain unqualified. |
+| I-F2-03 | An external Git operation may continue after a parent disappears; changing a logical leader cannot stop it. | Control case owner; explicit possible-effect marker blocks handoff/release until lead-reported settlement. No fencing claim. | Operator recovery and real Git consumer protocol remain pending. |
+| I-F2-04 | Internal syntactic IDs do not prove authentication, worktree membership or object existence. | Future service/workspace composition; new operations remain internal/unregistered. | Required real service/CLI/MCP, membership and retirement-race evidence before public support. |
+| I-F2-05 | No native grammar bundle, full pinned dependency closure, installed host or independent review is available here. | Environment/maintainer; inherited I-ENV-01 remains blocking for the objective. F2 has only scoped compiler/real-file/process evidence. | Native M0, all language rows, full pinned checks, actual user workflow and external review. |
+
+F2 implements the internal parts of SCC-I07 and SCC-I10; it does not close their
+full consumer/path claims. Notes and cases are not yet exposed or connected to
+retirement. None of these dispositions marks SC09–SC15 satisfied.

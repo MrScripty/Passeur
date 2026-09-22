@@ -8,9 +8,9 @@ The selected parser runtime is the official native Node binding in a local helpe
 
 Plan state: `Planned`. Acceptance: `pending`. Exactly one next slice: `M0-S1`. Source defects listed in issues remain source observations pending reproduction. Existing lifecycle acceptance remains with its owner. No product code, dependency installation, branch, runtime configuration, worker task or provider account was changed.
 
-## Implementation evidence
+## Evidence recording rule (at plan preparation)
 
-No implementation verification has run for this plan. Record each admitted slice, exact material candidate, commands/procedures, observed outcomes, limitations and resource dispositions here when execution occurs.
+At plan preparation no implementation verification had run. Record each admitted slice, exact material candidate, commands/procedures, observed outcomes, limitations and resource dispositions here when execution occurs.
 
 ## September 21, 2026 — explicit start and environment qualification
 
@@ -28,3 +28,41 @@ Admitted the user's `implement plan 2a` request as `start`. Plan 2B remains unse
 - Self-reviewed the exact patch and corrected a test that attempted to mutate a frozen result; the fixture now changes its source before comparison. Source/result immutability remained enforced.
 - No commit or push was created: the source mirror lacks the complete repository/hook/signing context. The deliverable is a baseline-guarded changed-file patch for maintainer review, not a fabricated commit rooted at the upstream hash.
 - Plan 2B is included unchanged and unselected. Full Plan 2A remains `Blocked`, not `Implemented` or `Accepted`. Next integration slice is M0-S1 after dependency/environment qualification and an owned unblock decision.
+
+## September 22, 2026 — continuation from the committed foundation
+
+The connected repository reader identifies `43e3a78a1736539e0fd565899c1bd1c52eae9b42`
+as the committed foundation. Confirmed the current plan is Blocked and retained
+its native/dependency restrictions. Direct dependency access still fails and the
+native parser is absent. The F2 admission records the bounded sequencing change
+before source edits: implement independent internal controls while native
+qualification remains blocked. Selected operation after re-plan: `continue`.
+
+Implemented owned v1 command/state decoding, parent authorization and immutable
+notes, explicit agreement acknowledgment/withdrawal, stable target leadership
+and generation-checked consent handoff, a pending-external-effect marker, and
+receipt/byte capacity reserved for selected release/revocation operations.
+The real-file store stages complete initialization, checks identity/version and
+cross-record invariants, uses conditional serialized publication, preserves
+uncertain outcomes, and supports explicit fresh-process reopen. The existing
+atomicJson function was moved intact and re-exported by TaskStore.
+
+During local review, bounded the note-disclosure invariant across input changes:
+case notes keep their original work references so removing a case input does not
+bypass a later sharing revocation. Reserved byte capacity as well as receipt
+slots for release paths. Tests exercise both findings.
+
+Verification: 52 new tests plus 26 unchanged observation regressions pass (78,
+zero failures/skips). New import closure passes strict TypeScript 5.8.3 with
+available Node 25.1.0 declarations; this is not the repository-pinned compiler
+or full app check. Persistence tests use real files and sequential fresh child
+processes; they do not simulate concurrent service election or prove power-loss
+behavior. Controlled actors/workspace metadata do not prove host authentication
+or Git object existence. See [F2 verification](reports/f2-verification.md).
+
+Plan F2 source state: Implemented, locally verified at its selected boundary.
+Overall status: Blocked; acceptance blocked; next integration slice M0-S1.
+No remote commit/push, live accounts, dependency changes, user configuration,
+service installation or user-worktree cleanup occurred. Plan 2B remains unchanged
+and unselected. The changed-file patch is for maintainer integration; no fake
+upstream commit or claimed signed commit was created from the sparse mirror.

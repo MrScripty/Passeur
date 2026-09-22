@@ -1,5 +1,6 @@
+import { atomicJson, type MutationAuthority } from "./atomic-json.js";
 import { mkdir, open, readFile, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FinalizeReceipt, HistoricalRequest, ResourceRecord, StoredResult } from "../contracts/types.js";
 import { KeyedMutex, stableHash } from "../core/async.js";
@@ -15,25 +16,12 @@ export type LegacyStoredRequest = {
   execution?: import("../contracts/agents.js").ExecutionSnapshot;
 };
 export type StoredRequest = LegacyStoredRequest | DurableRequest;
-export type MutationAuthority = () => void;
+export { atomicJson } from "./atomic-json.js";
+export type { MutationAuthority } from "./atomic-json.js";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A bounded read rejects oversized authoritative records without labeling or quarantining them as corrupt.
 const MAX_RECORD_BYTES = 8 * 1024 * 1024;
 const absent = (error: unknown) => nativeCode(error) === "ENOENT";
-
-export async function atomicJson(path: string, value: unknown, authority?: MutationAuthority): Promise<void> {
-  authority?.();
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  authority?.();
-  const handle = await open(temporary, "wx", 0o600);
-  try { authority?.(); await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`); await handle.sync(); }
-  finally { await handle.close(); }
-  authority?.();
-  await rename(temporary, path);
-  const directory = await open(dirname(path), "r");
-  try { await directory.sync(); } finally { await directory.close(); }
-}
 
 /** Low-level persistence. Production mutation callers supply their current lease authority. */
 export class TaskStore {

@@ -77,3 +77,22 @@ Passing those commands alone does not supply real provider/host or all parser-la
 Only temporary test repositories, hook processes and in-memory fixtures were created. Each completed test closes owned handles, releases its controlled hook/worker, drains the coordinator and removes only its explicitly disposable test root. No user worktree or unique user commit is removed. No production background service remains running. The source mirror and delivery artifacts remain as the requested handoff. [Test-resource dispositions](test-resources.jsonl) record 19 test-created repository roots and their known heads/worktrees; every recorded root was confirmed absent after cleanup.
 
 Plan 2B is included unchanged for reference. It is not admitted for implementation, and this patch introduces no evaluator dependency, credential path or network evaluation.
+
+## September 22, 2026 — F2 continuation
+
+The maintainer committed F0/F1 as `43e3a78a1736539e0fd565899c1bd1c52eae9b42`.
+This continuation adds the independently admitted internal coordination owner
+and real-file store. The earlier source/evidence record remains historical;
+its seven foundation tests were not rerun in this continuation.
+
+Current evidence is [F2 verification](f2-verification.md),
+[test output](f2-test-results.txt), [scoped compiler output](f2-typecheck.txt),
+and [source integrity](f2-source-integrity.json). 52 new tests and 26 unchanged
+observation tests pass. No parser qualification, full pinned build, actual
+TaskStore class suite, public transport test, installed host, performance
+acceptance or independent final review is claimed. The atomicJson function's
+body was compared byte-for-byte with the verified original implementation.
+
+Plan 2B is unchanged reference material; no evaluator dependency or inference
+was added. Source integration remains the maintainer's action using the
+baseline-guarded patch. The complete Plan 2A remains Blocked.
