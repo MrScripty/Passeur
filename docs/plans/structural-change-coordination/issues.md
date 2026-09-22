@@ -100,3 +100,21 @@ See [F3 evidence](reports/f3-verification.md) and its exact scenario logs.
 The source-gated behavior, command generation, note disclosure and persistent
 coordination schema keep their existing owners. No timer releases authority,
 no parser substitute is used, and no receipt/view digest is treated as consent.
+
+
+## F5 current dispositions — September 22, 2026
+
+| ID | Finding and owner | Disposition / required evidence |
+|---|---|---|
+| I-F5-01 | New managed-resource check accepted a reused former path after a managed worktree moved and detached. | Fixed with branch/path agreement; independently written negative fixture failed then passes. Details: F5-R1 in f5-review.md. |
+| I-F5-02 | Equality-only comparison missed nested/containing physical workspaces. | Fixed with component-aware overlap and positive prefix-sibling tests; F5-R2. |
+| I-F5-03 | Retired resource label alone did not establish terminal task state. | Require the actual inventory owner's task phase; F5-R3. |
+| I-F5-04 | Namespace read can complete after shutdown selects the owners to close. | Open-state recheck before lazy session construction; lifetime construction review and general shutdown tests. No dedicated private-await race proof claimed. |
+| I-F5-05 | Complete Runtime/TaskStore/public host and native parser dependencies are unavailable in this mirror. | Runtime executes with explicit task-inventory/lease/recovery seams; 236 focused tests do not close full pinned/native/installed claims. No substitute definitions or parser. |
+| I-F5-06 | TaskStore.list performs a whole inventory read before the new 4096-record consumer cap. | Actual inventory implementation is retained. Large-store memory/latency and public saturation remain unqualified; measure at M0/M1 before performance acceptance, rather than claiming a bound on the complete path. |
+| I-F5-07 | Public listener authentication, task linkage and case-aware retirement are not connected. | Keep the new entrypoint internal; implement and verify complete public/resource paths before advertisement. |
+
+The existing I-F3-05 fixture path fix and I-F4-06 transport build-root correction
+were preserved from the current commit. The new findings are about F5 code;
+they are not attributed to the committed baseline. Operator access remains a
+same-user application policy, not protection from arbitrary same-UID code.

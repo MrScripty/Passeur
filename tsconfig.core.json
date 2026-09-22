@@ -31,6 +31,8 @@
     "src/coordination/bound-control.ts",
     "src/contracts/coordination-service.ts",
     "src/service/coordination.ts",
-    "src/service/transport.ts"
+    "src/service/transport.ts",
+    "src/core/coordination-resources.ts",
+    "src/service/operator-token.ts"
   ]
 }

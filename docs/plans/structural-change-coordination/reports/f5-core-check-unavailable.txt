@@ -1,0 +1,17 @@
+Attempt: actual tsconfig.core.json with available Node declarations, without substitute SDK/contract declarations.
+error TS6053: File '/mnt/data/passeur-f5-final/Passeur checkout/src/agents/report.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+error TS6053: File '/mnt/data/passeur-f5-final/Passeur checkout/src/core/cleanup.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+error TS6053: File '/mnt/data/passeur-f5-final/Passeur checkout/src/core/disposition.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+error TS6053: File '/mnt/data/passeur-f5-final/Passeur checkout/src/core/lease.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+error TS6053: File '/mnt/data/passeur-f5-final/Passeur checkout/src/core/recovery.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+full_core_exit=2

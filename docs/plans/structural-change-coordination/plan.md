@@ -7,11 +7,11 @@
 | Plan status | `Blocked` |
 | Plan revision | `2A` — standalone code-only target |
 | Acceptance status | `blocked` |
-| Current phase | F4 service-session increment implemented; native qualification, actual runtime/public integration and objective acceptance remain blocked |
-| Exactly one next integration slice | **M0-S1 — obtain the pinned dependency closure; integrate the tested metadata session with authenticated runtime/resource owners and qualify native analysis** |
+| Current phase | F5 runtime metadata composition implemented; native qualification, public wiring and objective acceptance remain blocked |
+| Exactly one next integration slice | **M0-S1 — qualify native parser dependencies and analysis, then wire authenticated public consumers to the runtime-owned session** |
 | Canonical plan path | `docs/plans/structural-change-coordination/plan.md` |
 | Implementation invocation | Explicit `start`; subsequent `continue` or `verify` only in the states allowed by Planning |
-| Examined implementation | Passeur `81b7a2a308f6fe546b4a0b9e118180936e0360a2` |
+| Examined implementation | Passeur `accc19acab46da6e3310b878bcee0b77c37ecdd1` |
 | Adopted standards | MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
 | Prepared | September 21, 2026, America/Vancouver |
 | Product and acceptance owner | Passeur maintainer |
@@ -20,16 +20,17 @@
 
 [Execution ledger](execution-ledger.md) owns dated work/evidence. [Issues](issues.md) owns findings. [Contracts and workflow](reports/contracts-and-workflow.md) refines D1–D12. [Language qualification](reports/language-qualification.md) owns the required grammar/extraction matrix. [Implementation map](reports/implementation-map.md) owns exact slice write sets. [Verification](reports/verification.md) owns scenario procedures and oracle boundaries. [Sources and routing](reports/sources-and-routing.md) records examined sources and standards. None duplicates task-lifecycle authority.
 
-This is a partially implemented plan. The maintainer committed F3 and requested
-continuation. [F4 admission](reports/f4-admission.md) records the bounded
-Blocked-to-Active transition for a service-owned metadata session; it does not
-waive parser or installed qualification. F4 is implemented and locally verified
-through its real Git/control/store and framed-transport boundaries, with fixture
-principals and initialization/resource policy. [F4 verification](reports/f4-verification.md)
-records 175 passing selected tests, corrected same-author findings and remaining
-consumers. The overall plan returns to Blocked. No SC01–SC17 objective claim is
-marked satisfied from this partial increment. Existing F0–F3 and shared-service
-evidence retain their exact scope; no remote or installed runtime was changed.
+This is a partially implemented plan. The maintainer committed F4 and requested
+continuation. [F5 admission](reports/f5-admission.md) records the bounded
+Blocked-to-Active transition for actual runtime metadata composition and
+managed-resource exclusion. F5 is implemented with 236 passing selected tests,
+including the seven coordinator foundation regressions. Its new dependency-free
+module closure passes strict available-tool checking. Repository integration
+then passed the complete pinned application type check and test suite; the
+package author's sparse-checkout limitation remains recorded as its own evidence.
+[F5 verification](reports/f5-verification.md) records actual paths and limits.
+The plan returns to Blocked; no SC01–SC17 objective claim is marked accepted.
+Earlier evidence keeps its original scope. No remote or installed runtime changed.
 
 This is a standalone implementation target. The implemented shared-service lifecycle retains its own authority and pending acceptance evidence. Before editing, inspect actual source, installed readers and durable state; choose explicit preservation, migration or rejection for any incompatible state. Plan selection grants no authority to erase records or rewrite history.
 
@@ -363,3 +364,29 @@ A fixture listener is not a production service fallback. Initialization needs a
 runtime-owned permission callback; a valid request cannot grant it. Detached
 observers do not abandon admitted operations. Metadata readiness does not imply
 parser/provider/source readiness. Plan 2B remains unselected and unchanged.
+
+
+## F5 delivered increment — September 22, 2026
+
+**Goal:** actual RepositoryRuntime composition, operator-backed initialization,
+managed-workspace exclusion, bounded request admission and observed session drain.
+**State:** Implemented with local evidence; overall acceptance remains Blocked.
+**Writes/admission:** [F5 admission](reports/f5-admission.md).
+**Gate exercised:** 54 new tests, 175 retained control/observation/transport tests
+and seven controlled coordinator foundation tests: 236 pass, zero skips/failures.
+The new resource/token/inventory import closure passes strict TypeScript 5.8.3
+checking. The full application and entire modified runtime/bootstrap type graph
+remain unavailable; no SDK/contract declarations were fabricated.
+**Preserved contracts:** metadata v1, task/result and existing public surfaces;
+one canonical token reader and unchanged inventory re-export. No public command
+is registered. Plan 2B is unchanged and unselected.
+**Remaining gate:** elected-listener authentication, CLI/MCP operations, managed
+task/announcement linkage, retirement ordering, native grammars and all language
+extractors, full pinned checks, installed host, performance and independent review.
+
+[F5 verification](reports/f5-verification.md),
+[review](reports/f5-review.md), and
+[all eight design probes](reports/design-admission.md#f5-composed-design-delta)
+record the material evidence. TaskStore inventory, lease/recovery and principals
+are explicit test seams; real metadata storage and Git are exercised. A checked
+resource observation is not process fencing or a transaction with Git refs.

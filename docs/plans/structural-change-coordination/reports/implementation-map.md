@@ -154,3 +154,26 @@ future write set must include actual actor/initialization/resource ownership,
 request-capacity composition, task linkage and lifecycle/retirement consumers.
 They remain necessary before public availability rather than being bypassed
 with an internal direct-call command. Plan 2B is unchanged and unselected.
+
+
+## F5-S1 — actual runtime metadata composition
+
+Baseline: `accc19acab46da6e3310b878bcee0b77c37ecdd1`.
+State: Implemented with scoped local evidence. Exact write owner and paths:
+[f5-admission.md](f5-admission.md). Material source changes connect
+RepositoryRuntime to the existing metadata session, add a task-resource exclusion
+consumer and canonical bounded operator credential reader, and extract/re-export
+the unchanged read-only worktree inventory. `tsconfig.core.json` retains the
+maintainer's `src/service/transport.ts` root and adds the three new source roots.
+
+New evidence: 23 runtime tests, 22 resource tests, nine credential tests and one
+runtime fixture. Retained evidence: 175 prior metadata/observation/transport tests
+and seven original controlled coordinator foundation tests. All 236 run against
+the actual selected source from a space-containing path. The new helper/type
+closure passes strict available-tool checking; complete runtime/bootstrap type
+checking remains unavailable, not substituted by local declarations.
+
+`service/server.ts`, `service/client.ts`, CLI, MCP, registration, package/lock,
+installed scripts and Plan 2B remain read-only. Public elected-listener/host,
+managed task linkage, retirement guard, parser and installed acceptance are not
+advertised or waived. See [F5 verification](f5-verification.md).

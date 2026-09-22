@@ -1,0 +1,7 @@
+{
+  "root": "/tmp/passeur-session-IyY1PA",
+  "origin": "F5 interrupted first test run",
+  "authority": "discard-authorized test-only fixture",
+  "outcome": "removed",
+  "postcondition_absent": true
+}

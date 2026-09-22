@@ -1,4 +1,11 @@
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { CoordinationService, type CoordinationServiceLimits } from "../service/coordination.js";
+import { decodeCoordinationRequest, coordinationRequestLane, type CoordinationReply } from "../contracts/coordination-service.js";
+import { parentId } from "../contracts/coordination-control.js";
+import { operatorToken } from "../service/operator-token.js";
+import { privateDirectory } from "../service/process.js";
+import { assertExternalWorkspace } from "./coordination-resources.js";
 import type { DelegateRequest, DelegateResult, FinalizeOperation, ResultRequest, StoredResult } from "../contracts/types.js";
 import type { RuntimeBinding, RuntimeIdentity, RuntimeStatus } from "../contracts/runtime.js";
 import type { TaskStore } from "../store/task-store.js";
@@ -14,6 +21,11 @@ import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure } from "./err
 import { Mutex, withAbort, canonicalHash } from "./async.js";
 
 const PREPARATION_TIMEOUT_MS = 90_000;
+// Initial safety bounds for metadata work, distinct from native inference capacity.
+const coordinationLimits: CoordinationServiceLimits = Object.freeze({
+  ordinary_requests: 16, control_requests: 4, max_source_operations: 4, max_worktrees: 256,
+});
+const coordinationResourceRecords = 4096;
 export type LaunchIntent = {
   project: string; profilePath?: string; stateRoot?: string; expectedRepositoryId?: string;
 };
@@ -83,6 +95,9 @@ export class RepositoryRuntime {
   #composition: Promise<Coordinator> | undefined;
   #shutdown: Promise<void> | undefined;
   #containment: Promise<void> | undefined;
+  #coordination: CoordinationService | undefined;
+  #coordinationOrdinary = 0;
+  #coordinationControls = 0;
 
   constructor(intent: LaunchIntent, identity: RuntimeIdentity, dependencies: RuntimeDependencies = {}, environment: Environment = process.env) {
     this.#intent = { ...intent };
@@ -304,6 +319,74 @@ export class RepositoryRuntime {
       return coordinator.submit(identity, actor, signal);
     });
   }
+  /** Internal service entrypoint. The listener, not the payload, supplies its authenticated actor/source. */
+  coordinate(raw: unknown, actor: ClientActor, sourceView: string, signal?: AbortSignal): Promise<CoordinationReply> {
+    let request: ReturnType<typeof decodeCoordinationRequest>, connection: Readonly<{ owner_id: string; source_view: string }>;
+    try {
+      signal?.throwIfAborted(); this.#assertOpen();
+      request = decodeCoordinationRequest(raw);
+      connection = Object.freeze({ owner_id: parentId(actor.owner_id), source_view: sourceView });
+      if (typeof sourceView !== "string" || !sourceView.length || sourceView.length > 4096 || sourceView.includes("\0") || !isAbsolute(sourceView)) {
+        throw new BridgeError("COORDINATION_SOURCE_VIEW_INVALID", "Use the authenticated connection's absolute source view");
+      }
+      if (this.#admissionClosed && (request.kind === "initialize" || request.kind === "command" && coordinationRequestLane(request) === "ordinary")) {
+        throw new BridgeError("COORDINATION_SERVICE_DRAINING", "New coordination work is closed; existing reads and release controls remain available");
+      }
+      this.#assertOpen();
+    } catch (error) { return Promise.reject(error); }
+    const control = coordinationRequestLane(request) === "control";
+    if (control ? this.#coordinationControls >= coordinationLimits.control_requests : this.#coordinationOrdinary >= coordinationLimits.ordinary_requests) {
+      return Promise.reject(new BridgeError(control ? "COORDINATION_CONTROL_CAPACITY" : "COORDINATION_SERVICE_CAPACITY", "The selected runtime coordination lane is full; no operation was admitted"));
+    }
+    if (control) this.#coordinationControls++; else this.#coordinationOrdinary++;
+    const operation = this.#track(async () => {
+      // From admission onward, preparation/publication has runtime ownership.
+      // A request cancellation detaches only the promise returned below.
+      const binding = await this.#resolve(this.#lifetime.signal);
+      if (request.kind === "initialize" || request.kind === "command") await this.#ensurePrepared(undefined, control);
+      this.#assertOpen();
+      if (this.#admissionClosed && (request.kind === "initialize" || request.kind === "command" && !control)) {
+        throw new BridgeError("COORDINATION_SERVICE_DRAINING", "Coordination admission closed during preparation");
+      }
+      if (request.kind !== "identity") {
+        // Service startup supplies this private namespace. A read cannot recreate
+        // a missing namespace or reinterpret lost authority as a never-enabled store.
+        try { await privateDirectory(binding.storeRoot); }
+        catch (error) { throw filesystemFailure(error, "coordination.namespace", binding.storeRoot); }
+      }
+      // Namespace checks suspend. Closing during that read must not create a
+      // session after shutdown has already selected the owners it will close.
+      this.#assertOpen();
+      if (!this.#coordination) {
+        this.#coordination = new CoordinationService({ store_root: binding.storeRoot, repository_id: binding.repositoryId }, {
+          assertOwned: () => this.#assertAuthority(),
+          authorizeInitialization: async (principal) => {
+            const token = await operatorToken(binding);
+            const expected = token === undefined ? undefined : createHash("sha256").update(token).digest("hex");
+            if (!expected || !timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(principal.owner_id, "hex"))) {
+              throw new BridgeError("COORDINATION_INITIALIZATION_FORBIDDEN", "Initialization requires the existing operator identity; ordinary task or connection ownership does not authorize it");
+            }
+            this.#assertAuthority();
+          },
+          externalWorkspaces: { assertExternalRegistration: async (_principal, workspace, sourceSignal) => {
+            if (!this.#store) throw new BridgeError("COORDINATION_RESOURCE_UNAVAILABLE", "The runtime resource inventory is not prepared");
+            await assertExternalWorkspace(workspace, this.#store,
+              { records: coordinationResourceRecords, worktrees: coordinationLimits.max_worktrees }, () => this.#assertAuthority(), sourceSignal);
+          } },
+        }, coordinationLimits);
+        if (this.#admissionClosed) this.#coordination.beginDrain();
+      }
+      return this.#coordination.handle(connection, request);
+    });
+    const settled = () => {
+      if (control) this.#coordinationControls--; else this.#coordinationOrdinary--;
+      // Notification is advisory and runs after #track removed the owned work.
+      // A broken observer cannot turn a published receipt into a failed mutation.
+      try { this.onSettled?.(); } catch (error) { this.#failure ??= diagnosticInfo(error); }
+    };
+    void operation.then(settled, settled);
+    return withAbort(operation, signal);
+  }
   async retainedTaskId(requestKey: string): Promise<string> {
     const record = await (await this.#readStore()).find({ request_key: requestKey });
     if (!record) throw new BridgeError("RESULT_NOT_FOUND", "No matching retained request");
@@ -366,12 +449,12 @@ export class RepositoryRuntime {
     for (const record of await this.#store.list()) if ("schema_version" in record) await this.#controls.releaseClient(record.task_id, clientId);
   }
   async hasObligations(): Promise<boolean> {
-    if (this.#preparation || this.#composition && !this.#coordinator || this.#pending.size || this.#coordinator?.outstandingCount) return true;
+    if (this.#preparation || this.#composition && !this.#coordinator || this.#pending.size || this.#coordinator?.outstandingCount || this.#coordination?.pendingCount) return true;
     if (!this.#store) return false;
     for (const record of await this.#store.list()) if ((await this.#store.readState(record.task_id)).phase !== "terminal") return true;
     return false;
   }
-  async stopAdmission(): Promise<void> { this.#admissionClosed = true; this.#coordinator?.closeAdmission(); }
+  async stopAdmission(): Promise<void> { this.#admissionClosed = true; this.#coordinator?.closeAdmission(); this.#coordination?.beginDrain(); }
   async drain(): Promise<void> { if (this.#coordinator) await this.#coordinator.shutdown(); }
   async #readStore(): Promise<TaskStore> {
     this.#assertOpen();
@@ -468,6 +551,7 @@ export class RepositoryRuntime {
       await Promise.allSettled(startup);
       const outcomes = await Promise.allSettled([
         ...(this.#coordinator ? [this.#coordinator.shutdown()] : []),
+        ...(this.#coordination ? [this.#coordination.close()] : []),
         ...(this.#containment ? [this.#containment] : []),
       ]);
       await Promise.allSettled([...this.#pending]);

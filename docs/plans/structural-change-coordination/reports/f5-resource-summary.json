@@ -1,0 +1,8 @@
+{
+  "recorded_rows": 202,
+  "unique_roots": 202,
+  "remaining": [],
+  "authority": "Only test-created disposable roots; fixture cleanup is discard-authorized.",
+  "source_directory": "/mnt/data/passeur-f5-final/Passeur checkout",
+  "development_cleanup": "f5-development-cleanup.json"
+}

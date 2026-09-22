@@ -221,3 +221,33 @@ current-authority pages with content-bound continuation, not permission tokens
 or a durable source-version database. Operation cancellation detaches an admitted
 observer without cancelling its mutation. Pending work is owned through close.
 The current selected evidence is [F4 verification](f4-verification.md).
+
+
+## F5 current runtime consumer
+
+`RepositoryRuntime.coordinate(raw, actor, sourceView, signal)` is the internal
+consumer of the unchanged coordination request/reply v1. Its trusted actor/source
+are separate arguments supplied by the future elected listener. It copies and
+validates them before suspension, acquires bounded lane admission, and tracks
+accepted work independently of observer cancellation. Decode/admission refusal
+has no metadata effect. Existing task preparation can occur for an admitted
+mutation before metadata initialization permission is evaluated.
+
+The runtime owns one lazy CoordinationService. Identity reads do not create the
+state root. Other reads require the existing canonical private service namespace;
+missing namespace is unavailable. Metadata initialization additionally requires
+the existing canonical operator principal. No request creates or replaces a
+credential or manufactures human consent. Supported drain-time reads/releases
+retain their lane; closing rejects new entry and observes owned session work
+before releasing lease authority.
+
+External registration consumes TaskStore-decoded resource claims and real Git
+inventory, including canonical containment and moved-branch anchors. Unknown,
+missing, contradictory, nonterminal-retired or reused-path resource facts refuse
+enrollment. This check is not a reservation against arbitrary external mutation.
+Actual task admission/linkage and retirement-case serialization remain unimplemented.
+
+Canonical detailed behavior: [runtime composition](../../../coordination.md#runtime-composition-f5).
+Versioning: no stored task/result/control or public IPC/MCP schema changes here.
+Bootstrap and worktree inventory retain their old exported APIs through re-exports.
+The parser/host/native/full-pinned acceptance claims stay with their owning gates.

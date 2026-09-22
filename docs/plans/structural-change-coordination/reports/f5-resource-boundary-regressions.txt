@@ -1,0 +1,46 @@
+TAP version 13
+# Subtest: an independently registered nested worktree cannot borrow a managed workspace directory
+not ok 1 - an independently registered nested worktree cannot borrow a managed workspace directory
+  ---
+  duration_ms: 206.094706
+  type: 'test'
+  location: '/mnt/data/passeur-f5-work/repo/tests/core/coordination-resources.test.mjs:107:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    code: 'COORDINATION_WORKSPACE_MANAGED'
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///mnt/data/passeur-f5-work/repo/tests/core/coordination-resources.test.mjs:111:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: a retired resource label cannot override a nonterminal task state
+not ok 2 - a retired resource label cannot override a nonterminal task state
+  ---
+  duration_ms: 140.666262
+  type: 'test'
+  location: '/mnt/data/passeur-f5-work/repo/tests/core/coordination-resources.test.mjs:113:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    code: 'COORDINATION_RESOURCE_UNAVAILABLE'
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///mnt/data/passeur-f5-work/repo/tests/core/coordination-resources.test.mjs:116:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 0
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 446.850438

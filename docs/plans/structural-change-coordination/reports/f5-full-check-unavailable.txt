@@ -1,0 +1,20 @@
+Not a pinned full-check result; this sparse mirror has no pinned dependency installation.
+error TS2688: Cannot find type definition file for 'node'.
+  The file is in the program because:
+    Entry point of type library 'node' specified in compilerOptions
+error TS6053: File '/mnt/data/passeur-f5-work/repo/src/agents/report.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+error TS6053: File '/mnt/data/passeur-f5-work/repo/src/core/cleanup.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+error TS6053: File '/mnt/data/passeur-f5-work/repo/src/core/disposition.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+error TS6053: File '/mnt/data/passeur-f5-work/repo/src/core/lease.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+error TS6053: File '/mnt/data/passeur-f5-work/repo/src/core/recovery.ts' not found.
+  The file is in the program because:
+    Part of 'files' list in tsconfig.json
+core_exit=2

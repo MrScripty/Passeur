@@ -1,0 +1,7 @@
+Scope: src/core/coordination-resources.ts, src/service/operator-token.ts, src/workspace/inventory.ts and their actual dependency-free TypeScript import closure.
+Complete RepositoryRuntime, bootstrap and application contracts are excluded from this limited typecheck; pinned dependency closure is unavailable.
+v22.16.0
+Version 5.8.3
+25.1.0
+selected_exit=0
+[3JTERM environment variable not set.

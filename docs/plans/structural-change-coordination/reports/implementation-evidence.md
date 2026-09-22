@@ -122,3 +122,13 @@ use the unchanged production IpcConnection but fixture authentication/resource
 policies. Current public operations, task meanings and installed runtime are
 unchanged. The service integration and structural-analysis objective is not
 complete; the plan and acceptance remain Blocked.
+
+
+## F5 continuation
+
+Actual runtime metadata composition, canonical operator read and managed-source
+exclusion are implemented. [F5 verification](f5-verification.md) records 236
+passing selected tests and the limited strict typecheck, with no complete pinned
+application or native/parser acceptance. [F5 review](f5-review.md) contains the
+three reproduced new-code findings. Current plan status remains Blocked and
+public tools stay unregistered. Historical F0–F4 results are not relabelled.

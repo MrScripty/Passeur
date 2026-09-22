@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { lstat, open, readFile, statfs } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { open, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DescriptorSchema, type ServiceDescriptor } from "../contracts/service.js";
 import type { ResolvedBinding } from "../core/repository-runtime.js";
@@ -70,20 +70,5 @@ export async function launchService(binding: ResolvedBinding, exactCli: string):
 }
 export async function existingOwner(descriptor: ServiceDescriptor): Promise<boolean> { return sameProcess(descriptor.process); }
 
-/** Explicit operator CLI invocations share a private reconnect identity; MCP front ends do not use this file. */
-export async function operatorToken(binding: ResolvedBinding, create = false): Promise<string | undefined> {
-  try { await privateDirectory(binding.storeRoot, create); }
-  catch (error) { if (!create && nativeCode(error) === "ENOENT") return undefined; throw error; }
-  const path = join(binding.storeRoot, "operator-control.token");
-  if (create) try {
-    const handle = await open(path, "wx", 0o600);
-    try { await handle.writeFile(randomBytes(32).toString("hex")); await handle.sync(); } finally { await handle.close(); }
-  } catch (error) { if (nativeCode(error) !== "EEXIST") throw error; }
-  try { await privateFile(path); }
-  catch (error) { if (!create && nativeCode(error) === "ENOENT") return undefined; throw error; }
-  const info = await lstat(path);
-  if (info.size !== 64) throw new BridgeError("CONTROL_CREDENTIAL_INVALID", "Private operator credential has an invalid size");
-  const token = await readFile(path, "utf8");
-  if (!/^[a-f0-9]{64}$/.test(token)) throw new BridgeError("CONTROL_CREDENTIAL_INVALID", "Private operator credential is invalid");
-  return token;
-}
+// Keep the existing CLI import path while sharing the actual credential owner.
+export { operatorToken } from "./operator-token.js";

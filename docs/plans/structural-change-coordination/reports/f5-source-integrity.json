@@ -1,0 +1,150 @@
+{
+  "baseline": "accc19acab46da6e3310b878bcee0b77c37ecdd1",
+  "scope": "Selected preimage/context files in a sparse verified source mirror; not a complete clone.",
+  "files": [
+    {
+      "path": "docs/coordination.md",
+      "git_blob_sha1": "3f645bdcb774496f6f35c011907369d5ad8f607e",
+      "sha256": "f2e282bf08c98753285218c54d5195a850240f2c2741051aa0926ca886a6baab",
+      "bytes": 16356
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/plan.md",
+      "git_blob_sha1": "5381c67946c603085f93ff9bd72a74ecfb93f6d2",
+      "sha256": "c1f84c2ae6e1b96963e25f24852c2503a138554f4303c8b8e14a309939e75fc7",
+      "bytes": 46280
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/execution-ledger.md",
+      "git_blob_sha1": "651ace6342e983ba0084c15ac612c983d0ad1c57",
+      "sha256": "94fed0dc1ee98a229f35e5c5652491121061c9e0e03f3e212eac232ea94a219d",
+      "bytes": 10572
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/issues.md",
+      "git_blob_sha1": "7d831e64146127fe96182bd6b2fc4163d1aac5bf",
+      "sha256": "773348baacecd2df2487ccc9ef5ce660c64b2d425610ec000bcbe9d87c6c6df3",
+      "bytes": 15057
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/contracts-and-workflow.md",
+      "git_blob_sha1": "892d9992c6573b42fe6a5dc091ae932fc257bcb2",
+      "sha256": "851f80a53049e7a9be4a17644751381d699ad375b81bf204ec2207033f6637a1",
+      "bytes": 27392
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/design-admission.md",
+      "git_blob_sha1": "34c693dc136591c307d4225362d583c539ac4c50",
+      "sha256": "4ac225133678523de3b23fa47e944e73f8546411096edf3b3771889f1aa3b77c",
+      "bytes": 20651
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/implementation-evidence.md",
+      "git_blob_sha1": "586e800b6e5767f379444074560a60291bcc954c",
+      "sha256": "c1472a8d2ffafe1f0902fc946399d87d7fd4f81eaa3f31011f73412334dac376",
+      "bytes": 10700
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/implementation-map.md",
+      "git_blob_sha1": "2943ebc5229b9e4a44f3d4b16b6e7914eebe2742",
+      "sha256": "348cdea9e8afb4ac9e9831f7335acff561447a3af2cd4575c9c76ee38af74ab3",
+      "bytes": 16013
+    },
+    {
+      "path": "tsconfig.core.json",
+      "git_blob_sha1": "78ef5cdf28fe5bdb09dbabd03516537780d9a5ee",
+      "sha256": "59db2680b370cc230b1dede386f4d0b1956cd1f0564b6dd68bc861b5ee3df129",
+      "bytes": 949
+    },
+    {
+      "path": "src/core/repository-runtime.ts",
+      "git_blob_sha1": "7d17f45ed65cc59c8759cce5af7475acd024c5e3",
+      "sha256": "32a9055bad9393680bda1fa7482e9f9931b576b82913a029d5d668396a16ddf9",
+      "bytes": 29417
+    },
+    {
+      "path": "src/service/bootstrap.ts",
+      "git_blob_sha1": "914f75995dfdf8525ec1b20891070a12f965862f",
+      "sha256": "70f33dfbe93f832d2a046614559e7fdca68a33ecd94983a131fc6cd9906b599a",
+      "bytes": 6600
+    },
+    {
+      "path": "src/workspace/worktree.ts",
+      "git_blob_sha1": "2de96eb76b7679491a83a4d582aa6c5442570f5a",
+      "sha256": "dc3face889bd5c6bbc52d865123d2acf462abf2b1ad56a9aaab0609946363624",
+      "bytes": 10898
+    },
+    {
+      "path": "src/service/transport.ts",
+      "git_blob_sha1": "c6fd69ebfe9188365386541e032fee3abda07a74",
+      "sha256": "3cd344f88ca8885cf5fa5ed3ccbf7ec3bd5aab98e2514f257b346c0d499b3e90",
+      "bytes": 7458
+    },
+    {
+      "path": "src/core/async.ts",
+      "git_blob_sha1": "5bfde3a7289c046caf008bc1e38ddb2415708f00",
+      "sha256": "59fe78dadca2b12a618d20b8585588a4d0b3d26bcec22c195822b02a9b4f339a",
+      "bytes": 3280
+    },
+    {
+      "path": "src/core/errors.ts",
+      "git_blob_sha1": "62d850ed2c883995b976f225a3530620aacab700",
+      "sha256": "2c2414a0f2a09eaf89016ea099ea68eed5b0a39ba61bd7b9595858d9395164a3",
+      "bytes": 3093
+    },
+    {
+      "path": "src/core/task-control.ts",
+      "git_blob_sha1": "9787dccc070b1fe9b5dec446807fcdef71de7778",
+      "sha256": "64bee812d319299e51e5a34cbba1a3db30c3ed83bbae13e0709cdd1b3c420464",
+      "bytes": 10085
+    },
+    {
+      "path": "src/service/process.ts",
+      "git_blob_sha1": "2bc05b2fec722e63a7458c8c9e36451a475d55e7",
+      "sha256": "41b3ad9cfca4c44debde30febe7466556d7d0fbf7dd5588337e00cd02a405ed0",
+      "bytes": 4109
+    },
+    {
+      "path": "src/workspace/project.ts",
+      "git_blob_sha1": "a2b0d1dd9d5be5bcbac5e9e84c2db86284b950b7",
+      "sha256": "f6ed566410bfb9ee091ca0e40c7373dd28fd71b917684efd30b7f3e3b991d8ce",
+      "bytes": 9317
+    },
+    {
+      "path": "src/core/input-broker.ts",
+      "git_blob_sha1": "6b65a5df5d0c6abc24bf597e1b3672999a361ee2",
+      "sha256": "3648d1d068bacb65ed750e76c6cebd19289c0e726fa96adb2ff8bbfebdeae08d",
+      "bytes": 7038
+    },
+    {
+      "path": "src/core/result.ts",
+      "git_blob_sha1": "ef76dbc8cf83c1526e70e5b528cfd027c9895a7a",
+      "sha256": "456c25a493cc7d0844f423d31675db71d5ef4d2c94d59c03c7a7b95debf8938e",
+      "bytes": 6771
+    },
+    {
+      "path": "src/agents/report-format.ts",
+      "git_blob_sha1": "9c458d8c99b012a41a9278040b0027f40dcfdfdd",
+      "sha256": "f56c5eed00379522a23279a986b88db6531fdc6ea9c0a1ac82c93bb4b07eedcf",
+      "bytes": 911
+    },
+    {
+      "path": "package.json",
+      "git_blob_sha1": "9513aa8b9d729c4ec17535420650a2e04b8424ed",
+      "sha256": "ff9b30175613b50d6da860953260e3ef05dbbd7066349fc72d676b5d926bfd94",
+      "bytes": 1530
+    },
+    {
+      "path": "tests/core/coordination-bound.test.mjs",
+      "git_blob_sha1": "61470df9aeca1cefac21911bb5b1c6700f12dab1",
+      "sha256": "7efb861568f3ec7958b9e0a7615ca6ce4ea927c5193c0ca0959526f28d922ce5",
+      "bytes": 16790
+    },
+    {
+      "path": "src/service/coordination.ts",
+      "git_blob_sha1": "77ad9dd231ae1c49212fece459e30fa57a3c6f6b",
+      "sha256": "f08d8e50e21cd4097c2330136d327d26cb71775a3142fa83afbcb8bb540353de",
+      "bytes": 12398
+    }
+  ]
+}

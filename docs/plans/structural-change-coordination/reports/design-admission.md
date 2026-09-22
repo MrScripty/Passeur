@@ -234,3 +234,50 @@ All eight Architecture probes are re-evaluated for the added service boundary.
    for packaging. Re-plan if connecting them forces task/source/permission policy
    into this module, or file-store/transport limits cannot satisfy the required
    operation without a materially different design.
+
+
+## F5 composed-design delta
+
+Applicability: applicable. Source baseline:
+`accc19acab46da6e3310b878bcee0b77c37ecdd1`.
+
+1. **Independent concepts/dimensions.** Runtime preparation/lease, admitted
+   operation lifetime, private operator identity, task-resource ownership and
+   metadata state remain separate. Observation does not confer task control.
+2. **State/identity/value/time/policy/mechanism.** Metadata v1 and existing task,
+   result and IPC representations keep their meanings. Principal digest is the
+   existing operator-token identity, not a new permission field. Counter limits
+   are runtime safety policy; no elapsed duration releases authority. Source
+   identity is checked against existing resource claims, not inferred from path
+   strings alone. Source loss/ref changes invalidate observations, not history.
+3. **Caller/composition-root knowledge.** `RepositoryRuntime` now supplies its
+   real binding, lease and inventory to `CoordinationService`. No parent caller
+   needs to understand metadata storage or construct workspace identities. The
+   future listener supplies only authenticated actor/source plus decoded input.
+4. **Representative change paths.** Token-read rules change in one canonical
+   module with bootstrap re-export. Task-resource interpretation changes in
+   `coordination-resources`; Git inventory stays in one unchanged owner.
+   Metadata transitions stay in CoordinationControl, not RepositoryRuntime.
+5. **Stable interfaces/hidden knowledge.** The internal coordinate request/reply
+   contract is unchanged. The resource inventory is a documented narrow
+   projection of already-decoded TaskStore records. It does not become another
+   persisted schema or a direct untrusted entrypoint.
+6. **Independent evolution/test/failure/replacement.** Real runtime/metadata/Git
+   tests isolate actual task codecs, lease and host with declared fixtures.
+   Invalid credentials/resources refuse dependent mutations; existing receipts
+   and supported closure remain usable. Parser failure is still outside this
+   metadata path. Source work is read-only and outside control locks.
+7. **Necessary complexity/containment.** Ordinary/control admission before
+   preparation and tracked session shutdown prevent unbounded pending work or
+   lease release while a mutation remains owned. Open-state is rechecked after
+   namespace I/O. Inventory ambiguity is an explicit refusal rather than a new
+   repair engine. Initial caps require later workload qualification.
+8. **Deletion/cumulative machinery.** Removed duplicate token ownership and
+   moved the exact existing inventory function to a narrow import boundary.
+   There is one metadata session per runtime, no new daemon, scheduler, publisher,
+   database, evaluator or fallback parser. Temporary evidence transpilation is
+   not shipped as production runtime behavior. Public adapters remain pending;
+   they must consume this owner rather than add another metadata lifecycle.
+
+The current change does not establish global simplicity/compliance or complete
+acceptance. F5 verification identifies the exact subject and remaining claims.

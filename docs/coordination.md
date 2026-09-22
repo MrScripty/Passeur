@@ -2,18 +2,19 @@
 
 ## Implementation status
 
-F2 implements the internal coordination-control owner and real-file store.
-F3 adds a repository-bound operation facade that verifies physical worktrees,
-exact commits/ancestry and direct target refs before source-dependent controls.
-F4 adds a service-owned metadata session with explicit initialization, closed
-request/reply contracts, current-authority read pages and observed shutdown.
-No CLI/MCP operation is registered for these methods yet. Actual elected-runtime
-and resource-authority composition, native parsing, managed task/announcement
-linkage, operator adoption and retirement guards remain unimplemented.
-This is not yet a usable end-to-end multi-parent feature.
+F2-F4 provide the control/store, Git-bound facade, and metadata session.
+F5 composes that actual session inside `RepositoryRuntime.coordinate`: the
+runtime supplies the binding, operation lifetime, lease checks, existing
+operator-credential authorization, and managed-task resource inventory.
+
+No elected-listener operation or public CLI/MCP command is registered yet.
+Actual host authentication through that new route, managed task/announcement
+linkage, operator adoption, retirement guards, native parsing and complete
+installed acceptance remain unfinished. This is not the end-to-end feature.
 
 Plan authority: [Plan 2A](plans/structural-change-coordination/plan.md).
-Evidence: [F4 verification](plans/structural-change-coordination/reports/f4-verification.md),
+Evidence: [F5 verification](plans/structural-change-coordination/reports/f5-verification.md),
+[F4 verification](plans/structural-change-coordination/reports/f4-verification.md),
 [F3 verification](plans/structural-change-coordination/reports/f3-verification.md)
 and retained [F2 verification](plans/structural-change-coordination/reports/f2-verification.md).
 The evaluator-assisted plan is an unselected reference.
@@ -28,9 +29,10 @@ interruption handling and reopening. `store/atomic-json.ts` contains the shared
 fsync/rename primitive; TaskStore re-exports the existing API without changing
 that primitive's behavior.
 
-The future composition root must create exactly one control/store owner for
-the canonical repository under the existing service election and mutation
-authority. These modules neither acquire a second lease nor permit independent
+The runtime now creates exactly one metadata session/control/store owner for
+its canonical binding. The elected listener still needs to route authenticated
+requests to it under the existing service election and mutation authority.
+These modules neither acquire a second lease nor permit independent
 concurrent processes to mutate the control file. A read/revision check by itself
 is not cross-process fencing. Analysis and native execution remain separate.
 
@@ -60,8 +62,9 @@ rechecked. These are observations, not locks on changing Git state.
 The facade requires an `ExternalWorkspaceAuthority` supplied by the resource
 owner: repository membership alone does not permit enrollment of a managed
 worker's directory. Its callback runs outside control locks, followed by another
-physical-identity observation. The actual service/resource implementation is
-still pending. Low-level `register_work` accepts verified metadata only and
+physical-identity observation. F5 supplies the runtime task-resource inventory
+policy. Its real TaskStore/elected-host qualification and public entrypoint remain
+pending. Low-level `register_work` accepts verified metadata only and
 must not be exposed directly to client payloads. Existing unverified metadata
 labels remain readable/closable but cannot be used as source proof.
 
@@ -269,3 +272,71 @@ authentication/election, real host consent, provider behavior, managed task
 linkage, retirement protection, installed packaging or performance. No dormant
 public flag or command claims this capability is available. Those consumers
 must be completed and qualified together before the feature is advertised.
+
+
+## Runtime composition (F5)
+
+`RepositoryRuntime.coordinate` is an internal entrypoint, not an independently
+advertised tool. The caller must supply the trusted connection's actor and
+source view separately from the completely decoded request. Ordinary payloads
+cannot select their own actor or initialization permission. Task adoption does
+not confer initialization, workspace, leadership or target privileges.
+
+Identity reads resolve the binding without preparing task execution. Other
+reads require the already-existing canonical private service namespace; loss
+of that namespace is unavailable, not a new empty control store. Mutations use
+the existing preparation/lease path and may perform its supported task-state
+preparation before metadata initialization is authorized. They never load an
+execution profile, agent registry or native provider merely to manage metadata.
+
+Initialization compares the supplied principal with the SHA-256 identity of the
+existing private operator credential. `service/operator-token.ts` owns its
+bounded handle-based read and existing explicit-create procedure; bootstrap
+re-exports the established function. The runtime never creates a credential as
+a side effect of an initialization request. An absent, malformed or changed
+credential does not grant permission. This is the current local same-user
+operator contract, not a security boundary against malicious same-user code.
+
+The request and principal are copied before suspension. Admitted work is tracked
+by the runtime independently of its observer's abort signal. Runtime admission
+has distinct ordinary/control lanes before preparation so outstanding ordinary
+requests cannot consume all release/receipt capacity. Drain rejects new metadata
+work while keeping supported reads/releases available. Shutdown closes the
+session and observes owned operations before releasing its lease. There is no
+new task deadline. Metadata readiness does not assert lease, parser, provider,
+source or application readiness; each protected mutation still checks authority.
+
+### External enrollment and managed resources
+
+`core/coordination-resources.ts` consumes the TaskStore-owned decoded inventory.
+Matching managed paths, canonical aliases, containing/nested workspaces and
+branch-located moved work are refused. Missing resource records, legacy/unknown
+claims, missing branch/path anchors and contradictory task/resource state leave
+enrollment unavailable. A retired label is usable only with terminal task state.
+`not_applicable` cannot also claim a workspace or branch.
+
+A moved managed worktree whose former path has been reused is not treated as
+unowned. Admission of unrelated new external work requires the nonretired
+resource's recorded path and one retained-branch inventory entry to agree.
+Ambiguity refuses source-dependent enrollment; it does not terminate workers,
+release coordination claims or prevent source-independent metadata closure.
+
+Read-only worktree inventory now has the narrow `workspace/inventory.ts` owner;
+`workspace/worktree.ts` re-exports the same function and type. The inventory
+implementation is unchanged. Git/source facts remain observations, not locks
+against external ref edits. F5 does not provide task enrollment or serialize
+case selection against resource retirement; those consumers remain required.
+
+### Resource and evidence limits
+
+Initial runtime safety caps are 16 ordinary requests, four control requests,
+four source operations, 256 worktree rows and 4096 resource records per
+inspection. They are not measured performance guarantees. TaskStore.list still
+owns its complete inventory read before the resource-row cap is checked;
+large-store latency/memory and public transport capacity require qualification.
+No claim is made that these local caps bound an entire unconnected host path.
+
+See F5 verification for actual runtime/metadata/Git execution with fixture task
+inventory, election/recovery and principals. Public authentication, actual
+TaskStore codecs, parser extraction, installed behavior and complete pinned
+application checking were not replaced by those tests. Plan 2B is unselected.

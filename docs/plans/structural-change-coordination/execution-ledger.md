@@ -137,3 +137,42 @@ performance, full pinned checks and independent external review remain open.
 No remote commit/push, dependency installation, user configuration, account
 operation or user-worktree cleanup occurred. The ZIP is for maintainer review
 and ordinary repository integration; no synthetic upstream commit was created.
+
+
+## September 22, 2026 — F5 runtime composition
+
+Baseline `accc19acab46da6e3310b878bcee0b77c37ecdd1` was confirmed through the repository connection after the
+maintainer committed F4. The explicit continuation selected Plan 2A and the
+bounded [F5 admission](reports/f5-admission.md): Blocked → Active for independent
+runtime/resource work. Native/pinned/host gates remained blocked. The mirror
+contains selected byte-verified sources, not a complete repository checkout.
+
+Implemented actual RepositoryRuntime metadata composition, canonical bounded
+operator credentials and managed-resource exclusion. Read-only worktree inventory
+was extracted unchanged and re-exported. Scope remained one runtime consumer;
+no listener/public tool/parser/evaluator/task schema or installation changed.
+
+Same-author review added three independent counterexamples that failed before
+correction. Final run from `/mnt/data/passeur-f5-final/Passeur checkout`: **236/236**
+(54 new, 175 retained, seven original coordinator foundation tests), no failures
+or skips. All **202** recorded test roots are absent. New dependency-free
+helper closure passes strict TypeScript 5.8.3 checking. Complete runtime/bootstrap
+and application checking remain unavailable; no generated substitute types.
+The maintainer's fileURLToPath and transport compilation-root fixes are preserved.
+
+[F5 verification](reports/f5-verification.md) owns the exact commands/fidelity;
+[F5 review](reports/f5-review.md) distinguishes source findings from fixture
+corrections. Initial interrupted-run cleanup is recorded independently.
+F5 is Implemented with scoped evidence; the whole plan returns to Blocked.
+SC01–SC17 retain their required complete-path claims. Plan 2B remains unchanged.
+No remote commit/push, credentials/account use, installed-runtime change or user
+worktree cleanup occurred. Integration of the supplied patch belongs to the maintainer.
+
+## September 22, 2026 — F5 complete-checkout integration
+
+The supplied patch applied to the exact `accc19a` preimages. In the complete
+repository checkout, the pinned TypeScript 5.9.3 and Node declarations 24.7.2
+are installed. `npm run check` passed, and `npm test` passed with 325 core,
+40 native and 97 frontend tests. `git diff --check` passed. This resolves the
+package mirror's full-check availability limit for this integration; native
+parser, public/installed workflow and independent acceptance remain blocked.
