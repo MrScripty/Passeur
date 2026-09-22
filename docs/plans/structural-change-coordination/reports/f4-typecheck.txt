@@ -1,0 +1,5 @@
+Scope: new service session and real imported observation/control/store/transport closure only.
+Not the repository-pinned application check.
+v22.16.0
+Version 5.8.3
+25.1.0

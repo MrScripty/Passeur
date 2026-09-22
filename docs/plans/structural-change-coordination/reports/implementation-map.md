@@ -135,3 +135,22 @@ sources. Source checks are not a public authenticated path, resource pinning,
 managed-task enrollment or native analysis. Runtime/transport/retirement
 consumers remain required work rather than production stubs. The existing
 workspace/project/source implementations are retained byte-for-byte.
+
+
+## F4 — service-owned metadata session
+
+Admission and exact allowed paths: [f4-admission.md](f4-admission.md).
+Material production changes are `src/contracts/coordination-service.ts`,
+`src/service/coordination.ts`, the existing receipt decoder export in
+`src/contracts/coordination-control.ts`, and `tsconfig.core.json` discovery.
+The bound/control implementations and the existing transport remain unchanged.
+Three new suites and three new scoped fixtures exercise the complete selected
+path. `tests/core/coordination-bound.test.mjs` is unchanged from the current
+commit; its maintainer-applied fileURLToPath correction was preserved in the
+working mirror. The current preimages are recorded in F4 source integrity.
+
+No runtime/server/client/CLI/MCP/registration/installed file is changed. Their
+future write set must include actual actor/initialization/resource ownership,
+request-capacity composition, task linkage and lifecycle/retirement consumers.
+They remain necessary before public availability rather than being bypassed
+with an internal direct-call command. Plan 2B is unchanged and unselected.

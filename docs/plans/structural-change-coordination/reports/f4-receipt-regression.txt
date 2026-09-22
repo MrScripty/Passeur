@@ -1,0 +1,134 @@
+TAP version 13
+# Subtest: complete request decoding supports each implemented operation and copies nested input
+ok 1 - complete request decoding supports each implemented operation and copies nested input
+  ---
+  duration_ms: 2.973074
+  type: 'test'
+  ...
+# Subtest: request versions distinguish malformed from unsupported representations
+ok 2 - request versions distinguish malformed from unsupported representations
+  ---
+  duration_ms: 2.630579
+  type: 'test'
+  ...
+# Subtest: unknown operations and unexpected authorization fields cannot dispatch
+ok 3 - unknown operations and unexpected authorization fields cannot dispatch
+  ---
+  duration_ms: 0.362034
+  type: 'test'
+  ...
+# Subtest: nested command variants reject incomplete source and control identity
+ok 4 - nested command variants reject incomplete source and control identity
+  ---
+  duration_ms: 0.397317
+  type: 'test'
+  ...
+# Subtest: enumerable accessors, inherited fields and hidden/symbol fields are rejected without execution
+ok 5 - enumerable accessors, inherited fields and hidden/symbol fields are rejected without execution
+  ---
+  duration_ms: 0.502634
+  type: 'test'
+  ...
+# Subtest: null-prototype records and wire JSON have the same declared request meaning
+ok 6 - null-prototype records and wire JSON have the same declared request meaning
+  ---
+  duration_ms: 0.790639
+  type: 'test'
+  ...
+# Subtest: all read selectors have exact variant-specific fields
+ok 7 - all read selectors have exact variant-specific fields
+  ---
+  duration_ms: 0.59862
+  type: 'test'
+  ...
+# Subtest: continuation must identify the original view and use valid byte limits
+ok 8 - continuation must identify the original view and use valid byte limits
+  ---
+  duration_ms: 0.767918
+  type: 'test'
+  ...
+# Subtest: valid but excessive source scope does not escape the service message bound
+ok 9 - valid but excessive source scope does not escape the service message bound
+  ---
+  duration_ms: 1.184007
+  type: 'test'
+  ...
+# Subtest: release and recovery have protected capacity but routine observations do not
+ok 10 - release and recovery have protected capacity but routine observations do not
+  ---
+  duration_ms: 0.580589
+  type: 'test'
+  ...
+# Subtest: identity response cannot substitute another parent or repository
+ok 11 - identity response cannot substitute another parent or repository
+  ---
+  duration_ms: 0.703272
+  type: 'test'
+  ...
+# Subtest: initialization output must be ready with the exact requested configuration
+ok 12 - initialization output must be ready with the exact requested configuration
+  ---
+  duration_ms: 1.31516
+  type: 'test'
+  ...
+# Subtest: valid command reply proves actor, action, key, and subject correspondence
+ok 13 - valid command reply proves actor, action, key, and subject correspondence
+  ---
+  duration_ms: 3.038307
+  type: 'test'
+  ...
+# Subtest: metadata command receipt hash must acknowledge the exact accepted command content
+not ok 14 - metadata command receipt hash must acknowledge the exact accepted command content
+  ---
+  duration_ms: 1.729136
+  type: 'test'
+  location: '/mnt/data/passeur-f4/tests/core/coordination-service-contract.test.mjs:104:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    code: 'COORDINATION_SERVICE_INVALID'
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (file:///mnt/data/passeur-f4/tests/core/coordination-service-contract.test.mjs:105:36)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: external registration reply acknowledges the derived registration action, not client-supplied workspace identity
+ok 15 - external registration reply acknowledges the derived registration action, not client-supplied workspace identity
+  ---
+  duration_ms: 0.589436
+  type: 'test'
+  ...
+# Subtest: pages preserve exact selector and continuation identity
+ok 16 - pages preserve exact selector and continuation identity
+  ---
+  duration_ms: 0.506811
+  type: 'test'
+  ...
+# Subtest: page bytes, offsets, limits and eof are independently validated
+ok 17 - page bytes, offsets, limits and eof are independently validated
+  ---
+  duration_ms: 0.582167
+  type: 'test'
+  ...
+# Subtest: reply version, extra fields and wrong kind are not accepted as successful data
+ok 18 - reply version, extra fields and wrong kind are not accepted as successful data
+  ---
+  duration_ms: 0.37847
+  type: 'test'
+  ...
+1..18
+# tests 18
+# suites 0
+# pass 17
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 118.033452

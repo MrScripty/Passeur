@@ -182,3 +182,55 @@ source-preparation/receipt methods on the existing control owner.
 
 This delta is supported by same-author code review and real-Git/control tests.
 Independent external review and full objective acceptance remain outstanding.
+
+
+## F4 composed-design delta
+
+All eight Architecture probes are re-evaluated for the added service boundary.
+
+1. **Independent concerns/dimensions.** CoordinationControl decides who may change
+   metadata and what transition is valid; Store owns durable publication; the
+   source gate owns Git evidence; the new session owns how long admitted service
+   requests live and how bounded views cross its boundary. The elected runtime
+   remains the future who/where authority for construction and permission. The
+   protocol codec owns representation, not task policy or Git semantics.
+2. **Interleavings.** Store revision and entity generation retain their owners.
+   Session request counts and close/drain state are scoped to one service instance.
+   Parent, selector, epoch and view bytes intentionally meet only at view identity.
+   Caller cancellation ends observation, not the accepted operation. Permission
+   callbacks and Git run outside control/store locks. No wall clock owns state.
+3. **Caller/root knowledge.** The root supplies resolved binding, lease callback,
+   initialization decision, resource-admission interface and finite capacities.
+   A consumer knows the closed request and correlated reply; it does not know
+   control file layout or receipt internals. Future public wiring must understand
+   outer capacity and source authentication rather than assume this component
+   provides either. That is an explicit outstanding boundary, not hidden success.
+4. **Representative change paths.** UTF-8 paging changes codec/session and paging
+   tests, not source parsing or worker adapters. A new coordination command changes
+   its existing contract/control owner and the relevant source/capacity routing;
+   the service codec delegates that command's decoding. A new native agent changes
+   no metadata session code. Initialization policy changes the runtime-owned
+   callback and its workflow proof, not the file store.
+5. **Stable interfaces/hidden knowledge.** Session consumes decoded commands and
+   repository-control operations. Store location and original receipt hash remain
+   behind their owners. The exposed existing receipt decoder avoids an independent
+   copied representation. Registration hash construction remains source-derived
+   and is not inferred by the reply projection. There is no vendor knowledge.
+6. **Independent evolution/failure.** Codec and session tests run without parser,
+   provider, Zod or host packages. A source failure preserves metadata release/read.
+   An observer loss preserves pending operation ownership. The actual transport
+   is tested unchanged; its callback limits still need production composition
+   qualification. No successful fixture replaces that dependency.
+7. **Deletion test.** Removing the session would push lifecycle, initialization,
+   pagination and capacity logic into every CLI/MCP handler. Removing its codec
+   would duplicate request/response and cross-field interpretation across handlers.
+   The shared receipt decoder contains an existing rule, not a second schema.
+   Removing the test peer would lose real framed-process evidence; it is test-only
+   and not a production adapter/listener. No new scheduler, database or registry.
+8. **Necessary cumulative machinery.** Two coherent production modules and a small
+   existing decoder export add one internal session/representation boundary.
+   Ordinary task execution and provider policy do not expand. Pending public
+   consumers remain explicitly named; no independent ownership is added merely
+   for packaging. Re-plan if connecting them forces task/source/permission policy
+   into this module, or file-store/transport limits cannot satisfy the required
+   operation without a materially different design.

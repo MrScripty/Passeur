@@ -84,3 +84,19 @@ Source/ref validation never promises a transaction with external Git commands.
 A stale/missing source does not release ownership or authorize replay. F3
 failures above concern new code and are not claimed as baseline incidents.
 See [F3 evidence](reports/f3-verification.md) and its exact scenario logs.
+
+
+## F4 current dispositions — September 22, 2026
+
+| ID | Finding / scope | Disposition / evidence |
+|---|---|---|
+| I-F4-01 | New reply validation initially checked key/action/subject but not the caller-computable command content hash. Owner: service destination codec. | Fixed across applicable reply commands. The independent wrong-hash receipt test failed before correction and passes afterward. Registration hashes include source-derived facts and are explicitly not recomputed from a different public shape. No baseline defect is claimed. |
+| I-F4-02 | A new cold-reopen test initially used URL.pathname despite the committed fixture conversion rule. Owner: test harness. | Reproduced from a path containing spaces; replaced with fileURLToPath. All 175 final tests run from that path. Original I-F3-05 and committed test bytes are preserved. |
+| I-F4-03 | Fixture listener cleanup tried to unlink a Unix socket already removed by Node; two expected names did not match the existing control contract. Owner: F4 test-only peer. | Corrected fixture cleanup to assert absent after observed server close and restored exact contract field/error expectations. Five known disposable roots retained by failed teardown were removed only after peer exit; final teardown evidence is complete. |
+| I-F4-04 | Production election/actor authentication, operator initialization workflow, managed-workspace resource authority and outer transport admission remain unconnected. Owner: runtime/CLI/MCP/resource integration. | New session stays internal and unregistered. Actual framed transport is tested with explicit fixture identities/policies, not claimed production support. Revisit in next pinned-runtime integration slice. |
+| I-F4-05 | Native Tree-sitter, full pinned dependency closure, actual installed/native host, independent reviewer and representative performance environment remain absent. Owner: inherited M0/acceptance. | Full plan and acceptance remain Blocked. Independent code/session evidence does not satisfy SC01–SC17 or advertise any structural language support. |
+| I-F4-06 | The new framed IPC test imports the existing production transport from `.passeur-core`, but the package's core TypeScript file list omitted `src/service/transport.ts`. The test file could not load in the complete repository. Owner: core test build. | Added the transport source to `tsconfig.core.json`; all five focused IPC tests and the full repository suite pass. No production transport code changed. |
+
+The source-gated behavior, command generation, note disclosure and persistent
+coordination schema keep their existing owners. No timer releases authority,
+no parser substitute is used, and no receipt/view digest is treated as consent.

@@ -97,3 +97,43 @@ remain unfinished. No objective claim is marked satisfied by these partial
 results. The delivery artifact contains a reviewed patch/overlay and both plan
 references. Repository integration remains with the maintainer: no remote
 commit, push, user-worktree removal or installed configuration change occurred.
+
+
+## September 22, 2026 — F4 metadata service session
+
+Baseline `81b7a2a308f6fe546b4a0b9e118180936e0360a2` confirmed after the maintainer committed F3.
+The partial mirror was reconciled to the actual committed bytes, including the
+maintainer's path-with-spaces correction and added I-F3-05 disposition. No full
+checkout, pinned dependencies or local copy of the user's runtime is asserted.
+
+[Admission](reports/f4-admission.md) records Blocked → Active for independently
+verifiable M1/M4 session/contract work, with native/public qualification still
+blocked. One integration owner changed the selected production modules, tests
+and current planning authority; Plan 2B was not selected.
+
+Implemented explicit initialization, operation decoding and reply correlation,
+real source-gated commands, permission-rechecked view paging, separate service
+control capacity, observer detachment and observed close/drain. The actual
+unchanged transport was exercised through a fixture-owned process/listener,
+not installed as a new production path. Public catalogs remain unchanged.
+
+Review reproduced and fixed a reply command-hash gap, and the newly authored
+cold-reopen test's URL pathname handling. A first IPC fixture incorrectly tried
+to unlink an already-removed socket and used two wrong expected field names;
+those fixture errors were corrected without weakening production behavior.
+See [review record](reports/f4-review.md) for classification and red evidence.
+
+Final selected run: **175/175**, zero failures/skips/cancellations/todos, from a
+source path containing spaces. Strict actual-import-closure typechecking passed
+on TypeScript 5.8.3 / Node declarations 25.1.0, not the repository pins.
+All **141** recorded final-suite roots were absent after teardown. Five exact
+owned development-fixture roots left after initial teardown failures were
+separately accounted for after observing their peer processes had exited.
+
+F4 is implemented and locally verified; the overall plan returns to Blocked.
+Parser/native source-to-output qualification, authenticated runtime/resource
+wiring, managed task linkage, public/installed workflow, representative
+performance, full pinned checks and independent external review remain open.
+No remote commit/push, dependency installation, user configuration, account
+operation or user-worktree cleanup occurred. The ZIP is for maintainer review
+and ordinary repository integration; no synthetic upstream commit was created.

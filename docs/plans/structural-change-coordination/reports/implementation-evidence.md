@@ -111,3 +111,14 @@ compiler. All 104 recorded test roots are absent after teardown. Three
 new-code review regressions failed before correction and pass afterward.
 These results do not alter historical F0/F1/F2 logs or close full objective
 claims. Plan 2B remains unchanged and unselected.
+
+
+## F4 implementation evidence
+
+The service-facing metadata session and its complete prospective operation
+contract are implemented. [F4 verification](f4-verification.md) owns the
+selected 175-test results and exact proof limits. Five framed-process scenarios
+use the unchanged production IpcConnection but fixture authentication/resource
+policies. Current public operations, task meanings and installed runtime are
+unchanged. The service integration and structural-analysis objective is not
+complete; the plan and acceptance remain Blocked.

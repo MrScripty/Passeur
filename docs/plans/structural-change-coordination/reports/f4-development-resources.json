@@ -1,0 +1,22 @@
+[
+  {
+    "root": "/tmp/passeur-session-AoySlU",
+    "outcome": "removed-owned-development-fixture-after-observed-child-exit"
+  },
+  {
+    "root": "/tmp/passeur-session-TCMoMV",
+    "outcome": "removed-owned-development-fixture-after-observed-child-exit"
+  },
+  {
+    "root": "/tmp/passeur-session-Zzhutg",
+    "outcome": "removed-owned-development-fixture-after-observed-child-exit"
+  },
+  {
+    "root": "/tmp/passeur-session-czMWGk",
+    "outcome": "removed-owned-development-fixture-after-observed-child-exit"
+  },
+  {
+    "root": "/tmp/passeur-session-gVEwq4",
+    "outcome": "removed-owned-development-fixture-after-observed-child-exit"
+  }
+]

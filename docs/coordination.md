@@ -5,13 +5,16 @@
 F2 implements the internal coordination-control owner and real-file store.
 F3 adds a repository-bound operation facade that verifies physical worktrees,
 exact commits/ancestry and direct target refs before source-dependent controls.
-No CLI/MCP operation is registered for these methods yet. Actual service and
-resource-authority composition, native parsing, managed task/announcement
+F4 adds a service-owned metadata session with explicit initialization, closed
+request/reply contracts, current-authority read pages and observed shutdown.
+No CLI/MCP operation is registered for these methods yet. Actual elected-runtime
+and resource-authority composition, native parsing, managed task/announcement
 linkage, operator adoption and retirement guards remain unimplemented.
 This is not yet a usable end-to-end multi-parent feature.
 
 Plan authority: [Plan 2A](plans/structural-change-coordination/plan.md).
-Evidence: [F3 verification](plans/structural-change-coordination/reports/f3-verification.md)
+Evidence: [F4 verification](plans/structural-change-coordination/reports/f4-verification.md),
+[F3 verification](plans/structural-change-coordination/reports/f3-verification.md)
 and retained [F2 verification](plans/structural-change-coordination/reports/f2-verification.md).
 The evaluator-assisted plan is an unselected reference.
 
@@ -190,3 +193,79 @@ Native parsers, providers, evaluators, compilers and project tests are not calle
 by these coordination operations. Test/toolchain commands are development
 verification, not application behavior. The selected suite and exact remaining
 gates are recorded in F3 verification.
+
+
+## Service-owned metadata session (F4)
+
+`service/coordination.ts::CoordinationService` owns one metadata session under
+the elected repository runtime. It composes the existing `CoordinationStore`,
+`CoordinationControl` and lazy `RepositoryCoordination`; it does not own a
+listener, election, worker, parser, model or project build. The production
+`RepositoryRuntime` has not yet been wired to instantiate it. The actual
+initialization and managed-workspace policies remain the runtime/resource
+owners' obligations. Tests supply explicit policies rather than silent defaults.
+
+The constructor takes the resolved canonical repository/store binding,
+`assertOwned`, an asynchronous initialization-authorization callback, the
+external-workspace authority, and explicit ordinary/control/source capacities.
+A trusted connection supplies the parent ID and source view outside the command.
+The request contains neither actor nor credentials nor a model-issued approval.
+`identity` and `status` do not implicitly enable persistent coordination.
+Only `initialize` runs the required authorization callback, outside store locks,
+then rechecks authority and publishes/reopens the accepted limits. Conflicting
+limits require a separate explicit supported migration. `ready` means metadata
+state is readable; it does not certify source, native provider or parser readiness.
+
+`contracts/coordination-service.ts` owns request/reply version 1. Its closed
+variants are identity, status, initialize, command and read. Commands reuse the
+existing repository-command decoder; no raw physical workspace metadata is
+accepted. Replies validate their operation, parent, repository, subject, key,
+encoding and range relations. Command receipts reuse the existing receipt
+codec. Their content hashes are checked where the caller's command is the
+hash input. External registration is the explicit exception: its internal
+hash additionally contains verified workspace/object-format facts; the public
+reply checks the mapped action, owner/key and created work identity instead.
+Receipts prove acknowledgment, not current authorization or source liveness.
+
+Reads select one authorized work, note, case, overlap result or own receipt.
+Each page rereads current control authority. Page identity binds repository,
+store epoch, parent, selector and the exact serialized view. Continuations
+require that identity. Changed selected views return `COORDINATION_VIEW_CHANGED`;
+revoked sharing returns the same not-found outcome as unavailable subjects before
+revealing a changed hash. Unrelated updates do not invalidate unchanged views.
+UTF-8 pages use byte offsets and never split a returned code point. These are
+revision-bound current views, not immutable historical snapshots. A missing own
+receipt is the selected JSON null variant. They do not expose raw control files.
+
+The 8192-byte page maximum and 24576-byte serialized-message maximum are separate
+bounds: JSON escaping and metadata consume response space too. A reply exceeding
+its full message bound returns an explicit size error; the caller can request a
+smaller page. Read views are bounded by the existing 2 MiB control record plus
+projection allowance. No per-client historical snapshot cache is introduced.
+
+Admission separates ordinary operations from explicitly bounded release/recovery
+capacity. Own-receipt reads, closing work/cases, complete sharing revocation,
+note withdrawal and reporting external settlement use the latter. Authorization
+and transition checks still apply. Source inspection is separately bounded.
+This class does not override the existing outer transport/client callback limits;
+actual runtime integration must reserve adequate end-to-end control capacity.
+
+Arguments/actor are copied and decoded before suspension. Cancellation before
+admission prevents work. Afterwards the caller stops observing while the service
+tracks publication/completion. The service removes pending entries only after
+the operation settles. `beginDrain` prevents new ordinary mutation but retains
+reads and release/recovery; `close` closes all admission, waits owned operations,
+then closes its bound/control/store owner. It does not kill tasks or release
+case ownership because of elapsed time. Lost source directories do not disable
+metadata closure or receipt reads, including on fresh-process reopening.
+
+### Pending production consumers
+
+The existing runtime/server/client, CLI/MCP registration and protocol negotiation
+are unchanged. A test peer runs the actual existing `IpcConnection` and new
+session over a real Unix socket but deliberately supplies fixture identity,
+initialization permission and resource policies. It does not prove production
+authentication/election, real host consent, provider behavior, managed task
+linkage, retirement protection, installed packaging or performance. No dormant
+public flag or command claims this capability is available. Those consumers
+must be completed and qualified together before the feature is advertised.

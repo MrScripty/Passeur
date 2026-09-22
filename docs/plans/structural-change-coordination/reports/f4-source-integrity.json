@@ -1,0 +1,116 @@
+{
+  "baseline_commit": "81b7a2a308f6fe546b4a0b9e118180936e0360a2",
+  "source_scope": "selected preimages/context verified through the connected repository; partial mirror, not complete checkout",
+  "records": [
+    {
+      "path": "docs/coordination.md",
+      "git_blob_sha1": "b5484893055f86c44734233d8b8b78694a3ec6d1",
+      "sha256": "c9991fcdec948f81b15a52571136c69067c6a01be0504b2014be4c0efe3a1c19",
+      "bytes": 11115,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/docs/coordination.md"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/plan.md",
+      "git_blob_sha1": "1d2e7fb70b6672fc699ab14094394df24326aa26",
+      "sha256": "fdda5640125bc7d356aa9c882f33834bfed49b33098ec53b3687e5e6a3df67a9",
+      "bytes": 44376,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/docs/plans/structural-change-coordination/plan.md"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/execution-ledger.md",
+      "git_blob_sha1": "89149494d6aed4d726f8544c3a83c969a309e77d",
+      "sha256": "9db4dc535841ad11754566906e7005d6ccfefb343f270d8ab13a409bd8a2358a",
+      "bytes": 8111,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/docs/plans/structural-change-coordination/execution-ledger.md"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/issues.md",
+      "git_blob_sha1": "0b871e2285ad21ab695c91089c8a84bad6a459b2",
+      "sha256": "05e862dba27145553c0637e137389105ac1de947e3c80e81245b85241e5d581e",
+      "bytes": 12325,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/docs/plans/structural-change-coordination/issues.md"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/contracts-and-workflow.md",
+      "git_blob_sha1": "9daacf342930920afe24d64f60bff58ea5c9ad28",
+      "sha256": "683e0e26d95c8e03c46da8378824ad942cf6cc3414ff04214bc4c6f3175bde93",
+      "bytes": 26341,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/docs/plans/structural-change-coordination/reports/contracts-and-workflow.md"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/design-admission.md",
+      "git_blob_sha1": "3fe6160b50c16f6bdf3bc57a08c4524a33b640c7",
+      "sha256": "977a5f76b878232c598a380ddc10d596ffc4e8debafa929b8b671f1f12637a10",
+      "bytes": 16901,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/docs/plans/structural-change-coordination/reports/design-admission.md"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/implementation-evidence.md",
+      "git_blob_sha1": "ad349f35a1b5f36882669470af5e21f8e50c2b65",
+      "sha256": "326df869edf8dfddd80af80cd2e5b07215ef3a9668e408e243b17a7cc2a76fed",
+      "bytes": 10157,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/docs/plans/structural-change-coordination/reports/implementation-evidence.md"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/implementation-map.md",
+      "git_blob_sha1": "b3e74339e428e692d722bb78995684fafdec3888",
+      "sha256": "b0d331de0334d252f2239efd9b51f03a5d05bdd93093ed3a0c48bc55ae8ee680",
+      "bytes": 14904,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/docs/plans/structural-change-coordination/reports/implementation-map.md"
+    },
+    {
+      "path": "src/contracts/coordination-control.ts",
+      "git_blob_sha1": "e4295970a2214ea1303947dcddd6b1bd0a3a9ca7",
+      "sha256": "e0cd7cc9449abe5d2dd6b96d98d51234de05e519da6723fa390b7495d43be049",
+      "bytes": 21832,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/src/contracts/coordination-control.ts"
+    },
+    {
+      "path": "tsconfig.core.json",
+      "git_blob_sha1": "447fc6d93c148ea05aaee19e18c1987a883ce2e9",
+      "sha256": "393bafb4f89a7fae507f27f009c8ade3b6f9bc60a0597a049d7e8241d4c10b55",
+      "bytes": 837,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/tsconfig.core.json"
+    },
+    {
+      "path": "src/core/async.ts",
+      "git_blob_sha1": "5bfde3a7289c046caf008bc1e38ddb2415708f00",
+      "sha256": "59fe78dadca2b12a618d20b8585588a4d0b3d26bcec22c195822b02a9b4f339a",
+      "bytes": 3280,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/src/core/async.ts"
+    },
+    {
+      "path": "src/core/errors.ts",
+      "git_blob_sha1": "62d850ed2c883995b976f225a3530620aacab700",
+      "sha256": "2c2414a0f2a09eaf89016ea099ea68eed5b0a39ba61bd7b9595858d9395164a3",
+      "bytes": 3093,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/src/core/errors.ts"
+    },
+    {
+      "path": "src/workspace/project.ts",
+      "git_blob_sha1": "a2b0d1dd9d5be5bcbac5e9e84c2db86284b950b7",
+      "sha256": "f6ed566410bfb9ee091ca0e40c7373dd28fd71b917684efd30b7f3e3b991d8ce",
+      "bytes": 9317,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/src/workspace/project.ts"
+    },
+    {
+      "path": "src/service/transport.ts",
+      "git_blob_sha1": "c6fd69ebfe9188365386541e032fee3abda07a74",
+      "sha256": "3cd344f88ca8885cf5fa5ed3ccbf7ec3bd5aab98e2514f257b346c0d499b3e90",
+      "bytes": 7458,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/src/service/transport.ts"
+    },
+    {
+      "path": "tests/core/coordination-bound.test.mjs",
+      "git_blob_sha1": "61470df9aeca1cefac21911bb5b1c6700f12dab1",
+      "sha256": "7efb861568f3ec7958b9e0a7615ca6ce4ea927c5193c0ca0959526f28d922ce5",
+      "bytes": 16790,
+      "source": "https://github.com/MrScripty/Passeur/blob/81b7a2a308f6fe546b4a0b9e118180936e0360a2/tests/core/coordination-bound.test.mjs"
+    }
+  ],
+  "preserved_integration_edits": [
+    "issues I-F3-05 row",
+    "tests/core/coordination-bound.test.mjs fileURLToPath conversion"
+  ],
+  "limitations": "Retained dependencies not changed by this increment were recovered from preceding delivered overlays. No claim of full checkout/tree verification."
+}

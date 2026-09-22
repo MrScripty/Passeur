@@ -263,3 +263,6 @@ export function decodeRepositoryCommand(value: unknown): RepositoryCommand {
 }
 /** The key names a retained acknowledgment, not a current authority token. */
 export function coordinationOperationKey(value: unknown): string { return text(value, 256); }
+
+/** Complete receipt representation reused by service projections; this proves no current control grant. */
+export function decodeCoordinationReceipt(value: unknown): Receipt { return receipt(value); }

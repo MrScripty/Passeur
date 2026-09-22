@@ -203,3 +203,21 @@ The parser and public consumers remain unfinished. Details live in
 [the durable contract](../../../coordination.md); evidence is
 [F3 verification](f3-verification.md). Earlier F2 statements describe that
 increment's source-proof boundary, not an alternative public registration API.
+
+
+## F4 service-session contract refinement
+
+The implemented metadata-session boundary is owned by
+`src/contracts/coordination-service.ts` and `src/service/coordination.ts`.
+Its externally meaningful behavior and unresolved production consumers are
+specified in [service-owned metadata session](../../../coordination.md#service-owned-metadata-session-f4).
+This internal/prospective wire version does not alter the registered service
+operation catalog or historical coordination state v1. Current task/request/result
+versions remain intact. Complete runtime decoding occurs at request and reply
+boundaries; validated control entities retain their existing meaning.
+
+Initialization is explicitly authorized outside mutation locks. Reads are
+current-authority pages with content-bound continuation, not permission tokens
+or a durable source-version database. Operation cancellation detaches an admitted
+observer without cancelling its mutation. Pending work is owned through close.
+The current selected evidence is [F4 verification](f4-verification.md).

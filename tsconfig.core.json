@@ -28,6 +28,9 @@
     "src/coordination/control.ts",
     "src/store/coordination-store.ts",
     "src/coordination/repository.ts",
-    "src/coordination/bound-control.ts"
+    "src/coordination/bound-control.ts",
+    "src/contracts/coordination-service.ts",
+    "src/service/coordination.ts",
+    "src/service/transport.ts"
   ]
 }
