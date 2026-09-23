@@ -1,0 +1,311 @@
+{
+  "schema_version": 1,
+  "source_revision": "3c07dc364efecf9d7ffb314eb90a2336223a9694",
+  "installed_build": "884ade46bd98f9e5ac910757fb62772ec43fb9141a2d2bf592a6303ba0051126",
+  "installed_manifest_sha256": "1bed667b3cbefaf2fa2b7b4843147e0789adb4d90e0d62446b64666686779030",
+  "service_generation": "5ad2c2d8-a250-45f3-9109-937fa20d37c6",
+  "repository_id": "9a815f59a0fc77c69ce37ece",
+  "epoch": "9cad0456-31c0-4569-ac1f-cb72f4832a16",
+  "target_ref": "refs/heads/main",
+  "target_commit": "33efe70e7d27b3b08d5f6eb82657d067e800873a",
+  "target_clean": true,
+  "case": {
+    "id": "f37cb994-7d76-4d4c-b7fc-b81eeddbb09d",
+    "state": "closed",
+    "revision": 6,
+    "generation": 2,
+    "external_effect": "not_started",
+    "inputs": [
+      {
+        "work_id": "141553f0-e45f-47bf-8541-d62c58d63c3a",
+        "commit_oid": "18f3671b9d8a3e0e779ba1619f2f5c5cc62f1f6c"
+      },
+      {
+        "work_id": "7969be1e-2b20-433f-b830-b6f7363e1692",
+        "commit_oid": "15a6a78eb3affa2babef39e521ac8a8df9c16ea8"
+      }
+    ]
+  },
+  "works": [
+    {
+      "id": "141553f0-e45f-47bf-8541-d62c58d63c3a",
+      "owner": "40c499ec6791ca9e1517c82bb92c98be9c1158bc8a33397d045ecb38a7c4b0b5",
+      "revision": 12,
+      "state": "closed",
+      "managed_control_generation": 1
+    },
+    {
+      "id": "538a8f1c-e341-4442-9ba1-cda947ecada9",
+      "owner": "40c499ec6791ca9e1517c82bb92c98be9c1158bc8a33397d045ecb38a7c4b0b5",
+      "revision": 3,
+      "state": "closed",
+      "managed_control_generation": 1
+    },
+    {
+      "id": "7969be1e-2b20-433f-b830-b6f7363e1692",
+      "owner": "f7cb44c6262eb09f3e90aa59bc70e4ddfe2612815f6d7f883aa2295bb8345887",
+      "revision": 12,
+      "state": "closed",
+      "managed_control_generation": 1
+    },
+    {
+      "id": "312685b7-3509-45fd-973e-2bf24927ced3",
+      "owner": "40c499ec6791ca9e1517c82bb92c98be9c1158bc8a33397d045ecb38a7c4b0b5",
+      "revision": 2,
+      "state": "closed",
+      "managed_control_generation": 1
+    },
+    {
+      "id": "287181a9-f60c-40aa-ad3f-33deb28c7096",
+      "owner": "bea257f01321c2b690815814ff7429cc13787de678a765780b87990279c53c83",
+      "revision": 2,
+      "state": "closed",
+      "managed_control_generation": null
+    },
+    {
+      "id": "cd866e83-a0ba-42ff-b9d1-ca86e9464483",
+      "owner": "bea257f01321c2b690815814ff7429cc13787de678a765780b87990279c53c83",
+      "revision": 4,
+      "state": "closed",
+      "managed_control_generation": null
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "141553f0-e45f-47bf-8541-d62c58d63c3a",
+      "agent_id": "muse",
+      "request_key": "sc15-overlap-a-8089c031dd074a2f9313e2fbcbed3674",
+      "phase": "terminal",
+      "outcome": "completed",
+      "control_generation": 2,
+      "native_run_id": "eef7aac6-15fb-4c10-9580-5ab8ebeaf662",
+      "native_state": "stopped",
+      "worker_stop": "confirmed",
+      "worker_assessment": "met",
+      "delivery_commit": "18f3671b9d8a3e0e779ba1619f2f5c5cc62f1f6c",
+      "branch_ref": "refs/heads/muse-bridge/141553f0-e45f-47bf-8541-d62c58d63c3a",
+      "resource_state": "retired",
+      "disposition": "integrated",
+      "protection_ref": "refs/heads/main",
+      "protected_commit": "18f3671b9d8a3e0e779ba1619f2f5c5cc62f1f6c",
+      "inputs": [
+        {
+          "id": "84b03dc8-4bf2-4a07-b74d-bdb1f6e574e9",
+          "kind": "permission",
+          "state": "settled"
+        },
+        {
+          "id": "91179c92-f847-4429-9b13-6358ec9364dc",
+          "kind": "clarification",
+          "state": "settled"
+        },
+        {
+          "id": "d843d803-a1d0-4261-b5ac-2d5a1f049622",
+          "kind": "clarification",
+          "state": "settled"
+        },
+        {
+          "id": "5ab4fbcb-7b5a-4679-a1d8-0169ba26276b",
+          "kind": "clarification",
+          "state": "settled"
+        },
+        {
+          "id": "896906a5-1aab-46ba-8213-762b5e4cec90",
+          "kind": "clarification",
+          "state": "settled"
+        }
+      ],
+      "main_ancestor": true
+    },
+    {
+      "task_id": "7969be1e-2b20-433f-b830-b6f7363e1692",
+      "agent_id": "sc15-muse-b",
+      "request_key": "sc15-overlap-b-8089c031dd074a2f9313e2fbcbed3674",
+      "phase": "terminal",
+      "outcome": "completed",
+      "control_generation": 2,
+      "native_run_id": "5a13fb20-b6ba-47a7-9715-836ce8a2c118",
+      "native_state": "stopped",
+      "worker_stop": "confirmed",
+      "worker_assessment": "met",
+      "delivery_commit": "15a6a78eb3affa2babef39e521ac8a8df9c16ea8",
+      "branch_ref": "refs/heads/muse-bridge/7969be1e-2b20-433f-b830-b6f7363e1692",
+      "resource_state": "retired",
+      "disposition": "integrated",
+      "protection_ref": "refs/heads/main",
+      "protected_commit": "15a6a78eb3affa2babef39e521ac8a8df9c16ea8",
+      "inputs": [
+        {
+          "id": "d804d6a9-a985-4454-8719-64a86c3ad773",
+          "kind": "clarification",
+          "state": "settled"
+        }
+      ],
+      "main_ancestor": true
+    },
+    {
+      "task_id": "538a8f1c-e341-4442-9ba1-cda947ecada9",
+      "agent_id": "sc15-codex",
+      "request_key": "sc15-independent-8089c031dd074a2f9313e2fbcbed3674",
+      "phase": "terminal",
+      "outcome": "completed",
+      "control_generation": 2,
+      "native_run_id": "58ef6227-cb40-4b8a-8827-4200f6d3fb93",
+      "native_state": "stopped",
+      "worker_stop": "confirmed",
+      "worker_assessment": "met",
+      "delivery_commit": "fba0f9bc1f4333fd8d7bdaf0af3efc9cb0e5fc86",
+      "branch_ref": "refs/heads/muse-bridge/538a8f1c-e341-4442-9ba1-cda947ecada9",
+      "resource_state": "retired",
+      "disposition": "integrated",
+      "protection_ref": "refs/heads/main",
+      "protected_commit": "fba0f9bc1f4333fd8d7bdaf0af3efc9cb0e5fc86",
+      "inputs": [
+        {
+          "id": "fc95e709-1071-42fa-9b34-67bff2f1078c",
+          "kind": "permission",
+          "state": "settled"
+        },
+        {
+          "id": "93949db5-9e38-479f-8b33-df6dcf8f9c06",
+          "kind": "clarification",
+          "state": "settled"
+        }
+      ],
+      "main_ancestor": true
+    },
+    {
+      "task_id": "312685b7-3509-45fd-973e-2bf24927ced3",
+      "agent_id": "sc15-muse-b",
+      "request_key": "sc15-lifecycle-native-1",
+      "phase": "terminal",
+      "outcome": "blocked",
+      "control_generation": 2,
+      "native_run_id": "153c4f4a-293b-4857-9824-cc45f4758c40",
+      "native_state": "stopped",
+      "worker_stop": "confirmed",
+      "worker_assessment": "unmet",
+      "delivery_commit": "ae3ccb43322b56695047dfe4ba7233e671f51996",
+      "branch_ref": "refs/heads/muse-bridge/312685b7-3509-45fd-973e-2bf24927ced3",
+      "resource_state": "retired",
+      "disposition": "archived",
+      "protection_ref": "refs/passeur/archive/312685b7-3509-45fd-973e-2bf24927ced3",
+      "protected_commit": "ae3ccb43322b56695047dfe4ba7233e671f51996",
+      "inputs": [
+        {
+          "id": "1c38b125-bf12-4ea2-a382-da9802f60e38",
+          "kind": "permission",
+          "state": "settled"
+        },
+        {
+          "id": "8364fdb3-58d5-444b-a03f-993acd41a7aa",
+          "kind": "permission",
+          "state": "settled"
+        },
+        {
+          "id": "90a9662d-4454-41bf-87d2-160d97f1e6d1",
+          "kind": "clarification",
+          "state": "settled"
+        },
+        {
+          "id": "fc6e8da7-98f5-4457-99fc-22d86ebd5eac",
+          "kind": "clarification",
+          "state": "settled"
+        },
+        {
+          "id": "ae2e7e5c-7ec4-4190-b0b4-86380daf8f21",
+          "kind": "clarification",
+          "state": "settled"
+        }
+      ],
+      "main_ancestor": false
+    }
+  ],
+  "failed_diagnostic_fixture": [
+    {
+      "task_id": "b11c692b-57c2-4e95-ba4d-0cdc47a4d224",
+      "outcome": "failed",
+      "worker_state": "stopped",
+      "resource_state": "retired",
+      "disposition": "archived",
+      "protection_ref": "refs/passeur/archive/b11c692b-57c2-4e95-ba4d-0cdc47a4d224"
+    },
+    {
+      "task_id": "d03f454b-e7ed-4047-844f-aab58002ba72",
+      "outcome": "failed",
+      "worker_state": "stopped",
+      "resource_state": "retired",
+      "disposition": "archived",
+      "protection_ref": "refs/passeur/archive/d03f454b-e7ed-4047-844f-aab58002ba72"
+    },
+    {
+      "task_id": "16e851bb-80ac-467e-ae7d-617e580d2534",
+      "outcome": "blocked",
+      "worker_state": "stopped",
+      "resource_state": "retained",
+      "disposition": "retained",
+      "protection_ref": null
+    }
+  ],
+  "hook_wait_log": [
+    "start 2026-09-23T18:11:36Z pid=7",
+    "end 2026-09-23T18:12:41Z pid=7"
+  ],
+  "retained_measurements": [
+    "passeur-sc16-supplement-884ade46.json",
+    "passeur-sc16-cycle120-884ade46.json",
+    "passeur-sc16-installed-probe-884ade46.json"
+  ],
+  "cross_parent_detail": {
+    "work_id": "cd866e83-a0ba-42ff-b9d1-ca86e9464483",
+    "recipient": "b1e6e0d38568b4efbf28552c13db9a0ada1b3efe5951910da246acdea5e09aa6",
+    "artifact_id": "da19a80fd4f848d03a11749dfe92f08d1b243df611f499491105e74b6d9a57f9",
+    "granted_revision": 2,
+    "observed_range": [
+      0,
+      50
+    ],
+    "observed_text": "export function computeTotal(items: readonly numbe",
+    "revoked_revision": 3,
+    "post_revocation_report_error": "STRUCTURAL_SOURCE_FORBIDDEN",
+    "post_revocation_detail_error": "STRUCTURAL_SOURCE_FORBIDDEN",
+    "closed_revision": 4,
+    "operation_keys": [
+      "sc15-final-detail-register",
+      "sc15-final-detail-grant",
+      "sc15-final-detail-revoke",
+      "sc15-final-detail-close"
+    ]
+  },
+  "fresh_session_lifecycle": {
+    "task_id": "312685b7-3509-45fd-973e-2bf24927ced3",
+    "old_parent_sessions_exited_while_awaiting_input": true,
+    "pending_input": "1c38b125-bf12-4ea2-a382-da9802f60e38",
+    "native_run_id": "153c4f4a-293b-4857-9824-cc45f4758c40",
+    "service_generation": "5ad2c2d8-a250-45f3-9109-937fa20d37c6",
+    "new_session_read_usage_skill": true,
+    "new_session_initial_controlled_tasks": 0,
+    "attach_operation_key": "sc15-live-recover-1",
+    "adopted_control_generation": 2,
+    "hook_started_at": "2026-09-23T18:11:36Z",
+    "hook_ended_at": "2026-09-23T18:12:41Z",
+    "observed_same_run_after_hook": true,
+    "structural_report_and_refresh_during_pending_input": true,
+    "final_outcome": "blocked",
+    "worker_stop": "confirmed",
+    "archive_operation_key": "sc15-live-archive-1"
+  },
+  "supplemental_pressure_task": {
+    "task_id": "edf8674e-65d0-41f3-9bf4-235b4b41a64a",
+    "role": "disposable live control-under-observation task; not one of the three required completed workers",
+    "worker_tip": "f917488302608ae900cb17d117c5682d6a9cb701",
+    "execution_status": "cancelled",
+    "worker_stop": "unconfirmed",
+    "stop_reconciled": "separate operator assertion after service drain and process inspection",
+    "resource_state": "retained",
+    "retained_owner": "SC16 acceptance operator",
+    "control_generation": 3,
+    "evidence": "sc16-live-control-884ade46.json",
+    "process_scan": "sc16-process-scan-884ade46.json"
+  }
+}

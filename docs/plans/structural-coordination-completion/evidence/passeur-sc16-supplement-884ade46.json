@@ -1,0 +1,377 @@
+{
+  "observed_at": "2026-09-23T18:03:35.660Z",
+  "runtime": {
+    "package_version": "0.1.0",
+    "build_id": "884ade46bd98f9e5ac910757fb62772ec43fb9141a2d2bf592a6303ba0051126",
+    "mode": "installed",
+    "source_revision": "3c07dc364efecf9d7ffb314eb90a2336223a9694",
+    "node_version": "v24.12.0",
+    "node_executable": "/home/jeremy/.nvm/versions/node/v24.12.0/bin/node",
+    "pid": 1155147,
+    "started_at": "2026-09-23T18:03:35.658Z"
+  },
+  "environment": {
+    "node": "v24.12.0",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu_parallelism": 24,
+    "host_total_memory_bytes": 66815021056,
+    "cgroup_memory_max": "unavailable",
+    "cgroup_cpu_max": "unavailable"
+  },
+  "corpus": {
+    "description": "Component workload: actual Git capture plus native extraction of five language fixture pairs and two current Passeur TypeScript files. Public service and installed-host measurements are separate acceptance runs.",
+    "paths": [
+      "typescript/sample.ts",
+      "rust/sample.rs",
+      "cpp/sample.cpp",
+      "c/sample.c",
+      "svelte/sample.svelte",
+      "project/repository-runtime.ts",
+      "project/source.ts"
+    ],
+    "public_paths": [
+      "project/repository-runtime.ts",
+      "project/source.ts",
+      "rust/sample.rs",
+      "svelte/sample.svelte"
+    ],
+    "base_commit": "e8362aab313cde89c869d534f43407d06f34e972",
+    "files": [
+      {
+        "path": "typescript/sample.ts",
+        "input_bytes": 189,
+        "observed_bytes": 189,
+        "input_sha256": "1d97fa6f70de481c1c464360f3300ba8107d2cf4554a8ffb22e77fe8add2b222",
+        "observed_sha256": "f410b920b3e1ebae74777b550584bb0a6a955892220a73787695ed2195d10211"
+      },
+      {
+        "path": "rust/sample.rs",
+        "input_bytes": 138,
+        "observed_bytes": 146,
+        "input_sha256": "be6d1258f3c14376b2a8ace6d7385e30089cdc753732e4ed154bb6a4f9feb891",
+        "observed_sha256": "edcf638c701cd6cc432a16d3dbb3a03685610d51b69e327ee044abb3fb03699b"
+      },
+      {
+        "path": "cpp/sample.cpp",
+        "input_bytes": 328,
+        "observed_bytes": 328,
+        "input_sha256": "e89f679e0477079121664a3216c2a217b138c5bc17fbe76047b7391f0e6bad18",
+        "observed_sha256": "380fdab83df6338379956536046449b4fc801cb1b0e157fd73e1637d6beffe4c"
+      },
+      {
+        "path": "c/sample.c",
+        "input_bytes": 276,
+        "observed_bytes": 276,
+        "input_sha256": "48bc840c8ecf56fa789789627b36b3f114cb859149362ac65e87eb3ef7138faa",
+        "observed_sha256": "41d112e10ec23839e254121ffcd497aa477b3dc3e665589b84237bedeedfcd3b"
+      },
+      {
+        "path": "svelte/sample.svelte",
+        "input_bytes": 433,
+        "observed_bytes": 448,
+        "input_sha256": "d3623a3f6f6d32efffbc673247dda83d3656345739785b02152066495ea1dc37",
+        "observed_sha256": "7ed4819d59bbabfdacea6f88db3675da31c29907657bdbd88b5d33083fddae50"
+      },
+      {
+        "path": "project/repository-runtime.ts",
+        "input_bytes": 102320,
+        "observed_bytes": 102353,
+        "input_sha256": "862bc2b33cf1be25559bbe8e5fa5013d6c8e60722875a9f5cb638ccc63627044",
+        "observed_sha256": "089ad5016b100b9b77df52f83d890e33350e9c1d67a92f8d5aa4a108ffe25df0"
+      },
+      {
+        "path": "project/source.ts",
+        "input_bytes": 18178,
+        "observed_bytes": 18211,
+        "input_sha256": "2975809e163417b4dc72edf1c00ef750fbdeab8163ac91ffb6bf276c99cac8ad",
+        "observed_sha256": "666607668022039596d0f76bb257307d5733aca24d3da5389db99a51a5f2cfda"
+      }
+    ]
+  },
+  "command": "npx tsx scripts/benchmark-structural.ts public --runtime-root ABSOLUTE_PATH [--installed] [--rounds 3..100] [--edits 1..20]",
+  "rounds": 10,
+  "edits": 10,
+  "worker_lifecycle": {
+    "status": "not_exercised",
+    "reason": "Disposable public benchmark does not submit live agents; correlate with actual V14/V15 worker evidence"
+  },
+  "work_ids": [
+    "952d67f1-2757-4224-8789-24690e0f725c"
+  ],
+  "baseline": {
+    "monitor": "off",
+    "generation": "1ba5b07f-ea1f-4aa3-b855-e2ea14109f59",
+    "samples": {
+      "wall_ms": 2011.307617,
+      "parent_cpu_ms_sampled": 0,
+      "child_cpu_ms_sampled": 0,
+      "peak_parent_rss_bytes": 97058816,
+      "peak_child_rss_bytes": 0,
+      "result": {
+        "control_roundtrip_ms": [
+          2.0723030000000335,
+          0.891597000000047,
+          0.7461270000000013,
+          0.5360999999999194,
+          0.5361890000000358,
+          0.5243310000000747,
+          1.172392000000059,
+          1.4759890000000269,
+          0.9125060000000076,
+          0.8917050000000017
+        ],
+        "control_percentiles_ms": {
+          "p50": 0.891597000000047,
+          "p95": 2.0723030000000335,
+          "p99": 2.0723030000000335,
+          "count": 10
+        },
+        "observation_calls": 0
+      }
+    }
+  },
+  "enabled": {
+    "monitor": "on",
+    "generation": "476ab65e-b63c-4cc8-bfb1-b9cd0d8ed513",
+    "samples": {
+      "wall_ms": 11190.075716,
+      "parent_cpu_ms_sampled": 2490,
+      "child_cpu_ms_sampled": 3780,
+      "peak_parent_rss_bytes": 163790848,
+      "peak_child_rss_bytes": 134623232,
+      "result": {
+        "refreshes": [
+          {
+            "work_id": "952d67f1-2757-4224-8789-24690e0f725c",
+            "latency_ms": 1666.2131,
+            "status": "published",
+            "limitations": []
+          }
+        ],
+        "reports": [
+          {
+            "work_id": "952d67f1-2757-4224-8789-24690e0f725c",
+            "latency_ms": 168.10770800000046,
+            "response_bytes": 7719,
+            "paths": [
+              "project/repository-runtime.ts",
+              "project/source.ts",
+              "rust/sample.rs",
+              "svelte/sample.svelte"
+            ],
+            "limitations": []
+          }
+        ],
+        "saturation": {
+          "samples": [
+            {
+              "analysis_ms": 156.54351600000064,
+              "control_ms": 2.101270000000113,
+              "control_completed_before_analysis": true,
+              "overload": {
+                "outcome": "STRUCTURAL_ANALYSIS_CAPACITY"
+              },
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 166.98441599999933,
+              "control_ms": 1.1946710000001985,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 164.42287899999974,
+              "control_ms": 1.2024170000004233,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 160.7418090000001,
+              "control_ms": 0.9874970000000758,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 157.08632099999977,
+              "control_ms": 1.202792000000045,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 157.91906000000017,
+              "control_ms": 1.0689400000001115,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 163.10916300000008,
+              "control_ms": 1.2855689999996684,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 159.94835199999943,
+              "control_ms": 1.7366369999999733,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 157.60644899999988,
+              "control_ms": 1.1992229999996198,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 160.25554499999998,
+              "control_ms": 0.9374339999994845,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            }
+          ],
+          "control_percentiles_ms": {
+            "p50": 1.1992229999996198,
+            "p95": 2.101270000000113,
+            "p99": 2.101270000000113,
+            "count": 10
+          },
+          "analysis_percentiles_ms": {
+            "p50": 159.94835199999943,
+            "p95": 166.98441599999933,
+            "p99": 166.98441599999933,
+            "count": 10
+          }
+        },
+        "idle": {
+          "wall_ms": 2001.2310870000001,
+          "parent_cpu_ms_sampled": 0,
+          "child_cpu_ms_sampled": 0,
+          "peak_parent_rss_bytes": 152842240,
+          "peak_child_rss_bytes": 0,
+          "result": {
+            "idle_ms": 2000
+          }
+        },
+        "edit": {
+          "samples": [
+            {
+              "status": "observed",
+              "edit_to_current_ms": 538.6237120000005,
+              "materiality_changed": false,
+              "baseline_artifact_id": "cd15a058a6b8529f3e831966f37fb05137bc64b6e24ee9f1cd971d24211211ca",
+              "observed_artifact_id": "53a70a9b91745c235d4e666f3b22d87488fa4700f80afb5e92a902c6e7651956",
+              "service_rss_bytes": 156893184
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 524.0359399999998,
+              "materiality_changed": false,
+              "baseline_artifact_id": "53a70a9b91745c235d4e666f3b22d87488fa4700f80afb5e92a902c6e7651956",
+              "observed_artifact_id": "8a5f0e2a94a5e2ebcc0e8127f4fed81da609443b4ea928d547c1735cc2bc5c76",
+              "service_rss_bytes": 157421568
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 542.3865420000002,
+              "materiality_changed": false,
+              "baseline_artifact_id": "8a5f0e2a94a5e2ebcc0e8127f4fed81da609443b4ea928d547c1735cc2bc5c76",
+              "observed_artifact_id": "e6c137faa85110087cb15c38ab7cf1dfe04c2a9b5a457ee9aad0b43ff30a6354",
+              "service_rss_bytes": 160673792
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 533.0468650000003,
+              "materiality_changed": false,
+              "baseline_artifact_id": "e6c137faa85110087cb15c38ab7cf1dfe04c2a9b5a457ee9aad0b43ff30a6354",
+              "observed_artifact_id": "68da148e7c3405877a46dda529002bf264c3dab707ce3cc059c42817297d96ce",
+              "service_rss_bytes": 158986240
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 505.08161499999915,
+              "materiality_changed": false,
+              "baseline_artifact_id": "68da148e7c3405877a46dda529002bf264c3dab707ce3cc059c42817297d96ce",
+              "observed_artifact_id": "6dcec4595db1a9e9fcb0170422ebf7850dd52fbed07d2826f9f27d3a64d9181f",
+              "service_rss_bytes": 160436224
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 532.6997149999988,
+              "materiality_changed": false,
+              "baseline_artifact_id": "6dcec4595db1a9e9fcb0170422ebf7850dd52fbed07d2826f9f27d3a64d9181f",
+              "observed_artifact_id": "211e22217c966651387fb5042f11a2d182ff9c15728cf5d2f7bd67186f087501",
+              "service_rss_bytes": 161067008
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 526.8216000000011,
+              "materiality_changed": false,
+              "baseline_artifact_id": "211e22217c966651387fb5042f11a2d182ff9c15728cf5d2f7bd67186f087501",
+              "observed_artifact_id": "3a5382f6360725cdb6c9a6e22f089a911d779ffcb12a36e811d8c3bc94041855",
+              "service_rss_bytes": 161746944
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 537.1877380000005,
+              "materiality_changed": false,
+              "baseline_artifact_id": "3a5382f6360725cdb6c9a6e22f089a911d779ffcb12a36e811d8c3bc94041855",
+              "observed_artifact_id": "c8b55fd48bd19f78aae4e5252ed0d71bc777954b5e2cd9a46c59912e61f6cb3e",
+              "service_rss_bytes": 161767424
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 503.05020200000035,
+              "materiality_changed": false,
+              "baseline_artifact_id": "c8b55fd48bd19f78aae4e5252ed0d71bc777954b5e2cd9a46c59912e61f6cb3e",
+              "observed_artifact_id": "06d644b3b79c2d2c260290747b7d0c2f59af174f68994fcc7de891ddc7394fd8",
+              "service_rss_bytes": 160796672
+            },
+            {
+              "status": "observed",
+              "edit_to_current_ms": 562.9297010000009,
+              "materiality_changed": false,
+              "baseline_artifact_id": "06d644b3b79c2d2c260290747b7d0c2f59af174f68994fcc7de891ddc7394fd8",
+              "observed_artifact_id": "f58b2b008ffe87a085d297dbb41831a114b29f29155d0168fd2de0e8eed44bbe",
+              "service_rss_bytes": 162099200
+            }
+          ],
+          "edit_percentiles_ms": {
+            "p50": 532.6997149999988,
+            "p95": 562.9297010000009,
+            "p99": 562.9297010000009,
+            "count": 10
+          },
+          "all_observed": true
+        },
+        "parent_context_bytes": 84919
+      }
+    }
+  },
+  "limitations": [
+    "No live coding workers are launched by this disposable benchmark",
+    "No input/cancel/recovery operation is executed without an actual authorized task scenario",
+    "Child CPU/RSS sampling is a lower bound and includes Git plus native helper children",
+    "Installed mode uses its published public socket path; host stdio and source-hidden qualifications are separate V13/V14 gates",
+    "Baseline and enabled use the same build, repository, registered works and changed source bytes, but separate fresh service generations"
+  ]
+}

@@ -1,0 +1,2648 @@
+{
+  "observed_at": "2026-09-23T18:10:44.683Z",
+  "runtime": {
+    "package_version": "0.1.0",
+    "build_id": "884ade46bd98f9e5ac910757fb62772ec43fb9141a2d2bf592a6303ba0051126",
+    "mode": "installed",
+    "source_revision": "3c07dc364efecf9d7ffb314eb90a2336223a9694",
+    "node_version": "v24.12.0",
+    "node_executable": "/home/jeremy/.nvm/versions/node/v24.12.0/bin/node",
+    "pid": 1188598,
+    "started_at": "2026-09-23T18:10:44.682Z"
+  },
+  "environment": {
+    "node": "v24.12.0",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu_parallelism": 24,
+    "host_total_memory_bytes": 66815021056,
+    "cgroup_memory_max": "unavailable",
+    "cgroup_cpu_max": "unavailable"
+  },
+  "corpus": {
+    "description": "Component workload: actual Git capture plus native extraction of five language fixture pairs and two current Passeur TypeScript files. Public service and installed-host measurements are separate acceptance runs.",
+    "paths": [
+      "typescript/sample.ts",
+      "rust/sample.rs",
+      "cpp/sample.cpp",
+      "c/sample.c",
+      "svelte/sample.svelte",
+      "project/repository-runtime.ts",
+      "project/source.ts"
+    ],
+    "public_paths": [
+      "project/repository-runtime.ts",
+      "project/source.ts",
+      "rust/sample.rs",
+      "svelte/sample.svelte"
+    ],
+    "base_commit": "380ba769b1ed412f33d1d7aeb55f8be3cf67bb9c",
+    "files": [
+      {
+        "path": "typescript/sample.ts",
+        "input_bytes": 189,
+        "observed_bytes": 189,
+        "input_sha256": "1d97fa6f70de481c1c464360f3300ba8107d2cf4554a8ffb22e77fe8add2b222",
+        "observed_sha256": "f410b920b3e1ebae74777b550584bb0a6a955892220a73787695ed2195d10211"
+      },
+      {
+        "path": "rust/sample.rs",
+        "input_bytes": 138,
+        "observed_bytes": 146,
+        "input_sha256": "be6d1258f3c14376b2a8ace6d7385e30089cdc753732e4ed154bb6a4f9feb891",
+        "observed_sha256": "edcf638c701cd6cc432a16d3dbb3a03685610d51b69e327ee044abb3fb03699b"
+      },
+      {
+        "path": "cpp/sample.cpp",
+        "input_bytes": 328,
+        "observed_bytes": 328,
+        "input_sha256": "e89f679e0477079121664a3216c2a217b138c5bc17fbe76047b7391f0e6bad18",
+        "observed_sha256": "380fdab83df6338379956536046449b4fc801cb1b0e157fd73e1637d6beffe4c"
+      },
+      {
+        "path": "c/sample.c",
+        "input_bytes": 276,
+        "observed_bytes": 276,
+        "input_sha256": "48bc840c8ecf56fa789789627b36b3f114cb859149362ac65e87eb3ef7138faa",
+        "observed_sha256": "41d112e10ec23839e254121ffcd497aa477b3dc3e665589b84237bedeedfcd3b"
+      },
+      {
+        "path": "svelte/sample.svelte",
+        "input_bytes": 433,
+        "observed_bytes": 448,
+        "input_sha256": "d3623a3f6f6d32efffbc673247dda83d3656345739785b02152066495ea1dc37",
+        "observed_sha256": "7ed4819d59bbabfdacea6f88db3675da31c29907657bdbd88b5d33083fddae50"
+      },
+      {
+        "path": "project/repository-runtime.ts",
+        "input_bytes": 102320,
+        "observed_bytes": 102353,
+        "input_sha256": "862bc2b33cf1be25559bbe8e5fa5013d6c8e60722875a9f5cb638ccc63627044",
+        "observed_sha256": "089ad5016b100b9b77df52f83d890e33350e9c1d67a92f8d5aa4a108ffe25df0"
+      },
+      {
+        "path": "project/source.ts",
+        "input_bytes": 18178,
+        "observed_bytes": 18211,
+        "input_sha256": "2975809e163417b4dc72edf1c00ef750fbdeab8163ac91ffb6bf276c99cac8ad",
+        "observed_sha256": "666607668022039596d0f76bb257307d5733aca24d3da5389db99a51a5f2cfda"
+      }
+    ]
+  },
+  "command": "npx tsx scripts/benchmark-structural.ts public --runtime-root ABSOLUTE_PATH [--installed] [--rounds 3..100] [--edits 1..120]",
+  "rounds": 3,
+  "edits": 120,
+  "worker_lifecycle": {
+    "status": "not_exercised",
+    "reason": "Disposable public benchmark does not submit live agents; correlate with actual V14/V15 worker evidence"
+  },
+  "work_ids": [
+    "7845b646-6fca-4e84-87dd-08d470e72f3d"
+  ],
+  "baseline": {
+    "monitor": "off",
+    "generation": "c667c4e8-ed7b-4bb6-b044-21fa833177bd",
+    "samples": {
+      "wall_ms": 2004.6857260000002,
+      "parent_cpu_ms_sampled": 0,
+      "child_cpu_ms_sampled": 0,
+      "peak_parent_rss_bytes": 97828864,
+      "peak_child_rss_bytes": 0,
+      "result": {
+        "control_roundtrip_ms": [
+          2.150269000000094,
+          0.7576619999999821,
+          0.6925489999999854
+        ],
+        "control_percentiles_ms": {
+          "p50": 0.7576619999999821,
+          "p95": 2.150269000000094,
+          "p99": 2.150269000000094,
+          "count": 3
+        },
+        "observation_calls": 0
+      }
+    }
+  },
+  "enabled": {
+    "monitor": "on",
+    "generation": "1a67e021-c0db-40bc-934a-5e5e24f97954",
+    "samples": {
+      "wall_ms": 89727.582498,
+      "parent_cpu_ms_sampled": 27170,
+      "child_cpu_ms_sampled": 23600,
+      "peak_parent_rss_bytes": 228433920,
+      "peak_child_rss_bytes": 131223552,
+      "result": {
+        "refreshes": [
+          {
+            "work_id": "7845b646-6fca-4e84-87dd-08d470e72f3d",
+            "latency_ms": 1660.60801,
+            "status": "published",
+            "limitations": []
+          }
+        ],
+        "reports": [
+          {
+            "work_id": "7845b646-6fca-4e84-87dd-08d470e72f3d",
+            "latency_ms": 155.84449399999994,
+            "response_bytes": 7719,
+            "paths": [
+              "project/repository-runtime.ts",
+              "project/source.ts",
+              "rust/sample.rs",
+              "svelte/sample.svelte"
+            ],
+            "limitations": []
+          }
+        ],
+        "saturation": {
+          "samples": [
+            {
+              "analysis_ms": 156.50070899999992,
+              "control_ms": 2.0881370000006427,
+              "control_completed_before_analysis": true,
+              "overload": {
+                "outcome": "STRUCTURAL_ANALYSIS_CAPACITY"
+              },
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 158.94174199999998,
+              "control_ms": 1.2281240000002072,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            },
+            {
+              "analysis_ms": 160.5959469999998,
+              "control_ms": 1.0822410000000673,
+              "control_completed_before_analysis": true,
+              "task_count": 0,
+              "admission": "open",
+              "response_bytes": 7720
+            }
+          ],
+          "control_percentiles_ms": {
+            "p50": 1.2281240000002072,
+            "p95": 2.0881370000006427,
+            "p99": 2.0881370000006427,
+            "count": 3
+          },
+          "analysis_percentiles_ms": {
+            "p50": 158.94174199999998,
+            "p95": 160.5959469999998,
+            "p99": 160.5959469999998,
+            "count": 3
+          }
+        },
+        "idle": {
+          "wall_ms": 2000.8359100000007,
+          "parent_cpu_ms_sampled": 0,
+          "child_cpu_ms_sampled": 0,
+          "peak_parent_rss_bytes": 127582208,
+          "peak_child_rss_bytes": 0,
+          "result": {
+            "idle_ms": 2000
+          }
+        },
+        "edit": {
+          "samples": [
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 525.8837059999996,
+              "baseline_artifact_id": "249cb804e577d8df3838e5b881ba4b7c4a9e20f595e2c75de9a64c8f008d8a1c",
+              "observed_artifact_id": "62fb6a05c3f53d8e6f0f196894bf027c4efcf9938cf43f8aaf98f7a245746eda",
+              "report_latency_ms": 154.92371700000058,
+              "control_latency_ms": 1.2989999999999782,
+              "response_bytes": 7720,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 260,
+              "peak_parent_rss_bytes": 131772416,
+              "peak_child_rss_bytes": 116191232
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 487.9448139999995,
+              "baseline_artifact_id": "8a61aefa44717bdc9ab92ebec57d6d5f2852175dbe6f0d0ee18a4918fe4636b6",
+              "observed_artifact_id": "10bfde6197b73abe1bb7b7594f2730098d1e37c21fc182a55de7acc186ccd09a",
+              "report_latency_ms": 168.90727400000105,
+              "control_latency_ms": 1.0745700000006764,
+              "response_bytes": 7811,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 100,
+              "peak_parent_rss_bytes": 147156992,
+              "peak_child_rss_bytes": 83476480
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 516.9810130000005,
+              "baseline_artifact_id": "f4a74a8267ddadb82df526df7125ae23f515d9a9b13094b34196e093404e42cf",
+              "observed_artifact_id": "84b417825870008b3e560465227ba01439571e950460e54dff24e447431538e6",
+              "report_latency_ms": 156.1161830000001,
+              "control_latency_ms": 1.1984150000007503,
+              "response_bytes": 7811,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 157020160,
+              "peak_child_rss_bytes": 111022080
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 516.2777699999988,
+              "baseline_artifact_id": "62fb6a05c3f53d8e6f0f196894bf027c4efcf9938cf43f8aaf98f7a245746eda",
+              "observed_artifact_id": "cdaafc87a41735d43e9af208aff32ea84e4095fa72e3c5511eda419b7da01ce1",
+              "report_latency_ms": 167.2832699999999,
+              "control_latency_ms": 1.1207770000000892,
+              "response_bytes": 7811,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 220,
+              "sampled_child_cpu_ms": 190,
+              "peak_parent_rss_bytes": 157564928,
+              "peak_child_rss_bytes": 124125184
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 468.5532280000007,
+              "baseline_artifact_id": "10bfde6197b73abe1bb7b7594f2730098d1e37c21fc182a55de7acc186ccd09a",
+              "observed_artifact_id": "77049af76dc3f6348803f47174c259afecca1829ccbae77faf5b16384cd79ec3",
+              "report_latency_ms": 175.16338899999937,
+              "control_latency_ms": 1.083690999999817,
+              "response_bytes": 7811,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 140,
+              "peak_parent_rss_bytes": 160059392,
+              "peak_child_rss_bytes": 99872768
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 523.8776719999987,
+              "baseline_artifact_id": "84b417825870008b3e560465227ba01439571e950460e54dff24e447431538e6",
+              "observed_artifact_id": "5f152c0ec1f099445214d6f875ce75d894ed43411b089c01ea4bee52742003e9",
+              "report_latency_ms": 172.00894499999958,
+              "control_latency_ms": 0.7798819999989064,
+              "response_bytes": 7811,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 160112640,
+              "peak_child_rss_bytes": 102940672
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 519.8565490000001,
+              "baseline_artifact_id": "cdaafc87a41735d43e9af208aff32ea84e4095fa72e3c5511eda419b7da01ce1",
+              "observed_artifact_id": "f744d1d4b817b45c54d6a17ad1c876997256fe4da74d6f59faf2874388f4cc6f",
+              "report_latency_ms": 163.7014849999996,
+              "control_latency_ms": 0.845472000000882,
+              "response_bytes": 7811,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 160120832,
+              "peak_child_rss_bytes": 118456320
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 463.337336999999,
+              "baseline_artifact_id": "77049af76dc3f6348803f47174c259afecca1829ccbae77faf5b16384cd79ec3",
+              "observed_artifact_id": "f3784f41d1c19d210d8d910c4aa32214bac8d7f6aebc4083d4dd8f1a79d268b9",
+              "report_latency_ms": 160.03493999999955,
+              "control_latency_ms": 1.0112169999993057,
+              "response_bytes": 7811,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 90,
+              "peak_parent_rss_bytes": 164007936,
+              "peak_child_rss_bytes": 89968640
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 513.073382999999,
+              "baseline_artifact_id": "5f152c0ec1f099445214d6f875ce75d894ed43411b089c01ea4bee52742003e9",
+              "observed_artifact_id": "7225022235bb90a3d77688f8277e0fff041411f0b5552f5738f0d53537019207",
+              "report_latency_ms": 174.66319400000066,
+              "control_latency_ms": 0.7349670000003243,
+              "response_bytes": 7811,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 170,
+              "peak_parent_rss_bytes": 162172928,
+              "peak_child_rss_bytes": 109907968
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 522.0589139999993,
+              "baseline_artifact_id": "f744d1d4b817b45c54d6a17ad1c876997256fe4da74d6f59faf2874388f4cc6f",
+              "observed_artifact_id": "c5e954e72c867283714e0a49bff5526046119ab5a12bd720577cb8b113c9d8d7",
+              "report_latency_ms": 176.9336540000004,
+              "control_latency_ms": 0.8031920000012178,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 162521088,
+              "peak_child_rss_bytes": 129490944
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 470.8367019999987,
+              "baseline_artifact_id": "f3784f41d1c19d210d8d910c4aa32214bac8d7f6aebc4083d4dd8f1a79d268b9",
+              "observed_artifact_id": "16374e2567006ea9bec69f30a488057dd99b3ce890188a040d37ec2e52f30c21",
+              "report_latency_ms": 170.4208890000009,
+              "control_latency_ms": 0.7744259999999485,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 130,
+              "peak_parent_rss_bytes": 162963456,
+              "peak_child_rss_bytes": 86962176
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 522.7464360000013,
+              "baseline_artifact_id": "7225022235bb90a3d77688f8277e0fff041411f0b5552f5738f0d53537019207",
+              "observed_artifact_id": "7e2650441f536a2588264f57329d1e3c491eee20a787afe5e31b81b5df0176d6",
+              "report_latency_ms": 167.54602400000113,
+              "control_latency_ms": 1.9151330000004236,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 163115008,
+              "peak_child_rss_bytes": 110907392
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 535.0956490000008,
+              "baseline_artifact_id": "c5e954e72c867283714e0a49bff5526046119ab5a12bd720577cb8b113c9d8d7",
+              "observed_artifact_id": "03bb7e926dd887abb2d797883dd7eda663fdf3977afccb11bc2b928615cfd30d",
+              "report_latency_ms": 193.36531300000024,
+              "control_latency_ms": 1.1962150000017573,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 163016704,
+              "peak_child_rss_bytes": 127574016
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 461.040210000001,
+              "baseline_artifact_id": "16374e2567006ea9bec69f30a488057dd99b3ce890188a040d37ec2e52f30c21",
+              "observed_artifact_id": "374a4c479ee8d24e3cb6e46a21065d22440bb809b554ba6665d427f55de04a99",
+              "report_latency_ms": 180.48710700000083,
+              "control_latency_ms": 0.8890700000010838,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 130,
+              "peak_parent_rss_bytes": 165412864,
+              "peak_child_rss_bytes": 87736320
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 592.3373649999994,
+              "baseline_artifact_id": "7e2650441f536a2588264f57329d1e3c491eee20a787afe5e31b81b5df0176d6",
+              "observed_artifact_id": "413d47d6d519ba77a4246ad97765f7121aec26df9d257f3d100d4c6ff9a7112d",
+              "report_latency_ms": 208.02000199999748,
+              "control_latency_ms": 1.042380000002595,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 190,
+              "peak_parent_rss_bytes": 193482752,
+              "peak_child_rss_bytes": 110465024
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 520.1838190000017,
+              "baseline_artifact_id": "03bb7e926dd887abb2d797883dd7eda663fdf3977afccb11bc2b928615cfd30d",
+              "observed_artifact_id": "cc275985c15307e6ad0f16c8e655448dc478f6c6e7fac6728e55e8d837788773",
+              "report_latency_ms": 181.54081700000097,
+              "control_latency_ms": 1.032802999998239,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 194473984,
+              "peak_child_rss_bytes": 117796864
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 465.0153019999998,
+              "baseline_artifact_id": "374a4c479ee8d24e3cb6e46a21065d22440bb809b554ba6665d427f55de04a99",
+              "observed_artifact_id": "21180e007974774ed6ba7dc38319513da78b0a003be77c6faa4dbd59fc88080c",
+              "report_latency_ms": 185.1999399999986,
+              "control_latency_ms": 0.7528380000003381,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 100,
+              "peak_parent_rss_bytes": 216051712,
+              "peak_child_rss_bytes": 88768512
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 514.6017930000016,
+              "baseline_artifact_id": "413d47d6d519ba77a4246ad97765f7121aec26df9d257f3d100d4c6ff9a7112d",
+              "observed_artifact_id": "d00b4996b8a4885300c040835504f1e1de062524e87be5e8c0f6098b4e17d28f",
+              "report_latency_ms": 179.04309300000023,
+              "control_latency_ms": 0.6961750000009488,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 217923584,
+              "peak_child_rss_bytes": 96108544
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 523.2687019999976,
+              "baseline_artifact_id": "cc275985c15307e6ad0f16c8e655448dc478f6c6e7fac6728e55e8d837788773",
+              "observed_artifact_id": "e0301daadbf43d60de8df4f3c64cf0d6573a991dfca29797dd9b8c7b10ab9354",
+              "report_latency_ms": 190.95874600000025,
+              "control_latency_ms": 1.1203929999974207,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 260,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 220221440,
+              "peak_child_rss_bytes": 115367936
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 461.4100130000006,
+              "baseline_artifact_id": "21180e007974774ed6ba7dc38319513da78b0a003be77c6faa4dbd59fc88080c",
+              "observed_artifact_id": "06b44d182a8075d489ab03db1e81df22c6eb6a1c6e90b89de94f3512eb5c6e09",
+              "report_latency_ms": 179.9106920000013,
+              "control_latency_ms": 0.6692990000010468,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 90,
+              "peak_parent_rss_bytes": 219213824,
+              "peak_child_rss_bytes": 88829952
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 528.7287330000036,
+              "baseline_artifact_id": "d00b4996b8a4885300c040835504f1e1de062524e87be5e8c0f6098b4e17d28f",
+              "observed_artifact_id": "45663f8e00d1b7839b826613e4590029166e6aa5725f51c2c25efa61392f8244",
+              "report_latency_ms": 198.07222099999854,
+              "control_latency_ms": 0.8331490000018675,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 221396992,
+              "peak_child_rss_bytes": 98492416
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 522.7821550000008,
+              "baseline_artifact_id": "e0301daadbf43d60de8df4f3c64cf0d6573a991dfca29797dd9b8c7b10ab9354",
+              "observed_artifact_id": "3b8d5d083bd8c32a80341a5cd1617087e45d990ab072af1324833de4425938d6",
+              "report_latency_ms": 186.78249700000015,
+              "control_latency_ms": 0.7695910000002186,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 219353088,
+              "peak_child_rss_bytes": 120582144
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 479.1889379999993,
+              "baseline_artifact_id": "06b44d182a8075d489ab03db1e81df22c6eb6a1c6e90b89de94f3512eb5c6e09",
+              "observed_artifact_id": "73cbc22ca737a30538812e71799f43b4a302b7ef062996557a5f5e7e0da81877",
+              "report_latency_ms": 193.15178500000184,
+              "control_latency_ms": 0.7255240000013146,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 120,
+              "peak_parent_rss_bytes": 219619328,
+              "peak_child_rss_bytes": 93310976
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 494.5850559999999,
+              "baseline_artifact_id": "45663f8e00d1b7839b826613e4590029166e6aa5725f51c2c25efa61392f8244",
+              "observed_artifact_id": "20e6995a0625e5201588bb13fec27fa31ca45aada9a43cc6bb3ea103e579b907",
+              "report_latency_ms": 180.48143699999855,
+              "control_latency_ms": 0.8431689999997616,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 221458432,
+              "peak_child_rss_bytes": 96354304
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 544.2564349999993,
+              "baseline_artifact_id": "3b8d5d083bd8c32a80341a5cd1617087e45d990ab072af1324833de4425938d6",
+              "observed_artifact_id": "4265fc35cd56b094ff6aeffef378fc5a9daf69cf585317e3a311b165b8e4a1f7",
+              "report_latency_ms": 178.26085799999782,
+              "control_latency_ms": 1.2216870000011113,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 221458432,
+              "peak_child_rss_bytes": 116195328
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 450.3170370000007,
+              "baseline_artifact_id": "73cbc22ca737a30538812e71799f43b4a302b7ef062996557a5f5e7e0da81877",
+              "observed_artifact_id": "210378f50d62506025384484f5692934f320a4346e9b9dd23756c9d2aa7809f3",
+              "report_latency_ms": 189.59760500000266,
+              "control_latency_ms": 1.1295979999995325,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 260,
+              "sampled_child_cpu_ms": 110,
+              "peak_parent_rss_bytes": 219652096,
+              "peak_child_rss_bytes": 89559040
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 507.96990599999845,
+              "baseline_artifact_id": "20e6995a0625e5201588bb13fec27fa31ca45aada9a43cc6bb3ea103e579b907",
+              "observed_artifact_id": "f523d6bcf328a6092f37f98713b16cf7408673a0bd994265e4f0bb6f0c368711",
+              "report_latency_ms": 187.02380899999844,
+              "control_latency_ms": 0.7509350000000268,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 218845184,
+              "peak_child_rss_bytes": 92160000
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 529.2920580000027,
+              "baseline_artifact_id": "4265fc35cd56b094ff6aeffef378fc5a9daf69cf585317e3a311b165b8e4a1f7",
+              "observed_artifact_id": "9b8c8c2ec8b695625805db4c061802ed25e9f4785db9d18e1d0c0058df5a0fac",
+              "report_latency_ms": 186.6166710000034,
+              "control_latency_ms": 1.091733999997814,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220262400,
+              "peak_child_rss_bytes": 116551680
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 457.1808149999997,
+              "baseline_artifact_id": "210378f50d62506025384484f5692934f320a4346e9b9dd23756c9d2aa7809f3",
+              "observed_artifact_id": "6ea9ef94410cbf3ae8498bbde8c13790601fa43608eb738370b46015791b62d4",
+              "report_latency_ms": 179.65666399999827,
+              "control_latency_ms": 0.9821169999995618,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 110,
+              "peak_parent_rss_bytes": 219144192,
+              "peak_child_rss_bytes": 90648576
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 507.5516039999966,
+              "baseline_artifact_id": "f523d6bcf328a6092f37f98713b16cf7408673a0bd994265e4f0bb6f0c368711",
+              "observed_artifact_id": "67853eee9d4e69bcb4f0b0de044e862d5aa9d168544c3cb30feea394e0a9e674",
+              "report_latency_ms": 191.00993599999856,
+              "control_latency_ms": 1.0494539999999688,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 180,
+              "peak_parent_rss_bytes": 219357184,
+              "peak_child_rss_bytes": 99880960
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 583.5343030000004,
+              "baseline_artifact_id": "9b8c8c2ec8b695625805db4c061802ed25e9f4785db9d18e1d0c0058df5a0fac",
+              "observed_artifact_id": "90a51c24cddc90070e0a7e33c7ce5ba7b2efd14110eff832f3658a4cb0c2970c",
+              "report_latency_ms": 180.36190999999963,
+              "control_latency_ms": 0.8527290000020002,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 240,
+              "peak_parent_rss_bytes": 220647424,
+              "peak_child_rss_bytes": 120754176
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 451.4665580000001,
+              "baseline_artifact_id": "6ea9ef94410cbf3ae8498bbde8c13790601fa43608eb738370b46015791b62d4",
+              "observed_artifact_id": "b64841be407060f147226bf6012582c0fa9875254df002363d4d776d9d68250e",
+              "report_latency_ms": 178.6252600000007,
+              "control_latency_ms": 0.794237999998586,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 90,
+              "peak_parent_rss_bytes": 219951104,
+              "peak_child_rss_bytes": 89759744
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 521.1270899999981,
+              "baseline_artifact_id": "67853eee9d4e69bcb4f0b0de044e862d5aa9d168544c3cb30feea394e0a9e674",
+              "observed_artifact_id": "30fae1c8d8e8647fcd514b075f84874803cbc6e8163c788fe1a292daff56124f",
+              "report_latency_ms": 202.11969599999793,
+              "control_latency_ms": 1.3336269999999786,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 221716480,
+              "peak_child_rss_bytes": 100499456
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 563.135585,
+              "baseline_artifact_id": "90a51c24cddc90070e0a7e33c7ce5ba7b2efd14110eff832f3658a4cb0c2970c",
+              "observed_artifact_id": "10e51a1a3329d2a7c15a144d061f85615673f14064f3d8adf62c9cf274e827be",
+              "report_latency_ms": 188.99896300000182,
+              "control_latency_ms": 0.838566999998875,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 219557888,
+              "peak_child_rss_bytes": 123572224
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 462.2268839999997,
+              "baseline_artifact_id": "b64841be407060f147226bf6012582c0fa9875254df002363d4d776d9d68250e",
+              "observed_artifact_id": "d3e9764eb22a4f5ee4f8f78947cbb3f07ddb8b3777bcfd22892227e6c31141ac",
+              "report_latency_ms": 183.68721799999912,
+              "control_latency_ms": 0.7734659999987343,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 80,
+              "peak_parent_rss_bytes": 219996160,
+              "peak_child_rss_bytes": 81498112
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 527.4738249999973,
+              "baseline_artifact_id": "30fae1c8d8e8647fcd514b075f84874803cbc6e8163c788fe1a292daff56124f",
+              "observed_artifact_id": "1d0a569b2c90d0d79792295d2b9fe8c4556cec9ab83523b575882292a7a5e1e3",
+              "report_latency_ms": 185.57890599999882,
+              "control_latency_ms": 1.1393820000012056,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 221609984,
+              "peak_child_rss_bytes": 111349760
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 525.8781990000025,
+              "baseline_artifact_id": "10e51a1a3329d2a7c15a144d061f85615673f14064f3d8adf62c9cf274e827be",
+              "observed_artifact_id": "b06bd49c0c8fbbcdf07180b5f380d8f5f6a477b5a57be91a477395d79a9cb4f9",
+              "report_latency_ms": 178.593155999999,
+              "control_latency_ms": 0.9009839999998803,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 240,
+              "peak_parent_rss_bytes": 219570176,
+              "peak_child_rss_bytes": 130396160
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 481.67628899999545,
+              "baseline_artifact_id": "d3e9764eb22a4f5ee4f8f78947cbb3f07ddb8b3777bcfd22892227e6c31141ac",
+              "observed_artifact_id": "e603a1190259e00b85918bc65ab8562682f85c257c73ad49cfd9567f447e6cf1",
+              "report_latency_ms": 190.47634599999583,
+              "control_latency_ms": 1.0426300000035553,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 130,
+              "peak_parent_rss_bytes": 219996160,
+              "peak_child_rss_bytes": 90206208
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 516.7907679999989,
+              "baseline_artifact_id": "1d0a569b2c90d0d79792295d2b9fe8c4556cec9ab83523b575882292a7a5e1e3",
+              "observed_artifact_id": "8d92cdbfd3e827608becabd46adcbecac4c956dbca0136fd414cc3367962c6ee",
+              "report_latency_ms": 177.84457099999418,
+              "control_latency_ms": 0.7865559999991092,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 180,
+              "peak_parent_rss_bytes": 221704192,
+              "peak_child_rss_bytes": 102641664
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 562.4049320000049,
+              "baseline_artifact_id": "b06bd49c0c8fbbcdf07180b5f380d8f5f6a477b5a57be91a477395d79a9cb4f9",
+              "observed_artifact_id": "21fca343007daeab4519e950f687562c3262de56cc9b054318a8838363b9a825",
+              "report_latency_ms": 189.77543600000354,
+              "control_latency_ms": 0.7686069999981555,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 221704192,
+              "peak_child_rss_bytes": 120963072
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 462.29942599999777,
+              "baseline_artifact_id": "e603a1190259e00b85918bc65ab8562682f85c257c73ad49cfd9567f447e6cf1",
+              "observed_artifact_id": "1cc742c816c0a027658767517728e1012cb5a28822e2a369346a10f0159f7674",
+              "report_latency_ms": 180.67326499999763,
+              "control_latency_ms": 0.8587110000007669,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 100,
+              "peak_parent_rss_bytes": 221302784,
+              "peak_child_rss_bytes": 85131264
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 542.4226289999933,
+              "baseline_artifact_id": "8d92cdbfd3e827608becabd46adcbecac4c956dbca0136fd414cc3367962c6ee",
+              "observed_artifact_id": "dfbd1fc35efdb4190a4dcd7555132d519e2073891f73e8ad4053e95f24f6f830",
+              "report_latency_ms": 207.66153199999826,
+              "control_latency_ms": 0.9413059999933466,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 190,
+              "peak_parent_rss_bytes": 221302784,
+              "peak_child_rss_bytes": 119242752
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 513.8221839999969,
+              "baseline_artifact_id": "21fca343007daeab4519e950f687562c3262de56cc9b054318a8838363b9a825",
+              "observed_artifact_id": "35944b15eab57cf01a6377bed37cf5a0fba1ae36c6d580e6b47eb1b761d11e8d",
+              "report_latency_ms": 185.75113399999827,
+              "control_latency_ms": 0.9982969999982743,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 221048832,
+              "peak_child_rss_bytes": 117723136
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 459.8938710000002,
+              "baseline_artifact_id": "1cc742c816c0a027658767517728e1012cb5a28822e2a369346a10f0159f7674",
+              "observed_artifact_id": "fc3ded113adce0c5f5d2cfcea218d7af38e7201abe26db39e03deb64d08c35ec",
+              "report_latency_ms": 184.77259500000218,
+              "control_latency_ms": 0.8227380000025732,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 130,
+              "peak_parent_rss_bytes": 219770880,
+              "peak_child_rss_bytes": 97013760
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 563.7087329999995,
+              "baseline_artifact_id": "dfbd1fc35efdb4190a4dcd7555132d519e2073891f73e8ad4053e95f24f6f830",
+              "observed_artifact_id": "492eb8e45243be761bf2e741264a06f50d5b783861c43324deb1ce412d6829c3",
+              "report_latency_ms": 187.7855950000012,
+              "control_latency_ms": 1.1678049999973155,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 219770880,
+              "peak_child_rss_bytes": 100990976
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 527.9235369999951,
+              "baseline_artifact_id": "35944b15eab57cf01a6377bed37cf5a0fba1ae36c6d580e6b47eb1b761d11e8d",
+              "observed_artifact_id": "e7a05f1e4c2cf2cb76fa4a3689d33f6f8125ab58ef091e6cb8fe6251555111b5",
+              "report_latency_ms": 184.07380799999373,
+              "control_latency_ms": 0.9723089999970398,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 219807744,
+              "peak_child_rss_bytes": 125345792
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 467.6014309999955,
+              "baseline_artifact_id": "fc3ded113adce0c5f5d2cfcea218d7af38e7201abe26db39e03deb64d08c35ec",
+              "observed_artifact_id": "d103827779239a1fdb2e5d6a7e1252a04da1c3f98120b2905de9129cdcc7afa9",
+              "report_latency_ms": 205.3668089999992,
+              "control_latency_ms": 0.7635450000016135,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 100,
+              "peak_parent_rss_bytes": 219811840,
+              "peak_child_rss_bytes": 91201536
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 574.7078639999963,
+              "baseline_artifact_id": "492eb8e45243be761bf2e741264a06f50d5b783861c43324deb1ce412d6829c3",
+              "observed_artifact_id": "1e5fa0779ff176c6ff902d2861004a83717fcb4132041625c7cecc3a20435786",
+              "report_latency_ms": 196.46695000000182,
+              "control_latency_ms": 0.9120160000020405,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 221253632,
+              "peak_child_rss_bytes": 112553984
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 561.7259599999961,
+              "baseline_artifact_id": "e7a05f1e4c2cf2cb76fa4a3689d33f6f8125ab58ef091e6cb8fe6251555111b5",
+              "observed_artifact_id": "d03fd604f792593c2d354e0fafeb74686d8b8f772ed8d5019d86f5ad86c37899",
+              "report_latency_ms": 190.86558199999854,
+              "control_latency_ms": 0.8766089999990072,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 221253632,
+              "peak_child_rss_bytes": 125378560
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 459.4945360000056,
+              "baseline_artifact_id": "d103827779239a1fdb2e5d6a7e1252a04da1c3f98120b2905de9129cdcc7afa9",
+              "observed_artifact_id": "5594ff5af59a98741c0a2ea0e5de5d05d52172ad62f01d14ba7485728c799083",
+              "report_latency_ms": 175.87660799999867,
+              "control_latency_ms": 0.99459200000274,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 150,
+              "peak_parent_rss_bytes": 220835840,
+              "peak_child_rss_bytes": 90136576
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 516.9858749999985,
+              "baseline_artifact_id": "1e5fa0779ff176c6ff902d2861004a83717fcb4132041625c7cecc3a20435786",
+              "observed_artifact_id": "8cfd7db0c57619e745a0300b5e9aacb4d301896568b1cf96f516af64e8118d37",
+              "report_latency_ms": 180.57579299999634,
+              "control_latency_ms": 1.6154290000049514,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 220844032,
+              "peak_child_rss_bytes": 110792704
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 523.777390999996,
+              "baseline_artifact_id": "d03fd604f792593c2d354e0fafeb74686d8b8f772ed8d5019d86f5ad86c37899",
+              "observed_artifact_id": "08ef453896d05d2346bc0cc440b3b93e7cfea6b8200a7331d384d4aa8fc92526",
+              "report_latency_ms": 191.4593290000048,
+              "control_latency_ms": 0.8414669999983744,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220807168,
+              "peak_child_rss_bytes": 120295424
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 449.0056909999985,
+              "baseline_artifact_id": "5594ff5af59a98741c0a2ea0e5de5d05d52172ad62f01d14ba7485728c799083",
+              "observed_artifact_id": "972e07be8afb1dede76cf046d4ba4f97cb13360623e545641edce1ebf71b9ca0",
+              "report_latency_ms": 190.01554100000067,
+              "control_latency_ms": 0.710707000005641,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 110,
+              "peak_parent_rss_bytes": 219529216,
+              "peak_child_rss_bytes": 88387584
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 519.344097000001,
+              "baseline_artifact_id": "8cfd7db0c57619e745a0300b5e9aacb4d301896568b1cf96f516af64e8118d37",
+              "observed_artifact_id": "72d1a044bd97fe63dbdcd296857f5964885064e303653e526d2751a77039873b",
+              "report_latency_ms": 180.14666800000123,
+              "control_latency_ms": 1.0068200000023353,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 220,
+              "sampled_child_cpu_ms": 190,
+              "peak_parent_rss_bytes": 219529216,
+              "peak_child_rss_bytes": 103014400
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 559.1956260000006,
+              "baseline_artifact_id": "08ef453896d05d2346bc0cc440b3b93e7cfea6b8200a7331d384d4aa8fc92526",
+              "observed_artifact_id": "0529682a3f90cce2ae35b50ed1ea447e8b692cb57ca1acecc06b73e4c10f086c",
+              "report_latency_ms": 199.04059700000653,
+              "control_latency_ms": 0.6128499999977066,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 219967488,
+              "peak_child_rss_bytes": 115105792
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 459.7340200000035,
+              "baseline_artifact_id": "972e07be8afb1dede76cf046d4ba4f97cb13360623e545641edce1ebf71b9ca0",
+              "observed_artifact_id": "d0a74c6301d0208445029c56cfd7f8e3528619471af3c8d4b84b6c2bf2b95fbc",
+              "report_latency_ms": 178.21300699999847,
+              "control_latency_ms": 0.9033699999999953,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 270,
+              "sampled_child_cpu_ms": 80,
+              "peak_parent_rss_bytes": 223956992,
+              "peak_child_rss_bytes": 81448960
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 559.8128530000031,
+              "baseline_artifact_id": "72d1a044bd97fe63dbdcd296857f5964885064e303653e526d2751a77039873b",
+              "observed_artifact_id": "da678b106c06f4d7b647d7dfe98a87ad4fbcb4d272dd5fcc570607a6f79fd6ff",
+              "report_latency_ms": 180.8189199999979,
+              "control_latency_ms": 0.683723000001919,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 221405184,
+              "peak_child_rss_bytes": 113049600
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 519.5003109999961,
+              "baseline_artifact_id": "0529682a3f90cce2ae35b50ed1ea447e8b692cb57ca1acecc06b73e4c10f086c",
+              "observed_artifact_id": "c3f0adbf175c11527a90caa368539dfb6640159908bfd2f2eba38f936c24a4c3",
+              "report_latency_ms": 177.08388799999375,
+              "control_latency_ms": 0.8499530000044615,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 240,
+              "peak_parent_rss_bytes": 219275264,
+              "peak_child_rss_bytes": 127283200
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 513.9518559999997,
+              "baseline_artifact_id": "d0a74c6301d0208445029c56cfd7f8e3528619471af3c8d4b84b6c2bf2b95fbc",
+              "observed_artifact_id": "833ec3553795892a3bd00576292ac1673495e347d544cf83c792835e79023915",
+              "report_latency_ms": 184.95006600000488,
+              "control_latency_ms": 0.7529839999988326,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 150,
+              "peak_parent_rss_bytes": 220979200,
+              "peak_child_rss_bytes": 90009600
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 511.03558100000373,
+              "baseline_artifact_id": "da678b106c06f4d7b647d7dfe98a87ad4fbcb4d272dd5fcc570607a6f79fd6ff",
+              "observed_artifact_id": "67ee7914c0a246faefcfd9646fcbf6c850a3578ea96b34be4f3365cedc47c031",
+              "report_latency_ms": 178.9600139999966,
+              "control_latency_ms": 1.130739000000176,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 219701248,
+              "peak_child_rss_bytes": 93921280
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 555.0456290000002,
+              "baseline_artifact_id": "c3f0adbf175c11527a90caa368539dfb6640159908bfd2f2eba38f936c24a4c3",
+              "observed_artifact_id": "d0c560604592b9cc864d6608667f3b9c604ab362f30359215530282ce01237e4",
+              "report_latency_ms": 203.82068000000436,
+              "control_latency_ms": 0.6898900000014692,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 220,
+              "sampled_child_cpu_ms": 240,
+              "peak_parent_rss_bytes": 220979200,
+              "peak_child_rss_bytes": 121769984
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 469.775916999999,
+              "baseline_artifact_id": "833ec3553795892a3bd00576292ac1673495e347d544cf83c792835e79023915",
+              "observed_artifact_id": "884081d82663b32f112e64b118edb7b36344b0b64ebe80c71f7a70b459fe5a22",
+              "report_latency_ms": 178.78116999999475,
+              "control_latency_ms": 0.6593710000015562,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 120,
+              "peak_parent_rss_bytes": 220135424,
+              "peak_child_rss_bytes": 86978560
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 520.0669039999993,
+              "baseline_artifact_id": "67ee7914c0a246faefcfd9646fcbf6c850a3578ea96b34be4f3365cedc47c031",
+              "observed_artifact_id": "999f739d48ac2600c3c2482acf0daa0ca5b8c40db431bfcb52a2d5746e53de46",
+              "report_latency_ms": 177.37418900000193,
+              "control_latency_ms": 0.8700539999990724,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 220135424,
+              "peak_child_rss_bytes": 108474368
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 513.4838779999991,
+              "baseline_artifact_id": "d0c560604592b9cc864d6608667f3b9c604ab362f30359215530282ce01237e4",
+              "observed_artifact_id": "434f7cdb9db0f2a8691e0de9f120e6ba27ad8dc504e9b9e54b2c4b89dced8fc5",
+              "report_latency_ms": 179.52732000000105,
+              "control_latency_ms": 0.6615769999989425,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 221040640,
+              "peak_child_rss_bytes": 127299584
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 449.6250960000034,
+              "baseline_artifact_id": "884081d82663b32f112e64b118edb7b36344b0b64ebe80c71f7a70b459fe5a22",
+              "observed_artifact_id": "53a16a0ae023557d54047ee77ee020075ef081ea9cdd213b478310ca1a5c96a5",
+              "report_latency_ms": 192.52455600000394,
+              "control_latency_ms": 0.6929660000023432,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 110,
+              "peak_parent_rss_bytes": 221040640,
+              "peak_child_rss_bytes": 89554944
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 518.8215479999999,
+              "baseline_artifact_id": "999f739d48ac2600c3c2482acf0daa0ca5b8c40db431bfcb52a2d5746e53de46",
+              "observed_artifact_id": "70768a8249629344c4cbbace3e17a344c61bce40a80c3f9c690c4f786f939748",
+              "report_latency_ms": 190.54393900000287,
+              "control_latency_ms": 0.6652480000047944,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 221495296,
+              "peak_child_rss_bytes": 109064192
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 523.766165999994,
+              "baseline_artifact_id": "434f7cdb9db0f2a8691e0de9f120e6ba27ad8dc504e9b9e54b2c4b89dced8fc5",
+              "observed_artifact_id": "d9b1b9990ab46655579b66af962ad3591765e96d458538b983663ae21a723526",
+              "report_latency_ms": 177.88977400000294,
+              "control_latency_ms": 0.7330290000027162,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 219365376,
+              "peak_child_rss_bytes": 123367424
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 455.7517530000041,
+              "baseline_artifact_id": "53a16a0ae023557d54047ee77ee020075ef081ea9cdd213b478310ca1a5c96a5",
+              "observed_artifact_id": "ae91b9a8e75f5d29d2546851046727a5049c919c05a0ff2107c87a759c9a8f1e",
+              "report_latency_ms": 180.3581269999995,
+              "control_latency_ms": 0.7990740000022925,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 80,
+              "peak_parent_rss_bytes": 221200384,
+              "peak_child_rss_bytes": 79568896
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 510.18193299999984,
+              "baseline_artifact_id": "70768a8249629344c4cbbace3e17a344c61bce40a80c3f9c690c4f786f939748",
+              "observed_artifact_id": "dced7eefc78e5389994238992643b9ee667568b354b7766dd22a6c8be3aea94c",
+              "report_latency_ms": 179.16156500000216,
+              "control_latency_ms": 0.6870800000033341,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 219926528,
+              "peak_child_rss_bytes": 115040256
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 539.7917140000063,
+              "baseline_artifact_id": "d9b1b9990ab46655579b66af962ad3591765e96d458538b983663ae21a723526",
+              "observed_artifact_id": "0997cdc44e06f5671bf0831f8a40f6ccfb0a1ed385c5d2c74463666af738f21d",
+              "report_latency_ms": 177.83293600000616,
+              "control_latency_ms": 0.7195940000019618,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 219926528,
+              "peak_child_rss_bytes": 129822720
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 472.5625409999993,
+              "baseline_artifact_id": "ae91b9a8e75f5d29d2546851046727a5049c919c05a0ff2107c87a759c9a8f1e",
+              "observed_artifact_id": "bcb2946d4e9aff872d30418416e15cb82ed077ca17ba0a2a8728ff56b5008632",
+              "report_latency_ms": 192.1569429999945,
+              "control_latency_ms": 0.7826429999986431,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 130,
+              "peak_parent_rss_bytes": 221224960,
+              "peak_child_rss_bytes": 87121920
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 574.2568350000001,
+              "baseline_artifact_id": "dced7eefc78e5389994238992643b9ee667568b354b7766dd22a6c8be3aea94c",
+              "observed_artifact_id": "2b3f62dbfddfc2192edc1bdd94e80238957d2d9e478b97865044b4f274f42964",
+              "report_latency_ms": 195.13994300000195,
+              "control_latency_ms": 0.7817070000019157,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 219955200,
+              "peak_child_rss_bytes": 108937216
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 553.5211970000018,
+              "baseline_artifact_id": "0997cdc44e06f5671bf0831f8a40f6ccfb0a1ed385c5d2c74463666af738f21d",
+              "observed_artifact_id": "030b00a8ae922816679ef2d165344115bf2fd2988603484d846127f024e891f8",
+              "report_latency_ms": 184.8767499999958,
+              "control_latency_ms": 0.8767200000002049,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 222130176,
+              "peak_child_rss_bytes": 115986432
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 449.56487099999504,
+              "baseline_artifact_id": "bcb2946d4e9aff872d30418416e15cb82ed077ca17ba0a2a8728ff56b5008632",
+              "observed_artifact_id": "5d6b69f59c3c76cac8e07b93b9c9b316c916719e7fe1b08622fcf4c11af77a9d",
+              "report_latency_ms": 184.93901700000424,
+              "control_latency_ms": 0.632807000001776,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 90,
+              "peak_parent_rss_bytes": 220864512,
+              "peak_child_rss_bytes": 85557248
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 517.9306299999953,
+              "baseline_artifact_id": "2b3f62dbfddfc2192edc1bdd94e80238957d2d9e478b97865044b4f274f42964",
+              "observed_artifact_id": "e4515d3236bcf858a384331ac2b10f830ab8be11a9310a77a9257c6d95e7e953",
+              "report_latency_ms": 191.13722699999926,
+              "control_latency_ms": 1.0418920000010985,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 160,
+              "peak_parent_rss_bytes": 220864512,
+              "peak_child_rss_bytes": 93806592
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 524.9675869999992,
+              "baseline_artifact_id": "030b00a8ae922816679ef2d165344115bf2fd2988603484d846127f024e891f8",
+              "observed_artifact_id": "94999784aceb53bf4781b782b980674609e4de2cb36c856522f3ef1557c09f39",
+              "report_latency_ms": 179.47559799999726,
+              "control_latency_ms": 0.6849179999990156,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 222142464,
+              "peak_child_rss_bytes": 118218752
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 475.7840490000017,
+              "baseline_artifact_id": "5d6b69f59c3c76cac8e07b93b9c9b316c916719e7fe1b08622fcf4c11af77a9d",
+              "observed_artifact_id": "de87e6f9a41eff704f38a5a465c53cb69110b203ebfa5025fa6f40eb6bfe5d48",
+              "report_latency_ms": 186.6837400000004,
+              "control_latency_ms": 0.6614479999989271,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 100,
+              "peak_parent_rss_bytes": 222142464,
+              "peak_child_rss_bytes": 90005504
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 525.7905050000045,
+              "baseline_artifact_id": "e4515d3236bcf858a384331ac2b10f830ab8be11a9310a77a9257c6d95e7e953",
+              "observed_artifact_id": "cbbac3a5bd8fc6d3d7e9780c3a3f4603393e15c4cb32e355c5fb89490f561a27",
+              "report_latency_ms": 191.30164299999888,
+              "control_latency_ms": 0.7953639999977895,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 190,
+              "peak_parent_rss_bytes": 222568448,
+              "peak_child_rss_bytes": 110768128
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 511.50366999999824,
+              "baseline_artifact_id": "94999784aceb53bf4781b782b980674609e4de2cb36c856522f3ef1557c09f39",
+              "observed_artifact_id": "6ba2672c01414f6838b8af20e4cbe4576d6ab88d7bb45fd94e45943c4da25cae",
+              "report_latency_ms": 185.75456999999733,
+              "control_latency_ms": 0.6237590000018827,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 220438528,
+              "peak_child_rss_bytes": 122986496
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 712.8677099999986,
+              "baseline_artifact_id": "de87e6f9a41eff704f38a5a465c53cb69110b203ebfa5025fa6f40eb6bfe5d48",
+              "observed_artifact_id": "3ffc01be735bf2904e5204d8216852ee3491c6f82668bf2e363b880d6fc50a86",
+              "report_latency_ms": 192.60871300000144,
+              "control_latency_ms": 0.7011779999957071,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 310,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 220872704,
+              "peak_child_rss_bytes": 90353664
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 569.8104979999989,
+              "baseline_artifact_id": "cbbac3a5bd8fc6d3d7e9780c3a3f4603393e15c4cb32e355c5fb89490f561a27",
+              "observed_artifact_id": "b8a237a2be0b6185c0236abd3abc30b3df2b8de058f31136a18604551b6029fe",
+              "report_latency_ms": 188.79123600000457,
+              "control_latency_ms": 0.7643749999988358,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 222576640,
+              "peak_child_rss_bytes": 98861056
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 516.5335109999942,
+              "baseline_artifact_id": "6ba2672c01414f6838b8af20e4cbe4576d6ab88d7bb45fd94e45943c4da25cae",
+              "observed_artifact_id": "20dc173ae44dc0d2ecf5596b07ae6db0a8620dfc594c8ab16f6ffd19b23e0fe0",
+              "report_latency_ms": 172.87049000000115,
+              "control_latency_ms": 1.3646290000033332,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 220446720,
+              "peak_child_rss_bytes": 115003392
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 460.54357500000333,
+              "baseline_artifact_id": "3ffc01be735bf2904e5204d8216852ee3491c6f82668bf2e363b880d6fc50a86",
+              "observed_artifact_id": "118fdf64ae233738561a37fdd392b2088dab4d440e9678e9a395607023d6886e",
+              "report_latency_ms": 192.46297100000083,
+              "control_latency_ms": 0.7197259999957168,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 270,
+              "sampled_child_cpu_ms": 120,
+              "peak_parent_rss_bytes": 228032512,
+              "peak_child_rss_bytes": 92549120
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 539.9554659999994,
+              "baseline_artifact_id": "b8a237a2be0b6185c0236abd3abc30b3df2b8de058f31136a18604551b6029fe",
+              "observed_artifact_id": "e5afe601035d63f549c71c83f5efec55339e3843ff57a130dafb2b46cdb280fe",
+              "report_latency_ms": 188.32394200000272,
+              "control_latency_ms": 0.8244059999997262,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220913664,
+              "peak_child_rss_bytes": 110579712
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 554.4118070000113,
+              "baseline_artifact_id": "20dc173ae44dc0d2ecf5596b07ae6db0a8620dfc594c8ab16f6ffd19b23e0fe0",
+              "observed_artifact_id": "a605e74e9c20a393961a057808ff2f3b1eafe8f0213bc9ed8a62f1cf50e7deb2",
+              "report_latency_ms": 193.0713320000068,
+              "control_latency_ms": 0.7571210000023711,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220913664,
+              "peak_child_rss_bytes": 119664640
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 466.6870729999937,
+              "baseline_artifact_id": "118fdf64ae233738561a37fdd392b2088dab4d440e9678e9a395607023d6886e",
+              "observed_artifact_id": "79d677d1f8e04df42e36c4e531fdbefca25e48dd5c06d32a25322fd92da7ba87",
+              "report_latency_ms": 199.76416299999983,
+              "control_latency_ms": 0.8004349999973783,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 90,
+              "peak_parent_rss_bytes": 222142464,
+              "peak_child_rss_bytes": 80277504
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 588.6782879999955,
+              "baseline_artifact_id": "e5afe601035d63f549c71c83f5efec55339e3843ff57a130dafb2b46cdb280fe",
+              "observed_artifact_id": "183d31134e47925f1a48777581e1f92a3d5f4159f55c5d584568593ef1e55a36",
+              "report_latency_ms": 187.90503200000967,
+              "control_latency_ms": 1.179513000010047,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 224866304,
+              "peak_child_rss_bytes": 110600192
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 587.0075119999965,
+              "baseline_artifact_id": "a605e74e9c20a393961a057808ff2f3b1eafe8f0213bc9ed8a62f1cf50e7deb2",
+              "observed_artifact_id": "98cb03cc37f16aa65280f55520a6447e344ba26fe00a14aab70bd0ca1bd834c4",
+              "report_latency_ms": 179.3996949999855,
+              "control_latency_ms": 1.0094039999967208,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 226144256,
+              "peak_child_rss_bytes": 126451712
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 459.54066199999943,
+              "baseline_artifact_id": "79d677d1f8e04df42e36c4e531fdbefca25e48dd5c06d32a25322fd92da7ba87",
+              "observed_artifact_id": "f4b7eb916ef22738bf501bf1a4d71e112b8a9e5112a65b07c2f0e32efae26d40",
+              "report_latency_ms": 190.01383499999065,
+              "control_latency_ms": 0.6178370000125142,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 110,
+              "peak_parent_rss_bytes": 220516352,
+              "peak_child_rss_bytes": 90562560
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 517.983527999997,
+              "baseline_artifact_id": "183d31134e47925f1a48777581e1f92a3d5f4159f55c5d584568593ef1e55a36",
+              "observed_artifact_id": "f32c77cf20ce0dba4dd84f181f45c741fe7fdffcc4ff8dc20183562742c8eb56",
+              "report_latency_ms": 193.2502550000063,
+              "control_latency_ms": 0.7465579999989131,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220516352,
+              "peak_child_rss_bytes": 99987456
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 519.2417549999955,
+              "baseline_artifact_id": "98cb03cc37f16aa65280f55520a6447e344ba26fe00a14aab70bd0ca1bd834c4",
+              "observed_artifact_id": "ee77883d050dbf961ce401cf7da46cf81087a868909cfe6c0cf017fc9726bcf0",
+              "report_latency_ms": 185.33419700000377,
+              "control_latency_ms": 0.7578400000056718,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 221622272,
+              "peak_child_rss_bytes": 122302464
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 458.31092000000353,
+              "baseline_artifact_id": "f4b7eb916ef22738bf501bf1a4d71e112b8a9e5112a65b07c2f0e32efae26d40",
+              "observed_artifact_id": "f0c65033b93faf1564ff8dd1d23b98b45e46fa1a9e7f9e26247360675ed9b599",
+              "report_latency_ms": 183.16316000001098,
+              "control_latency_ms": 0.6461089999938849,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 90,
+              "peak_parent_rss_bytes": 220344320,
+              "peak_child_rss_bytes": 90537984
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 523.6883159999998,
+              "baseline_artifact_id": "f32c77cf20ce0dba4dd84f181f45c741fe7fdffcc4ff8dc20183562742c8eb56",
+              "observed_artifact_id": "61edcc661eeca8c254ad952bfa9ad7d2741cf862bbc6599726e52e35c0520f2a",
+              "report_latency_ms": 181.19484099998954,
+              "control_latency_ms": 0.7199569999938831,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 221474816,
+              "peak_child_rss_bytes": 101388288
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 567.2686539999995,
+              "baseline_artifact_id": "ee77883d050dbf961ce401cf7da46cf81087a868909cfe6c0cf017fc9726bcf0",
+              "observed_artifact_id": "e8a8fb8c9e894e85634c764de1dbae4bf1702931b2aef886435ff174e1b25533",
+              "report_latency_ms": 195.9688169999863,
+              "control_latency_ms": 1.058441999994102,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 218435584,
+              "peak_child_rss_bytes": 116690944
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 507.8024759999971,
+              "baseline_artifact_id": "f0c65033b93faf1564ff8dd1d23b98b45e46fa1a9e7f9e26247360675ed9b599",
+              "observed_artifact_id": "b75474c573306b2e13a6cdc285bcf0b04c37ce362b4fd4844e2d0888d7c2a586",
+              "report_latency_ms": 192.53293500001018,
+              "control_latency_ms": 0.6878359999973327,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 140,
+              "peak_parent_rss_bytes": 218869760,
+              "peak_child_rss_bytes": 87085056
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 522.2877949999965,
+              "baseline_artifact_id": "61edcc661eeca8c254ad952bfa9ad7d2741cf862bbc6599726e52e35c0520f2a",
+              "observed_artifact_id": "5f04bac0de907dee2c9d7b7453fe0accd66566cea9d45f5c4fa934d7e5be6b3e",
+              "report_latency_ms": 181.579018000004,
+              "control_latency_ms": 0.7541409999976167,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220573696,
+              "peak_child_rss_bytes": 112963584
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 554.8789620000025,
+              "baseline_artifact_id": "e8a8fb8c9e894e85634c764de1dbae4bf1702931b2aef886435ff174e1b25533",
+              "observed_artifact_id": "c0eb0f77827e75926319a23e0a4f37bceb330c29f565c7d39a1188c14dd50c49",
+              "report_latency_ms": 174.25586699999985,
+              "control_latency_ms": 0.7684969999972964,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 218894336,
+              "peak_child_rss_bytes": 112463872
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 469.2920710000035,
+              "baseline_artifact_id": "b75474c573306b2e13a6cdc285bcf0b04c37ce362b4fd4844e2d0888d7c2a586",
+              "observed_artifact_id": "60e7023c782fbe313b0fba40ee682c18f7e44636faa1fe8f4fd48ea849e148f1",
+              "report_latency_ms": 189.77870399999665,
+              "control_latency_ms": 1.4700900000025285,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 90,
+              "peak_parent_rss_bytes": 220602368,
+              "peak_child_rss_bytes": 77946880
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 515.2606369999994,
+              "baseline_artifact_id": "5f04bac0de907dee2c9d7b7453fe0accd66566cea9d45f5c4fa934d7e5be6b3e",
+              "observed_artifact_id": "cedff0518095e003a61b3ce18cabbd2eb170b6fa3c6a45c40aa97940f0859d02",
+              "report_latency_ms": 182.6843499999959,
+              "control_latency_ms": 0.9634340000047814,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 190,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 219463680,
+              "peak_child_rss_bytes": 112877568
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 520.1512820000062,
+              "baseline_artifact_id": "c0eb0f77827e75926319a23e0a4f37bceb330c29f565c7d39a1188c14dd50c49",
+              "observed_artifact_id": "26e496b8b8386e4f13cf988a3de18ac3ada5fca57cfb6dc6c7d8018d366263af",
+              "report_latency_ms": 184.35630200000014,
+              "control_latency_ms": 0.9571589999977732,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220741632,
+              "peak_child_rss_bytes": 118886400
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 457.4089130000066,
+              "baseline_artifact_id": "60e7023c782fbe313b0fba40ee682c18f7e44636faa1fe8f4fd48ea849e148f1",
+              "observed_artifact_id": "ba7555b3f19b376672dc345cf0bf5adf9c10a4cd761ec1c824af0e7edd64eb9e",
+              "report_latency_ms": 176.62212099999306,
+              "control_latency_ms": 0.8249869999999646,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 80,
+              "peak_parent_rss_bytes": 219897856,
+              "peak_child_rss_bytes": 89993216
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 545.0052989999967,
+              "baseline_artifact_id": "cedff0518095e003a61b3ce18cabbd2eb170b6fa3c6a45c40aa97940f0859d02",
+              "observed_artifact_id": "846188b4c3ea936138279941dd196748f854a995c8f2cd5da2d633cd14e08e91",
+              "report_latency_ms": 177.62262300000293,
+              "control_latency_ms": 0.6672069999913219,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 220,
+              "sampled_child_cpu_ms": 180,
+              "peak_parent_rss_bytes": 219897856,
+              "peak_child_rss_bytes": 98639872
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 541.7267289999872,
+              "baseline_artifact_id": "26e496b8b8386e4f13cf988a3de18ac3ada5fca57cfb6dc6c7d8018d366263af",
+              "observed_artifact_id": "18efac41767aa480d3482668e36b4c77f7c50a58d395abc4a91ae3ca771d2880",
+              "report_latency_ms": 182.65595499999472,
+              "control_latency_ms": 1.2147030000051018,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 220,
+              "sampled_child_cpu_ms": 230,
+              "peak_parent_rss_bytes": 220770304,
+              "peak_child_rss_bytes": 118157312
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 485.8617890000023,
+              "baseline_artifact_id": "ba7555b3f19b376672dc345cf0bf5adf9c10a4cd761ec1c824af0e7edd64eb9e",
+              "observed_artifact_id": "19ef74499577670370824a974b8144233dfa29d9caec73ca2d03f7d66d05e103",
+              "report_latency_ms": 203.8585230000026,
+              "control_latency_ms": 0.8462869999930263,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 220,
+              "sampled_child_cpu_ms": 110,
+              "peak_parent_rss_bytes": 219500544,
+              "peak_child_rss_bytes": 85950464
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 513.2972490000102,
+              "baseline_artifact_id": "846188b4c3ea936138279941dd196748f854a995c8f2cd5da2d633cd14e08e91",
+              "observed_artifact_id": "2b1efef274c97841444232d2213fe200edaa9d23d43958a8a3be362600584206",
+              "report_latency_ms": 189.75697700001183,
+              "control_latency_ms": 0.6775559999950929,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 190,
+              "peak_parent_rss_bytes": 221204480,
+              "peak_child_rss_bytes": 117960704
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 514.0575309999986,
+              "baseline_artifact_id": "18efac41767aa480d3482668e36b4c77f7c50a58d395abc4a91ae3ca771d2880",
+              "observed_artifact_id": "62b3f670661f7ec9e1ea9fbae81e69e8687c69bcf50024d9d267d60e2611e707",
+              "report_latency_ms": 178.07301600000937,
+              "control_latency_ms": 1.236057999994955,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 219074560,
+              "peak_child_rss_bytes": 127459328
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 481.288137999989,
+              "baseline_artifact_id": "19ef74499577670370824a974b8144233dfa29d9caec73ca2d03f7d66d05e103",
+              "observed_artifact_id": "d66017f375b9b7b7412a0f3b4a58abffdbc388a1aad552bbe46648292277e210",
+              "report_latency_ms": 188.59829199999513,
+              "control_latency_ms": 0.6711970000033034,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 90,
+              "peak_parent_rss_bytes": 219074560,
+              "peak_child_rss_bytes": 88596480
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 502.9122000000061,
+              "baseline_artifact_id": "2b1efef274c97841444232d2213fe200edaa9d23d43958a8a3be362600584206",
+              "observed_artifact_id": "2a881a4f9dab73c9fe37b24648d35245bd4fc3d3e7c41fd9826d7a99c5964e9b",
+              "report_latency_ms": 178.8528549999901,
+              "control_latency_ms": 0.7798659999971278,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 210,
+              "peak_parent_rss_bytes": 219926528,
+              "peak_child_rss_bytes": 112361472
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 568.5601620000089,
+              "baseline_artifact_id": "62b3f670661f7ec9e1ea9fbae81e69e8687c69bcf50024d9d267d60e2611e707",
+              "observed_artifact_id": "bab58f47a0029100a29ecda87a8e001f7b12b4045c6dde69bd029a5689bc6192",
+              "report_latency_ms": 181.50396000000183,
+              "control_latency_ms": 0.6285849999985658,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 250,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 219926528,
+              "peak_child_rss_bytes": 120336384
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 487.0053429999971,
+              "baseline_artifact_id": "d66017f375b9b7b7412a0f3b4a58abffdbc388a1aad552bbe46648292277e210",
+              "observed_artifact_id": "da75fc9148ce98e89dc7a493230422a8ca0a5aa99c24aa52fba5b9e923958cdc",
+              "report_latency_ms": 207.58455300000787,
+              "control_latency_ms": 1.3866479999996955,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 120,
+              "peak_parent_rss_bytes": 220778496,
+              "peak_child_rss_bytes": 78958592
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 576.0133439999918,
+              "baseline_artifact_id": "2a881a4f9dab73c9fe37b24648d35245bd4fc3d3e7c41fd9826d7a99c5964e9b",
+              "observed_artifact_id": "f2167db8f8a94f28826e77435acd78c70657e2f3ca2675ad324ab63b02391e47",
+              "report_latency_ms": 185.0473650000058,
+              "control_latency_ms": 0.7592000000004191,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 240,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220778496,
+              "peak_child_rss_bytes": 108138496
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 522.0381160000106,
+              "baseline_artifact_id": "bab58f47a0029100a29ecda87a8e001f7b12b4045c6dde69bd029a5689bc6192",
+              "observed_artifact_id": "49edce8f2fdf008a7c5b2e809ddcc8d453b388b0b62b87335b177b1ca9318e6f",
+              "report_latency_ms": 178.56143400000292,
+              "control_latency_ms": 1.0153319999953965,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 220778496,
+              "peak_child_rss_bytes": 119078912
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 468.51602000001003,
+              "baseline_artifact_id": "da75fc9148ce98e89dc7a493230422a8ca0a5aa99c24aa52fba5b9e923958cdc",
+              "observed_artifact_id": "9f2d6c9ba2f16e72406253218547133962a41efa5cc05a03bf0ea42abe2a089d",
+              "report_latency_ms": 194.4517230000056,
+              "control_latency_ms": 0.6191609999950742,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 110,
+              "peak_parent_rss_bytes": 219504640,
+              "peak_child_rss_bytes": 92110848
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 555.3384420000075,
+              "baseline_artifact_id": "f2167db8f8a94f28826e77435acd78c70657e2f3ca2675ad324ab63b02391e47",
+              "observed_artifact_id": "94c77edbec03189e458e0c45eb2ec169b77c9f69aff54dd77408c29e0d745904",
+              "report_latency_ms": 185.53279800000018,
+              "control_latency_ms": 0.8436990000045625,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 220,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 219930624,
+              "peak_child_rss_bytes": 112021504
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 543.8661520000023,
+              "baseline_artifact_id": "49edce8f2fdf008a7c5b2e809ddcc8d453b388b0b62b87335b177b1ca9318e6f",
+              "observed_artifact_id": "5cf5cd700319efd9572612b94faa88a11dd94833becf82a799c8a374917f3e7b",
+              "report_latency_ms": 176.94109700000263,
+              "control_latency_ms": 0.7508309999975609,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 220,
+              "peak_parent_rss_bytes": 219086848,
+              "peak_child_rss_bytes": 120729600
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 471.21511800000735,
+              "baseline_artifact_id": "9f2d6c9ba2f16e72406253218547133962a41efa5cc05a03bf0ea42abe2a089d",
+              "observed_artifact_id": "b5119773a08878e239f503a8fd7bef4f6c03631bdc808d1b919beec26d961b34",
+              "report_latency_ms": 182.13353500000085,
+              "control_latency_ms": 0.9491409999900497,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 230,
+              "sampled_child_cpu_ms": 130,
+              "peak_parent_rss_bytes": 219512832,
+              "peak_child_rss_bytes": 86843392
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 514.5164709999954,
+              "baseline_artifact_id": "94c77edbec03189e458e0c45eb2ec169b77c9f69aff54dd77408c29e0d745904",
+              "observed_artifact_id": "99ea00e4e711866e499cf769e19c4587aa0660e1292b1fa9bb4bb67d6deea111",
+              "report_latency_ms": 182.3997750000126,
+              "control_latency_ms": 0.6104639999975916,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 200,
+              "sampled_child_cpu_ms": 190,
+              "peak_parent_rss_bytes": 221224960,
+              "peak_child_rss_bytes": 104321024
+            },
+            {
+              "status": "observed",
+              "path": "project/repository-runtime.ts",
+              "edit_to_current_ms": 555.2557830000005,
+              "baseline_artifact_id": "5cf5cd700319efd9572612b94faa88a11dd94833becf82a799c8a374917f3e7b",
+              "observed_artifact_id": "5289b358382d6b3801d1aa2b59f33c6a6055b5de0fb6b341592233701c6c8cef",
+              "report_latency_ms": 184.80115600000136,
+              "control_latency_ms": 0.9548649999924237,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 220,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 221224960,
+              "peak_child_rss_bytes": 128266240
+            },
+            {
+              "status": "observed",
+              "path": "rust/sample.rs",
+              "edit_to_current_ms": 445.10150299999805,
+              "baseline_artifact_id": "b5119773a08878e239f503a8fd7bef4f6c03631bdc808d1b919beec26d961b34",
+              "observed_artifact_id": "8a549a468fea6b8ef25f020e7ec6c6b9bc77b21c89d31dd09760eb5f65a51630",
+              "report_latency_ms": 175.74426000000676,
+              "control_latency_ms": 0.6824110000015935,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 180,
+              "sampled_child_cpu_ms": 120,
+              "peak_parent_rss_bytes": 220798976,
+              "peak_child_rss_bytes": 93216768
+            },
+            {
+              "status": "observed",
+              "path": "svelte/sample.svelte",
+              "edit_to_current_ms": 547.7639900000067,
+              "baseline_artifact_id": "99ea00e4e711866e499cf769e19c4587aa0660e1292b1fa9bb4bb67d6deea111",
+              "observed_artifact_id": "56dc5c68b7127866f2664b356a5ff46ad940366c349a3a6b7d041183fa394e6e",
+              "report_latency_ms": 184.41524700001173,
+              "control_latency_ms": 0.6309819999878528,
+              "response_bytes": 7815,
+              "report_paths": [
+                "project/repository-runtime.ts",
+                "project/source.ts",
+                "rust/sample.rs",
+                "svelte/sample.svelte"
+              ],
+              "sampled_parent_cpu_ms": 210,
+              "sampled_child_cpu_ms": 200,
+              "peak_parent_rss_bytes": 220798976,
+              "peak_child_rss_bytes": 116469760
+            }
+          ],
+          "all_observed": true,
+          "edit_percentiles_ms": {
+            "p50": 517.9306299999953,
+            "p95": 574.7078639999963,
+            "p99": 592.3373649999994,
+            "count": 120
+          },
+          "report_percentiles_ms": {
+            "p50": 184.35630200000014,
+            "p95": 202.11969599999793,
+            "p99": 207.66153199999826,
+            "count": 120
+          },
+          "control_percentiles_ms": {
+            "p50": 0.8227380000025732,
+            "p95": 1.2989999999999782,
+            "p99": 1.6154290000049514,
+            "count": 120
+          },
+          "context_bytes": 937673,
+          "limitation": "Per-round child CPU/RSS sampling is a lower bound; each report reparses four paths across TypeScript, Rust and Svelte"
+        },
+        "parent_context_bytes": 30879
+      }
+    }
+  },
+  "limitations": [
+    "No live coding workers are launched by this disposable benchmark",
+    "No input/cancel/recovery operation is executed without an actual authorized task scenario",
+    "Child CPU/RSS sampling is a lower bound and includes Git plus native helper children",
+    "Installed mode uses its published public socket path; host stdio and source-hidden qualifications are separate V13/V14 gates",
+    "Baseline and enabled use the same build, repository, registered works and changed source bytes, but separate fresh service generations"
+  ]
+}

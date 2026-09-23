@@ -1,0 +1,2988 @@
+{
+  "schema_version": 1,
+  "candidate_build_id": "01fbda2ceee129599a7875f69cf07e2da02b21581f973e28f68dc8939262ac8c",
+  "installed_root": "/tmp/passeur-sc15-final-installed/01fbda2ceee129599a7875f69cf07e2da02b21581f973e28f68dc8939262ac8c",
+  "relocated_path": "/tmp/passeur-structural-installed-AaaW9F/source project ü spaces",
+  "rows": [
+    {
+      "row": "L01",
+      "suffix": ".rs",
+      "dialect": "rust",
+      "work_id": "a4093f45-6a0c-40f2-84ff-1ab41d5d858f",
+      "report_id": "bd42255e-1724-408d-be95-0a43b71ebba3",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 191
+    },
+    {
+      "row": "L02",
+      "suffix": ".ts",
+      "dialect": "typescript",
+      "work_id": "77d65fbf-32bd-4532-9464-708116dafe7f",
+      "report_id": "15ee4ddf-939c-457c-b4aa-07e2f0c7f2d9",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 263
+    },
+    {
+      "row": "L02",
+      "suffix": ".mts",
+      "dialect": "typescript",
+      "work_id": "054c28e6-07df-4f48-960a-662c3741aa54",
+      "report_id": "d2874f05-0663-4933-93c9-9addc4e1224b",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 263
+    },
+    {
+      "row": "L02",
+      "suffix": ".cts",
+      "dialect": "typescript",
+      "work_id": "9a67ad4c-f7b8-4579-8ee2-812ac518bd59",
+      "report_id": "4863be13-37be-41b1-bf49-81e8340b9231",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 263
+    },
+    {
+      "row": "L03",
+      "suffix": ".js",
+      "dialect": "javascript",
+      "work_id": "31b0379e-1def-469a-9747-f9729cb37f99",
+      "report_id": "dc2c4400-5ad6-4ea0-96f2-4b956f3e9fb6",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 347
+    },
+    {
+      "row": "L03",
+      "suffix": ".mjs",
+      "dialect": "javascript",
+      "work_id": "3528a584-104e-4080-aac0-b0b40d9f1d81",
+      "report_id": "900c1d9b-8e51-445d-9008-594a62bbb40a",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 347
+    },
+    {
+      "row": "L03",
+      "suffix": ".cjs",
+      "dialect": "javascript",
+      "work_id": "e892d5b0-b8f7-4cbb-869b-8d6965f4f325",
+      "report_id": "b848122f-564b-49e8-b972-ba4fc14ab6cb",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 261
+    },
+    {
+      "row": "L04",
+      "suffix": ".py",
+      "dialect": "python",
+      "work_id": "65b9e3dd-4818-451d-9b93-806567008399",
+      "report_id": "9a909e07-f195-4652-a257-c2543d54109e",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 391
+    },
+    {
+      "row": "L04",
+      "suffix": ".pyi",
+      "dialect": "python",
+      "work_id": "1cf6e4ae-33ca-46a3-8e2a-0facbee138ec",
+      "report_id": "cda616fd-8c96-47b8-89ad-e09bdb2ce76a",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 391
+    },
+    {
+      "row": "L05",
+      "suffix": ".lua",
+      "dialect": "lua",
+      "work_id": "dc93e21d-2370-4e50-8a72-cab73f405f02",
+      "report_id": "8e034015-ce64-4cde-b476-da0aa25bdb18",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 285
+    },
+    {
+      "row": "L06",
+      "suffix": ".kt",
+      "dialect": "kotlin",
+      "work_id": "9e3e0a86-4367-45f9-9ebc-13f5ed70e983",
+      "report_id": "50a78e20-7bb4-4fff-8b05-62be1b480ea7",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 301
+    },
+    {
+      "row": "L06",
+      "suffix": ".kts",
+      "dialect": "kotlin",
+      "work_id": "ce83adfa-2867-4322-a47b-0361606922fd",
+      "report_id": "60c6217d-f1bf-42ca-bb5e-fcf3a6e827da",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 301
+    },
+    {
+      "row": "L07",
+      "suffix": ".zig",
+      "dialect": "zig",
+      "work_id": "e81de2e8-f542-4c62-9db6-a33bca397f2c",
+      "report_id": "5cfdc515-95cd-4987-aad1-158c88f501de",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 333
+    },
+    {
+      "row": "L08",
+      "suffix": ".cs",
+      "dialect": "csharp",
+      "work_id": "9045e8bd-35ba-4c3f-8e1a-2d390111a90c",
+      "report_id": "00702425-1747-49a5-b425-ff472cd2509d",
+      "declaration": "InstalledProbe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 435
+    },
+    {
+      "row": "L09",
+      "suffix": ".c",
+      "dialect": "c",
+      "work_id": "979a5080-a3dd-4837-844d-20d9e8df5c3c",
+      "report_id": "791e8e98-6f76-486d-8dec-e0fca1f11964",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "direct_body_coverage_unavailable",
+        "preprocessor_alternatives_unresolved"
+      ],
+      "exact_detail_bytes": 326
+    },
+    {
+      "row": "L09",
+      "suffix": ".h",
+      "dialect": "c",
+      "configured_dialect": "c",
+      "work_id": "55e12241-880b-42d2-8220-da3fe97e3194",
+      "report_id": "ad4c85e0-2c99-4996-a5fe-a4b25591e759",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "direct_body_coverage_unavailable",
+        "preprocessor_alternatives_unresolved"
+      ],
+      "exact_detail_bytes": 326
+    },
+    {
+      "row": "L10",
+      "suffix": ".cc",
+      "dialect": "cpp",
+      "work_id": "d02d22cc-0483-48d7-bb9b-f2b437d74b85",
+      "report_id": "ffdc1620-f6dc-4c7d-91e6-a8ee0a7b3ec3",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 378
+    },
+    {
+      "row": "L10",
+      "suffix": ".cpp",
+      "dialect": "cpp",
+      "work_id": "d770d07a-3be0-41b1-ad7e-c52dc0159234",
+      "report_id": "7440b886-c2b9-4846-bafd-07032efbbe9c",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 378
+    },
+    {
+      "row": "L10",
+      "suffix": ".cxx",
+      "dialect": "cpp",
+      "work_id": "f644927d-45f0-4d9a-9cc6-ad3bec235c63",
+      "report_id": "fb19511a-4280-4000-bbac-c6743fed4644",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 378
+    },
+    {
+      "row": "L10",
+      "suffix": ".hpp",
+      "dialect": "cpp",
+      "work_id": "44889399-adeb-499e-9169-ce1e1f46def2",
+      "report_id": "b180c6f6-8148-42b9-a36a-d40654603d4e",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 378
+    },
+    {
+      "row": "L10",
+      "suffix": ".hh",
+      "dialect": "cpp",
+      "work_id": "61b4dc8d-2c11-4a5b-a74e-fd17ab91f5d6",
+      "report_id": "f1da1c37-9520-4ec9-adc2-30fa846a9819",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 378
+    },
+    {
+      "row": "L10",
+      "suffix": ".hxx",
+      "dialect": "cpp",
+      "work_id": "c9eec322-06f4-45fb-922a-ef6f219e340f",
+      "report_id": "5b8c0d4d-caae-48ea-b72d-30cf9d8c5418",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 378
+    },
+    {
+      "row": "L10",
+      "suffix": ".h",
+      "dialect": "cpp",
+      "configured_dialect": "cpp",
+      "work_id": "340598d7-b44a-48de-91ed-2bac34e363ff",
+      "report_id": "58f81746-c203-4383-b814-b4919508a9de",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 378
+    },
+    {
+      "row": "L11",
+      "suffix": ".odin",
+      "dialect": "odin",
+      "work_id": "6ea53d45-b1ba-4ab2-aa0e-6012c7953f5a",
+      "report_id": "9cb4d446-fb14-4aa3-a7e6-552b06ed4707",
+      "declaration": "installed_probe",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "exact_detail_bytes": 318
+    },
+    {
+      "row": "L12",
+      "suffix": ".svelte",
+      "dialect": "svelte5",
+      "work_id": "0432667f-5414-411f-a136-e2e3175a1f3d",
+      "report_id": "68d60ce2-2f26-4d47-956f-5e59ee1ab002",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 498
+    },
+    {
+      "row": "L12",
+      "suffix": ".svelte.js",
+      "dialect": "javascript",
+      "work_id": "043c67d4-1185-4741-80b0-7196653d273b",
+      "report_id": "ecb8935f-6589-4f54-a85c-061b65038994",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 347
+    },
+    {
+      "row": "L12",
+      "suffix": ".svelte.ts",
+      "dialect": "typescript",
+      "work_id": "84f0e52e-f71c-4062-8ba3-e0ed09a80044",
+      "report_id": "fd7761b7-0aa3-45c1-897f-28c635245154",
+      "declaration": "installed_probe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 263
+    },
+    {
+      "row": "L13",
+      "suffix": ".jsx",
+      "dialect": "jsx",
+      "work_id": "52280a2d-f664-4263-ace5-8497f06a8ef7",
+      "report_id": "5f11309f-1ae4-4a16-b594-1277d150bcf8",
+      "declaration": "InstalledProbe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 189
+    },
+    {
+      "row": "L13",
+      "suffix": ".js",
+      "dialect": "jsx",
+      "configured_dialect": "jsx",
+      "work_id": "00546449-4cc8-44ee-b9f9-2d62c4e3f94b",
+      "report_id": "fef19715-548d-4b20-b235-3de47c934b93",
+      "declaration": "InstalledProbe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 189
+    },
+    {
+      "row": "L13",
+      "suffix": ".tsx",
+      "dialect": "tsx",
+      "work_id": "89069148-e60f-4854-91f8-20e97833c6af",
+      "report_id": "bf1fd95b-daad-453a-a753-5aaea34d99e2",
+      "declaration": "InstalledProbe",
+      "coverage": "complete",
+      "limitations": [],
+      "exact_detail_bytes": 199
+    }
+  ],
+  "canonical_public": [
+    {
+      "row": "L01",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "d3bbef9d-5edb-4cdc-b419-1daff8da1600",
+      "coverage": "complete",
+      "declarations": 5
+    },
+    {
+      "row": "L01",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "7f2c5fe1-6ca2-4de6-ae65-3fbd031b8771",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "value",
+        "transform",
+        "Packet"
+      ],
+      "exact_detail_bytes": 146
+    },
+    {
+      "row": "L01",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "e0ff9faa-d1f3-4f9d-92ab-06e1e9b6f011",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "value",
+        "broken",
+        "transform",
+        "read",
+        "Packet",
+        "Read"
+      ],
+      "exact_detail_bytes": 41
+    },
+    {
+      "row": "L01",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "cc0540cc-a705-47f6-aa15-1fb32b612432",
+      "coverage": "complete",
+      "declarations": 5
+    },
+    {
+      "row": "L01",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "eabcfc49-0278-4be3-91b8-273b0539c7b9",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "value",
+        "transform",
+        "Packet"
+      ],
+      "exact_detail_bytes": 146
+    },
+    {
+      "row": "L01",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "b8b9fc2e-8fd0-4bf0-b261-e44d45ff45e4",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "value",
+        "broken",
+        "transform",
+        "read",
+        "Packet",
+        "Read"
+      ],
+      "exact_detail_bytes": 41
+    },
+    {
+      "row": "L02",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "b3fea56b-f7a7-4005-a725-539cdcce33fa",
+      "coverage": "complete",
+      "declarations": 3
+    },
+    {
+      "row": "L02",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "267740e2-db36-4f1e-a509-f0b316a00784",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "mapper",
+        "Item"
+      ],
+      "exact_detail_bytes": 189
+    },
+    {
+      "row": "L02",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "6265a338-ea8b-4889-b68f-cf65c35f7a75",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "mapper",
+        "broken",
+        "take",
+        "Item"
+      ],
+      "exact_detail_bytes": 56
+    },
+    {
+      "row": "L02",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "79227f47-9770-485a-ad4d-951e57e19bb2",
+      "coverage": "complete",
+      "declarations": 3
+    },
+    {
+      "row": "L02",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "8a833f84-639c-4726-9035-8519eefcb39e",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "mapper",
+        "Item"
+      ],
+      "exact_detail_bytes": 189
+    },
+    {
+      "row": "L02",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "73000b61-7694-4fee-9fff-78c70880ad03",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "mapper",
+        "broken",
+        "take",
+        "Item"
+      ],
+      "exact_detail_bytes": 56
+    },
+    {
+      "row": "L03",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "4c24e638-7166-47d3-883e-df1c3ffb2ded",
+      "coverage": "complete",
+      "declarations": 6
+    },
+    {
+      "row": "L03",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "69883db4-9e36-4e3b-a6fc-a7fe757e6996",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "stream"
+      ],
+      "exact_detail_bytes": 293
+    },
+    {
+      "row": "L03",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "1a092730-5e39-4edb-bc22-f440232d48db",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "embedded_parse_error_or_missing_token",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "twice",
+        "Box",
+        "#private",
+        "field",
+        "broken",
+        "stream",
+        "open"
+      ],
+      "exact_detail_bytes": 45
+    },
+    {
+      "row": "L03",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "df83f6d8-f496-49c8-ab18-532939181fad",
+      "coverage": "complete",
+      "declarations": 6
+    },
+    {
+      "row": "L03",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "31bf132e-1402-4b76-bff6-ec23c8fc3de1",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "stream"
+      ],
+      "exact_detail_bytes": 293
+    },
+    {
+      "row": "L03",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "269c7cb9-dd13-4362-9f1f-a13a46470e4b",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "embedded_parse_error_or_missing_token",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "twice",
+        "Box",
+        "#private",
+        "field",
+        "broken",
+        "stream",
+        "open"
+      ],
+      "exact_detail_bytes": 45
+    },
+    {
+      "row": "L04",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "f3de6717-9796-4acc-a155-32a8f23a3331",
+      "coverage": "incomplete",
+      "declarations": 5
+    },
+    {
+      "row": "L04",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "a105cb5f-de53-48b9-ae61-a9ad4ba592d2",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "run",
+        "Alias"
+      ],
+      "exact_detail_bytes": 342
+    },
+    {
+      "row": "L04",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "49b92169-1f32-4e6a-a1cd-06ce9fb50802",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "value",
+        "Box",
+        "run",
+        "get",
+        "valid",
+        "Alias"
+      ],
+      "exact_detail_bytes": 44
+    },
+    {
+      "row": "L04",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "8bdca008-4e01-4876-96cf-2e504e4d6e86",
+      "coverage": "incomplete",
+      "declarations": 5
+    },
+    {
+      "row": "L04",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "5c199442-1451-4b68-9369-9b79dacf61fd",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "run",
+        "Alias"
+      ],
+      "exact_detail_bytes": 342
+    },
+    {
+      "row": "L04",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "ec5f498d-5d3d-4059-88a0-318af74b039c",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "value",
+        "Box",
+        "run",
+        "get",
+        "valid",
+        "Alias"
+      ],
+      "exact_detail_bytes": 44
+    },
+    {
+      "row": "L05",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "cb59cab2-234c-49b4-b884-caec83a6aba7",
+      "coverage": "incomplete",
+      "declarations": 5
+    },
+    {
+      "row": "L05",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "3f6270b1-4d16-4014-9e54-9b06200fd41a",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "greet",
+        "value"
+      ],
+      "exact_detail_bytes": 235
+    },
+    {
+      "row": "L05",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "527a321b-065a-4bca-837a-cf8aaded5cbe",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Box.read",
+        "Box:get",
+        "f",
+        "greet",
+        "nested",
+        "value"
+      ],
+      "exact_detail_bytes": 32
+    },
+    {
+      "row": "L05",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "926a882b-96db-44ae-9110-1a0d9b80bedf",
+      "coverage": "incomplete",
+      "declarations": 5
+    },
+    {
+      "row": "L05",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "7a2ec8ee-043c-4257-b834-15e8626e593f",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "greet",
+        "value"
+      ],
+      "exact_detail_bytes": 235
+    },
+    {
+      "row": "L05",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "cd03adbc-75be-4651-a307-5eeeab2d9a0b",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Box.read",
+        "Box:get",
+        "f",
+        "greet",
+        "nested",
+        "value"
+      ],
+      "exact_detail_bytes": 32
+    },
+    {
+      "row": "L06",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "0b710570-915a-4eec-9f59-4dfb2dd3602b",
+      "coverage": "incomplete",
+      "declarations": 5
+    },
+    {
+      "row": "L06",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "ba011112-5885-488d-9fe7-0c2be43a62e9",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "get",
+        "repeat2"
+      ],
+      "exact_detail_bytes": 264
+    },
+    {
+      "row": "L06",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "d4ba1896-51b5-466e-b5d0-fcd4184a6ab3",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Box",
+        "broken",
+        "get",
+        "repeat2",
+        "valid",
+        "current",
+        "Names"
+      ],
+      "exact_detail_bytes": 46
+    },
+    {
+      "row": "L06",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "f98b6c54-16dc-4e7e-9f94-8c798ada9d3e",
+      "coverage": "incomplete",
+      "declarations": 5
+    },
+    {
+      "row": "L06",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "03a87e69-b779-4d6d-a525-58a4262943a1",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "get",
+        "repeat2"
+      ],
+      "exact_detail_bytes": 264
+    },
+    {
+      "row": "L06",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "b8b69953-5ad4-492f-b6f1-3e5ed3fdaf5e",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Box",
+        "broken",
+        "get",
+        "repeat2",
+        "valid",
+        "current",
+        "Names"
+      ],
+      "exact_detail_bytes": 46
+    },
+    {
+      "row": "L07",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "85710878-e770-43d2-befd-297905b8084c",
+      "coverage": "incomplete",
+      "declarations": 8
+    },
+    {
+      "row": "L07",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "28a52448-fbc9-41ee-8016-4f77cef9cd92",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "y",
+        "add"
+      ],
+      "exact_detail_bytes": 279
+    },
+    {
+      "row": "L07",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "61ab6a41-b55e-4c50-af60-66395725422a",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "first",
+        "second",
+        "x",
+        "y",
+        "add",
+        "broken",
+        "move",
+        "valid",
+        "Choice",
+        "Point"
+      ],
+      "exact_detail_bytes": 82
+    },
+    {
+      "row": "L07",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "92a11c6b-6486-440f-8280-f18617729dff",
+      "coverage": "incomplete",
+      "declarations": 8
+    },
+    {
+      "row": "L07",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "f1447e09-e41e-40cf-8b5d-771a26dd078a",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "y",
+        "add"
+      ],
+      "exact_detail_bytes": 279
+    },
+    {
+      "row": "L07",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "49d8f465-05f6-4c68-945d-f6300ed505ae",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "first",
+        "second",
+        "x",
+        "y",
+        "add",
+        "broken",
+        "move",
+        "valid",
+        "Choice",
+        "Point"
+      ],
+      "exact_detail_bytes": 82
+    },
+    {
+      "row": "L08",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "1d9e4d12-2168-405e-bfa0-a75153eb780c",
+      "coverage": "incomplete",
+      "declarations": 7
+    },
+    {
+      "row": "L08",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "bb055863-b2f1-4339-bfe3-ba9b617c8ec0",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "Run"
+      ],
+      "exact_detail_bytes": 358
+    },
+    {
+      "row": "L08",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "8e970b21-4edd-4a6e-8e70-e2f948993343",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "declaration_header_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Box",
+        "Box",
+        "Seed",
+        "N",
+        "Run",
+        "Run",
+        "Count",
+        "Name",
+        "Box"
+      ],
+      "exact_detail_bytes": 59
+    },
+    {
+      "row": "L08",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "cfa2b1d3-543d-48f0-9fd3-0e3936a7f74d",
+      "coverage": "incomplete",
+      "declarations": 7
+    },
+    {
+      "row": "L08",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "f760cef8-ed3b-4564-a8ae-89ed8db9c629",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "Run"
+      ],
+      "exact_detail_bytes": 358
+    },
+    {
+      "row": "L08",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "325d7a25-3299-4e01-bde5-df6b7bbe30a8",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "declaration_header_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Box",
+        "Box",
+        "Seed",
+        "N",
+        "Run",
+        "Run",
+        "Count",
+        "Name",
+        "Box"
+      ],
+      "exact_detail_bytes": 59
+    },
+    {
+      "row": "L09",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "9785a614-1c1d-414b-a800-212dcf90e1b3",
+      "coverage": "incomplete",
+      "declarations": 8
+    },
+    {
+      "row": "L09",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "4df451c2-495d-4624-a36c-224377cade68",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "direct_body_coverage_unavailable",
+        "preprocessor_alternatives_unresolved"
+      ],
+      "changed_names": [
+        "sum"
+      ],
+      "exact_detail_bytes": 276
+    },
+    {
+      "row": "L09",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "27aaaae6-2e0a-4750-8baf-46eeced26209",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token",
+        "preprocessor_alternatives_unresolved"
+      ],
+      "changed_names": [
+        "sum",
+        "x",
+        "y",
+        "selected",
+        "selected",
+        "sum",
+        "Point",
+        "Handler"
+      ],
+      "exact_detail_bytes": 31
+    },
+    {
+      "row": "L09",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "2cc2cc06-d83c-419d-8ff8-431ec1d72838",
+      "coverage": "incomplete",
+      "declarations": 8
+    },
+    {
+      "row": "L09",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "8f890c88-a339-439b-aaa0-f30c0bbd673d",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "direct_body_coverage_unavailable",
+        "preprocessor_alternatives_unresolved"
+      ],
+      "changed_names": [
+        "sum"
+      ],
+      "exact_detail_bytes": 276
+    },
+    {
+      "row": "L09",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "352186e4-a0d8-4ccc-8ee9-ba7c2f5623a7",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token",
+        "preprocessor_alternatives_unresolved"
+      ],
+      "changed_names": [
+        "sum",
+        "x",
+        "y",
+        "selected",
+        "selected",
+        "sum",
+        "Point",
+        "Handler"
+      ],
+      "exact_detail_bytes": 31
+    },
+    {
+      "row": "L10",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "616ff13d-cca6-4ffd-82df-413f40341be7",
+      "coverage": "incomplete",
+      "declarations": 9
+    },
+    {
+      "row": "L10",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "4443556d-c029-41af-a32c-0f23a8296557",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "run"
+      ],
+      "exact_detail_bytes": 328
+    },
+    {
+      "row": "L10",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "473ce892-d193-46aa-8ed6-3769464d1127",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Callback",
+        "Worker",
+        "Worker",
+        "~Worker",
+        "operator()",
+        "choose",
+        "operator[]",
+        "run",
+        "run"
+      ],
+      "exact_detail_bytes": 56
+    },
+    {
+      "row": "L10",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "92049df0-dacd-45a7-a742-862d6f3fc509",
+      "coverage": "incomplete",
+      "declarations": 9
+    },
+    {
+      "row": "L10",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "5cb6a3dc-5638-4bfb-95d9-90301d8cf25f",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "run"
+      ],
+      "exact_detail_bytes": 328
+    },
+    {
+      "row": "L10",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "d069bb01-bd29-4bcf-b78b-699f26530f5e",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_body_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Callback",
+        "Worker",
+        "Worker",
+        "~Worker",
+        "operator()",
+        "choose",
+        "operator[]",
+        "run",
+        "run"
+      ],
+      "exact_detail_bytes": 56
+    },
+    {
+      "row": "L11",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "09c78e3d-3e56-462f-829e-87e5ebffdddf",
+      "coverage": "incomplete",
+      "declarations": 9
+    },
+    {
+      "row": "L11",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "f669f039-4915-4889-99f1-3c0ef82fd661",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "add"
+      ],
+      "exact_detail_bytes": 257
+    },
+    {
+      "row": "L11",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "5c912a87-68c4-4e55-98e2-d7a0be81b032",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Id",
+        "Color",
+        "x",
+        "y",
+        "Blue",
+        "Red",
+        "(Point) .move",
+        "add",
+        "broken",
+        "valid",
+        "Point"
+      ],
+      "exact_detail_bytes": 95
+    },
+    {
+      "row": "L11",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "074c5def-5274-4d07-b376-2a54b8416427",
+      "coverage": "incomplete",
+      "declarations": 9
+    },
+    {
+      "row": "L11",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "4ef6282a-ef1e-4ac9-be2d-e20a639656b1",
+      "coverage": "incomplete",
+      "limitations": [
+        "direct_body_coverage_unavailable"
+      ],
+      "changed_names": [
+        "add"
+      ],
+      "exact_detail_bytes": 257
+    },
+    {
+      "row": "L11",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "5295ba6f-e1a2-403c-9c27-cae25c4ab616",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "direct_body_coverage_unavailable",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Id",
+        "Color",
+        "x",
+        "y",
+        "Blue",
+        "Red",
+        "(Point) .move",
+        "add",
+        "broken",
+        "valid",
+        "Point"
+      ],
+      "exact_detail_bytes": 95
+    },
+    {
+      "row": "L12",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "29e02882-3ddb-4898-8600-9c3a85ea5673",
+      "coverage": "complete",
+      "declarations": 4
+    },
+    {
+      "row": "L12",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "86596c2d-e42a-4d1f-af7f-f9e0c8bbddf0",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "card"
+      ],
+      "exact_detail_bytes": 448
+    },
+    {
+      "row": "L12",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "3dd78b6c-7421-48e2-8249-fe6862288066",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "snippet_parameters_unavailable"
+      ],
+      "changed_names": [
+        "broken",
+        "hello",
+        "shared",
+        "card",
+        "$props"
+      ],
+      "exact_detail_bytes": 131
+    },
+    {
+      "row": "L12",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "32b4dac7-cb8d-4846-a2a7-6b953a29dd99",
+      "coverage": "complete",
+      "declarations": 4
+    },
+    {
+      "row": "L12",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "8c0bc4c3-85f3-4a55-bf8d-46e62e0f0413",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "card"
+      ],
+      "exact_detail_bytes": 448
+    },
+    {
+      "row": "L12",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "8886db98-51ca-4364-beee-3f3058f18d1e",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "snippet_parameters_unavailable"
+      ],
+      "changed_names": [
+        "broken",
+        "hello",
+        "shared",
+        "card",
+        "$props"
+      ],
+      "exact_detail_bytes": 131
+    },
+    {
+      "row": "L13",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "77f8e1b3-ab29-4e9a-95c9-08dff8ba35ba",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L13",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "5f7dcd3a-8a8f-45f6-a22c-1908ecf42694",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "Card"
+      ],
+      "exact_detail_bytes": 113
+    },
+    {
+      "row": "L13",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "cli",
+      "report_id": "d7f583fa-8a19-41ef-b00b-ebf7fcdb660d",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "embedded_parse_error_or_missing_token",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Card"
+      ],
+      "exact_detail_bytes": 62
+    },
+    {
+      "row": "L13",
+      "variant": "canonical",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "c53da5d6-a54b-4658-b007-8f7814b5d8b9",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L13",
+      "variant": "canonical",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "42ffb100-354e-48d5-8812-4754ef21bb0a",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "Card"
+      ],
+      "exact_detail_bytes": 113
+    },
+    {
+      "row": "L13",
+      "variant": "canonical",
+      "stage": "incomplete",
+      "route": "mcp",
+      "report_id": "85c10642-fb69-4f4d-94dc-bb80e577fd48",
+      "coverage": "incomplete",
+      "limitations": [
+        "comparison_coverage_incomplete",
+        "declaration_header_incomplete",
+        "embedded_parse_error_or_missing_token",
+        "parse_error_or_missing_token"
+      ],
+      "changed_names": [
+        "Card"
+      ],
+      "exact_detail_bytes": 62
+    },
+    {
+      "row": "L01",
+      "variant": "population",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "2a72784e-8c6f-43a7-ad3b-ab616364cf21",
+      "coverage": "complete",
+      "declarations": 15
+    },
+    {
+      "row": "L01",
+      "variant": "population",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "16daaf2c-85fd-4887-91f8-b4c89d868bf3",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "A",
+        "data",
+        "fetch",
+        "r#gen",
+        "Record",
+        "Label"
+      ],
+      "exact_detail_bytes": 566
+    },
+    {
+      "row": "L01",
+      "variant": "population",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "5e302e35-f99d-43ff-90be-e8a6d15ca7fe",
+      "coverage": "complete",
+      "declarations": 15
+    },
+    {
+      "row": "L01",
+      "variant": "population",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "39dfbbe4-4254-4cff-9156-7116c5f99b35",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "A",
+        "data",
+        "fetch",
+        "r#gen",
+        "Record",
+        "Label"
+      ],
+      "exact_detail_bytes": 566
+    },
+    {
+      "row": "L02",
+      "variant": "population_mts",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "d70135c4-34db-48d5-874b-21af91436c56",
+      "coverage": "complete",
+      "declarations": 10
+    },
+    {
+      "row": "L02",
+      "variant": "population_mts",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "b4a32bc4-eb76-4954-901a-a0c413c294ca",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "pick",
+        "convert",
+        "convert",
+        "value",
+        "Key"
+      ],
+      "exact_detail_bytes": 522
+    },
+    {
+      "row": "L02",
+      "variant": "population_mts",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "5dcd945a-34c5-4de8-a7dd-61d8131a106d",
+      "coverage": "complete",
+      "declarations": 10
+    },
+    {
+      "row": "L02",
+      "variant": "population_mts",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "df5fdae6-8397-45c0-acf3-2a4bb4716986",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "pick",
+        "convert",
+        "convert",
+        "value",
+        "Key"
+      ],
+      "exact_detail_bytes": 522
+    },
+    {
+      "row": "L02",
+      "variant": "population_cts",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "244845b6-1cee-4348-9ec5-298d35fa13f5",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L02",
+      "variant": "population_cts",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "b465c3dc-1a07-4925-81e7-4de1edba1161",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "sum"
+      ],
+      "exact_detail_bytes": 83
+    },
+    {
+      "row": "L02",
+      "variant": "population_cts",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "721fdafe-ba81-4a77-ba4c-eec6d7058028",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L02",
+      "variant": "population_cts",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "1916d190-67f1-4e5e-ac5e-8fae628f7237",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "sum"
+      ],
+      "exact_detail_bytes": 83
+    },
+    {
+      "row": "L12",
+      "variant": "script_js",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "2195eb41-6896-447d-b771-ff13ea664b4b",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L12",
+      "variant": "script_js",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "4b1c6c79-7dda-452a-86e1-ff719952d893",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "scriptJs"
+      ],
+      "exact_detail_bytes": 68
+    },
+    {
+      "row": "L12",
+      "variant": "script_js",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "7be0cc26-b757-4362-94e9-828692952a6f",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L12",
+      "variant": "script_js",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "a0e4df4f-358b-48a1-a8de-17740ccf6ae2",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "scriptJs"
+      ],
+      "exact_detail_bytes": 68
+    },
+    {
+      "row": "L12",
+      "variant": "script_ts",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "cf3dff8b-ee07-414e-9a92-8f035bcef74e",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L12",
+      "variant": "script_ts",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "02e0bb8e-fa74-4b8a-8b3b-edcc8934b04f",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "scriptTs"
+      ],
+      "exact_detail_bytes": 84
+    },
+    {
+      "row": "L12",
+      "variant": "script_ts",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "4c4a7b36-e389-43da-81a3-d4da65550b7b",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L12",
+      "variant": "script_ts",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "aad456c1-1e5a-479d-aaef-fdd24724293b",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "scriptTs"
+      ],
+      "exact_detail_bytes": 84
+    },
+    {
+      "row": "L13",
+      "variant": "tsx",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "03f21040-ce62-46cb-a7a7-53c4467f779e",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L13",
+      "variant": "tsx",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "1a5b79e6-36c7-4a30-95e7-55471ce2d277",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "TypedCard"
+      ],
+      "exact_detail_bytes": 104
+    },
+    {
+      "row": "L13",
+      "variant": "tsx",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "b98f1920-d021-4e57-9259-03257ff1c7ad",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L13",
+      "variant": "tsx",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "7b21a310-1d05-4d92-8d2b-ceb80031093b",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "TypedCard"
+      ],
+      "exact_detail_bytes": 104
+    },
+    {
+      "row": "L13",
+      "variant": "configured_jsx_js",
+      "stage": "input_population",
+      "route": "cli",
+      "report_id": "f612b38c-8a8c-4eb9-8fbd-f447cf2ed55e",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L13",
+      "variant": "configured_jsx_js",
+      "stage": "changed",
+      "route": "cli",
+      "report_id": "dddb9082-c2f9-4ac8-b0cc-f5cde494cc67",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "ConfiguredCard"
+      ],
+      "exact_detail_bytes": 90
+    },
+    {
+      "row": "L13",
+      "variant": "configured_jsx_js",
+      "stage": "input_population",
+      "route": "mcp",
+      "report_id": "423af178-66a6-41cf-b320-3e1bde7180c1",
+      "coverage": "complete",
+      "declarations": 1
+    },
+    {
+      "row": "L13",
+      "variant": "configured_jsx_js",
+      "stage": "changed",
+      "route": "mcp",
+      "report_id": "0a835b26-8977-4734-a1a1-69fbe765bf49",
+      "coverage": "complete",
+      "limitations": [],
+      "changed_names": [
+        "ConfiguredCard"
+      ],
+      "exact_detail_bytes": 90
+    }
+  ],
+  "semantic_oracles": {
+    "schema_version": 2,
+    "rows": [
+      {
+        "row": "L01",
+        "dialect": "rust",
+        "asserted_keys": [
+          "input_declarations",
+          "changes",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "required_subset"
+        },
+        "fixture_bytes": {
+          "input": 138,
+          "changed": 146,
+          "incomplete": 41
+        },
+        "fixture_sha256": {
+          "input": "be6d1258f3c14376b2a8ace6d7385e30089cdc753732e4ed154bb6a4f9feb891",
+          "changed": "edcf638c701cd6cc432a16d3dbb3a03685610d51b69e327ee044abb3fb03699b",
+          "incomplete": "c3b96c2ae72c45722f6a13bfaed9034561803578334a4283efed7d120aea0e4e"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 5,
+        "changed_declarations": 3,
+        "incomplete_comparison_changes": 6,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_body_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L02",
+        "dialect": "typescript",
+        "asserted_keys": [
+          "input_declarations",
+          "changes",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "required_subset"
+        },
+        "fixture_bytes": {
+          "input": 189,
+          "changed": 189,
+          "incomplete": 56
+        },
+        "fixture_sha256": {
+          "input": "1d97fa6f70de481c1c464360f3300ba8107d2cf4554a8ffb22e77fe8add2b222",
+          "changed": "f410b920b3e1ebae74777b550584bb0a6a955892220a73787695ed2195d10211",
+          "incomplete": "10322f3029d9faa3d84b17253246d4dcfcc00a53b30350855f26ea38a3b30ece"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 3,
+        "changed_declarations": 2,
+        "incomplete_comparison_changes": 4,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_body_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L03",
+        "dialect": "javascript",
+        "asserted_keys": [
+          "input_declarations",
+          "input_ranges",
+          "changed_ranges",
+          "changed",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "required_subset"
+        },
+        "fixture_bytes": {
+          "input": 289,
+          "changed": 293,
+          "incomplete": 45
+        },
+        "fixture_sha256": {
+          "input": "344b2ff693b1f1135e8ea39e96d5ae623b31bb480c15a72ee7bb4c7cc025fb49",
+          "changed": "438fa4d804398431f4287c506a523559dd0c49d8c80f835fffe32e32317b6948",
+          "incomplete": "21c0feb84814be6192b357738706435af377b02541f199cb31fdafc104405a3c"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 6,
+        "changed_declarations": 1,
+        "incomplete_comparison_changes": 7,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_header_incomplete",
+          "embedded_parse_error_or_missing_token",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L04",
+        "dialect": "python",
+        "asserted_keys": [
+          "coverage",
+          "declarations",
+          "changed",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "exact"
+        },
+        "fixture_bytes": {
+          "input": 333,
+          "changed": 342,
+          "incomplete": 44
+        },
+        "fixture_sha256": {
+          "input": "0e6525df0699ad4b639bdc752439fc3ca800e58ea5ae292196047644154e175f",
+          "changed": "895c8869f4b2ce6a81f7cb6ead8893edc51b6b434271793f8ed56b659d6768b7",
+          "incomplete": "d480953e56ba6da73badcfd8bc7ad0ed4967049e8e2a2731f18caaa9f694704f"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 5,
+        "changed_declarations": 2,
+        "incomplete_comparison_changes": 6,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_body_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L05",
+        "dialect": "lua",
+        "asserted_keys": [
+          "coverage",
+          "declarations",
+          "changed",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "exact"
+        },
+        "fixture_bytes": {
+          "input": 231,
+          "changed": 235,
+          "incomplete": 32
+        },
+        "fixture_sha256": {
+          "input": "f50d0e393864ee393e878ba4b04e67c770c3bf6835ee7f3944d4068a96c6c421",
+          "changed": "ff59580be04d6b66b83b8fb7b81d9f036c1721dbe5cea95a47e8f512b063335e",
+          "incomplete": "512e5a37569dc403908230e142957d9502c4353829037d0d35d024e28ecce95f"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 5,
+        "changed_declarations": 2,
+        "incomplete_comparison_changes": 6,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_body_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L06",
+        "dialect": "kotlin",
+        "asserted_keys": [
+          "input_declarations",
+          "changes",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "exact"
+        },
+        "fixture_bytes": {
+          "input": 255,
+          "changed": 264,
+          "incomplete": 46
+        },
+        "fixture_sha256": {
+          "input": "4c081fd0323ddd52e2e98baa1b72a235f7b4b3503ae66391eba9c6bb487fa313",
+          "changed": "58fe5bef33dd5bf825894f1142b9993824a341aa3dbe7aa52ca947fb8c163fe5",
+          "incomplete": "16602e54f3b13624da55ab60ce787ac99a9997f2251901834b7bb395a3d810c6"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 5,
+        "changed_declarations": 2,
+        "incomplete_comparison_changes": 7,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_header_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L07",
+        "dialect": "zig",
+        "asserted_keys": [
+          "input_declarations",
+          "changes",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "exact"
+        },
+        "fixture_bytes": {
+          "input": 275,
+          "changed": 279,
+          "incomplete": 82
+        },
+        "fixture_sha256": {
+          "input": "782a95ed9b1b470696f3a40ffab5247d78346227b936143426628b8bc38a1769",
+          "changed": "737693e5e1ac29ea15724732f58d85fbdbd07e73b2ee36bdc5e232daed20e62e",
+          "incomplete": "1247ab122e92c5b2e0cc3ce867700c34e00133f0e6b116e72b68e8b439506af0"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 8,
+        "changed_declarations": 2,
+        "incomplete_comparison_changes": 10,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_body_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L08",
+        "dialect": "csharp",
+        "asserted_keys": [
+          "names",
+          "kinds",
+          "record_parameters",
+          "method_enclosing",
+          "method_signature",
+          "method_parameters",
+          "method_result",
+          "property_initializer_digests",
+          "first_start_byte",
+          "first_source",
+          "limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "not_authored"
+        },
+        "fixture_bytes": {
+          "input": 358,
+          "changed": 358,
+          "incomplete": 59
+        },
+        "fixture_sha256": {
+          "input": "88725a702f4ad9898a01f5b09d5425e47101f68e4bda5956043e826e3b0834e4",
+          "changed": "f252ec04620aed097e974a8bd4c927cd543056ed84203e65f5a3cae9440ff890",
+          "incomplete": "4ec273f381ddc99ef5379cb206491ca62c3d0d9240b9a816f96fd9df391a1b77"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 7,
+        "changed_declarations": 1,
+        "incomplete_comparison_changes": 9,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_body_incomplete",
+          "declaration_header_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "not_authored_in_expected_json"
+      },
+      {
+        "row": "L09",
+        "dialect": "c",
+        "asserted_keys": [
+          "names",
+          "kinds",
+          "sum_signature",
+          "sum_parameters",
+          "sum_result",
+          "first_start_byte",
+          "first_source",
+          "selected_branch_count",
+          "limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "not_authored"
+        },
+        "fixture_bytes": {
+          "input": 276,
+          "changed": 276,
+          "incomplete": 31
+        },
+        "fixture_sha256": {
+          "input": "48bc840c8ecf56fa789789627b36b3f114cb859149362ac65e87eb3ef7138faa",
+          "changed": "41d112e10ec23839e254121ffcd497aa477b3dc3e665589b84237bedeedfcd3b",
+          "incomplete": "b9efe84848f004f58e4aa8c68075fe747eab7a7dcc6ca7fe60f403c0d6a77e45"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 8,
+        "changed_declarations": 1,
+        "incomplete_comparison_changes": 8,
+        "input_coverage": "incomplete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_header_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "not_authored_in_expected_json"
+      },
+      {
+        "row": "L10",
+        "dialect": "cpp",
+        "asserted_keys": [
+          "names",
+          "kinds",
+          "choose_signature",
+          "choose_parameters",
+          "choose_result",
+          "run_enclosing",
+          "run_result",
+          "first_start_byte",
+          "first_source",
+          "limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "not_authored"
+        },
+        "fixture_bytes": {
+          "input": 328,
+          "changed": 328,
+          "incomplete": 56
+        },
+        "fixture_sha256": {
+          "input": "e89f679e0477079121664a3216c2a217b138c5bc17fbe76047b7391f0e6bad18",
+          "changed": "380fdab83df6338379956536046449b4fc801cb1b0e157fd73e1637d6beffe4c",
+          "incomplete": "13d039d16e6ec8423577db691a354cbceace5354f219efb6c2e346315b212cbf"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 9,
+        "changed_declarations": 1,
+        "incomplete_comparison_changes": 9,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_body_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "not_authored_in_expected_json"
+      },
+      {
+        "row": "L11",
+        "dialect": "odin",
+        "asserted_keys": [
+          "input_declarations",
+          "changes",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "exact"
+        },
+        "fixture_bytes": {
+          "input": 257,
+          "changed": 257,
+          "incomplete": 95
+        },
+        "fixture_sha256": {
+          "input": "1b2bedd82b6bbe81b202dd4cb7edfc525bd954af3f54b283e70d0def6b29ff36",
+          "changed": "fc36f83defd6d43feda1e13b96e78d3613a2fe8a8ab121cad9d408aaf2271497",
+          "incomplete": "2a0c0bea639ca29e83dd026a8c35d595d923b1f695eb32e1ca463a702370c1c3"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 9,
+        "changed_declarations": 1,
+        "incomplete_comparison_changes": 11,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_header_incomplete",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L12",
+        "dialect": "svelte5",
+        "asserted_keys": [
+          "input_declarations",
+          "input_ranges",
+          "changed_ranges",
+          "changed",
+          "region_changed",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "required_subset"
+        },
+        "fixture_bytes": {
+          "input": 433,
+          "changed": 448,
+          "incomplete": 131
+        },
+        "fixture_sha256": {
+          "input": "d3623a3f6f6d32efffbc673247dda83d3656345739785b02152066495ea1dc37",
+          "changed": "7ed4819d59bbabfdacea6f88db3675da31c29907657bdbd88b5d33083fddae50",
+          "incomplete": "0dc2e32868466bc828bdbedae4f3b1483d074cfbb9aa49cc2b9de7dc81f13b8e"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 4,
+        "changed_declarations": 1,
+        "incomplete_comparison_changes": 5,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_header_incomplete",
+          "snippet_parameters_unavailable"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      },
+      {
+        "row": "L13",
+        "dialect": "jsx",
+        "asserted_keys": [
+          "jsx_declarations",
+          "jsx_input_ranges",
+          "jsx_changed_ranges",
+          "jsx_body_only",
+          "incomplete_limitations"
+        ],
+        "assertion_scope": {
+          "incomplete_limitations": "required_subset"
+        },
+        "fixture_bytes": {
+          "input": 113,
+          "changed": 113,
+          "incomplete": 62
+        },
+        "fixture_sha256": {
+          "input": "0b88435050e4d837b5c5d6034afcd8f62c3d807222faa4e5078d305533b820cb",
+          "changed": "9453a7c7fc4af14c8d8a2e1dc5bf393237846e1226d5cf62c95af2040eef8cdf",
+          "incomplete": "c4bc1a5cdab79c81d1d7897ce0ca50470a672b09fb85fd11d3ec7d50b3db52a0"
+        },
+        "checked_transitions": [
+          "input→changed",
+          "input→incomplete"
+        ],
+        "input_declarations": 1,
+        "changed_declarations": 1,
+        "incomplete_comparison_changes": 1,
+        "input_coverage": "complete",
+        "incomplete_coverage": "incomplete",
+        "incomplete_limitations": [
+          "declaration_header_incomplete",
+          "embedded_parse_error_or_missing_token",
+          "parse_error_or_missing_token"
+        ],
+        "incomplete_limitation_oracle": "authored"
+      }
+    ],
+    "variants": [
+      {
+        "row": "L01",
+        "variant": "edition_2024",
+        "dialect": "rust",
+        "asserted_keys": [
+          "edition_2024_native_nodes",
+          "edition_2024_declarations",
+          "edition_2024_ranges",
+          "edition_2024_coverage"
+        ],
+        "fixture_bytes": {
+          "input": 130,
+          "changed": 130
+        },
+        "fixture_sha256": {
+          "input": "8052a40bb376f30936209e95eafc3beb2ac0ddd252c219a0a0506de2045a14d3",
+          "changed": "8052a40bb376f30936209e95eafc3beb2ac0ddd252c219a0a0506de2045a14d3"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L01",
+        "variant": "population",
+        "dialect": "rust",
+        "asserted_keys": [
+          "population_declarations",
+          "population_changes",
+          "population_region_changed"
+        ],
+        "fixture_bytes": {
+          "input": 531,
+          "changed": 566
+        },
+        "fixture_sha256": {
+          "input": "a1f714735cd417071b4014d34803ca5203d1164d5a11ad16a5966a2a9ad2fe63",
+          "changed": "2e6bbb8ed82f795fd0bf33639b12fa060de9ee1f1f38bc16f5a37800d6655ea1"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 6
+      },
+      {
+        "row": "L02",
+        "variant": "population_mts",
+        "dialect": "typescript",
+        "asserted_keys": [
+          "population_mts_declarations",
+          "population_mts_changes"
+        ],
+        "fixture_bytes": {
+          "input": 477,
+          "changed": 522
+        },
+        "fixture_sha256": {
+          "input": "e50f82193542b63472e0d6975c92a7f0d0b7fcc7da4b3d87d432cfbb66dff857",
+          "changed": "a08acfd80b6efda6623062fe3ba2151b4b2697f3f1250fb569d676acf28818a4"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 5
+      },
+      {
+        "row": "L02",
+        "variant": "population_cts",
+        "dialect": "typescript",
+        "asserted_keys": [
+          "population_cts_declarations",
+          "population_cts_changes"
+        ],
+        "fixture_bytes": {
+          "input": 68,
+          "changed": 83
+        },
+        "fixture_sha256": {
+          "input": "486ff9cf4a3b4d4ca82eda0bc5e06f356be8fd4f8775dfc7aeb33617e80309a9",
+          "changed": "b7aa440384059ca6ac17976210f675c574c7c1fb42f1c388f5562a33c7cc7cfa"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 1
+      },
+      {
+        "row": "L04",
+        "variant": "ambiguous",
+        "dialect": "python",
+        "asserted_keys": [
+          "ambiguous_change_count"
+        ],
+        "fixture_bytes": {
+          "input": 44,
+          "changed": 44
+        },
+        "fixture_sha256": {
+          "input": "ee4b48b4b39b162d2a87210820db9427675c92e469bd7999018f27fa06aeea37",
+          "changed": "63b8cdf7b4ce409f96c0e330857fb259e9e33d23910e90b3db6b460cc2b6fa4f"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 4
+      },
+      {
+        "row": "L04",
+        "variant": "added",
+        "dialect": "python",
+        "asserted_keys": [
+          "added_name"
+        ],
+        "fixture_bytes": {
+          "input": 32,
+          "changed": 66
+        },
+        "fixture_sha256": {
+          "input": "5b9ec401b78c29a0206f3ec9742917cabd923066e20df9069fc3c3572578ee5b",
+          "changed": "45663a55d742b61ade78defb42bc1b13bfecabfe6fcdfed2c5a512c32e645d87"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 1
+      },
+      {
+        "row": "L05",
+        "variant": "ambiguous",
+        "dialect": "lua",
+        "asserted_keys": [
+          "ambiguous_change_count"
+        ],
+        "fixture_bytes": {
+          "input": 52,
+          "changed": 52
+        },
+        "fixture_sha256": {
+          "input": "9e70abb041637bbf8223d720897cbd9c6b143381eef3381e0fcac1f846b9def5",
+          "changed": "c9fd1d20a0e5bd1e7b851464b45baec01550129fc29b24807c292d1575e017e3"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 4
+      },
+      {
+        "row": "L05",
+        "variant": "added",
+        "dialect": "lua",
+        "asserted_keys": [
+          "added_name"
+        ],
+        "fixture_bytes": {
+          "input": 29,
+          "changed": 59
+        },
+        "fixture_sha256": {
+          "input": "8325a46fcd7dbb4c75e214a709e2303b399152ebbb9a4c8111e9755971cac52f",
+          "changed": "423aca22bf2549d7a885f0fd7d57269dfaf24720591ec7c26acc374363c0eb6c"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 1
+      },
+      {
+        "row": "L06",
+        "variant": "advanced",
+        "dialect": "kotlin",
+        "asserted_keys": [
+          "advanced_declarations"
+        ],
+        "fixture_bytes": {
+          "input": 211,
+          "changed": 211
+        },
+        "fixture_sha256": {
+          "input": "77455ea7205b0ffbae8d3ed2f64a193145477261195c48d4a285949c15e25f9d",
+          "changed": "77455ea7205b0ffbae8d3ed2f64a193145477261195c48d4a285949c15e25f9d"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L07",
+        "variant": "advanced",
+        "dialect": "zig",
+        "asserted_keys": [
+          "advanced_declarations"
+        ],
+        "fixture_bytes": {
+          "input": 218,
+          "changed": 218
+        },
+        "fixture_sha256": {
+          "input": "b3b9cda1647ac110491312df621923f929bfd1eab410f25a860a661a55bc3586",
+          "changed": "b3b9cda1647ac110491312df621923f929bfd1eab410f25a860a661a55bc3586"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L11",
+        "variant": "advanced",
+        "dialect": "odin",
+        "asserted_keys": [
+          "advanced_declarations"
+        ],
+        "fixture_bytes": {
+          "input": 318,
+          "changed": 318
+        },
+        "fixture_sha256": {
+          "input": "17a6dd96c43e600bcc1f51e5ed1d4b8dbf4367ff0ad417881efe6cffe18fe904",
+          "changed": "17a6dd96c43e600bcc1f51e5ed1d4b8dbf4367ff0ad417881efe6cffe18fe904"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L06",
+        "variant": "context",
+        "dialect": "kotlin",
+        "asserted_keys": [
+          "context_declarations"
+        ],
+        "fixture_bytes": {
+          "input": 134,
+          "changed": 134
+        },
+        "fixture_sha256": {
+          "input": "3f2c03120827a978426cb655e49dc6f08096bf3c36646ca3f4df6ad9c1ddfb38",
+          "changed": "3f2c03120827a978426cb655e49dc6f08096bf3c36646ca3f4df6ad9c1ddfb38"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L09",
+        "variant": "modern",
+        "dialect": "c",
+        "asserted_keys": [
+          "names",
+          "types",
+          "number_signature",
+          "nullish_parameters"
+        ],
+        "fixture_bytes": {
+          "input": 85,
+          "changed": 85
+        },
+        "fixture_sha256": {
+          "input": "d2d0470d793ecb56570a32e01427e7e6479a1f29847bde73ff1c53b42876feef",
+          "changed": "d2d0470d793ecb56570a32e01427e7e6479a1f29847bde73ff1c53b42876feef"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L09",
+        "variant": "bitint",
+        "dialect": "c",
+        "asserted_keys": [
+          "name",
+          "kind",
+          "signature",
+          "result",
+          "range"
+        ],
+        "fixture_bytes": {
+          "input": 31,
+          "changed": 31
+        },
+        "fixture_sha256": {
+          "input": "9a1011dc17005ce385863a69903e748ce83b3c702921e0ad02e0825e7574a94e",
+          "changed": "9a1011dc17005ce385863a69903e748ce83b3c702921e0ad02e0825e7574a94e"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L10",
+        "variant": "explicit_object",
+        "dialect": "cpp",
+        "asserted_keys": [
+          "container_name",
+          "container_kind",
+          "name",
+          "kind",
+          "signature",
+          "parameters",
+          "result",
+          "enclosing"
+        ],
+        "fixture_bytes": {
+          "input": 82,
+          "changed": 82
+        },
+        "fixture_sha256": {
+          "input": "dacf65e65138a92d7a378b8c03071cd00ca356fd36e76d10fbaee5ccde0cce53",
+          "changed": "dacf65e65138a92d7a378b8c03071cd00ca356fd36e76d10fbaee5ccde0cce53"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L08",
+        "variant": "extension_block",
+        "dialect": "csharp",
+        "asserted_keys": [
+          "names",
+          "kinds",
+          "receiver",
+          "property_enclosing",
+          "property_result"
+        ],
+        "fixture_bytes": {
+          "input": 120,
+          "changed": 120
+        },
+        "fixture_sha256": {
+          "input": "ed72f67982ee5d59a10b1eb82309f2de288ff1c9caa5cdd4b724603d3144ddd1",
+          "changed": "ed72f67982ee5d59a10b1eb82309f2de288ff1c9caa5cdd4b724603d3144ddd1"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 0
+      },
+      {
+        "row": "L12",
+        "variant": "script_js",
+        "dialect": "javascript",
+        "asserted_keys": [
+          "script_js",
+          "script_js_changed_range"
+        ],
+        "fixture_bytes": {
+          "input": 64,
+          "changed": 68
+        },
+        "fixture_sha256": {
+          "input": "cd10255a0e130fcf419656f200e1954db27830a63a49620ddb187d63f636c234",
+          "changed": "54d1c5fa34f0ebb2062f2553be9b8b7de081dcaebb0bd2d8d806d812d39168bd"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 1
+      },
+      {
+        "row": "L12",
+        "variant": "script_ts",
+        "dialect": "typescript",
+        "asserted_keys": [
+          "script_ts",
+          "script_ts_changed_range"
+        ],
+        "fixture_bytes": {
+          "input": 80,
+          "changed": 84
+        },
+        "fixture_sha256": {
+          "input": "a69d363e8a2321eeced2fcd84a097e9e152ed0f13edf79c7bcb5cb9b60609b2f",
+          "changed": "a4b374339f816a3eb21eaceb163bc46984930a4c311027e982f3e2851409236b"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 1
+      },
+      {
+        "row": "L12",
+        "variant": "nested",
+        "dialect": "svelte5",
+        "asserted_keys": [
+          "nested_declarations",
+          "nested_changes"
+        ],
+        "fixture_bytes": {
+          "input": 139,
+          "changed": 149
+        },
+        "fixture_sha256": {
+          "input": "3790d78eff1a499670eb828663ffddc9fdc9275c9c3e44946969429452a0703f",
+          "changed": "0dd569d9e120bcf30493c9083e4bc8d18274b9ef4fa29b63b041407b9dde9694"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 1
+      },
+      {
+        "row": "L13",
+        "variant": "tsx",
+        "dialect": "tsx",
+        "asserted_keys": [
+          "tsx_declarations",
+          "tsx_input_ranges",
+          "tsx_changed_ranges",
+          "tsx_body_only"
+        ],
+        "fixture_bytes": {
+          "input": 104,
+          "changed": 104
+        },
+        "fixture_sha256": {
+          "input": "6f1759813e42a404ada94f7877e15f03dcf3138644ec59a7166eeb992a43db2a",
+          "changed": "88c05cfc2ce7914312276843cb6e2a41c463f3a263539065e47239c374eadef2"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 1
+      },
+      {
+        "row": "L13",
+        "variant": "configured_jsx_js",
+        "dialect": "jsx",
+        "asserted_keys": [
+          "configured_jsx_js",
+          "configured_jsx_js_changed_range"
+        ],
+        "fixture_bytes": {
+          "input": 90,
+          "changed": 90
+        },
+        "fixture_sha256": {
+          "input": "a4c3e91c14787d97a174af44ef6a67672ddb43f416ef31aa6d6ef0d052586138",
+          "changed": "35dc66b2eeeee8a6898db51d3b31427771cccbf7199829fc43e453f2c22b808a"
+        },
+        "input_coverage": "complete",
+        "changed_coverage": "complete",
+        "changed_declarations": 1
+      }
+    ],
+    "native_parser": "installed",
+    "comparison": "installed",
+    "fixture_oracles": "canonical_expected_json",
+    "child_source_checkout_visible": false
+  },
+  "stdio_mcp_report": "observed",
+  "stdio_mcp_detail": "observed",
+  "guarded_build_tool_attempts": 0,
+  "selected_net_namespace": "net:[4026533569]",
+  "interfaces": [
+    "lo"
+  ],
+  "network_namespace_enforced": true,
+  "selected_pid_namespace": "pid:[4026533568]",
+  "host_pid_hidden": true,
+  "host_pid_root_hidden": true,
+  "forbidden_executables_hidden": true,
+  "absolute_executable_attempts": [
+    {
+      "path": "/bin/sh",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/npm",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/npx",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/node",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/cc",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/gcc",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/g++",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/make",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/cmake",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/curl",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    },
+    {
+      "path": "/usr/bin/wget",
+      "error": "ENOENT",
+      "status": null,
+      "signal": null
+    }
+  ],
+  "allowed_executables": [
+    "/node",
+    "/usr/bin/git",
+    "/usr/bin/flock"
+  ],
+  "source_snapshot_hidden": true,
+  "explicitly_configured_routes": [
+    "L09 .h→c",
+    "L10 .h→cpp",
+    "L13 .js→jsx"
+  ],
+  "limitations": [
+    "Executable allowlist limits installed child paths to Node, Git, flock, installed native bindings and their shared libraries; inspect final process/syscall trace for unexpected executable attempts."
+  ]
+}

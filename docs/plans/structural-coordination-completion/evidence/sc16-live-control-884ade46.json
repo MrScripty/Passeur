@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "fixture": "/tmp/passeur-sc15-final",
+  "source_commit": "3c07dc364efecf9d7ffb314eb90a2336223a9694",
+  "installed_build": "884ade46bd98f9e5ac910757fb62772ec43fb9141a2d2bf592a6303ba0051126",
+  "task_id": "edf8674e-65d0-41f3-9bf4-235b4b41a64a",
+  "worker_commit": "f917488302608ae900cb17d117c5682d6a9cb701",
+  "pressure": {
+    "saturation": {
+      "file": "sc16-live-pressure-saturation-884ade46.jsonl",
+      "first_at": "2026-09-23T18:29:35.108Z",
+      "last_at": "2026-09-23T18:34:22.778Z",
+      "requests": 3736,
+      "codes": {
+        "STRUCTURAL_ANALYSIS_CAPACITY": 927,
+        "OK": 1607,
+        "STRUCTURAL_SOURCE_FORBIDDEN": 1202
+      },
+      "p50_ms": 311.385,
+      "p95_ms": 370.989,
+      "max_in_flight": 4
+    },
+    "reduced": {
+      "file": "sc16-live-pressure-reduced-884ade46.jsonl",
+      "first_at": "2026-09-23T18:34:37.790Z",
+      "last_at": "2026-09-23T18:37:09.413Z",
+      "requests": 952,
+      "codes": {
+        "OK": 925,
+        "PROJECT_NEEDS_RECONCILIATION": 27
+      },
+      "p50_ms": 258.483,
+      "p95_ms": 273.629,
+      "max_in_flight": 2
+    },
+    "initial": {
+      "file": "sc16-live-pressure-initial-884ade46.jsonl",
+      "first_at": "2026-09-23T18:28:43.383Z",
+      "last_at": "2026-09-23T18:29:09.054Z",
+      "requests": 102,
+      "codes": {
+        "OK": 102
+      },
+      "p50_ms": 204.347,
+      "p95_ms": 214.532,
+      "max_in_flight": 0
+    }
+  },
+  "task_state_before_recovery": {
+    "revision": 61,
+    "phase": "needs_attention",
+    "native": {
+      "run_id": "9ae95bce-7e28-4596-b101-75947e84f842",
+      "state": "unknown",
+      "turn_id": "5feb44a5-97b9-41d5-9855-3eeaf3d4cc2c",
+      "obligations": [
+        {
+          "id": "6adbf3f7-2037-4365-b8f1-b2969201c2bf",
+          "kind": "reminderChild"
+        },
+        {
+          "id": "ac9c8b9f-c19d-4094-a0cf-a80f83eace53",
+          "kind": "reminderChild"
+        }
+      ],
+      "coverage": "unknown",
+      "last_observed_at": "2026-09-23T18:35:42.340Z"
+    },
+    "control_generation": 2,
+    "inputs": [
+      {
+        "input_id": "467b3d4a-6586-4483-a4af-c18a2558cd83",
+        "kind": "permission",
+        "state": "withdrawn"
+      },
+      {
+        "input_id": "eeae932b-6487-4cf5-ba43-9b669c2f276b",
+        "kind": "clarification",
+        "state": "settled"
+      }
+    ],
+    "receipts": [
+      {
+        "operation_key": "sc16-pressure-adopt-1",
+        "hash": "652de0e4f8e710e043fab596e939cfc1b6e8a7106ed7722254b0f3a9bbf7bd83",
+        "kind": "attach",
+        "outcome": "adopted",
+        "at": "2026-09-23T18:34:50.316Z",
+        "generation": 2
+      },
+      {
+        "operation_key": "sc16-pressure-input-1",
+        "hash": "db2b65604eb3e15765bb27f24d6c38bed1456d85d9c88e31b6c428569e827d60",
+        "kind": "input",
+        "outcome": "answer_intent",
+        "at": "2026-09-23T18:35:38.933Z",
+        "input_id": "eeae932b-6487-4cf5-ba43-9b669c2f276b",
+        "generation": 2
+      },
+      {
+        "operation_key": "sc16-pressure-cancel-1",
+        "hash": "3538f970d312be8cdccaf680376e151617db41479fd42ff705b07aa11d1e8803",
+        "kind": "cancel",
+        "outcome": "accepted",
+        "at": "2026-09-23T18:36:07.141Z",
+        "generation": 2
+      }
+    ],
+    "result_execution_status": "cancelled",
+    "result_worker_stop": "unconfirmed",
+    "result_summary": "Task explicitly cancelled",
+    "attention": "Native shutdown or input delivery remains unconfirmed; explicit reconciliation is required"
+  },
+  "interpretation": "During installed observation pressure, human-confirmed adoption, protected clarification input and explicit cancellation succeeded. Cancellation recorded immutable worker_stop unconfirmed and a safety freeze. After service drain and documented process scan, the repaired installed operator CLI recorded a separate stop assertion; final result remains unconfirmed and exact worker ref/resource is retained. No adapter-native confirmed stop is claimed.",
+  "recovery": {
+    "repaired_source_commit": "3d9f613050af8ccc6512adbbeb2aa0db648111e5",
+    "repaired_installed_build": "01fbda2ceee129599a7875f69cf07e2da02b21581f973e28f68dc8939262ac8c",
+    "prior_cli_error": "TASK_CONTROL_CONFLICT",
+    "operator_reconcile_at": "2026-09-23T18:47:51.368Z",
+    "operator_reconcile": {
+      "at": "2026-09-23T18:47:51.368Z",
+      "owner": "SC16 acceptance operator",
+      "reason": "After cancellation and elected-service drain, host ps enumerated 623 processes with no Muse serve command; readable task-path cwd/cmd scan found no matching process and the fixture service PID was absent. The exact worker worktree is clean at f917488302608ae900cb17d117c5682d6a9cb701. Original native PID/birth was not retained and 392 proc records were inaccessible; this is a separate stop assertion, not a change to immutable worker_stop unconfirmed."
+    },
+    "final_state_revision": 64,
+    "final_phase": "terminal",
+    "final_outcome": "cancelled",
+    "final_control_generation": 3,
+    "final_result_sha256": "ca4d65096b71db33a300e90f5bc0bf10e920ac1656a0d232cda8ae18e5135f47",
+    "immutable_worker_stop": "unconfirmed",
+    "immutable_execution_status": "cancelled",
+    "resource_state": "retained",
+    "resource_head_commit": "f917488302608ae900cb17d117c5682d6a9cb701",
+    "resource_disposition": "retained",
+    "retained_owner": "SC16 acceptance operator",
+    "retained_next_action": "Preserve exact commit and worker ref for independent review; consider archive only after separate authorization and provenance review",
+    "finalize_operation_key": "sc16-pressure-retain-1",
+    "final_service_stop": "draining, outstanding false"
+  }
+}

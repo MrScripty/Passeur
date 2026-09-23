@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "at": "2026-09-23T18:45:12.135014+00:00",
+  "host_proc_namespace": "",
+  "scan_proc_namespace": "pid:[4026531836]",
+  "scanned_processes": 213,
+  "inaccessible_processes": 392,
+  "self_and_launcher_excluded": [
+    1694490,
+    1694489
+  ],
+  "criteria": [
+    "cwd starts with exact task worktree",
+    "command contains exact task worktree",
+    "exe equals registered Muse binary",
+    "command starts with registered Muse serve"
+  ],
+  "matches": [],
+  "service_pid": 886588,
+  "service_pid_exists": false,
+  "native_pid_birth_identity": "not recorded by fixture; no remembered PID was used as stop proof",
+  "native_history": "task events record toolCall and reminderChild item kinds but no full shell command history; the only retained native permission command was withdrawn, and the fixture pre-commit hook used foreground sleep 65",
+  "ps_process_rows": 623,
+  "ps_muse_worker_matches": [],
+  "visibility_limit": "Host ps command enumeration found no Muse serve command, while /proc cwd/cmd scan could not read 392 processes. The original worker PID/birth identity was not recorded. This is separate operator process evidence, not adapter-native stop confirmation."
+}

@@ -1,0 +1,8 @@
+
+ RUN  v4.1.11 /media/jeremy/OrangeCream/Linux Software/repos/owned/developer-tooling/Passeur
+
+
+ Test Files  3 passed (3)
+      Tests  6 passed (6)
+   Start at  12:01:30
+   Duration  2.20s (transform 428ms, setup 0ms, import 808ms, tests 4.17s, environment 0ms)
