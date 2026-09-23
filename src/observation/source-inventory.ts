@@ -7,8 +7,14 @@ import { MAX_REGIONS, type Region } from "../contracts/coordination-control.js";
 import { gitWithoutLazyFetch } from "../workspace/project.js";
 import { assertSourceMount, sourceMountId, validateSourcePath } from "./source.js";
 import { isStructuralSourcePath } from "./language-routing.js";
+import { SourcePathPage, type InventorySelection } from "./inventory-selection.js";
 
-export type SourceInventory = Readonly<{ paths: string[]; limitations: string[] }>;
+export type SourceInventory = Readonly<{
+  paths: string[]; limitations: string[];
+  /** Ordinary lexical continuation after this bounded page; not a workspace snapshot. */
+  next_path?: string;
+  priority_paths?: readonly string[];
+}>;
 
 const MAX_FILES = 256;
 const MAX_ENTRIES = 4096;
@@ -34,7 +40,7 @@ async function currentDescriptorPath(handle: FileHandle, root: string): Promise<
 
 /** Read names only. Exact bytes and path identity are checked again by source capture. */
 export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommitOid: string, areas: readonly Region[],
-  limit: number, signal?: AbortSignal): Promise<SourceInventory> {
+  limit: number, signal?: AbortSignal, selection: InventorySelection = {}): Promise<SourceInventory> {
   if (process.platform !== "linux") throw new BridgeError("STRUCTURAL_INVENTORY_UNSUPPORTED", "Descriptor-anchored inventory is supported only on Linux");
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(inputCommitOid)) {
     throw new BridgeError("STRUCTURAL_INVENTORY_INPUT_INVALID", "Inventory requires a full immutable input commit ID");
@@ -42,10 +48,20 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_FILES || areas.length > MAX_REGIONS) {
     throw new BridgeError("STRUCTURAL_INVENTORY_LIMIT_INVALID", "Inventory limits or declared areas exceed admitted bounds");
   }
+  if (selection.priority_paths !== undefined && selection.priority_paths.length > MAX_FILES)
+    throw new BridgeError("STRUCTURAL_INVENTORY_LIMIT_INVALID", "Priority paths exceed the inventory bound");
   for (const area of areas) {
     if (area.kind !== "file" && area.kind !== "subtree") throw new BridgeError("STRUCTURAL_INVENTORY_AREA_INVALID", "Unknown declared area kind");
     validateSourcePath(area.path);
   }
+  if (selection.after_path) validateSourcePath(selection.after_path);
+  for (const path of selection.priority_paths ?? []) validateSourcePath(path);
+  const priorityPaths = new Set<string>();
+  for (const path of [...areas.filter(area => area.kind === "file").map(area => area.path), ...(selection.priority_paths ?? [])]) {
+    if (priorityPaths.size < MAX_FILES && sourcePath(path) && admitted(path, areas)) priorityPaths.add(path);
+  }
+  // Validate selection before any filesystem or Git inspection.
+  let candidates = new SourcePathPage(limit, { ...selection, priority_paths: [...priorityPaths] });
   throwIfAborted(signal);
   const root = await realpath(workspaceRoot);
   const top = await realpath((await gitWithoutLazyFetch(root, [...GIT_READ_FLAGS, "rev-parse", "--show-toplevel"], signal)).trim());
@@ -55,14 +71,13 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
   }
 
   const limitations = new Set<string>();
-  const candidates = new Set<string>();
   const sourceBoundaries = new Map<string, string>();
   const beneathBoundary = (path: string): string | undefined =>
     [...sourceBoundaries].find(([boundary]) => path === boundary || path.startsWith(`${boundary}/`))?.[1];
   const blockBoundary = (path: string, reason = "nested_repository_boundary"): void => {
     sourceBoundaries.set(path, reason);
     limitations.add(reason);
-    for (const candidate of candidates) if (candidate === path || candidate.startsWith(`${path}/`)) candidates.delete(candidate);
+    candidates.removeBeneath(path);
   };
   const add = (path: string): void => {
     if (!sourcePath(path) || !admitted(path, areas)) return;
@@ -71,11 +86,7 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
     // The Git helper decodes stdout as UTF-8. A replacement character cannot prove the original path bytes.
     if (path.includes("\ufffd")) { limitations.add("source_path_unrepresentable"); return; }
     try { validateSourcePath(path); } catch { limitations.add("source_path_unrepresentable"); return; }
-    if (candidates.has(path)) return;
-    if (candidates.size < limit) { candidates.add(path); return; }
-    limitations.add("source_file_inventory_limit");
-    const largest = [...candidates].sort().at(-1)!;
-    if (path < largest) { candidates.delete(largest); candidates.add(path); }
+    candidates.add(path);
   };
   if (areas.length === 0) return { paths: [], limitations: [] };
   // Include every ancestor: Git pathspecs for a path inside a gitlink do not necessarily print that gitlink.
@@ -118,6 +129,18 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
       if (metadata[1] === "160000") blockBoundary(line.slice(separator + 1));
     }
     if (boundaryUncertain) return { paths: [], limitations: [...limitations].sort() };
+    if (selection.after_path === undefined && currentHead !== inputCommitOid) {
+      // Compare immutable trees only: a working-tree diff may invoke configured clean filters.
+      // Uncommitted changes use event hints or bounded reconciliation, never repository code.
+      const changed = await gitWithoutLazyFetch(root, [...GIT_READ_FLAGS, "diff-tree", "--no-commit-id", "-r", "--name-only", "-z",
+        "--no-ext-diff", "--no-textconv", "--no-renames", inputCommitOid, currentHead, "--", ...paths], signal);
+      for (const path of changed.split("\0")) {
+        if (priorityPaths.size >= MAX_FILES) break;
+        if (!sourcePath(path) || !admitted(path, areas) || path.includes("\ufffd")) continue;
+        try { validateSourcePath(path); priorityPaths.add(path); } catch { /* Normal inventory retains its own path diagnostic. */ }
+      }
+      candidates = new SourcePathPage(limit, { priority_paths: [...priorityPaths] });
+    }
     for (const area of areas) if (area.kind === "file") add(area.path);
     // Input-only files must remain observable after deletion, checkout changes, or a different worker base.
     collectTree(inputTree, true);
@@ -206,5 +229,8 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
   if ((await gitWithoutLazyFetch(root, [...GIT_READ_FLAGS, "rev-parse", "--verify", "HEAD^{commit}"], signal)).trim() !== currentHead) {
     return { paths: [], limitations: [...limitations, "source_inventory_head_changed"].sort() };
   }
-  return { paths: [...candidates].sort(), limitations: [...limitations].sort() };
+  const page = candidates.result();
+  if (page.next_path !== undefined) limitations.add("source_file_inventory_limit");
+  return { ...page, priority_paths: selection.after_path === undefined
+    ? page.paths.filter(path => priorityPaths.has(path)) : [], limitations: [...limitations].sort() };
 }

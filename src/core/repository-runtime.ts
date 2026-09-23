@@ -19,7 +19,7 @@ import type { Assignment, AgentCatalog } from "../contracts/agents.js";
 import type { AgentRegistry } from "../agents/registry.js";
 import { TaskControls, owns, type ClientActor } from "./task-control.js";
 import { CoordinatedSubmissionIdentitySchema, coordinatedMaterialIdentity, type CoordinatedSubmissionIdentity, type SharedProfile, type TaskObservation, type SubmissionIdentity } from "../contracts/tasks.js";
-import type { CoordinatedSubmitSchema, AnnouncementCreateSchema } from "../contracts/service.js";
+import { operationSchemas, type CoordinatedSubmitSchema, type AnnouncementCreateSchema } from "../contracts/service.js";
 import type { z } from "zod";
 import { validateSourcePath } from "../observation/source.js";
 import type { NativeAnalysisHelper } from "../observation/helper.js";
@@ -452,9 +452,8 @@ export class RepositoryRuntime {
         grant.work_revision === work.revision && grant.recipient === watch.recipient)));
     const areas = [...work.areas];
     for (const region of watched.flatMap(watch => watch.regions)) {
-      if (!regionIncludesPath(areas, region.path) ||
-        (region.kind === "subtree" && !areas.some(area => area.kind === "subtree" &&
-          (area.path === region.path || region.path.startsWith(`${area.path}/`))))) areas.push(region);
+      // Exact file watches remain priority selectors even inside a declared subtree.
+      if (!areas.some(area => area.kind === region.kind && area.path === region.path)) areas.push(region);
     }
     return { work_id: work.id, work_revision: work.revision, control_generation: controlGeneration,
       workspace_id: work.workspace_id, workspace_generation: work.managed ? controlGeneration : Math.max(1, work.revision),
@@ -1146,11 +1145,18 @@ export class RepositoryRuntime {
         (recipient, workId, revision, generation) => this.#authorizeObservation(recipient, workId, revision, generation, "detail"));
     });
   }
-  structuralReport(workId: string, actor: ClientActor, sourceView: string, signal?: AbortSignal): Promise<Readonly<{
+  structuralReport(workId: string, actor: ClientActor, sourceView: string, signal?: AbortSignal,
+    selectedPaths?: readonly string[]): Promise<Readonly<{
     schema_version: 1; work_id: string; reports: readonly Readonly<{ report_id: string; path: string; dialect: NativeDialect; text: string }>[];
     limitations: readonly string[];
   }>> {
     this.#assertOpen();
+    const selection = operationSchemas.structural_report.shape.paths.safeParse(selectedPaths);
+    if (!selection.success) {
+      return Promise.reject(new BridgeError("STRUCTURAL_SOURCE_SELECTION_INVALID", "Select one to four distinct source paths"));
+    }
+    // Canonical decoding also gives this invocation its own bounded array.
+    const requestedPaths = selection.data;
     if (this.#structuralReportActive) {
       return Promise.reject(new BridgeError("STRUCTURAL_ANALYSIS_CAPACITY", "A source report is already using the bounded analysis admission"));
     }
@@ -1171,7 +1177,16 @@ export class RepositoryRuntime {
       if (!workspace) throw new BridgeError("COORDINATION_WORKSPACE_UNAVAILABLE", "The registered worktree is not available for current source capture");
       const { listDeclaredSourcePaths } = await import("../observation/source-inventory.js");
       const { sourceDialectForPath } = await import("../observation/language-routing.js");
-      const inventory = await listDeclaredSourcePaths(workspace.root, work.input_oid, work.areas, 4, ownedSignal);
+      let reportAreas = work.areas;
+      if (requestedPaths !== undefined) {
+        for (const path of requestedPaths) {
+          validateSourcePath(path);
+          if (!regionIncludesPath(work.areas, path))
+            throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Selected source lies outside this work's declared areas");
+        }
+        reportAreas = requestedPaths.map(path => ({ kind: "file" as const, path }));
+      }
+      const inventory = await listDeclaredSourcePaths(workspace.root, work.input_oid, reportAreas, 4, ownedSignal);
       const limitations = new Set(inventory.limitations);
       if (work.areas.length === 0) limitations.add("source_scope_not_declared");
       const { readCommittedFile, captureWorkingFile } = await import("../observation/source.js");

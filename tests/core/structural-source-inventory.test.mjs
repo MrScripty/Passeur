@@ -38,8 +38,18 @@ test('exact declared files stay observable when absent on both sides; the result
   const f = await fixture(t);
   const actual = await listDeclaredSourcePaths(f.root, f.input, [
     { kind: 'file', path: 'src/missing.ts' }, { kind: 'subtree', path: 'src' }], 2);
-  assert.deepEqual(actual.paths, ['src/deleted.rs', 'src/missing.ts']);
+  assert.deepEqual(actual.paths, ['src/missing.ts', 'src/deleted.rs']);
   assert.deepEqual(actual.limitations, ['source_file_inventory_limit']);
+});
+
+test('an exact file selector takes priority over a full page of event hints', async t => {
+  const f = await fixture(t);
+  const hints = Array.from({ length: 256 }, (_, index) => `src/hint${String(index).padStart(3, '0')}.ts`);
+  const actual = await listDeclaredSourcePaths(f.root, f.input, [
+    { kind: 'subtree', path: 'src' }, { kind: 'file', path: 'src/same.ts' }], 1,
+    undefined, { priority_paths: hints });
+  assert.deepEqual(actual.paths, ['src/same.ts']);
+  assert.equal(actual.next_path, '');
 });
 
 test('a managed subtree declaration may name one source file', async t => {

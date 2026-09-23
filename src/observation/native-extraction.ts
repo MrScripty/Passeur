@@ -10,6 +10,8 @@ import { extractLuaFamily, extractPythonFamily } from "./language-python-lua.js"
 import { extractJavaScriptReactSvelte } from "./language-js-react-svelte.js";
 import { extractKotlinZigOdin } from "./language-kotlin-zig-odin.js";
 import { extractCFamily } from "./language-c-family.js";
+import { parameterDefaultValues } from "./parameter-defaults.js";
+import { nativeExtractorIdentity } from "./extractor-identity.js";
 
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 const functionTypes = new Set(["function_item", "function_signature_item", "function_declaration", "function_signature",
@@ -64,7 +66,7 @@ function maskHeader(header: string, headerStart: number, headerEnd: number, oute
   typeDefaults: readonly (Parser.SyntaxNode | null)[], prefix: readonly Parser.SyntaxNode[] = []):
   { signature: string; parameters: string[]; digests: string[] } {
   const parameterNodes = parameters?.namedChildren.filter(parameter => !commentTypes.has(parameter.type)) ?? [];
-  const values = [...parameterNodes.map(parameter => parameter.childForFieldName("value")), ownValue, ...typeDefaults]
+  const values = [...parameterDefaultValues(parameterNodes), ownValue, ...typeDefaults]
     .filter((value): value is Parser.SyntaxNode => value !== null && value.startIndex >= headerStart && value.endIndex <= headerEnd);
   const spans: MaskSpan[] = values.map(value => ({ start: value.startIndex, end: value.endIndex, text: value.text,
     marker: "<default>", change: true }));
@@ -242,7 +244,7 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
   }
   outside.push(bytes.subarray(cursor));
   const remainder_digest = createHash("sha256").update(Buffer.concat(outside)).digest("hex");
-  return Object.freeze({ dialect, parser_identity: identity, extractor_identity: "native-declarations@1",
+  return Object.freeze({ dialect, parser_identity: identity, extractor_identity: nativeExtractorIdentity(dialect),
     source: sourceReference(file), coverage: limitations.size ? "incomplete" : "complete",
     declarations: Object.freeze(declarations), remainder_digest, limitations: Object.freeze([...limitations].sort()) });
 }
@@ -250,7 +252,7 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
 /** Non-present endpoints are represented without launching a parser or reading a replacement path. */
 export function emptyNativeExtraction(file: Exclude<SourceFile, { status: "present" }>, dialect: NativeDialect): Extraction {
   const absent = file.status === "absent_in_commit";
-  return Object.freeze({ dialect, parser_identity: nativeParserIdentity(dialect), extractor_identity: "native-declarations@1",
+  return Object.freeze({ dialect, parser_identity: nativeParserIdentity(dialect), extractor_identity: nativeExtractorIdentity(dialect),
     source: sourceReference(file), coverage: absent ? "complete" : "unavailable", declarations: [],
     ...(absent ? { remainder_digest: digest("") } : {}), limitations: absent ? [] : ["source_not_present"] });
 }

@@ -78,7 +78,7 @@ test('authenticated declared files route JS, React and Svelte component/script s
       areas: selected.map(([path]) => ({ kind: 'file', path })) }), owner, f.root);
     const response = await runtime.structuralReport(receipt.receipt.item_id, owner, f.root);
     assert.deepEqual(response.reports.map(row => [row.path, row.dialect]),
-      selected.map(([path, [, , dialect]]) => [path, dialect]).sort((a, b) => a[0] < b[0] ? -1 : 1));
+      selected.map(([path, [, , dialect]]) => [path, dialect]));
     assert.deepEqual(response.limitations, []);
     for (const row of response.reports) {
       assert.match(row.text, /body_changed \(body omitted\)/, row.path);

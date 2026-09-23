@@ -8,6 +8,7 @@ import type { Extraction, SourceFile } from "./model.js";
 import { decodeHelperExtraction, HELPER_PROTOCOL_VERSION, MAX_HELPER_REPLY_BYTES, MAX_HELPER_REQUEST_BYTES, MAX_SOURCE_BYTES } from "./helper-protocol.js";
 import { nativeParserIdentity, type NativeDialect } from "./native-parser.js";
 import { sourceReference } from "./source.js";
+import { nativeExtractorIdentity } from "./extractor-identity.js";
 
 const MAX_WAITING_JOBS = 4;
 const ANALYSIS_TIMEOUT_MS = 30_000;
@@ -18,7 +19,6 @@ const RSS_SAMPLE_INTERVAL_MS = 100;
 const MAX_PROC_STATUS_BYTES = 64 * 1024;
 const MAX_EXTRACTION_CACHE_BYTES = 8 * 1024 * 1024;
 const MAX_EXTRACTION_CACHE_ENTRIES = 16;
-const EXTRACTOR_IDENTITY = "native-declarations@1";
 type Job = { file: SourceFile; dialect: NativeDialect; cacheKey: string; signal?: AbortSignal;
   resolve: (value: Extraction) => void; reject: (reason: unknown) => void; abort: () => void };
 
@@ -58,7 +58,7 @@ export class NativeAnalysisHelper {
     if (actualDigest !== file.content_sha256) {
       return Promise.reject(new BridgeError("STRUCTURAL_HELPER_REQUEST_INVALID", "Captured source digest does not match its bytes"));
     }
-    const cacheKey = `${actualDigest}:${dialect}:${nativeParserIdentity(dialect)}:${EXTRACTOR_IDENTITY}:${this.#installedBuildId ?? "development"}`;
+    const cacheKey = `${actualDigest}:${dialect}:${nativeParserIdentity(dialect)}:${nativeExtractorIdentity(dialect)}:${this.#installedBuildId ?? "development"}`;
     let reused: Extraction | undefined;
     try { reused = this.#reuse(cacheKey, file, dialect); }
     catch (cause) { return Promise.reject(cause); }

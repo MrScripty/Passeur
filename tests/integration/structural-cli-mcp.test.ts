@@ -14,7 +14,7 @@ import { test, onTestFinished } from "vitest";
 // @ts-expect-error JavaScript fixture has no TypeScript declaration.
 import { serviceFixture } from "../fixtures/structural/service-fixture.mjs";
 import { resolveRepositoryBinding } from "../../src/core/repository-runtime.js";
-import { existingOwner, launchService, readDescriptor } from "../../src/service/bootstrap.js";
+import { existingOwner, launchService, readDescriptor, servicePaths } from "../../src/service/bootstrap.js";
 import { responseSchemas } from "../../src/contracts/service.js";
 
 const execute = promisify(execFile);
@@ -60,9 +60,15 @@ test("compiled CLI returns a native report and retained exact detail for its reg
   const binding = await resolveRepositoryBinding({ project: f.root, stateRoot: f.state,
     profilePath: join(f.temp, "absent-profile.json") }, process.env, AbortSignal.timeout(10000));
   const settled = AbortSignal.timeout(10000);
+  // The setup CLI may have removed its descriptor just before releasing the election lock.
   while (true) {
     const descriptor = await readDescriptor(binding);
-    if (!descriptor || !await existingOwner(descriptor)) break;
+    if (!descriptor || !await existingOwner(descriptor)) {
+      try { await execute("flock", ["--nonblock", servicePaths(binding).guard, "true"]); break; }
+      catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== 1) throw error;
+      }
+    }
     await delay(20, undefined, { signal: settled });
   }
   const launch = await launchService(binding, cli);

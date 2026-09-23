@@ -58,7 +58,10 @@ export const operationSchemas = {
   cancel: CancelRequestSchema, attach: AttachRequestSchema,
   input_claim: claim, input_dismiss: claimIdentity, input_answer: answer,
   retained: ResultRequestSchema, finalize: FinalizeRequestSchema,
-  structural_report: z.object({ work_id: workId }).strict(),
+  structural_report: z.object({ work_id: workId,
+    paths: z.array(z.string().min(1).max(4096)).min(1).max(4)
+      .refine(paths => new Set(paths).size === paths.length, "duplicate source paths").optional(),
+  }).strict(),
   structural_detail: z.object({ work_id: workId, report_id: z.string().uuid(), side: z.enum(["input", "observed"]),
     start_byte: z.number().int().nonnegative().safe(), end_byte: z.number().int().nonnegative().safe() }).strict(),
   structural_refresh: z.object({ work_id: workId }).strict(),

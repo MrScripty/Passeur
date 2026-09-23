@@ -13,6 +13,7 @@ import { captureContentDigest, decodeObservationArtifact, decodeObservationState
 import type { AttributedComparison, SourceFile, SourceReference } from "../observation/model.js";
 import { noticeMateriality } from "../coordination/notices.js";
 import { renderComparison } from "../observation/report.js";
+import { requiresParameterMaskRefresh } from "../observation/extractor-identity.js";
 
 export type ObservationAuthority = (recipient: string, workId: string, workRevision: number,
   generation: ObservationGeneration) => Promise<void> | void;
@@ -280,6 +281,9 @@ export class ObservationStore {
 
   async readReport(id: string, recipient: string, authorize: ObservationAuthority): Promise<Readonly<{ id: string; work_id: string; text: string }>> {
     const item = await this.#readAuthorized(id, recipient, authorize);
+    if (requiresParameterMaskRefresh(item.analysis_digest)) {
+      throw new BridgeError("STRUCTURAL_REPORT_REFRESH_REQUIRED", "This report predates corrected parameter masking; refresh the work and retrieve its current report identity");
+    }
     return { id: item.id, work_id: item.work_id, text: item.report_text };
   }
   /** Internal restart seed from exact retained captures; the public boundary exposes only bounded pages. */

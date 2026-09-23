@@ -4,6 +4,7 @@ import { BridgeError } from "../core/errors.js";
 import type { Extraction, SourceFile } from "./model.js";
 import { nativeParserIdentity, type NativeDialect } from "./native-parser.js";
 import { sourceReference as referenceFromFile } from "./source.js";
+import { nativeExtractorIdentity } from "./extractor-identity.js";
 
 export const HELPER_PROTOCOL_VERSION = 1;
 export const MAX_HELPER_REQUEST_BYTES = 9 * 1024 * 1024;
@@ -50,7 +51,7 @@ const declaration = z.object({ key: z.string().max(4096), kind: z.string().max(1
   enclosing: z.array(z.string().max(4096)).max(64), range: byteRange, signature: z.string().max(65536),
   parameters: z.array(z.string().max(65536)).max(256), result: annotation, header_complete: z.boolean(),
   body_digest: hex64.optional(), default_digests: z.array(hex64).max(256) }).strict();
-const extraction = z.object({ dialect: z.string().max(64), parser_identity: z.string().max(256), extractor_identity: z.literal("native-declarations@1"),
+const extraction = z.object({ dialect: z.string().max(64), parser_identity: z.string().max(256), extractor_identity: z.string().max(256),
   source: sourceReferenceSchema, coverage: z.enum(["complete", "incomplete", "unavailable"]),
   declarations: z.array(declaration).max(4096), remainder_digest: hex64.optional(), limitations: z.array(z.string().max(256)).max(64) }).strict();
 
@@ -61,6 +62,7 @@ export function decodeHelperExtraction(raw: unknown, file: SourceFile, dialect: 
   const value = parsed.data;
   const expectedSource = sourceReferenceSchema.parse(referenceFromFile(file));
   if (value.dialect !== dialect || value.parser_identity !== nativeParserIdentity(dialect) ||
+      value.extractor_identity !== nativeExtractorIdentity(dialect) ||
       JSON.stringify(value.source) !== JSON.stringify(expectedSource) ||
       value.declarations.some(d => d.range.end_byte > file.byte_length || d.range.end_byte < d.range.start_byte) ||
       new Set(value.declarations.map(d => d.key)).size !== value.declarations.length ||
