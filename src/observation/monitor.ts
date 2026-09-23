@@ -12,6 +12,8 @@ const MAX_WATCH_DEPTH = 16;
 const MAX_WATCH_ENTRIES = 2048;
 const MAX_WAITERS = 16;
 const MAX_PATHS = 256;
+const ANALYSIS_PATHS = 16;
+const MAX_PUBLIC_LIMITATIONS = 32;
 const QUIET_MS = 150;
 const SWEEP_MS = 60_000;
 
@@ -60,7 +62,12 @@ type WorkspaceState = {
   key: string;
   workspace: ObservationWorkspace;
   generation: number;
-  lastEvidence?: string;
+  evidenceByBatch: Map<string, string>;
+  inventoryKey?: string;
+  nextPathIndex: number;
+  continueInventory: boolean;
+  cycleLimitations: Set<string>;
+  cycleIncomplete: boolean;
   lastOutcome?: ObservationOutcome;
   reason: string;
   dirty: boolean;
@@ -83,8 +90,11 @@ function declared(path: string, areas: readonly Region[]): boolean {
     area.path.startsWith(`${path}/`));
 }
 function outcome(state: WorkspaceState, captureId: string, status: ObservationOutcome["status"], limitations: readonly string[]): ObservationOutcome {
+  const unique = [...new Set(limitations)].sort();
+  const publicLimitations = unique.length <= MAX_PUBLIC_LIMITATIONS ? unique
+    : [...unique.slice(0, MAX_PUBLIC_LIMITATIONS - 1), `additional_observation_limitations:${unique.length - MAX_PUBLIC_LIMITATIONS + 1}`];
   return Object.freeze({ work_id: state.workspace.work_id, workspace_id: state.workspace.workspace_id,
-    generation: state.generation, capture_id: captureId, status, limitations: Object.freeze([...new Set(limitations)].sort()) });
+    generation: state.generation, capture_id: captureId, status, limitations: Object.freeze(publicLimitations) });
 }
 
 /** Linux fs events are hints. Reconciliation and exact source capture own evidence. */
@@ -125,6 +135,8 @@ export class ObservationMonitor<T> {
     if (!state) {
       if (this.#states.size >= MAX_WORKSPACES) throw new BridgeError("STRUCTURAL_MONITOR_CAPACITY", "Observation workspace capacity is full");
       state = { key, workspace: snapshot, generation: 0, reason: "attach", dirty: false, queued: false,
+        evidenceByBatch: new Map(), nextPathIndex: 0, continueInventory: false,
+        cycleLimitations: new Set(), cycleIncomplete: false,
         watchers: [], coverage: new Set(), waiters: [] };
       this.#states.set(key, state);
     } else {
@@ -133,7 +145,14 @@ export class ObservationMonitor<T> {
         state.workspace.control_generation !== snapshot.control_generation ||
         state.workspace.workspace_generation !== snapshot.workspace_generation ||
         state.workspace.root !== snapshot.root ||
-        JSON.stringify(state.workspace.areas) !== JSON.stringify(snapshot.areas)) delete state.lastEvidence;
+        JSON.stringify(state.workspace.areas) !== JSON.stringify(snapshot.areas)) {
+        state.evidenceByBatch.clear();
+        delete state.inventoryKey;
+        state.nextPathIndex = 0;
+        state.continueInventory = false;
+        state.cycleLimitations.clear();
+        state.cycleIncomplete = false;
+      }
       state.workspace = snapshot;
     }
     const pending = this.#request(state, "attach", false);
@@ -190,6 +209,10 @@ export class ObservationMonitor<T> {
     state.generation++;
     state.reason = reason;
     state.dirty = true;
+    if (reason !== "inventory_continuation") {
+      state.nextPathIndex = 0;
+      state.continueInventory = false;
+    }
     state.active?.abort(new BridgeError("STRUCTURAL_ANALYSIS_CANCELLED", "Observation capture was superseded"));
     if (state.timer) clearTimeout(state.timer);
     if (quiet) {
@@ -215,6 +238,10 @@ export class ObservationMonitor<T> {
         if (this.#states.get(state.key) !== state || !state.dirty) continue;
         state.dirty = false;
         await this.#run(state);
+        if (this.#states.get(state.key) === state && state.continueInventory && !state.dirty) {
+          state.continueInventory = false;
+          this.#invalidate(state, "inventory_continuation", false);
+        }
         if (state.dirty && !state.timer) this.#enqueue(state);
       }
     })();
@@ -232,28 +259,53 @@ export class ObservationMonitor<T> {
     const limitations = new Set(state.coverage);
     const workspace = state.workspace;
     try {
-      const inventory = await listDeclaredSourcePaths(workspace.root, workspace.input_commit_oid,
-        workspace.areas, MAX_PATHS, controller.signal);
-      for (const limitation of inventory.limitations) limitations.add(limitation);
+      const inventoryPaths = new Set<string>();
+      for (let offset = 0; offset < Math.max(1, workspace.areas.length); offset += MAX_PATHS) {
+        const inventory = await listDeclaredSourcePaths(workspace.root, workspace.input_commit_oid,
+          workspace.areas.slice(offset, offset + MAX_PATHS), MAX_PATHS, controller.signal);
+        for (const limitation of inventory.limitations) limitations.add(limitation);
+        for (const path of inventory.paths) inventoryPaths.add(path);
+      }
+      const pathsInInventory = [...inventoryPaths].sort();
+      if (pathsInInventory.length > MAX_PATHS) limitations.add("source_file_inventory_limit");
+      pathsInInventory.length = Math.min(pathsInInventory.length, MAX_PATHS);
       if (!current()) return;
       await this.#replaceWatchers(state);
       for (const limitation of state.coverage) limitations.add(limitation);
       if (!current()) return;
+      if (pathsInInventory.length > ANALYSIS_PATHS) limitations.add("analysis_inventory_batched");
+      const inventoryKey = JSON.stringify(pathsInInventory);
+      const start = state.inventoryKey === inventoryKey && state.nextPathIndex < pathsInInventory.length
+        ? state.nextPathIndex : 0;
+      const paths = pathsInInventory.slice(start, start + ANALYSIS_PATHS);
+      const batchKey = JSON.stringify(paths);
+      const nextPathIndex = start + paths.length < pathsInInventory.length ? start + paths.length : 0;
+      if (nextPathIndex > 0) limitations.add("analysis_batch_pending");
       const job: ObservationJob = Object.freeze({ workspace, generation, capture_id: captureId,
-        paths: Object.freeze(inventory.paths), limitations: Object.freeze([...limitations].sort()),
+        paths: Object.freeze(paths), limitations: Object.freeze([...limitations].sort()),
         reason: state.reason, signal: controller.signal });
       const result = await this.#options.analyze(job);
       if (!current()) return;
-      if (result.kind === "incomplete") {
-        state.lastOutcome = outcome(state, captureId, "incomplete", [...limitations, result.limitation, ...(result.limitations ?? [])]);
-      } else if (state.lastEvidence === result.evidence_id) {
-        state.lastOutcome = outcome(state, captureId, "unchanged", [...limitations, ...(result.limitations ?? [])]);
-      } else {
+      let batchStatus: ObservationOutcome["status"] = "incomplete";
+      if (result.kind === "artifact" && state.evidenceByBatch.get(batchKey) === result.evidence_id) {
+        batchStatus = "unchanged";
+      } else if (result.kind === "artifact") {
         await this.#options.publish(job, result.artifact, current);
         if (!current()) return;
-        state.lastEvidence = result.evidence_id;
-        state.lastOutcome = outcome(state, captureId, "published", [...limitations, ...(result.limitations ?? [])]);
+        if (state.evidenceByBatch.size >= MAX_PATHS) state.evidenceByBatch.clear();
+        state.evidenceByBatch.set(batchKey, result.evidence_id);
+        batchStatus = "published";
       }
+      if (start === 0) { state.cycleLimitations.clear(); state.cycleIncomplete = false; }
+      for (const limitation of limitations) if (limitation !== "analysis_batch_pending") state.cycleLimitations.add(limitation);
+      if (result.kind === "incomplete") state.cycleLimitations.add(result.limitation);
+      for (const limitation of result.limitations ?? []) state.cycleLimitations.add(limitation);
+      state.cycleIncomplete ||= result.kind === "incomplete" || Boolean(result.limitations?.length);
+      state.lastOutcome = outcome(state, captureId, state.cycleIncomplete ? "incomplete" : batchStatus,
+        [...state.cycleLimitations, ...(nextPathIndex > 0 ? ["analysis_batch_pending"] : [])]);
+      state.inventoryKey = inventoryKey;
+      state.nextPathIndex = nextPathIndex;
+      state.continueInventory = nextPathIndex > 0;
     } catch (error) {
       if (!current()) return;
       const code = error instanceof BridgeError ? error.code : "STRUCTURAL_OBSERVATION_UNAVAILABLE";

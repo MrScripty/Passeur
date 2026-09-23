@@ -43,11 +43,31 @@ test('exact common input declaration produces one compact stable pair and revers
   assert.match(pair.pair_id, /^[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(pair).includes('function run'), false);
   assert.equal(index.upsert(report('b', [modified(declaration, 'f'.repeat(64))])).pairs.length, 0);
+  assert.equal(index.upsert(report('b', [modified(declaration, '1'.repeat(64))])).pairs.length, 0,
+    'a new concealed body digest keeps the same compact overlap');
   const reverted = index.upsert(report('b', []));
   assert.deepEqual(reverted.pairs, []);
   assert.deepEqual(reverted.resolved, [{ current_work_id: 'b', other_work_id: 'a',
     subject_id: pair.subject_id, pair_id: pair.pair_id }]);
   assert.equal(index.upsert(report('b', [])).resolved.length, 0);
+});
+
+test('concealed default revisions remain quiet while declaration and change markers notify', () => {
+  const index = new CorrespondenceIndex();
+  const defaultChange = (value, signature = declaration.signature, declarationChanged = false) => ({
+    kind: 'modified', correspondence: 'unique_syntax_correspondence', input: declaration,
+    observed: { ...declaration, key: `${declaration.key}:observed`, signature,
+      default_digests: [value] },
+    declaration_changed: declarationChanged, body_changed: false, default_changed: true,
+  });
+  index.upsert(report('a', [modified()]));
+  assert.equal(index.upsert(report('b', [defaultChange('e'.repeat(64))])).pairs.length, 1);
+  assert.equal(index.upsert(report('b', [defaultChange('f'.repeat(64))])).pairs.length, 0,
+    'a new concealed default digest keeps the same compact overlap');
+  assert.equal(index.upsert(report('b', [defaultChange('f'.repeat(64), 'function run(value: number): void', true)])).pairs.length, 1,
+    'a new declaration signature changes compact evidence');
+  assert.equal(index.upsert(report('b', [defaultChange('f'.repeat(64), 'function run(value: number): void')])).pairs.length, 1,
+    'a changed declaration marker also changes compact evidence');
 });
 
 test('different bases, paths, anchors and extraction identities never imply correspondence', () => {

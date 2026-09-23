@@ -165,10 +165,12 @@ test('invalid encoding and unsafe ancestor paths are reported while another real
       { kind: 'file', path: 'unsafe/skip.ts' }], readers: [] }), owner, fixture.root);
   await writeFile(join(fixture.root, 'source.ts'), 'export function run(value: number) { return value + 1; }\n');
   const outcome = await runtime.structuralRefresh(receipt.receipt.item_id, owner);
-  assert.equal(outcome.status, 'published');
+  assert.equal(outcome.status, 'incomplete');
   assert.ok(outcome.limitations.includes('bad.ts:SOURCE_ENCODING_UNSUPPORTED'), JSON.stringify(outcome.limitations));
   assert.ok(outcome.limitations.includes('unsafe/skip.ts:SOURCE_PATH_UNSAFE'), JSON.stringify(outcome.limitations));
-  assert.deepEqual((await runtime.structuralCurrent(owner)).reports.map(row => row.path), ['source.ts']);
+  const current = await runtime.structuralCurrent(owner);
+  assert.deepEqual(current.reports.map(row => row.path), ['source.ts']);
+  assert.match((await runtime.structuralArtifactReport(owner, current.reports[0].id)).text, /run/);
 });
 
 test('a failed second correspondence notice is replayed before source reversion resolves the pair', async t => {

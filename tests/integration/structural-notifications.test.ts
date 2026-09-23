@@ -205,6 +205,26 @@ test("two common-base worktrees notify corresponding edits and resolve a reverte
   assert.equal(pairedLeft.at(-1)?.correspondence_state, "overlap");
   assert.equal(pairedRight.at(-1)?.correspondence_state, "overlap");
 
+  for (const notice of pairedLeft) await call(left, "structural_notice_ack", { notice_id: notice.id });
+  for (const notice of pairedRight) await call(right, "structural_notice_ack", { notice_id: notice.id });
+  assert.deepEqual((await pull(left)).notices, []);
+  assert.deepEqual((await pull(right)).notices, []);
+  const currentRight = async () => responseSchemas.structural_current.parse(await call(right, "structural_current", {}))
+    .reports.find(row => row.work_id === rightWork && row.path === "source.ts")?.id;
+  const beforeBodyEdit = await currentRight();
+  const nextBody = "export function run() { return 4; }\nexport function other() { return 1; }\n";
+  await writeFile(join(otherRoot, "source.ts"), nextBody);
+  await refresh(right, rightWork);
+  assert.deepEqual((await pull(left)).notices, [], "a body revision must not repeat the compact overlap for the peer");
+  assert.deepEqual((await pull(right)).notices, [], "a body revision must not repeat the compact overlap for its owner");
+  const afterBodyEdit = await currentRight();
+  assert.ok(afterBodyEdit && afterBodyEdit !== beforeBodyEdit,
+    "the latest exact capture must advance while the correspondence notice remains quiet");
+  const bodyDetail = responseSchemas.structural_artifact_detail.parse(await call(right, "structural_artifact_detail", {
+    artifact_id: afterBodyEdit, side: "observed", start_byte: 0, end_byte: Buffer.byteLength(nextBody),
+  }));
+  assert.equal(bodyDetail.text, nextBody);
+
   await writeFile(join(otherRoot, "source.ts"), "export function run() {}\nexport function other() { return 1; }\n");
   await refresh(right, rightWork);
   const resolvedLeft = (await pull(left)).notices, resolvedRight = (await pull(right)).notices;

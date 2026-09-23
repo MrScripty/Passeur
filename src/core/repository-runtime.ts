@@ -447,9 +447,18 @@ export class RepositoryRuntime {
     const workspace = (await repository.resolveMany([work.workspace_id], this.#lifetime.signal)).get(work.workspace_id);
     if (!workspace) throw new BridgeError("COORDINATION_WORKSPACE_UNAVAILABLE", "Registered source workspace is unavailable");
     const controlGeneration = work.managed ? (await this.#store!.readControl(work.managed.task_id)).control_generation : 0;
+    const watched = (work.source_watches ?? []).filter(watch => watch.work_revision === work.revision &&
+      (watch.recipient === work.owner || work.source_grants?.some(grant =>
+        grant.work_revision === work.revision && grant.recipient === watch.recipient)));
+    const areas = [...work.areas];
+    for (const region of watched.flatMap(watch => watch.regions)) {
+      if (!regionIncludesPath(areas, region.path) ||
+        (region.kind === "subtree" && !areas.some(area => area.kind === "subtree" &&
+          (area.path === region.path || region.path.startsWith(`${area.path}/`))))) areas.push(region);
+    }
     return { work_id: work.id, work_revision: work.revision, control_generation: controlGeneration,
       workspace_id: work.workspace_id, workspace_generation: work.managed ? controlGeneration : Math.max(1, work.revision),
-      root: workspace.root, input_commit_oid: work.input_oid, areas: work.areas };
+      root: workspace.root, input_commit_oid: work.input_oid, areas };
   }
   async #analyzeObservation(job: ObservationJob) {
     if (job.paths.length > 16) return { kind: "incomplete" as const, limitation: "analysis_path_budget_exceeded" };
