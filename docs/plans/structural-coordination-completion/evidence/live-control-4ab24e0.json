@@ -1,0 +1,36 @@
+{
+  "fixture": "/tmp/passeur-sc15-4ab24e0",
+  "source_revision": "4ab24e00b01d25053f24038d5d3a549f313f503c",
+  "observation_revision": 12,
+  "artifact_count": 12,
+  "notice_count": 2,
+  "tasks": [
+    {
+      "task_id": "a6b036f9-7f85-41d5-8b94-a9709f83bceb",
+      "agent_id": "muse",
+      "phase": "terminal",
+      "native_state": "stopped",
+      "native_run_id": "f16e8c52-9de3-469d-b702-51c7de6b3689",
+      "owner_id": "44bb49ab980842882c4d5ed879501bb139c33da79c8c14d20283feb81efb7c04",
+      "pending_inputs": 0
+    },
+    {
+      "task_id": "c5aa43ab-aec5-43a4-a3af-17ad824c9800",
+      "agent_id": "sc15-codex",
+      "phase": "awaiting_input",
+      "native_state": "observed_live",
+      "native_run_id": "4da92618-6403-4cb5-b37e-592b7e07e778",
+      "owner_id": "44bb49ab980842882c4d5ed879501bb139c33da79c8c14d20283feb81efb7c04",
+      "pending_inputs": 1
+    },
+    {
+      "task_id": "ed5302b8-6142-4e33-92c9-725a3ec84e98",
+      "agent_id": "sc15-muse-b",
+      "phase": "awaiting_input",
+      "native_state": "observed_live",
+      "native_run_id": "a065b06f-2848-48ad-98eb-3477c7a2825d",
+      "owner_id": "0ea2caf30219e88a2306592572c69b9b3f533471043c4e8f79596a2c41a3fa87",
+      "pending_inputs": 1
+    }
+  ]
+}

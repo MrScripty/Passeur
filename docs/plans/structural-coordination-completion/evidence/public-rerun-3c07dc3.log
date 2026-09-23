@@ -1,0 +1,8 @@
+
+ RUN  v4.1.11 /tmp/passeur-structural-release-2624e9a
+
+
+ Test Files  39 passed (39)
+      Tests  144 passed | 6 skipped (150)
+   Start at  05:39:47
+   Duration  327.51s (transform 2.22s, setup 0ms, import 7.12s, tests 314.42s, environment 6ms)

@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Plan status | **Implemented** — source commit `3c07dc364efecf9d7ffb314eb90a2336223a9694`; objective verification is in progress under `verify` |
-| Acceptance status | **open**; SC01–SC17 require final claim disposition. The clean installed native/public gates pass; live worker permissions, integration, resource accounting and independent final review remain open. |
+| Acceptance status | **open**; SC01–SC09, SC11, SC13 and SC14 have independent claim-level passage on exact native/public/installed evidence. SC10, SC12, SC15–SC17 need live continuation, resource disposition and final review. |
 | Selected design | Plan 2A, code-only structural coordination |
 | Current phase | R6 objective verification on installed build `4902ce2fa9bcdbdc2030792fa939fc41742bdf69cca16fd4b46be77833ae22a2` |
 | Exactly one next integration slice | **R6-S1 — objective acceptance and external review** |
