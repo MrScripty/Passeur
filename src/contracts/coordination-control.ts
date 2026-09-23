@@ -3,6 +3,8 @@ import { BridgeError } from "../core/errors.js";
 
 /** Owned internal/persisted contract. Transport authorization is a separate boundary. */
 export const CONTROL_SCHEMA = 1;
+export const MANAGED_CONTROL_SCHEMA = 3;
+export const WORK_INTENT_BYTES = 4096;
 export const CONTROL_MAX_BYTES = 2 * 1024 * 1024;
 // More than the worst-case escaped closure receipt and its bounded counter changes.
 export const CONTROL_RELEASE_BYTES = 4096;
@@ -15,10 +17,15 @@ export type Region = { kind: "file" | "subtree"; path: string };
 export type Subject = { kind: "work" | "case"; id: string };
 export type Selection = { work_id: string; commit_oid: string };
 export type Limits = { works: number; cases: number; notes: number; receipts: number; note_bytes: number };
+/** Immutable source attribution; native-task control remains with TaskControls. */
+export type ManagedWork = {
+  task_id: string; control_generation: number; intent_truncated: boolean;
+  areas_source: "allowed_paths" | "not_declared";
+};
 export type Work = {
   id: string; owner: ParentId; workspace_id: string; revision: number;
   state: "active" | "closed"; input_oid: string; object_format: "sha1" | "sha256";
-  intent: string; areas: Region[]; readers: ParentId[];
+  intent: string; areas: Region[]; readers: ParentId[]; managed?: ManagedWork;
 };
 export type Case = {
   id: string; target: string; lead: ParentId; members: ParentId[];
@@ -41,7 +48,7 @@ type ControlData = {
 /** Existing state stays v1 until one authorized recovery atomically publishes v2. */
 export type ControlState = ControlData & (
   | { schema_version: 1 }
-  | { schema_version: 2; recoveries: RecoveryReceipt[] }
+  | { schema_version: 2 | 3; recoveries: RecoveryReceipt[] }
 );
 export type RecoveryCommand = {
   operation_key: string; epoch: string; expected_owner: ParentId;
@@ -60,13 +67,15 @@ const recoveryActions = ["adopt_work", "close_work", "adopt_case", "release_case
 // A bounded operator attribution or evidence reference, not a generated explanation or process proof.
 export const RECOVERY_STATEMENT_BYTES = 256;
 export function recoveryReceipts(state: ControlState): readonly RecoveryReceipt[] {
-  return state.schema_version === 2 ? state.recoveries : [];
+  return state.schema_version === 1 ? [] : state.recoveries;
 }
 export function controlReceiptCount(state: ControlState): number {
   return state.receipts.length + recoveryReceipts(state).length;
 }
 
 export type Command =
+  | { kind: "register_task_work"; operation_key: string; workspace_id: string; input_oid: string;
+      object_format: "sha1" | "sha256"; intent: string; areas: Region[]; managed: ManagedWork }
   | { kind: "register_work"; operation_key: string; workspace_id: string; input_oid: string;
       object_format: "sha1" | "sha256"; intent: string; areas: Region[]; readers: ParentId[] }
   | { kind: "share_work"; operation_key: string; work_id: string; expected_revision: number; readers: ParentId[] }
@@ -80,7 +89,7 @@ export type Command =
       operation_key: string; case_id: string; expected_revision: number; generation: number }
   | { kind: "transfer_case"; operation_key: string; case_id: string; expected_revision: number;
       generation: number; new_lead: ParentId };
-const actions = ["register_work", "share_work", "close_work", "post_note", "ack_note", "withdraw_note", "claim_target",
+const actions = ["register_task_work", "register_work", "share_work", "close_work", "post_note", "ack_note", "withdraw_note", "claim_target",
   "select_inputs", "release_case", "begin_external_integration", "record_external_settlement", "transfer_case"] as const;
 const noteKinds = ["intent", "question", "statement", "agreement_proposal", "resolution_update"] as const;
 
@@ -157,6 +166,14 @@ export function decodeCommand(value: unknown): Command {
   if (typeof v.kind === "string" && !actions.some(action => action === v.kind)) throw new BridgeError("COORDINATION_OPERATION_UNSUPPORTED", "The operation has no implemented handler");
   const kind = choice(v.kind, actions), operation_key = text(v.operation_key, 256);
   switch (kind) {
+    case "register_task_work": {
+      fields(v, ["kind", "operation_key", "workspace_id", "input_oid", "object_format", "intent", "areas", "managed"]);
+      const object_format = choice(v.object_format, ["sha1", "sha256"]), input_oid = coordinationOid(v.input_oid); formatOid(input_oid, object_format);
+      const managed = managedWork(v.managed), areas = regions(v.areas);
+      if (managed.areas_source === "not_declared" && areas.length) invalid("Undeclared areas cannot contain projected scope");
+      return { kind, operation_key, workspace_id: text(v.workspace_id, 4096), input_oid, object_format,
+        intent: text(v.intent, 4096, true), areas, managed };
+    }
     case "register_work": {
       fields(v, ["kind", "operation_key", "workspace_id", "input_oid", "object_format", "intent", "areas", "readers"]);
       const object_format = choice(v.object_format, ["sha1", "sha256"]), input_oid = coordinationOid(v.input_oid); formatOid(input_oid, object_format);
@@ -184,11 +201,17 @@ export function decodeCommand(value: unknown): Command {
       return { kind, operation_key, case_id: entityId(v.case_id), expected_revision: number(v.expected_revision, 1), generation: number(v.generation, 1) };
   }
 }
+function managedWork(value: unknown): ManagedWork {
+  const v = object(value); fields(v, ["task_id", "control_generation", "intent_truncated", "areas_source"]);
+  return { task_id: entityId(v.task_id), control_generation: number(v.control_generation, 1),
+    intent_truncated: boolean(v.intent_truncated), areas_source: choice(v.areas_source, ["allowed_paths", "not_declared"]) };
+}
 function work(value: unknown): Work {
-  const v = object(value); fields(v, ["id", "owner", "workspace_id", "revision", "state", "input_oid", "object_format", "intent", "areas", "readers"]);
+  const v = object(value); fields(v, ["id", "owner", "workspace_id", "revision", "state", "input_oid", "object_format", "intent", "areas", "readers", ...(Object.hasOwn(v, "managed") ? ["managed"] : [])]);
   const object_format = choice(v.object_format, ["sha1", "sha256"]), input_oid = coordinationOid(v.input_oid); formatOid(input_oid, object_format);
   return { id: entityId(v.id), owner: parentId(v.owner), workspace_id: text(v.workspace_id, 4096), revision: number(v.revision, 1),
-    state: choice(v.state, ["active", "closed"]), input_oid, object_format, intent: text(v.intent, 4096, true), areas: regions(v.areas), readers: parents(v.readers) };
+    state: choice(v.state, ["active", "closed"]), input_oid, object_format, intent: text(v.intent, 4096, true), areas: regions(v.areas), readers: parents(v.readers),
+    ...(Object.hasOwn(v, "managed") ? { managed: managedWork(v.managed) } : {}) };
 }
 function caseRecord(value: unknown): Case {
   const v = object(value); fields(v, ["id", "target", "lead", "members", "revision", "generation", "state", "external_effect", "target_oid", "inputs"]);
@@ -209,21 +232,36 @@ function receipt(value: unknown): Receipt {
 }
 export function decodeControl(value: unknown, expectedRepository: string): ControlState {
   const v = object(value);
-  if (typeof v.schema_version === "number" && Number.isSafeInteger(v.schema_version) && v.schema_version > 0 && v.schema_version !== CONTROL_SCHEMA && v.schema_version !== 2) throw new BridgeError("COORDINATION_VERSION_UNSUPPORTED", "The control version has no supported reader");
-  fields(v, ["schema_version", "repository_id", "epoch", "revision", "limits", "works", "cases", "notes", "receipts", ...(v.schema_version === 2 ? ["recoveries"] : [])]);
-  if (v.schema_version !== CONTROL_SCHEMA && v.schema_version !== 2) invalid("Missing or malformed control schema version");
+  if (typeof v.schema_version === "number" && Number.isSafeInteger(v.schema_version) && v.schema_version > 0 && v.schema_version !== CONTROL_SCHEMA && v.schema_version !== 2 && v.schema_version !== MANAGED_CONTROL_SCHEMA) throw new BridgeError("COORDINATION_VERSION_UNSUPPORTED", "The control version has no supported reader");
+  fields(v, ["schema_version", "repository_id", "epoch", "revision", "limits", "works", "cases", "notes", "receipts", ...(v.schema_version !== 1 ? ["recoveries"] : [])]);
+  if (v.schema_version !== CONTROL_SCHEMA && v.schema_version !== 2 && v.schema_version !== MANAGED_CONTROL_SCHEMA) invalid("Missing or malformed control schema version");
   const repository_id = text(v.repository_id, 256); if (repository_id !== expectedRepository) throw new BridgeError("COORDINATION_BINDING_CONFLICT", "Control belongs to another repository");
   const limits = decodeLimits(v.limits), revision = number(v.revision);
   const works = unique(list(v.works, limits.works, work), x => x.id), cases = unique(list(v.cases, limits.cases, caseRecord), x => x.id);
   const notes = unique(list(v.notes, limits.notes, note), x => x.id), receipts = unique(list(v.receipts, limits.receipts, receipt), x => `${x.owner}:${x.key}`);
-  const recoveries = v.schema_version === 2 ? list(v.recoveries, limits.receipts, decodeRecoveryReceipt) : [];
+  const recoveries = v.schema_version !== 1 ? list(v.recoveries, limits.receipts, decodeRecoveryReceipt) : [];
   if (v.schema_version === 2 && recoveries.length === 0) invalid("Recovery storage requires its first atomic recovery receipt");
   if (receipts.length + recoveries.length > limits.receipts) invalid("Receipt capacity includes operator recovery history");
   unique([...receipts.map(r => `${r.owner}:${r.key}`), ...recoveries.map(r => `${r.operator}:${r.command.operation_key}`)], x => x);
+  if (v.schema_version === MANAGED_CONTROL_SCHEMA && !works.some(w => w.managed)) invalid("Managed storage requires a managed enrollment");
+  if (v.schema_version !== MANAGED_CONTROL_SCHEMA && works.some(w => w.managed) || v.schema_version !== MANAGED_CONTROL_SCHEMA && receipts.some(r => r.action === "register_task_work")) invalid("Managed enrollment requires control storage v3");
+  const workMap = new Map(works.map(w => [w.id, w])), caseMap = new Map(cases.map(c => [c.id, c]));
+  const enrollments = new Map<string, Receipt>();
+  for (const r of receipts) if (r.action === "register_task_work") {
+    if (!workMap.get(r.item_id)?.managed || enrollments.has(r.item_id)) invalid("Managed receipt requires one uniquely enrolled work");
+    enrollments.set(r.item_id, r);
+  }
+  for (const w of works) if (w.managed) {
+    if (w.id !== w.managed.task_id || w.managed.areas_source === "not_declared" && w.areas.length) invalid("Managed work attribution is inconsistent");
+    const receipt = enrollments.get(w.id);
+    if (!receipt) invalid("Managed work requires exactly one enrollment receipt");
+    const command = { kind: "register_task_work", operation_key: receipt.key, workspace_id: w.workspace_id,
+      input_oid: w.input_oid, object_format: w.object_format, intent: w.intent, areas: w.areas, managed: w.managed };
+    if (receipt.entity.kind !== "work" || receipt.entity.id !== w.id || receipt.request_hash !== canonicalHash({ owner: receipt.owner, command })) invalid("Managed attribution differs from its immutable enrollment");
+  }
   unique(works.filter(x => x.state === "active"), x => x.workspace_id);
   unique(cases.filter(x => x.state === "active"), x => x.target);
   const allIds = [...works.map(x => x.id), ...cases.map(x => x.id), ...notes.map(x => x.id)]; unique(allIds, x => x);
-  const workMap = new Map(works.map(w => [w.id, w])), caseMap = new Map(cases.map(c => [c.id, c]));
   for (const w of works) if (w.revision > revision || w.readers.includes(w.owner)) invalid("Work revision/sharing contradicts its owner");
   for (const c of cases) {
     if (c.revision > revision || c.generation > revision || !c.members.includes(c.lead) || c.state === "closed" && c.external_effect !== "not_started") invalid("Case lifecycle contradicts its authority");
@@ -243,7 +281,7 @@ export function decodeControl(value: unknown, expectedRepository: string): Contr
       || ("work_id" in c ? !workMap.has(c.work_id) : !caseMap.has(c.case_id))) invalid("Recovery references missing state or contradicts its revision/epoch");
   }
   const data = { repository_id, epoch, revision, limits, works, cases, notes, receipts };
-  return v.schema_version === 2 ? { schema_version: 2, ...data, recoveries } : { schema_version: 1, ...data };
+  return v.schema_version === 1 ? { schema_version: 1, ...data } : { schema_version: v.schema_version as 2 | 3, ...data, recoveries };
 }
 export function emptyControl(repository: string, epoch: string, limits: unknown): ControlState {
   return decodeControl({ schema_version: CONTROL_SCHEMA, repository_id: repository, epoch, revision: 0, limits, works: [], cases: [], notes: [], receipts: [] }, repository);
@@ -294,12 +332,20 @@ export function assertControlTransition(before: ControlState, next: ControlState
   if (next.schema_version < before.schema_version || oldRecoveries.some((r, i) => !same(r, newRecoveries[i]))) invalid("Recovery history or supported storage version was rewritten");
   const recovered = newRecoveries.length === oldRecoveries.length + 1 ? newRecoveries.at(-1) : undefined;
   if (recovered) {
-    if (next.schema_version !== 2 || recovered.revision !== next.revision || before.receipts.length !== next.receipts.length) invalid("Recovery publication must append exactly its own receipt");
+    if (next.schema_version < 2 || (before.schema_version === MANAGED_CONTROL_SCHEMA && next.schema_version !== MANAGED_CONTROL_SCHEMA) || recovered.revision !== next.revision || before.receipts.length !== next.receipts.length) invalid("Recovery publication must append exactly its own receipt");
     assertRecoveryTransition(before, next, recovered.command);
-  } else if (newRecoveries.length !== oldRecoveries.length || next.receipts.length !== before.receipts.length + 1 || next.schema_version !== before.schema_version) {
+  } else if (newRecoveries.length !== oldRecoveries.length || next.receipts.length !== before.receipts.length + 1
+    || next.schema_version !== before.schema_version && !(next.schema_version === MANAGED_CONTROL_SCHEMA && next.receipts.at(-1)?.action === "register_task_work")) {
     invalid("A control publication appends one ordinary or recovery receipt");
   }
   if (before.receipts.some((r, i) => !same(r, next.receipts[i]))) invalid("Accepted operation receipts are immutable");
+  if (next.receipts.at(-1)?.action === "register_task_work" && next.receipts.length === before.receipts.length + 1) {
+    const receipt = next.receipts.at(-1)!, added = next.works.at(-1);
+    if (next.schema_version !== MANAGED_CONTROL_SCHEMA || next.works.length !== before.works.length + 1 || !same(next.works.slice(0, -1), before.works)
+      || !same(before.cases, next.cases) || !same(before.notes, next.notes) || !added?.managed
+      || added.owner !== receipt.owner || added.revision !== 1 || added.state !== "active" || added.readers.length
+      || receipt.item_id !== added.id || !same(oldRecoveries, newRecoveries)) invalid("Managed enrollment changed unrelated authority");
+  }
   for (const old of before.works) {
     const item = next.works.find(w => w.id === old.id); if (!item) invalid("Retained work cannot disappear during a control update");
     if (recovered && "work_id" in recovered.command && recovered.command.work_id === old.id) continue;
@@ -361,13 +407,18 @@ export type ExternalWorkRegistration = {
   kind: "register_external_work"; operation_key: string; input_oid: string;
   intent: string; areas: Region[]; readers: ParentId[];
 };
-export type RepositoryCommand = Exclude<Command, { kind: "register_work" }> | ExternalWorkRegistration;
+export type ManagedWorkRegistration = { kind: "register_managed_work"; operation_key: string; task_id: string };
+export type RepositoryCommand = Exclude<Command, { kind: "register_work" | "register_task_work" }> | ExternalWorkRegistration | ManagedWorkRegistration;
 export function decodeRepositoryCommand(value: unknown): RepositoryCommand {
   const v = object(value);
-  if (v.kind === "register_work") throw new BridgeError("COORDINATION_OPERATION_UNSUPPORTED", "Physical workspace metadata must be derived by the repository boundary");
+  if (v.kind === "register_work" || v.kind === "register_task_work") throw new BridgeError("COORDINATION_OPERATION_UNSUPPORTED", "Physical workspace metadata must be derived by the repository boundary");
+  if (v.kind === "register_managed_work") {
+    fields(v, ["kind", "operation_key", "task_id"]);
+    return { kind: "register_managed_work", operation_key: coordinationOperationKey(v.operation_key), task_id: entityId(v.task_id) };
+  }
   if (v.kind !== "register_external_work") {
     const command = decodeCommand(v);
-    if (command.kind === "register_work") invalid("Unreachable raw workspace registration");
+    if (command.kind === "register_work" || command.kind === "register_task_work") invalid("Unreachable raw workspace registration");
     return command;
   }
   fields(v, ["kind", "operation_key", "input_oid", "intent", "areas", "readers"]);

@@ -18,7 +18,7 @@ export function initialControl(id: string, owner: string): TaskControl {
     phase: "queued", updated_at: now(), native: { run_id: randomUUID(), state: "not_started", obligations: [], coverage: "unknown" },
     inputs: [], receipts: [], telemetry_omitted: false };
 }
-export function owns(state: TaskControl, actor: ClientActor, generation?: number): void {
+export function owns(state: TaskControl, actor: Pick<ClientActor, "owner_id">, generation?: number): void {
   if (state.owner_id !== actor.owner_id) throw new BridgeError("TASK_CONTROL_CONFLICT", "This connection does not control the task; use human-confirmed attach");
   if (generation !== undefined && generation !== state.control_generation) throw new BridgeError("STALE_CONTROL", "Task control changed; read a fresh observation");
 }

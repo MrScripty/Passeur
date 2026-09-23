@@ -1,0 +1,54 @@
+// Requires actual pinned TaskStore codecs and repository lease; it has no substitute dependencies.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash,randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { access } from 'node:fs/promises';
+import { serviceFixture,request,command,key,readRequest } from '../fixtures/structural/service-fixture.mjs';
+import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
+import { RepositoryRuntime,resolveRepositoryBinding } from '../../.passeur-core/src/core/repository-runtime.js';
+import { initialControl } from '../../.passeur-core/src/core/task-control.js';
+import { canonicalHash } from '../../.passeur-core/src/core/async.js';
+import { LifecyclePolicySchema } from '../../.passeur-core/src/contracts/tasks.js';
+import { AssignmentSchema } from '../../.passeur-core/src/contracts/agents.js';
+import { baseResult } from '../../.passeur-core/src/core/result.js';
+import { observeDelivery } from '../../.passeur-core/src/workspace/worktree.js';
+import { operatorToken } from '../../.passeur-core/src/service/operator-token.js';
+
+test('actual TaskStore admission and result codecs feed runtime enrollment and protected Git retirement',async t=>{
+ const f=await serviceFixture(t);await f.service.close();
+ const intent={project:f.root,stateRoot:f.state,profilePath:join(f.temp,'absent-profile.json')};
+ const binding=await resolveRepositoryBinding(intent,{},new AbortController().signal);
+ const token=await operatorToken(binding,true),owner=createHash('sha256').update(token).digest('hex');
+ const actor={owner_id:owner,client_id:randomUUID()},id=randomUUID(),name='managed-store-'+id,path=await f.linked(name);
+ const head=await f.commit(path,'source.ts','export function run(reason?: string) { return reason; }\n');
+ const assignment=AssignmentSchema.parse({schema_version:3,agent_id:'fixture',request_key:key(),mode:'implement',objective:'Preserve declared cancellation evidence',context:'Fixture-owned input',acceptance_criteria:['Retain result'],allowed_paths:['source.ts'],base_commit:f.base,target_ref:'refs/heads/main'});
+ const policy=LifecyclePolicySchema.parse({implementation:{enabled:true,worktree_root:f.temp}});
+ const execution={schema_version:2,agent_id:'fixture',adapter_id:'fixture',adapter_contract:'fixture-contract',configuration:{},configuration_fingerprint:canonicalHash({}),policy};
+ const state=initialControl(id,owner);state.phase='terminal';state.outcome='completed';state.native.state='stopped';state.native.coverage='turn_scoped';
+ const admission={schema_version:4,task_id:id,project_id:binding.repositoryId,accepted_at:new Date().toISOString(),source_view:f.root,initial_owner:owner,request:assignment,execution,canonical_hash:canonicalHash({schema_version:1,source_view:f.root,assignment})};
+ // Isolated fixture setup precedes any runtime lease; every record is written through real codecs.
+ const store=new TaskStore(binding.storeRoot);await store.create(admission,state);
+ const workspace={kind:'task_worktree',path,base_commit:f.base,branch:`refs/heads/${name}`,target_ref:'refs/heads/main'};
+ const result={...baseResult(id,assignment,execution,workspace),execution_status:'completed',worker_stop:'confirmed',native_evidence:state.native,delivery:await observeDelivery(workspace)};
+ await store.writeResult(id,result);
+ await store.writeResource(id,{schema_version:1,task_id:id,project_id:binding.repositoryId,state:'pending',worktree_path:path,branch_ref:workspace.branch,base_commit:f.base,head_commit:head,target_ref:'refs/heads/main',updated_at:new Date().toISOString()});
+ const identity={package_version:'fixture',build_id:'fixture',mode:'development',node_version:process.version,node_executable:process.execPath,pid:process.pid,started_at:new Date().toISOString()};
+ const runtime=new RepositoryRuntime(intent,identity);f.sessions.push({close:()=>runtime.shutdown()});
+ const call=req=>runtime.coordinate(req,actor,f.root);
+ const get=async(kind,id)=>JSON.parse((await call(readRequest({kind,id}))).content);
+ await call(request('initialize',{limits:f.limits}));
+ const enrollment=command({kind:'register_managed_work',operation_key:key(),task_id:id});
+ assert.equal((await call(enrollment)).receipt.item_id,id);
+ const work=await get('work',id);assert.equal(work.managed.task_id,id);assert.equal(work.input_oid,f.base);
+ const claimed=await call(command({kind:'claim_target',operation_key:key(),target:'refs/heads/main',members:[]}));
+ let item=await get('case',claimed.receipt.item_id);
+ await call(command({kind:'select_inputs',operation_key:key(),case_id:item.id,expected_revision:item.revision,generation:item.generation,target_oid:f.base,inputs:[{work_id:id,commit_oid:head}]}));
+ const operation={task_id:id,operation_key:key(),disposition:'archived',expected_head:head,expected_branch_ref:workspace.branch,cleanup_authorized:true,archive_authorized:true,reason:'Fixture exact result retained'};
+ assert.equal((await runtime.finalize([operation]))[0].error.code,'COORDINATION_RESULT_SELECTED');await access(path);
+ item=await get('case',item.id);await call(command({kind:'release_case',operation_key:key(),case_id:item.id,expected_revision:item.revision,generation:item.generation}));
+ const [done]=await runtime.finalize([operation]);assert.equal(done.receipt?.resource.state,'retired',JSON.stringify(done));
+ await assert.rejects(access(path),{code:'ENOENT'});assert.equal((await store.readResource(id)).state,'retired');
+ assert.deepEqual((await call(enrollment)).receipt.item_id,id);
+ assert.equal(runtime.status().execution.profile,'not_checked');
+});

@@ -1,0 +1,34 @@
+TAP version 13
+# Subtest: close racing a suspended retirement admission never grants a reservation after the owner is closed
+not ok 1 - close racing a suspended retirement admission never grants a reservation after the owner is closed
+  ---
+  duration_ms: 31.364779
+  type: 'test'
+  location: '/mnt/data/passeur-f9/Passeur checkout/tests/core/coordination-managed-control.test.mjs:133:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + 'granted'
+    - 'COORDINATION_CLOSED'
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 'COORDINATION_CLOSED'
+  actual: 'granted'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///mnt/data/passeur-f9/Passeur%20checkout/tests/core/coordination-managed-control.test.mjs:143:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 282.417675

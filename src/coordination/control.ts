@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { canonicalHash, Mutex } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
-import { CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
+import { MANAGED_CONTROL_SCHEMA, CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
   coordinationOperationKey, controlReceiptCount, recoveryReceipts, decodeRecoveryCommand, MAX_PARTIES, type RecoveryCommand, type RecoveryReceipt, type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
 import type { CoordinationStore } from "../store/coordination-store.js";
 
 /** The caller is the authenticated service actor, never an actor field taken from a command. */
 export type CoordinationActor = Readonly<{ owner_id: string }>;
-/** Internal owner only. Source membership, task linkage and public projections are not implemented here. */
+export type SourceVersions = ReadonlyArray<Readonly<{ task_id: string; version: number }>>;
+export type RetirementReservation = Readonly<{ release(): Promise<void> }>;
+/** Owns metadata transitions and their ordering against Passeur-owned retirement, not Git effects. */
 export class CoordinationControl {
   readonly #ordering = new Mutex();
   #closing = false;
+  readonly #resourceVersions = new Map<string, number>();
+  readonly #retirements = new Map<string, Promise<void>>();
   constructor(private readonly store: CoordinationStore) {}
 
   get repositoryId(): string { return this.store.repositoryId; }
@@ -23,7 +27,7 @@ export class CoordinationControl {
 
   /** Capture permission-checked values for read-only Git validation, outside this owner's lock. */
   async prepareSourceCommand(actor: CoordinationActor, raw: unknown): Promise<
-    { kind: "recorded"; receipt: Receipt } | { kind: "inspect"; target: Case | null; works: Work[] }
+    { kind: "recorded"; receipt: Receipt } | { kind: "inspect"; target: Case | null; works: Work[]; resource_versions: SourceVersions }
   > {
     const owner = parentId(actor.owner_id), command = decodeCommand(raw);
     if (command.kind !== "claim_target" && command.kind !== "select_inputs" && command.kind !== "begin_external_integration") {
@@ -40,18 +44,21 @@ export class CoordinationControl {
         if (prior.request_hash !== hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already names different intent");
         return { kind: "recorded", receipt: structuredClone(prior) };
       }
-      if (command.kind === "claim_target") return { kind: "inspect", target: null, works: [] };
+      if (command.kind === "claim_target") return { kind: "inspect", target: null, works: [], resource_versions: [] };
       const target = ownCase(state, owner, command.case_id, command.expected_revision, command.generation);
       idle(target);
       const inputs = command.kind === "select_inputs" ? command.inputs : target.inputs;
       const works = inputs.map(i => visibleWork(state, owner, i.work_id));
       for (const work of works) for (const member of target.members) visibleWork(state, member, work.id);
-      return { kind: "inspect", target: structuredClone(target), works: structuredClone(works) };
+      const resource_versions = works.flatMap(w => w.managed ? [{ task_id: w.managed.task_id, version: this.#resourceVersions.get(w.managed.task_id) ?? 0 }] : []);
+      for (const resource of resource_versions) if (this.#retirements.has(resource.task_id)) throw new BridgeError("COORDINATION_RETIREMENT_ACTIVE", "A selected task is being retired; refresh after the operation settles");
+      return { kind: "inspect", target: structuredClone(target), works: structuredClone(works), resource_versions };
     });
   }
 
-  async execute(actor: CoordinationActor, input: unknown): Promise<Receipt> {
+  async execute(actor: CoordinationActor, input: unknown, sourceVersions?: SourceVersions): Promise<Receipt> {
     const owner = parentId(actor.owner_id), command = decodeCommand(input);
+    const versions = sourceVersions ? sourceVersions.map(v => ({ ...v })) : [];
     if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
     const hash = canonicalHash({ owner, command });
     return this.#ordering.run(async () => {
@@ -66,7 +73,22 @@ export class CoordinationControl {
         // Historical acknowledgment, not a current ownership token or permission to repeat an external effect.
         return structuredClone(prior);
       }
-      const next = structuredClone(current);
+      for (const resource of versions) {
+        if (this.#retirements.has(resource.task_id) || (this.#resourceVersions.get(resource.task_id) ?? 0) !== resource.version) {
+          throw new BridgeError("COORDINATION_RESOURCE_CHANGED", "Task retirement changed during source inspection; refresh the source facts");
+        }
+      }
+      if (command.kind === "select_inputs" || command.kind === "begin_external_integration") {
+        const inputs = command.kind === "select_inputs" ? command.inputs : current.cases.find(c => c.id === command.case_id)?.inputs ?? [];
+        for (const input of inputs) {
+          const task = current.works.find(w => w.id === input.work_id)?.managed?.task_id;
+          if (task && this.#retirements.has(task)) throw new BridgeError("COORDINATION_RETIREMENT_ACTIVE", "A selected task is being retired");
+        }
+      }
+      if (command.kind === "register_task_work" && this.#retirements.has(command.managed.task_id)) throw new BridgeError("COORDINATION_RETIREMENT_ACTIVE", "The task is being retired");
+      const next: ControlState = command.kind === "register_task_work"
+        ? { ...structuredClone(current), schema_version: MANAGED_CONTROL_SCHEMA, recoveries: structuredClone([...recoveryReceipts(current)]) }
+        : structuredClone(current);
       const result = apply(next, owner, command);
       next.revision++;
       const receipt: Receipt = { owner, key: command.operation_key, request_hash: hash, revision: next.revision,
@@ -94,8 +116,8 @@ export class CoordinationControl {
         throw new BridgeError("COORDINATION_KEY_CONFLICT", "Recovery key already identifies an ordinary operation");
       }
       if (recovery.epoch !== current.epoch) throw new BridgeError("COORDINATION_STALE_EPOCH", "Recovery belongs to a different initialized coordination store");
-      const next: ControlState & { schema_version: 2 } = {
-        ...structuredClone(current), schema_version: 2, recoveries: structuredClone([...recoveryReceipts(current)]),
+      const next: ControlState & { schema_version: 2 | 3 } = {
+        ...structuredClone(current), schema_version: current.schema_version === MANAGED_CONTROL_SCHEMA ? MANAGED_CONTROL_SCHEMA : 2, recoveries: structuredClone([...recoveryReceipts(current)]),
       };
       applyRecovery(next, recovery);
       next.revision++;
@@ -167,8 +189,39 @@ export class CoordinationControl {
         .map(w => ({ work_id: w.id, areas: w.areas.filter(a => target.areas.some(b => overlap(a, b))) })).filter(w => w.areas.length > 0);
     });
   }
+  /** The runtime holds this reservation across disposition; no store lock is held across Git. */
+  async reserveRetirement(taskId: string): Promise<RetirementReservation> {
+    const id = entityId(taskId);
+    if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination is closing");
+    let finish!: () => void;
+    const done = new Promise<void>(resolve => { finish = resolve; });
+    await this.#ordering.run(async () => {
+      if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination is closing");
+      this.store.assertMutable();
+      const state = await this.store.snapshot();
+      if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination closed during retirement admission");
+      const ids = new Set(state.works.filter(w => w.managed?.task_id === id).map(w => w.id));
+      if (state.cases.some(c => c.state === "active" && c.inputs.some(i => ids.has(i.work_id)))) {
+        throw new BridgeError("COORDINATION_RESULT_SELECTED", "An active reconciliation case selects this task; release that selection before retirement");
+      }
+      if (this.#retirements.has(id)) throw new BridgeError("COORDINATION_RETIREMENT_ACTIVE", "This task already has a retirement operation");
+      // Only enrolled work needs a generation retained after release; this map is bounded by work capacity.
+      if (ids.size) this.#resourceVersions.set(id, (this.#resourceVersions.get(id) ?? 0) + 1);
+      this.#retirements.set(id, done);
+    });
+    let releasing: Promise<void> | undefined;
+    return Object.freeze({ release: () => releasing ??= (async () => {
+      await this.#ordering.run(() => {
+        this.#retirements.delete(id);
+        if (this.#resourceVersions.has(id)) this.#resourceVersions.set(id, this.#resourceVersions.get(id)! + 1);
+      });
+      finish();
+    })() });
+  }
+
   async close(): Promise<void> {
     this.#closing = true;
+    await Promise.all([...this.#retirements.values()]);
     await this.#ordering.run(() => this.store.close());
   }
 }
@@ -211,6 +264,14 @@ function idle(item: Case): void {
 }
 function apply(state: ControlState, parent: ParentId, command: Command): { entity: Subject; item_id: string } {
   switch (command.kind) {
+    case "register_task_work": {
+      if (state.works.some(w => w.id === command.managed.task_id)) throw new BridgeError("COORDINATION_TASK_REGISTERED", "This task already has retained coordination work; use its original receipt or read its current metadata");
+      if (state.works.some(w => w.state === "active" && w.workspace_id === command.workspace_id)) throw new BridgeError("COORDINATION_WORKSPACE_HELD", "The physical workspace already has a registered writer");
+      const id = command.managed.task_id;
+      state.works.push({ id, owner: parent, workspace_id: command.workspace_id, revision: 1, state: "active", input_oid: command.input_oid,
+        object_format: command.object_format, intent: command.intent, areas: command.areas, readers: [], managed: command.managed });
+      return { entity: { kind: "work", id }, item_id: id };
+    }
     case "register_work": {
       if (state.works.some(w => w.state === "active" && w.workspace_id === command.workspace_id)) throw new BridgeError("COORDINATION_WORKSPACE_HELD", "The workspace identity already has a registered writer");
       if (command.readers.includes(parent)) throw new BridgeError("COORDINATION_INVALID", "The owner is not a separate reader");

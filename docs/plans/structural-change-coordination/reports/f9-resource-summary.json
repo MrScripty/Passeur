@@ -1,0 +1,11 @@
+{
+  "records": 309,
+  "distinct_roots": 298,
+  "remaining": [],
+  "resource_log_sha256": "2c7aa0bef68c3a1798cccee2c7416d9574cde138ff6227cfb9f4ce0cf22eff2f",
+  "selected_test_exit": {
+    "exit_code": 0
+  },
+  "test_count": 372,
+  "test_concurrency": 4
+}

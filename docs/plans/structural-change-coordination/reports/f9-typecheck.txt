@@ -1,0 +1,4 @@
+TypeScript 5.8.3; Node declarations 25.1.0 (available tools, not repository pins)
+$ node /opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/bin/tsc --target es2022 --module nodenext --moduleResolution nodenext --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --noEmit --typeRoots /opt/nvm/versions/node/v22.16.0/lib/node_modules/ts-node/node_modules/@types --types node src/core/managed-coordination.ts src/service/coordination.ts src/mcp/coordination-operations.ts
+
+exit_code: 0

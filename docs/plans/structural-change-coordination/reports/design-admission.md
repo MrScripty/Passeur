@@ -321,3 +321,42 @@ Applicability: applicable. The public projection adds no metadata state owner.
 Selected tests establish their named correctness boundaries, not optimality or
 universal standards compliance. Required real SDK, entrypoint, installed and
 independent-review evidence remains in F7 verification and the objective gates.
+
+## F9 composed-design delta
+
+1. **Concerns and dimensions.** Existing runtime owns when/whose managed task can
+   enroll; TaskStore owns request/resource facts; Git owns source identity;
+   control owns where selection and metadata lifecycle agree; disposition owns
+   resource effects. New projection converts admitted values without owning
+   task serialization. Purpose is usable task coordination, not agent reasoning.
+2. **Interleavings.** Native adoption, enrollment and retirement share a per-task
+   runtime reservation. Selection preflight and retirement share a control-owned
+   resource epoch. Git/callbacks run outside mutex sections. A stopped observer
+   does not own completion; shutdown waits for reservations. Source ambiguity
+   refuses dependent work, not metadata release.
+3. **Caller knowledge.** Parent sends only existing task ID and stable key.
+   Runtime supplies current owner/source/store callbacks. Control sees verified
+   attribution; Git observer sees recorded branch/input. Callers do not compute
+   workspace IDs, effective type shapes, generated intentions or source hashes.
+4. **Representative changes.** New task-record versions affect their codec and
+   narrow task projection; scope projection changes affect that helper and its
+   fixtures. Git branch rules stay in repository observation. Case disclosure
+   stays in control. Native adapters need no change for explicit enrollment.
+5. **Dependencies.** Read-only TaskStore interface references its existing data
+   authority; no duplicate schema. Managed facts carry input/control generation
+   at enrollment, not continuing native permission. Reservation tokens expose
+   required release lifetime; metadata v3 exposes an intentional reader boundary.
+6. **Independent evolution/failure.** Parser failure is irrelevant here. Missing
+   task workspace refuses enrollment/selection; notes and release remain usable.
+   Corrupt metadata refuses destructive retirement. Real store/SDK conformance
+   is independent of controlled task fixtures and remains an explicit gate.
+7. **Deletion test.** Removing the projection spreads prompt/scope copying into
+   runtime. Removing task reservation reintroduces native adoption/enrollment
+   races; removing resource epoch permits stale selection after retirement.
+   Removing v3 makes earlier readers misinterpret new immutable attribution.
+   No added daemon, DB, scheduler, generic middleware or proposal lifecycle.
+8. **Cumulative complexity.** One small task projection plus additions to existing
+   source/control/runtime owners. Git and JSON remain separate effect domains.
+   Selected-input retention is conservative release-first, avoiding a new pin
+   graph or protecting-ref override. Tests and four owner boundaries contain
+   inherent authority/race complexity; counts of files are not simplicity proof.

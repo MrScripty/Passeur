@@ -3,8 +3,8 @@ import { isAbsolute } from "node:path";
 import { canonicalHash, throwIfAborted, withAbort } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
 import { CoordinationStore } from "../store/coordination-store.js";
-import { CoordinationControl, type CoordinationActor } from "../coordination/control.js";
-import { RepositoryCoordination, type BindingLimits, type CoordinationConnection, type ExternalWorkspaceAuthority } from "../coordination/bound-control.js";
+import { CoordinationControl, type CoordinationActor, type RetirementReservation } from "../coordination/control.js";
+import { RepositoryCoordination, type BindingLimits, type CoordinationConnection, type ExternalWorkspaceAuthority, type ManagedWorkspaceAuthority } from "../coordination/bound-control.js";
 import { decodeLimits, parentId, type Limits } from "../contracts/coordination-control.js";
 import { COORDINATION_VIEW_BYTES, coordinationRequestLane, decodeCoordinationReply, decodeCoordinationRequest,
   type CoordinationReply, type CoordinationRequest, type CoordinationSelector } from "../contracts/coordination-service.js";
@@ -16,6 +16,7 @@ export type CoordinationServiceAuthority = Readonly<{
   authorizeInitialization: (actor: CoordinationActor, limits: Readonly<Limits>) => Promise<void>;
   authorizeRecovery?: (actor: CoordinationActor) => Promise<void>;
   externalWorkspaces: ExternalWorkspaceAuthority;
+  managedWorkspaces?: ManagedWorkspaceAuthority;
 }>;
 export type CoordinationServiceLimits = BindingLimits & Readonly<{ ordinary_requests: number; control_requests: number }>;
 type Opened = { store: CoordinationStore; control: CoordinationControl };
@@ -25,7 +26,7 @@ export class CoordinationService {
   readonly #binding: CoordinationServiceBinding;
   readonly #authority: CoordinationServiceAuthority;
   readonly #limits: CoordinationServiceLimits;
-  readonly #pending = new Set<Promise<CoordinationReply>>();
+  readonly #pending = new Set<Promise<unknown>>();
   #opened: Opened | undefined;
   #opening: Promise<Opened> | undefined;
   #bound: RepositoryCoordination | undefined;
@@ -42,6 +43,7 @@ export class CoordinationService {
     }
     if (typeof authority.assertOwned !== "function" || typeof authority.authorizeInitialization !== "function"
       || typeof authority.externalWorkspaces?.assertExternalRegistration !== "function"
+      || authority.managedWorkspaces !== undefined && (typeof authority.managedWorkspaces.acquireRegistration !== "function" || typeof authority.managedWorkspaces.inspectSelection !== "function")
       || authority.authorizeRecovery !== undefined && typeof authority.authorizeRecovery !== "function") {
       throw new BridgeError("COORDINATION_SERVICE_AUTHORITY_UNAVAILABLE", "Service, initialization, and resource authorities must be supplied explicitly");
     }
@@ -110,7 +112,7 @@ export class CoordinationService {
   async #source(opened: Opened, source: string): Promise<RepositoryCoordination> {
     if (this.#bound) return this.#bound;
     if (!this.#bindingSource) {
-      const opening = RepositoryCoordination.open(source, opened.control, this.#authority.externalWorkspaces, this.#limits);
+      const opening = RepositoryCoordination.open(source, opened.control, this.#authority.externalWorkspaces, this.#limits, undefined, this.#authority.managedWorkspaces);
       this.#bindingSource = opening;
       void opening.then(bound => { this.#bound = bound; this.#bindingSource = undefined; }, () => { this.#bindingSource = undefined; });
     }
@@ -156,7 +158,7 @@ export class CoordinationService {
     }
     this.#authority.assertOwned();
     const command = request.command;
-    const sourceRequired = command.kind === "register_external_work" || command.kind === "claim_target"
+    const sourceRequired = command.kind === "register_managed_work" || command.kind === "register_external_work" || command.kind === "claim_target"
       || command.kind === "select_inputs" || command.kind === "begin_external_integration";
     const receipt = sourceRequired
       ? await (await this.#source(opened, connection.source_view)).execute(connection, command)
@@ -193,6 +195,24 @@ export class CoordinationService {
     if (!length && next_offset !== bytes.length) throw new BridgeError("COORDINATION_RANGE_INVALID", "The range cannot make progress");
     return { schema_version: 1, kind: "page", repository_id: this.#binding.repository_id, selector: request.selector, hash,
       offset: request.offset, bytes: length, next_offset, total_bytes: bytes.length, eof: next_offset === bytes.length, content };
+  }
+  /** The resource owner holds this reservation through its Git effect; no metadata mutex is retained. */
+  reserveRetirement(taskId: string): Promise<RetirementReservation | undefined> {
+    if (this.#closing) return Promise.reject(new BridgeError("COORDINATION_SERVICE_CLOSED", "Coordination no longer accepts resource operations"));
+    const operation = (async () => {
+      let opened: Opened;
+      try { opened = await this.#open(); }
+      catch (error) {
+        if (error instanceof BridgeError && error.code === "COORDINATION_NOT_ENABLED") return undefined;
+        throw error;
+      }
+      return opened.control.reserveRetirement(taskId);
+    })();
+    // Track lazy open as well as reservation admission, so close cannot miss an owner created after suspension.
+    this.#pending.add(operation);
+    const settled = () => { this.#pending.delete(operation); };
+    void operation.then(settled, settled);
+    return operation;
   }
   beginDrain(): void { this.#draining = true; }
   close(): Promise<void> {

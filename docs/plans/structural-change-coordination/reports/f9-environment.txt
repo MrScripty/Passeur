@@ -1,0 +1,16 @@
+F9 local verification environment
+Platform: Linux-6.18.44-x86_64-with-glibc2.41
+Node: v22.16.0
+Git: git version 2.47.3
+TypeScript: 5.8.3 available; repository pin 5.9.3 not available
+Node declarations: 25.1.0 available; repository pin 24.7.2 not available
+Source: sparse reconstructed mirror at exact affected baseline 8ddf6d9403ed4cc3f6f26a6d70c4b0940599020d
+No upstream checkout, account/provider execution, installed-runtime or performance acceptance.
+
+Dependency resolution probe (no installation or network request):
+tree-sitter: MODULE_NOT_FOUND
+tree-sitter-rust: MODULE_NOT_FOUND
+tree-sitter-typescript: MODULE_NOT_FOUND
+zod: MODULE_NOT_FOUND
+@modelcontextprotocol/sdk: MODULE_NOT_FOUND
+proper-lockfile: MODULE_NOT_FOUND

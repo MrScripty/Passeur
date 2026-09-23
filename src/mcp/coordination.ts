@@ -31,6 +31,7 @@ const information = z.discriminatedUnion("kind", [
   z.object({ schema_version: version, kind: z.literal("status") }).strict(), read,
 ]);
 const work = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("register_managed_work"), operation_key: operationKey, task_id: entity.describe("Existing implementation task controlled by this parent, with a prepared task worktree.") }).strict(),
   z.object({ kind: z.literal("register_external_work"), operation_key: operationKey, input_oid: oid,
     intent: z.string().describe("Parent-authored intent, up to 4096 UTF-8 bytes. Not a machine-inferred explanation."),
     areas: z.array(z.object({ kind: z.enum(["file", "subtree"]), path: z.string().describe("Repository-relative component path.") }).strict()).max(MAX_REGIONS),

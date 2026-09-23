@@ -64,3 +64,18 @@ test('SDK tool calls use the authenticated metadata path and return a recoverabl
   assert.equal(f.counts.profile,0);
  }finally{lifetime.abort();await client.close();await server.close()}
 });
+test('SDK exposes and dispatches managed enrollment without accepting caller-supplied source authority',async t=>{
+ const {managedFixture}=await import('../fixtures/structural/managed-fixture.mjs');
+ const f=await authenticatedFixture(t,{runtimeFixture:managedFixture}),endpoint=await f.client();await f.initialize(endpoint);
+ const identity=await endpoint.coordinate({schema_version:1,kind:'identity'}),task=await f.addTask({owner:identity.parent_id});
+ const server=new McpServer({name:'managed-consumer-test',version:'1'}),lifetime=new AbortController();
+ registerCoordinationTools(server,endpoint,lifetime.signal);const client=await connect(server);
+ try{
+  const request=f.enrollRequest(task.id),value=result(await client.callTool({name:'passeur_work',arguments:{request}}));
+  assert.equal(value.receipt.item_id,task.id);
+  const before=f.countsWire().received;
+  const forged={...request,command:{...request.command,input_oid:f.base}};
+  assert.equal((await client.callTool({name:'passeur_work',arguments:{request:forged}})).isError,true);
+  assert.equal(f.countsWire().received,before);assert.equal(f.counts.profile,0);
+ }finally{lifetime.abort();await client.close();await server.close()}
+});

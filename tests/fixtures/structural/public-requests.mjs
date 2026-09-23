@@ -11,6 +11,7 @@ export const publicRequests = [
  ...['work','note','case','overlaps'].map(kind => ['passeur_coordination', {schema_version:1,kind:'read',selector:{kind,id},offset:0,limit:256,expected_hash:null}]),
  ['passeur_coordination', {schema_version:1,kind:'read',selector:{kind:'receipt',operation_key:key},offset:0,limit:256,expected_hash:null}],
  ...[
+  ['passeur_work', {kind:'register_managed_work',operation_key:key,task_id:id}],
   ['passeur_work', {kind:'register_external_work',operation_key:key,input_oid:oid,intent:'Compare declarations',areas:[{kind:'file',path:'src/main.ts'}],readers:[parent]}],
   ['passeur_work', {kind:'share_work',operation_key:key,work_id:id,expected_revision:1,readers:[parent]}],
   ['passeur_work', {kind:'close_work',operation_key:key,work_id:id,expected_revision:1}],

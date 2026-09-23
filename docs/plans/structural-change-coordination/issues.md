@@ -189,3 +189,21 @@ A rotated operator credential cannot retrieve an older operator's receipt
 through the own-receipt selector; retained audit is not reassigned or deleted.
 Capacity/history compaction needs a separately admitted migration. These limits
 are explicit, not automatic cleanup or speculative fallback paths.
+
+## F9 current dispositions — September 22, 2026
+
+| ID | Finding and owning boundary | Disposition / evidence |
+|---|---|---|
+| I-F9-01 | New retirement admission could resume after an awaited store read when its control owner had already closed. | Same-author review wrote a failing race; recheck closing state after the read before granting the reservation. Before/after logs and final 372-test run retained. New-code finding, not a baseline incident. |
+| I-F9-02 | New fixture spread copied dynamic runtime/operator getters; the default test principal could differ from the intended operator. | Preserve explicit getters and assert the fixture owner. One runtime case failed before this fixture correction; production permission rules were not weakened. |
+| I-F9-03 | Old unsupported-version fixtures used 3, now a deliberately supported managed format. | Move future-version negative input to 4, preserve rejection, and add exact v1/v2/v3 migration/immutability cases. One missed object-form fixture was caught by the retained suite and corrected. |
+| I-F9-04 | Runtime uses logical task reservations and metadata retirement epochs; these do not fence external Git or survive process death as locks. | Recovery uses persisted task cleanup state and retained case selections. Current source and tests make no external fencing/transaction claim. |
+| I-F9-05 | Automatic announcement-to-submit linkage and native analysis are not part of explicit enrollment. | Preserve as unimplemented M0/M1/M3 requirements. No silent announcement, duplicated prompt, parser substitute or worker replay. |
+| I-F9-06 | This environment lacks actual SDK/TaskStore contract closure and pinned dependencies. | Supply real-store and SDK cases, record failed load attempts, require F9-V1 before deployment. Strict narrow type checking and selected fixture paths are not substitutes. |
+| I-F9-07 | A timed-out development test run left one known fixture directory. | Observe no live owned children, verify its fixture Git identity/head, then remove only that root; record disposition separately. Final 298 roots are absent. |
+
+Active-case retirement uses the release-first policy. An exact-protection-ref
+override is excluded for now: owner is resource integration, revisit on a
+concrete need to retire selected sources without editing their cases, with its
+separate disclosure, persistence and race evidence. The current conservative
+refusal preserves result availability and does not add a new publication system.

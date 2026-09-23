@@ -7,11 +7,11 @@
 | Plan status | `Blocked` |
 | Plan revision | `2A` — standalone code-only target |
 | Acceptance status | `blocked` |
-| Current phase | F8 operator metadata recovery implemented; complete-checkout pinned/elected/CLI tests pass, while installed-host and native acceptance remain blocked |
-| Exactly one next integration slice | **M0 — resume native parser qualification and structural observation, retaining installed-host and independent F8 acceptance gates** |
+| Current phase | F9 managed-task enrollment and selected-result retirement implemented; complete-checkout TaskStore/SDK/pinned tests pass, while parser and installed acceptance remain blocked |
+| Exactly one next integration slice | **M0 — resume native parser qualification and pre-start announcement linkage, retaining installed-host and independent F9 acceptance gates** |
 | Canonical plan path | `docs/plans/structural-change-coordination/plan.md` |
 | Implementation invocation | Explicit `start`; subsequent `continue` or `verify` only in the states allowed by Planning |
-| Examined implementation | Passeur `3f8dbfc278a806f0bae18e5bef8e30cf47737394` |
+| Examined implementation | Passeur `8ddf6d9403ed4cc3f6f26a6d70c4b0940599020d` |
 | Adopted standards | MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
 | Prepared | September 21, 2026, America/Vancouver |
 | Product and acceptance owner | Passeur maintainer |
@@ -20,17 +20,16 @@
 
 [Execution ledger](execution-ledger.md) owns dated work/evidence. [Issues](issues.md) owns findings. [Contracts and workflow](reports/contracts-and-workflow.md) refines D1–D12. [Language qualification](reports/language-qualification.md) owns the required grammar/extraction matrix. [Implementation map](reports/implementation-map.md) owns exact slice write sets. [Verification](reports/verification.md) owns scenario procedures and oracle boundaries. [Sources and routing](reports/sources-and-routing.md) records examined sources and standards. None duplicates task-lifecycle authority.
 
-The maintainer committed F7 and explicitly requested continuation of Plan 2A.
-[F8 admission](reports/f8-admission.md) records the bounded re-admission for
-operator recovery of already-public metadata, without waiving native M0.
-F7's successful complete-checkout SDK/CLI/pinned evidence remains in its own
-ledger/report. F8 adds no parser, model call, merge, task adoption or process
-control. Its first successful recovery intentionally upgrades only metadata
-control storage to version 2. See [the recovery contract](../../coordination.md#operator-metadata-recovery-f8)
-and [F8 verification](reports/f8-verification.md). Complete-checkout pinned,
-elected and compiled-CLI tests passed at integration; installed-host and
-independent evidence remain required.
-No complete SC01–SC17 claim is satisfied from this increment.
+The maintainer committed F8 and explicitly requested continuation. [F9 admission](reports/f9-admission.md)
+records bounded re-admission for explicit managed-task enrollment and protected
+retirement, not a substitute for native M0. [F9 verification](reports/f9-verification.md)
+records 372 selected passing tests and complete-checkout integration results. First
+successful managed enrollment upgrades only metadata control to schema 3.
+[F9's current contract](../../coordination.md#managed-task-enrollment-and-selected-result-retirement-f9)
+owns those semantics. Earlier F8 complete-checkout evidence is preserved for
+that candidate, not used as evidence of F9. Automatic announcement/submission
+linkage, parser extraction, monitoring, installed-host and independent acceptance
+remain required. No SC01–SC17 objective claim is accepted from this increment.
 
 This is a standalone implementation target. The implemented shared-service lifecycle retains its own authority and pending acceptance evidence. Before editing, inspect actual source, installed readers and durable state; choose explicit preservation, migration or rejection for any incompatible state. Plan selection grants no authority to erase records or rewrite history.
 
@@ -152,7 +151,7 @@ This selects atomic JSON publication, not SQLite. Each authoritative control tra
 
 Announcement-to-task linkage is recorded in the new durable request before native startup; interrupted linkage is reconciled by exact work ID/request key and existing accepted task, never duplicate submission. Metadata changes do not rewrite old task requests or results. Notes/claims/receipts are not disposable caches. Cache eviction may lose detailed working-buffer history only under the declared availability contract and must return `detail_unavailable` or a cursor gap.
 
-Existing task refs/disposition protect task work. An active case that names a task result prevents Passeur-owned retirement until the case releases it or another exact protecting ref is verified. This is a case-to-resource check, not a transitive proposal pin graph. External edits/ref deletions remain outside Passeur's prevention guarantee.
+Existing task refs/disposition protect task work. An active case that names managed work prevents Passeur-owned destructive retirement until the input is removed or the case releases it. This selects the conservative release-first policy; an alternate protecting-ref override is not implemented. Existing disposition separately verifies exact Git protection. This is a case-to-resource check, not a transitive proposal pin graph. External edits/ref deletions remain outside Passeur's prevention guarantee.
 
 ### D12. Failure, resource and compatibility behavior
 
@@ -248,7 +247,7 @@ Each slice inspects repository status, states exact writes and tests, protects u
 
 Re-plan only for a material design/authority/support/consumer/evidence change, a repeated invariant-family defect, or measured propagation/cost contradicting admission. Investigate only a named decision-changing uncertainty with a cheapest adequate method and observable stop. Passing a parser smoke is not adequate language coverage; passing tests is not evidence of semantic compatibility outside the stated claims.
 
-**Current blockers:** I-ENV-01 prevents native parser/dependency qualification and full application verification in this environment. The connected reader supplied a byte-verified source subset, not a complete Git checkout. Real native/host evidence, independent external review, and representative performance qualification also remain outstanding. These limits are not replaced by the focused F0/F1/F2/F3 checks.
+**Current blockers:** I-ENV-01 prevents native parser/dependency qualification and full application verification in this environment. The connected reader supplied a byte-verified source subset, not a complete Git checkout. Real native/host evidence, independent external review, and representative performance qualification also remain outstanding. Earlier user-checkout pinned evidence retains its candidate scope. Those limits are not replaced by the selected F9 tests.
 
 ## 7. Final acceptance and compaction
 
@@ -267,12 +266,14 @@ Move durable reporting/coordination contracts into `docs/structural-reporting.md
 | F5 runtime composition | Implemented; [local and maintainer integration evidence](reports/f5-verification.md). |
 | F6 authenticated transport | Implemented; [selected and committed elected/pinned evidence](reports/f6-verification.md). |
 | F7 public metadata consumers | Implemented; [selected and maintainer complete-checkout evidence](reports/f7-verification.md). |
-| F8 operator metadata recovery | Implemented; selected and complete-checkout pinned/elected/CLI evidence, with installed-host and independent gates open; [recovery and migration gates](reports/f8-verification.md). |
+| F8 operator metadata recovery | Implemented; [selected and complete-checkout evidence](reports/f8-verification.md). |
+| F9 managed-task enrollment and retirement | Implemented with selected and complete-checkout TaskStore/SDK/pinned evidence; [remaining acceptance gates](reports/f9-verification.md). |
 
-These increments do not satisfy the complete SC01–SC17 claims. F7 exposes only
-existing metadata operations: external work registration, attributed notes and
-cooperative target leadership. Parser-backed reports, managed task enrollment,
-announcement linkage and live monitoring remain unadvertised. Operator-only
-metadata recovery is separate from task adoption and process control.
+These increments do not satisfy the complete SC01–SC17 claims. F9 extends the
+existing work tool with explicit enrollment of prepared managed implementation
+tasks and makes runtime retirement respect selected managed work. Automatic
+announcement/submission linkage, parser-backed reports and live monitoring
+remain unadvertised. Operator metadata recovery is separate from task adoption
+and process control.
 Plan 2B is unchanged and unselected. Dated details remain in the linked ledger
 and reports rather than competing with current authority here.

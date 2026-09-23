@@ -1,7 +1,7 @@
 import { BridgeError } from "../core/errors.js";
 import { throwIfAborted } from "../core/async.js";
 import { validateSourcePath } from "../observation/source.js";
-import { decodeRepositoryCommand, parentId, type Receipt, type Selection } from "../contracts/coordination-control.js";
+import { decodeRepositoryCommand, parentId, type Receipt, type Selection, type Work, type ManagedWork, type Region } from "../contracts/coordination-control.js";
 import { CoordinationControl, type CoordinationActor } from "./control.js";
 import { CoordinationRepository, type WorkspaceFacts } from "./repository.js";
 
@@ -10,6 +10,15 @@ export type CoordinationConnection = Readonly<{ owner_id: string; source_view: s
 /** Task/workspace authority is separate from Git membership; the service must consult its actual resource owner. */
 export interface ExternalWorkspaceAuthority {
   assertExternalRegistration(actor: CoordinationActor, workspace: WorkspaceFacts, signal?: AbortSignal): Promise<void>;
+}
+/** Runtime acquires task-association authority before returning these immutable source facts. */
+export type ManagedEnrollment = Readonly<{
+  task_id: string; root: string; branch_ref: string; input_oid: string;
+  intent: string; areas: Region[]; managed: ManagedWork; release(): void;
+}>;
+export interface ManagedWorkspaceAuthority {
+  acquireRegistration(actor: CoordinationActor, taskId: string): Promise<ManagedEnrollment>;
+  inspectSelection(work: Work): Promise<Readonly<{ root: string; branch_ref: string; input_oid: string }>>;
 }
 export type BindingLimits = Readonly<{ max_worktrees: number; max_source_operations: number }>;
 
@@ -20,16 +29,18 @@ export class RepositoryCoordination {
   #closing = false;
   #close: Promise<void> | undefined;
   private constructor(readonly repository: CoordinationRepository, private readonly control: CoordinationControl,
-    private readonly externalAuthority: ExternalWorkspaceAuthority, private readonly sourceCapacity: number) {}
+    private readonly externalAuthority: ExternalWorkspaceAuthority, private readonly sourceCapacity: number,
+    private readonly managedAuthority?: ManagedWorkspaceAuthority) {}
 
   static async open(root: string, control: CoordinationControl, externalAuthority: ExternalWorkspaceAuthority,
-    limits: BindingLimits, signal?: AbortSignal): Promise<RepositoryCoordination> {
+    limits: BindingLimits, signal?: AbortSignal, managedAuthority?: ManagedWorkspaceAuthority): Promise<RepositoryCoordination> {
     if (!Number.isSafeInteger(limits.max_source_operations) || limits.max_source_operations < 1 || limits.max_source_operations > 64) {
       throw new BridgeError("COORDINATION_SOURCE_CAPACITY_INVALID", "An explicit source-operation limit from 1 to 64 is required");
     }
     if (typeof externalAuthority?.assertExternalRegistration !== "function") throw new BridgeError("COORDINATION_WORKSPACE_AUTHORITY_UNAVAILABLE", "External registration requires its service resource authority");
+    if (managedAuthority && (typeof managedAuthority.acquireRegistration !== "function" || typeof managedAuthority.inspectSelection !== "function")) throw new BridgeError("COORDINATION_TASK_AUTHORITY_UNAVAILABLE", "Managed enrollment requires complete runtime task/resource authority");
     const repository = await CoordinationRepository.open(root, control.repositoryId, limits.max_worktrees, signal);
-    return new RepositoryCoordination(repository, control, externalAuthority, limits.max_source_operations);
+    return new RepositoryCoordination(repository, control, externalAuthority, limits.max_source_operations, managedAuthority);
   }
 
   async execute(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<Receipt> {
@@ -38,6 +49,33 @@ export class RepositoryCoordination {
     const sourceView = connection.source_view, command = decodeRepositoryCommand(raw);
     return this.#track(async () => {
       throwIfAborted(signal);
+      if (command.kind === "register_managed_work") {
+        const prior = await this.control.receipt(actor, command.operation_key);
+        if (prior) {
+          if (prior.action !== "register_task_work" || prior.entity.kind !== "work" || prior.entity.id !== command.task_id || prior.item_id !== command.task_id) {
+            throw new BridgeError("COORDINATION_KEY_CONFLICT", "The key acknowledges a different enrollment or operation");
+          }
+          return prior;
+        }
+        if (!this.managedAuthority) throw new BridgeError("COORDINATION_TASK_AUTHORITY_UNAVAILABLE", "The runtime has not supplied managed task authority");
+        return this.#source(async () => {
+          const enrollment = await this.managedAuthority!.acquireRegistration(actor, command.task_id);
+          try {
+            if (enrollment.task_id !== command.task_id || enrollment.managed.task_id !== command.task_id) throw new BridgeError("COORDINATION_TASK_IDENTITY_CONFLICT", "Task authority returned another enrollment");
+            const workspace = await this.repository.inspect(enrollment.root, signal);
+            await this.repository.taskBranch(enrollment.root, enrollment.branch_ref, workspace.head_oid, signal);
+            await this.repository.retainedBetween(enrollment.input_oid, enrollment.input_oid, workspace.head_oid, signal);
+            const current = await this.repository.inspect(enrollment.root, signal);
+            if (current.workspace_id !== workspace.workspace_id) throw new BridgeError("COORDINATION_SOURCE_CHANGED", "The managed workspace changed physical identity during enrollment");
+            await this.repository.taskBranch(enrollment.root, enrollment.branch_ref, current.head_oid, signal);
+            await this.repository.retainedBetween(enrollment.input_oid, enrollment.input_oid, current.head_oid, signal);
+            throwIfAborted(signal);
+            return await this.control.execute(actor, { kind: "register_task_work", operation_key: command.operation_key,
+              workspace_id: workspace.workspace_id, object_format: workspace.object_format, input_oid: enrollment.input_oid,
+              intent: enrollment.intent, areas: enrollment.areas, managed: enrollment.managed });
+          } finally { enrollment.release(); }
+        });
+      }
       if (command.kind === "register_external_work") {
         return this.#source(async () => {
           const workspace = await this.repository.inspect(sourceView, signal);
@@ -74,6 +112,13 @@ export class RepositoryCoordination {
           for (const input of inputs) {
             const work = prepared.works.find(w => w.id === input.work_id)!;
             const workspace = workspaces.get(work.workspace_id)!;
+            if (work.managed) {
+              if (!this.managedAuthority) throw new BridgeError("COORDINATION_TASK_AUTHORITY_UNAVAILABLE", "Managed input validation requires the task/resource owner");
+              const source = await this.managedAuthority.inspectSelection(work);
+              const actual = await this.repository.inspect(source.root, signal);
+              if (source.input_oid !== work.input_oid || actual.workspace_id !== work.workspace_id) throw new BridgeError("COORDINATION_TASK_RESOURCE_CONFLICT", "Managed source no longer matches its enrolled identity");
+              await this.repository.taskBranch(source.root, source.branch_ref, actual.head_oid, signal);
+            }
             if (work.object_format !== workspace.object_format) throw new BridgeError("COORDINATION_OBJECT_FORMAT_CONFLICT", "Work metadata contradicts its repository object format");
             await this.repository.retainedBetween(work.input_oid, input.commit_oid, workspace.head_oid, signal);
           }
@@ -82,7 +127,7 @@ export class RepositoryCoordination {
         }
         throwIfAborted(signal);
         // Rechecks authorization, case revision, leadership and shared inputs after read-only inspection.
-        return this.control.execute(actor, command);
+        return this.control.execute(actor, command, prepared.resource_versions);
       });
     });
   }

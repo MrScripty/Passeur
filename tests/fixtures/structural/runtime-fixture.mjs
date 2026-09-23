@@ -62,7 +62,7 @@ export async function runtimeFixture(t, options = {}) {
       if (page.eof) return JSON.parse(contents);
     }
   };
-  return { ...f, intent, binding, counts, claims, phases, leases, ordinary, token, call, initialize, register, get,
+  return { ...f, intent, binding, counts, claims, phases, leases, taskStore, ordinary, token, call, initialize, register, get,
     get runtime() { return runtime; }, get operator() { return operator; },
     gate() { const gate = hold(); gates.push(gate); return gate; },
     setBeforeRecover(fn) { beforeRecover = fn; }, setBeforeList(fn) { beforeList = fn; }, setBeforeResource(fn) { beforeResource = fn; },

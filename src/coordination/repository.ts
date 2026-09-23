@@ -36,6 +36,18 @@ export class CoordinationRepository {
     return result;
   }
 
+  /** A managed task retains its recorded branch association; a matching commit alone is insufficient. */
+  async taskBranch(root: string, expectedRef: string, expectedHead: string, signal?: AbortSignal): Promise<void> {
+    let actual: string;
+    try { actual = line(await inspectGit(root, ["symbolic-ref", "--quiet", "HEAD"], signal)); }
+    catch (cause) {
+      if (cause instanceof BridgeError && cause.code === "GIT_ERROR") throw new BridgeError("COORDINATION_TASK_BRANCH_CHANGED", "The task workspace no longer has its recorded branch association", { cause });
+      throw cause;
+    }
+    if (actual !== expectedRef) throw new BridgeError("COORDINATION_TASK_BRANCH_CHANGED", "The task workspace uses a different branch");
+    await this.target(expectedRef, expectedHead, signal);
+  }
+
   async #assertRepository(): Promise<void> {
     if (!same(await directory(this.common.path), this.common)) throw changed();
   }

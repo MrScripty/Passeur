@@ -146,7 +146,7 @@ The claim linearization point is the atomic control-record publication. Update/c
 
 An operator adoption is an explicit authorized handoff; time, missing heartbeat, connection refusal and a PID are not ownership evidence. It cannot stop external code. Once the parent has started unmediated Git integration, a new ownership generation cannot undo/fence it; transfer must record that uncertainty and stop cooperating case actions until the operator reconciles the actual target. Case leadership serializes cooperating decisions, not the entire filesystem.
 
-Selected commits are externally protected by their task/ref owners. Before Passeur retires one of its worktrees/refs, it checks active case references under the same resource-reservation ordering and either refuses or verifies an exact retained/archive ref. Case selection racing retirement must yield one documented outcome, never an unprotected selected input. No generic proposal GC or force pruning is added. External workspaces remain external. Parent-owned integration uses ordinary hooks, signing, target revalidation and the existing finalization evidence.
+Selected commits are externally protected by their task/ref owners. Before Passeur retires one of its worktrees/refs, it checks active managed-case references under the same resource-reservation ordering and refuses removal while selected. After release, the existing disposition owner still verifies exact retained/archive protection; F9 introduces no protecting-ref override. Case selection racing retirement must yield one documented outcome, never an unprotected selected input. No generic proposal GC or force pruning is added. External workspaces remain external. Parent-owned integration uses ordinary hooks, signing, target revalidation and the existing finalization evidence.
 
 ## 10. Persistence and recovery
 
@@ -245,7 +245,7 @@ External registration consumes TaskStore-decoded resource claims and real Git
 inventory, including canonical containment and moved-branch anchors. Unknown,
 missing, contradictory, nonterminal-retired or reused-path resource facts refuse
 enrollment. This check is not a reservation against arbitrary external mutation.
-Actual task admission/linkage and retirement-case serialization remain unimplemented.
+At the F7 boundary, task admission/linkage and retirement-case serialization were unimplemented. F9 adds explicit enrollment and retirement ordering; automatic pre-start linkage remains unimplemented.
 
 Canonical detailed behavior: [runtime composition](../../../coordination.md#runtime-composition-f5).
 Versioning: no stored task/result/control or public IPC/MCP schema changes here.
@@ -272,3 +272,16 @@ per connection. Metadata classification delegates to coordinationRequestLane;
 native cancel/input/attach/stop are protected as well. Saturation is a per-request
 error; duplicate active request IDs remain connection faults. No autonomous
 message, inference, merge or resource-retirement effect is introduced.
+
+## F9 current consumer delta
+
+The durable contract for explicit managed enrollment and release-first
+retirement is owned by [the coordination contract](../../../coordination.md#managed-task-enrollment-and-selected-result-retirement-f9).
+The public operation extends the existing work group; source-derived metadata
+is internal only. Task/result formats stay unchanged; metadata schema 3 is
+published only with the first successful managed enrollment and retained
+through recovery. An enrollment is not a new assignment or automatic preflight.
+The runtime task owner, metadata parent, and selected-case leadership are
+separate authorities. Existing case selection plus runtime retirement gains
+logical reservations/resource epochs; no second service or long-held metadata
+lock is introduced. F9-V1 verifies the actual full consumer closure.

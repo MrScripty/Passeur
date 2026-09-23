@@ -232,3 +232,28 @@ action allowlist. `tests/core/coordination-launcher.test.mjs` executes the actua
 wrapper with a test-owned argument receiver to prove command/quoting behavior;
 it does not claim execution of the real CLI/runtime. No other launcher behavior
 or mode changes. The source preimage is Git-blob verified before editing.
+
+## F9 exact implementation map
+
+Production changes: `src/contracts/coordination-control.ts`,
+`src/contracts/coordination-service.ts`, `src/coordination/control.ts`,
+`src/coordination/bound-control.ts`, `src/coordination/repository.ts`,
+`src/service/coordination.ts`, `src/core/repository-runtime.ts`,
+`src/core/task-control.ts` (owner-check parameter type only),
+`src/core/managed-coordination.ts`, `src/mcp/coordination.ts`, and
+`src/mcp/coordination-operations.ts`.
+
+Evidence: new `tests/core/coordination-managed-{control,runtime,authenticated,store}.test.mjs`,
+`tests/fixtures/structural/managed-{fixture,reopen}.mjs`; changed
+`tests/core/coordination-{store,mcp}.test.mjs` and fixture peers
+`runtime-fixture.mjs`, `authenticated-peer.mjs`, `public-requests.mjs`.
+Existing core glob discovers the new cases; imports reach all new production
+owners. No package pins, runtime scripts, task/store codecs or DispositionManager
+implementation are changed. Actual DispositionManager is used by the new tests.
+
+Documentation: current plan/ledger/issues, this map, contracts/design reports,
+`docs/coordination.md`, usage skill and new F9 evidence files. Old reports remain
+historical evidence; the current F8 integration record is preserved. One lead
+owns all shared sources. Gate: actual public enrollment → stored task/Git source
+→ v3 record → selected-case refusal/release → exact protected retirement, plus
+cross-owner/race/cold-reopen tests. Native monitoring remains a separate gate.

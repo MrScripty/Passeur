@@ -305,3 +305,57 @@ recovery entrypoint. `git diff --check` passed. This closes F8's pinned,
 elected and compiled-CLI test availability gap here. The overall plan remains
 Blocked: installed-host behavior, native parser/structural observation,
 managed task linkage and independent objective acceptance remain open.
+
+## September 22, 2026 — F9 explicit managed enrollment and retirement
+
+Baseline `8ddf6d9403ed4cc3f6f26a6d70c4b0940599020d` was confirmed through the
+repository connection. The user requested continued Plan 2A implementation.
+The bounded [F9 admission](reports/f9-admission.md) re-admitted independent work
+(Blocked → Active), then returned the objective to Blocked after delivery.
+The prior F8 complete-checkout evidence was restored from the current commit
+and verified by Git blob identity, not overwritten by the earlier ZIP report.
+
+Implemented explicit task-owner enrollment through the existing work tool,
+actual runtime TaskStore/source authority composition, immutable managed
+attribution and atomic metadata v3 evolution. Case input selection and resource
+retirement now share reservation/generation ordering without holding metadata
+locks across Git or callbacks. Existing DispositionManager/Git protection stays
+unchanged. Automatic pre-start announcements and reference-based submission
+remain unimplemented; no parser, worker replay, model call, merge or retasking.
+
+The final selected suite ran with four independently isolated test-file workers
+from a path containing spaces: **372 passed**, zero failures/skips/todos.
+This includes 35 new cases and 337 retained cases. All **298** distinct recorded
+test roots are absent. The narrow actual import closure passes strict available
+TypeScript 5.8.3/Node declarations 25.1.0 checking. Full root-runtime/SDK/pinned
+checking remains unavailable. One new real TaskStore test and one new SDK case
+are supplied; both dependency-loading attempts fail before assertions here.
+
+Same-author review reproduced a late retirement reservation after control close,
+then fixed it and reran the final suite. Fixture getter and future-version
+expectations were corrected without weakening production contracts. The earlier
+interrupted run's one known temporary root was removed only after process exit;
+its authority and disposition are recorded in the evidence. User path-conversion
+fixes remain unchanged. [F9 verification](reports/f9-verification.md) owns exact
+commands, source/artifact identity, observations and boundary limitations.
+
+F9 is source-implemented with scoped evidence. The next integration gate is
+F9-V1 (actual TaskStore/SDK and full pinned consumer checks), then native M0 and
+pre-start linkage. No objective claim or independent review is marked complete.
+No remote commit/push, dependency installation, account use, personal config,
+installed-runtime or user-worktree cleanup occurred. Plan 2B is unchanged.
+
+## September 22, 2026 — F9 complete-checkout integration
+
+The supplied patch applied to the exact `8ddf6d9` affected preimages. The
+Passeur usage skill validated and its F9 contract link resolves. `npm run check`
+passed. The first full `npm test` found one invalid synthetic fixture in the new
+real-TaskStore test: it claimed completed/stopped execution while retaining
+`unknown` native coverage, which the real result codec correctly rejects.
+The fixture was corrected to `turn_scoped`; its isolated test and the full
+suite then passed: 475 core, 40 native and 100 frontend tests. This includes
+the actual TaskStore and SDK consumer cases that could not load in the sparse
+mirror. `git diff --check` passed. F9's pinned/TaskStore/SDK availability gap
+is closed for this checkout. Installed-host behavior, native parser/structural
+observation, automatic announcement/submission linkage and independent
+objective acceptance remain open; the overall plan remains Blocked.

@@ -161,13 +161,14 @@ export function decodeCoordinationReply(requestValue: CoordinationRequest, paren
     fields(v, ["schema_version", "kind", "repository_id", "receipt"]);
     if (v.kind !== "receipt") return invalid("Expected a command receipt");
     const receipt = decodeCoordinationReceipt(v.receipt), command = request.command;
-    const action = command.kind === "register_external_work" ? "register_work" : command.kind;
+    const action = command.kind === "register_external_work" ? "register_work" : command.kind === "register_managed_work" ? "register_task_work" : command.kind;
     if (receipt.owner !== parent || receipt.action !== action || receipt.key !== command.operation_key) return invalid("Receipt does not acknowledge this parent's command");
-    if (command.kind !== "register_external_work" && receipt.request_hash !== canonicalHash({ owner: parent, command })) return invalid("Receipt acknowledges different command content");
+    if (command.kind !== "register_external_work" && command.kind !== "register_managed_work" && receipt.request_hash !== canonicalHash({ owner: parent, command })) return invalid("Receipt acknowledges different command content");
     if ("work_id" in command && (receipt.entity.kind !== "work" || receipt.entity.id !== command.work_id || receipt.item_id !== command.work_id)
       || "case_id" in command && (receipt.entity.kind !== "case" || receipt.entity.id !== command.case_id || receipt.item_id !== command.case_id)
       || "note_id" in command && receipt.item_id !== command.note_id
       || command.kind === "post_note" && canonicalHash(receipt.entity) !== canonicalHash(command.subject)
+      || command.kind === "register_managed_work" && (receipt.entity.kind !== "work" || receipt.entity.id !== command.task_id || receipt.item_id !== command.task_id)
       || action === "register_work" && (receipt.entity.kind !== "work" || receipt.entity.id !== receipt.item_id)
       || action === "claim_target" && (receipt.entity.kind !== "case" || receipt.entity.id !== receipt.item_id)) return invalid("Receipt names a different command subject");
     result = { schema_version: 1, kind: "receipt", repository_id, receipt };

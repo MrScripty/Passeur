@@ -14,7 +14,7 @@ export { request, command, readRequest, key, hold, git, BridgeError, ServiceClie
 // Fixture listener; production authentication, route, client, framing and runtime are the subjects.
 // Election, descriptor discovery, and task inventory/recovery retain the runtime fixture's exclusions.
 export async function authenticatedFixture(t, options = {}) {
-  const f = await runtimeFixture(t), operator = await f.token();
+  const f = await (options.runtimeFixture ?? runtimeFixture)(t), operator = await f.token();
   const token = randomBytes(32).toString('hex'), generation = randomUUID(), endpoint = join(f.temp, 'auth.sock');
   const peers = new Set(), clients = new Set(), pending = new Set(), gates = [], failures = [];
   let beforeRoute, transform, dropReply, onResponse, received = 0, accepted = 0;

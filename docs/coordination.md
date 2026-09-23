@@ -11,11 +11,12 @@ execution scheduler, schema implementation or authority store is introduced.
 F7 adds `coordinate --request FILE` to the CLI and four MCP metadata tools.
 They use the existing authenticated frontend, runtime and durable contracts.
 The committed F6 and F7 elected/SDK/CLI/pinned checks retain their recorded
-scope. F8 adds the operator-only recovery contract below. Its new-candidate
-pinned/elected/compiled-CLI checks remain a deployment gate; prior passes do
-not qualify a changed candidate.
+scope. F8 adds the operator-only recovery contract below. Its complete-checkout pinned/elected/compiled-CLI checks are recorded in the
+F8 report. Those results do not qualify the changed F9 candidate; its real
+TaskStore/SDK and complete pinned checks remain deployment gates.
 
-Managed task linkage, coordination-aware retirement,
+F9 adds explicit enrollment of prepared managed implementation tasks and
+selection-aware retirement. Automatic pre-start announcements, submit linkage,
 parsers and live structural reporting remain unfinished and unadvertised.
 This is a metadata capability, not the complete structural-coordination feature.
 
@@ -177,7 +178,7 @@ transaction.
 ## Capacity and shutdown
 
 Limits bound retained works, cases, notes, receipts, note bytes and the total
-serialized record. Supported v1/v2 records share a 2 MiB representation bound and
+serialized record. Supported v1/v2/v3 records share a 2 MiB representation bound and
 4096 maximum entities per configured collection. Admission reserves receipt
 slots and conservatively sized bytes for active-work closure, complete reader
 revocation, agreement withdrawal, and pending-effect settlement/case release.
@@ -443,7 +444,7 @@ and operation key when the reply is uncertain.
 | Tool | Selected metadata operations |
 |---|---|
 | `passeur_coordination` | Identity, metadata status and one authorized read page. |
-| `passeur_work` | External source-view registration, explicit sharing, closure. |
+| `passeur_work` | External source-view or explicit managed-task enrollment, sharing and closure. |
 | `passeur_notes` | Post note, acknowledge exact parties, author withdrawal. |
 | `passeur_reconciliation` | Claim target, select inputs, begin/settle reported external effect, consented transfer or release. |
 
@@ -473,10 +474,10 @@ normal re-registration updates an existing named server while retaining its
 approval/denial settings. Incompatible service builds still require controlled
 cutover. Existing task tools and persisted metadata retain their meanings.
 
-Only a parent's own external workspace is enrollable here. Managed worker task
-linkage, pre-start announcement reference submission, live watches/reports and
-operator recovery are not exposed by these MCP tools. Source-derived context does not become a
-semantic judgment. Reconciliation leadership does not grant task ownership or
+External enrollment accepts only a parent's own source view. F9 adds the
+separate task-owner enrollment path below. Pre-start announcement submission
+and live watches/reports remain unavailable; operator recovery stays CLI-only.
+Source-derived context does not become a semantic judgment. Reconciliation leadership does not grant task ownership or
 permission to update the target. Keep the original resource-protection contract.
 
 ### Verification boundary
@@ -582,13 +583,15 @@ The operator read selector intentionally excludes arbitrary note-content reads.
 
 ### Receipts, persistence and compatibility
 
-The first successful recovery atomically publishes control schema v2, the exact
-metadata delta, and an immutable recovery receipt. Read-only inspection, failed
+The first successful recovery of a schema-v1 record atomically publishes
+control schema v2, the exact metadata delta, and an immutable recovery receipt.
+Recovery of an existing v2 or managed-enrollment v3 record retains that version. Read-only inspection, failed
 authorization, stale commands, capacity refusal and ordinary commands leave a
 v1 store in v1. Version-2 records retain the existing data and ordinary receipts
 and append `recoveries`; the enable marker, task records, native lifecycle and
-private framing versions are unchanged. Readers accept v1 and v2; writers retain
-v2 after migration. No background migration or second database is introduced.
+private framing versions are unchanged. Readers accept v1, v2 and v3; writers
+retain the current supported version except for the explicit recovery/enrollment
+migration triggers. No background migration or second database is introduced.
 
 A recovery receipt contains the operator identity, original decoded command,
 canonical request hash and resulting global metadata revision. The versioned
@@ -616,7 +619,8 @@ limit changes, not opportunistic deletion of retained receipts.
 
 Old v1-only binaries reject v2. After recovery has occurred, rolling back the
 executable cannot restore write compatibility: retain the records and use a
-reader capable of v2, or an independently qualified downgrade. Replacing
+reader capable of the stored version (v2 or v3), or an independently qualified
+downgrade. Replacing
 control.json with an old backup would discard accepted authority and is not a
 recovery operation. Git effects and task execution are outside this metadata
 transaction, and no fencing of unmediated same-user programs is promised.
@@ -624,3 +628,109 @@ transaction, and no fencing of unmediated same-user programs is promised.
 See [F8 verification](plans/structural-change-coordination/reports/f8-verification.md)
 for actual test paths and limits. SDK/CLI/elected and pinned checks for this
 candidate must pass before deployment; previous-candidate passes do not prove it.
+
+## Managed-task enrollment and selected-result retirement (F9)
+
+### Explicit enrollment
+
+A current task owner may enroll an already accepted, prepared implementation
+task through `passeur_work`, using the existing tool wrapper:
+
+```json
+{"request":{"schema_version":1,"kind":"command","command":{"kind":"register_managed_work","operation_key":"enroll-cancellation-1","task_id":"12345678-1234-4234-8234-123456789abc"}}}
+```
+
+The UUID is illustrative; use the real durable task receipt. The operator CLI
+uses the same inner request in `coordinate --request FILE --yes`. It still acts
+as its own authenticated parent; being the operator does not make it the task
+owner. No new tool name is registered. Operator initialization of metadata is
+still required before enrollment, and no observation silently enables it.
+
+`RepositoryRuntime` checks the actual TaskControl owner, immutable task request,
+and decoded resource inventory. The selected resource must be a prepared,
+nonretiring implementation worktree with the task's recorded branch and input.
+The Git owner verifies repository membership, physical workspace identity,
+local exact input ancestry/retention and the actual checked-out branch. Detached,
+foreign, replaced, retiring, retired or unclassified sources cannot authorize
+new enrollment or selection. A queued/creating task returns
+`COORDINATION_TASK_WORKSPACE_NOT_READY`; wait on that existing task, not a new
+submission. Historical or review tasks are not inferred to be writable work.
+
+Work ID equals task ID. The immutable enrollment stores the original input,
+workspace identity, control generation at enrollment, literal objective prefix,
+and scope provenance. Objective text is capped at 4096 UTF-8 bytes without a
+split code point, with `intent_truncated` explicit. Context and acceptance text
+are not copied. Only admitted `allowed_paths` become subtree areas, preserving
+the existing path-prefix scope meaning; they are not inferred from the prompt
+or confused with context files. Missing scope is `not_declared`, not a claim
+that the worker edits nothing. An unrepresentable path/scope refuses enrollment
+rather than silently omitting areas. This projection adds no filesystem write
+permission or enforcement guarantee.
+
+Readers initially are empty. The existing owner-controlled sharing operation
+can grant access explicitly. A later native task adoption changes task control
+only. Metadata sharing and operator metadata recovery do not grant native-task
+control or enrollment permission; enrollment receipts remain attributed to the
+original enrolling parent. Repeating an identical enrollment key returns its
+historical receipt even after source retirement; a different key cannot enroll
+the same task again. Reading that receipt is not renewed task authority.
+
+### State version and recovery
+
+The first successful managed enrollment atomically publishes coordination
+control schema 3, its work record, and its ordinary operation receipt. Records
+in schemas 1 and 2 remain unchanged by inspection, refusal, or ordinary commands.
+Schema 3 retains all existing work, notes, agreements, cases, ordinary receipts
+and operator-recovery history; subsequent operator recovery keeps schema 3.
+Decoding checks each managed attribution against its unique immutable enrollment
+receipt. This record format does not rewrite task requests or results.
+
+A runtime that only understands schemas 1/2 cannot read or mutate schema 3.
+Use controlled cutover and a reader supporting the actual durable records.
+Restoring an earlier executable or overwriting control.json with an old backup
+is not an authorized downgrade. Applying the source patch does not itself
+migrate an installed store; successful enrollment is the migration trigger.
+
+### Selection and retirement ordering
+
+At least one active case selecting managed work causes destructive retirement
+to return `COORDINATION_RESULT_SELECTED`, before disposition effects. The error
+does not disclose private case identities. Closing the work record does not
+remove a case's selected input. The current contract requires explicitly
+removing that input or releasing its case before retirement; it has no
+protecting-ref override. `retained` disposition remains possible. Existing
+archive/integration ancestry, clean-worktree, stop-evidence and exact-ref checks
+remain with DispositionManager and are not replaced.
+
+The runtime reserves each task association while enrolling, adopting task
+control, or disposing its resource. Competing operations return
+`COORDINATION_TASK_BUSY`; they do not wait indefinitely while holding authority.
+A metadata-owned retirement reservation orders case selection with destructive
+resource effects. Logical reservations span Git/store operations without
+holding a metadata mutex across them. Source-dependent selection includes a
+resource-generation token: a retirement that begins and ends during Git
+preflight invalidates the old preflight, even if the reservation is no longer
+active. Notes, revocation and closure do not acquire this source reservation.
+
+The resource owner releases its reservation in finally, and shutdown accounts
+for outstanding reservations before releasing runtime ownership. A reservation
+cannot be granted after its metadata owner closed during an asynchronous read.
+No elapsed timer transfers or releases authority. After a process crash, actual
+TaskStore resource state (including cleanup_pending) and retained cases govern
+new source-dependent operations; ephemeral reservations are not claimed as
+persistent process fencing or a transaction across Git and JSON.
+
+A never-enabled coordination store does not prevent ordinary safe disposition
+or create metadata as a side effect. A missing initialized/corrupt store is not
+treated as an empty board. External workspaces remain outside Passeur retirement.
+Other programs with same-user Git/filesystem authority remain outside its
+prevention guarantee.
+
+### Scope and verification
+
+Enrollment is explicit after workspace preparation. This increment does not
+automatically announce tasks, submit by announcement reference, alter a running
+worker's instructions, monitor code, or deliver new notices. Those remain Plan
+2A milestones. F9's [verification](plans/structural-change-coordination/reports/f9-verification.md)
+separates selected real-Git/metadata/runtime tests from actual TaskStore/SDK,
+complete pinned, installed/native and independent acceptance gates.

@@ -2,6 +2,9 @@ import { isAbsolute, join, resolve } from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { CoordinationService, type CoordinationServiceLimits } from "../service/coordination.js";
 import { decodeCoordinationRequest, coordinationRequestLane, type CoordinationReply } from "../contracts/coordination-service.js";
+import type { CoordinationActor } from "../coordination/control.js";
+import type { ManagedEnrollment } from "../coordination/bound-control.js";
+import { managedTaskSource, managedWorkProjection } from "./managed-coordination.js";
 import { parentId } from "../contracts/coordination-control.js";
 import { operatorToken } from "../service/operator-token.js";
 import { privateDirectory } from "../service/process.js";
@@ -96,6 +99,7 @@ export class RepositoryRuntime {
   #shutdown: Promise<void> | undefined;
   #containment: Promise<void> | undefined;
   #coordination: CoordinationService | undefined;
+  readonly #taskAssociations = new Set<string>();
   #coordinationOrdinary = 0;
   #coordinationControls = 0;
 
@@ -357,20 +361,7 @@ export class RepositoryRuntime {
       // Namespace checks suspend. Closing during that read must not create a
       // session after shutdown has already selected the owners it will close.
       this.#assertOpen();
-      if (!this.#coordination) {
-        this.#coordination = new CoordinationService({ store_root: binding.storeRoot, repository_id: binding.repositoryId }, {
-          assertOwned: () => this.#assertAuthority(),
-          authorizeInitialization: principal => this.#authorizeCoordinationOperator(principal.owner_id, "initialization"),
-          authorizeRecovery: principal => this.#authorizeCoordinationOperator(principal.owner_id, "recovery"),
-          externalWorkspaces: { assertExternalRegistration: async (_principal, workspace, sourceSignal) => {
-            if (!this.#store) throw new BridgeError("COORDINATION_RESOURCE_UNAVAILABLE", "The runtime resource inventory is not prepared");
-            await assertExternalWorkspace(workspace, this.#store,
-              { records: coordinationResourceRecords, worktrees: coordinationLimits.max_worktrees }, () => this.#assertAuthority(), sourceSignal);
-          } },
-        }, coordinationLimits);
-        if (this.#admissionClosed) this.#coordination.beginDrain();
-      }
-      return this.#coordination.handle(connection, request);
+      return this.#coordinationSession(binding).handle(connection, request);
     });
     const settled = () => {
       if (control) this.#coordinationControls--; else this.#coordinationOrdinary--;
@@ -380,6 +371,53 @@ export class RepositoryRuntime {
     };
     void operation.then(settled, settled);
     return withAbort(operation, signal);
+  }
+  #coordinationSession(binding: ResolvedBinding): CoordinationService {
+    this.#assertOpen();
+    if (!this.#coordination) {
+      this.#coordination = new CoordinationService({ store_root: binding.storeRoot, repository_id: binding.repositoryId }, {
+        assertOwned: () => this.#assertAuthority(),
+        authorizeInitialization: principal => this.#authorizeCoordinationOperator(principal.owner_id, "initialization"),
+        authorizeRecovery: principal => this.#authorizeCoordinationOperator(principal.owner_id, "recovery"),
+        externalWorkspaces: { assertExternalRegistration: async (_principal, workspace, sourceSignal) => {
+          if (!this.#store) throw new BridgeError("COORDINATION_RESOURCE_UNAVAILABLE", "The runtime resource inventory is not prepared");
+          await assertExternalWorkspace(workspace, this.#store,
+            { records: coordinationResourceRecords, worktrees: coordinationLimits.max_worktrees }, () => this.#assertAuthority(), sourceSignal);
+        } },
+        managedWorkspaces: {
+          acquireRegistration: (principal, taskId) => this.#managedEnrollment(principal, taskId),
+          inspectSelection: async work => {
+            if (!work.managed || !this.#store) throw new BridgeError("COORDINATION_TASK_AUTHORITY_UNAVAILABLE", "Managed task/resource facts are unavailable");
+            this.#assertAuthority();
+            const source = await managedTaskSource(this.#store, binding.repositoryId, work.managed.task_id);
+            this.#assertAuthority();
+            return { root: source.root, branch_ref: source.branch_ref, input_oid: source.input_oid };
+          },
+        },
+      }, coordinationLimits);
+      if (this.#admissionClosed) this.#coordination.beginDrain();
+    }
+    return this.#coordination;
+  }
+  /** Logical per-task exclusion, not a held lock: Git and store callbacks execute outside synchronization. */
+  #reserveTaskAssociation(id: string): () => void {
+    this.#assertOpen(); this.#assertAuthority();
+    if (this.#taskAssociations.has(id)) throw new BridgeError("COORDINATION_TASK_BUSY", "Task enrollment, adoption or disposition is already in progress; retry after that operation settles");
+    this.#taskAssociations.add(id);
+    let released = false;
+    return () => { if (!released) { released = true; this.#taskAssociations.delete(id); } };
+  }
+  async #managedEnrollment(actor: CoordinationActor, taskId: string): Promise<ManagedEnrollment> {
+    if (!this.#store || !this.#binding) throw new BridgeError("COORDINATION_TASK_AUTHORITY_UNAVAILABLE", "The task store is not prepared");
+    const release = this.#reserveTaskAssociation(taskId);
+    try {
+      // Only the actual task owner can enroll; metadata sharing or recovery never supplies this permission.
+      const state = await this.#store.readControl(taskId);
+      owns(state, actor);
+      const source = await managedTaskSource(this.#store, this.#binding.repositoryId, taskId);
+      this.#assertAuthority();
+      return Object.freeze({ ...source, ...managedWorkProjection(source, state.control_generation), release });
+    } catch (error) { release(); throw error; }
   }
   async #authorizeCoordinationOperator(owner: string, purpose: "initialization" | "recovery"): Promise<void> {
     if (!this.#binding) throw new BridgeError("COORDINATION_SERVICE_BINDING_INVALID", "Operator control needs the resolved repository binding");
@@ -427,9 +465,14 @@ export class RepositoryRuntime {
     if (record && "schema_version" in record) owns(await store.readControl(id), actor);
   }
   async attachTask(key: { task_id?: string | undefined; request_key?: string | undefined }, actor: ClientActor, operation: string) {
-    const controls = await this.#taskControls(), id = await this.taskId(key);
-    const receipt = await controls.adopt(id, actor, operation);
-    return { receipt, task: await controls.read(id, actor) };
+    return this.#track(async () => {
+      const controls = await this.#taskControls(), id = await this.taskId(key);
+      const release = this.#reserveTaskAssociation(id);
+      try {
+        const receipt = await controls.adopt(id, actor, operation);
+        return { receipt, task: await controls.read(id, actor) };
+      } finally { release(); }
+    });
   }
   async cancelTask(id: string, actor: ClientActor, generation: number, operation: string, reason: string) {
     const controls = await this.#taskControls();
@@ -520,8 +563,17 @@ export class RepositoryRuntime {
       const results = [];
       for (const operation of operations) {
         signal?.throwIfAborted(); this.#assertOpen(); this.#assertAuthority();
-        try { results.push({ task_id: operation.task_id, operation_key: operation.operation_key, receipt: await manager.finalize(operation) }); }
-        catch (error) { results.push({ task_id: operation.task_id, operation_key: operation.operation_key, error: diagnosticInfo(error) }); }
+        let releaseTask: (() => void) | undefined;
+        let reservation: Awaited<ReturnType<CoordinationService["reserveRetirement"]>>;
+        try {
+          releaseTask = this.#reserveTaskAssociation(operation.task_id);
+          if (operation.disposition !== "retained") reservation = await this.#coordinationSession(this.#binding!).reserveRetirement(operation.task_id);
+          results.push({ task_id: operation.task_id, operation_key: operation.operation_key, receipt: await manager.finalize(operation) });
+        } catch (error) { results.push({ task_id: operation.task_id, operation_key: operation.operation_key, error: diagnosticInfo(error) }); }
+        finally {
+          try { await reservation?.release(); }
+          finally { releaseTask?.(); }
+        }
       }
       return results;
     });
