@@ -1494,16 +1494,19 @@ export class RepositoryRuntime {
       await cleanupTask({ store: this.#store!, taskId, assertAuthority: () => this.#assertAuthority() });
     });
   }
-  reconcile(taskId: string, owner: string, reason: string): Promise<void> {
+  reconcile(taskId: string, owner: string, reason: string, actor: ClientActor): Promise<void> {
     return this.#track(async () => {
-      if (this.#coordinator?.isActive(taskId)) throw new BridgeError("TASK_ACTIVE", "A live task cannot be reconciled as stopped");
-      // Only the operator CLI exposes this explicitly authorized recovery operation.
       await this.#ensurePrepared(undefined, true); this.#assertOpen(); this.#assertAuthority();
-      const { acknowledgeStoppedTask } = await import("./recovery.js");
-      await acknowledgeStoppedTask(this.#store!, taskId, owner, reason);
-      const remaining = await this.#store!.frozenReason();
-      this.#phase = remaining ? "frozen" : "ready";
-      this.#failure = remaining ? diagnosticInfo(new BridgeError("PROJECT_NEEDS_RECONCILIATION", remaining)) : undefined;
+      await this.#authorizeCoordinationOperator(actor.owner_id, "recovery");
+      const release = this.#reserveTaskAssociation(taskId);
+      try {
+        const { acknowledgeStoppedTask } = await import("./recovery.js");
+        if (this.#coordinator?.isActive(taskId)) throw new BridgeError("TASK_ACTIVE", "A live task cannot be reconciled as stopped");
+        await acknowledgeStoppedTask(this.#store!, taskId, owner, reason);
+        const remaining = await this.#store!.frozenReason();
+        this.#phase = remaining ? "frozen" : "ready";
+        this.#failure = remaining ? diagnosticInfo(new BridgeError("PROJECT_NEEDS_RECONCILIATION", remaining)) : undefined;
+      } finally { release(); }
     });
   }
   shutdown(reason: unknown = new BridgeError("BRIDGE_CLOSING", "Connection closed")): Promise<void> {

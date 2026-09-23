@@ -148,7 +148,7 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
         return { results };
       }
       case "cleanup": { const a = args as Arguments<"cleanup">; await runtime.authorizeTask(a.task_id, actor); await runtime.cleanup(a.task_id); return { kind: "collected" }; }
-      case "reconcile": { const a = args as Arguments<"reconcile">; await runtime.authorizeTask(a.task_id, actor); await runtime.reconcile(a.task_id, a.owner, a.reason); return { kind: "reconciled", status: status() }; }
+      case "reconcile": { const a = args as Arguments<"reconcile">; await runtime.reconcile(a.task_id, a.owner, a.reason, actor); return { kind: "reconciled", status: status() }; }
       case "stop": {
         const a = args as Arguments<"stop">;
         for (const id of a.cancel_tasks) {

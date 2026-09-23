@@ -46,7 +46,7 @@ Queued tasks that never started are recorded as interrupted/not_started. Started
 
 Missing or corrupt records and unknown shutdown freeze new starts and retirement, while known healthy siblings can finish saving results. Quarantined records remain visible as an unresolved safety condition. Restoring/quarantining evidence is a lease-owned recovery action, not an effect of listing.
 
-When a process has actually been reconciled, stop the active coordinator and use the explicit offline assertion:
+When a process has actually been reconciled, drain the active coordinator and use the explicit operator assertion through the elected service. The CLI must use the repository's existing operator identity; task control from a departed host is neither required nor granted:
 
 ```sh
 muse-bridge reconcile --project /absolute/repository --task TASK_UUID \
@@ -54,7 +54,7 @@ muse-bridge reconcile --project /absolute/repository --task TASK_UUID \
   --reason "Describe the actual process and workspace reconciliation evidence"
 ```
 
-This records a human assertion separately; it does not falsify the immutable worker-stop result. It does not clear unresolved quarantine, missing-result or other tasks' stop conditions. Do not use it before inspecting the actual owned process tree and worktree. A corrupt/unknown legacy record needs manual repair/classification rather than a bypass flag.
+This records a human assertion separately; it does not falsify the immutable worker-stop result. It does not clear unresolved quarantine, missing-result or other tasks' stop conditions. Do not use it before inspecting the actual owned process tree and worktree. The CLI attaches to the elected service and uses its ordered recovery guards; it is not a direct store writer. A corrupt/unknown legacy record needs manual repair/classification rather than a bypass flag.
 
 ## Finalization
 
