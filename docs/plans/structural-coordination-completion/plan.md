@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Plan status | **Active** — R0-S1 started under the explicit `start` invocation of September 22, 2026 |
-| Acceptance status | **open**; SC01–SC17 remain unsatisfied and native/public/installed and real-host evidence is incomplete |
+| Plan status | **Implemented** — source commit `3c07dc364efecf9d7ffb314eb90a2336223a9694`; objective verification is in progress under `verify` |
+| Acceptance status | **open**; SC01–SC17 require final claim disposition. The clean installed native/public gates pass; live worker permissions, integration, resource accounting and independent final review remain open. |
 | Selected design | Plan 2A, code-only structural coordination |
-| Current phase | R2 — all-language extraction; disjoint R3 admission implementation may proceed concurrently under the R1 gate |
-| Exactly one next integration slice | **R5-S1 — clean installed native artifact and migration/cutover acceptance** |
+| Current phase | R6 objective verification on installed build `4902ce2fa9bcdbdc2030792fa939fc41742bdf69cca16fd4b46be77833ae22a2` |
+| Exactly one next integration slice | **R6-S1 — objective acceptance and external review** |
 | Canonical path | `docs/plans/structural-coordination-completion/plan.md` |
-| Initial implementation operation | **start**; subsequent **continue** while Active; **verify** from Implemented/Verifying |
+| Plan operation | **start** at R0-S1; **continue** while Active; current **verify** after source reached Implemented |
 | Examined source | `MrScripty/Passeur` at `2de20c756a375c726311767cd78b968c1161fdad` |
 | Standards authority | `MrScripty/Coding-Standards` at `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
 | Prepared | September 22, 2026, America/Vancouver |
@@ -131,14 +131,14 @@ Every milestone begins Planned. Exact writes are in [the map](reports/implementa
 | **R2-S1 — All required language extraction (Implemented; SC claims pending installed acceptance)** | Complete every L01–L13 row, embedding, default masking and conservative matching with independently reviewed expected output. Package grammars and queries through the same native contract. A partial language milestone is not full acceptance. |
 | **R3-S1 — Automatic announcement/submission linkage (Implemented; SC claims pending final acceptance)** | Add versioned inline/reference submission, advisory/gated preflight, durable binding and prepared-workspace attachment. Exercise actual TaskStore and coordinator admission, simultaneous parents, source-view differences, publication failure, recovery and ownership races. No extra native run on a retry. |
 | **R4-S1 — Live observation and quiet delivery (Implemented; SC claims pending installed/live acceptance)** | Integrate real watchers, helper jobs, caches, generation-safe snapshots, per-recipient notices/cursors and current-source authorization. Demonstrate public retrieval, event loss, replaced files, delayed results, disconnected parents, no-op edit storms, saturation and zero observation-origin model/build calls. |
-| **R5-S1 — Native release artifact and migration** | Finish complete native bundle production/identity, fresh installation away from source, schema migrations, controlled running-service cutover and data-aware rollback refusal. Run actual parser reports offline from the installed artifact for all languages. Preserve named-host approval/deny settings. |
+| **R5-S1 — Native release artifact and migration (Implemented; verifying)** | Clean source `4ab24e0` and installed build `2727ed8d…` passed the all-language offline native/public probe and gated installed tests. The disposable old-to-new running-service handover returned a typed build conflict, drained explicitly and reopened the same root. Historical migration and rollback meanings still require final claim disposition, including the zero-worker limit of that handover. |
 | **R6-S1 — Objective acceptance and external review** | Run all SC01–SC17 claims on the final material candidate: real two-parent/three-worker workflow, installed host and supported native adapters, representative performance, independent review, affected re-verification and resource accounting. Only then accept and set next slice to none. |
 
 R1 precedes shared-contract parallel expansion. After R1, disjoint language work and admission/linkage work may proceed concurrently under one integration owner; monitoring integrates only after the relevant source/link/report contracts stabilize. The actual workflow selects Concurrent Plan Integration only when independently authorizing proposals may become stale; product concurrency alone does not select it.
 
 ## 4. Objective acceptance population
 
-Retain the original **SC01–SC17 identifiers** so prior evidence can be traced. All remaining statuses are pending at handoff. Baseline results are references, not substituted final acceptance. Exact procedures, path boundaries and evidence requirements are in [verification and release](reports/verification-and-release.md).
+Retain the original **SC01–SC17 identifiers** so prior evidence can be traced. Current claim status is in [the claim ledger](reports/claim-status.md); installed evidence is partial objective acceptance while the live workflow and final material review remain open. Baseline results are references, not substituted final acceptance. Exact procedures, path boundaries and evidence requirements are in [verification and release](reports/verification-and-release.md).
 
 | ID | Observable criterion | Kind | Environment / mode | Owning remaining gate |
 |---|---|---|---|---|

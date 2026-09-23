@@ -1,6 +1,6 @@
 # Native parser and language qualification
 
-This report owns the required L01–L13 population for SC03–SC05 and its native-artifact contribution to SC14. All rows are **pending final acceptance**. R1/R2 selected exact native binding and grammar pins in the production catalog, including source-local patches for selected modern syntax; [dependency qualification](native-dependency-qualification.md) owns their revisions, provenance and generated hashes. Focused real-parser and production-dispatch fixtures exist for every row. The full final-source and installed public probe has not yet run, so those focused results do not advertise accepted support.
+This report owns the required L01–L13 population for SC03–SC05 and its native-artifact contribution to SC14. The rows have passed the exact `4ab24e0` clean-source gate and installed build `2727ed8d…` probe (30 routes, 106 authored public reports, 13 canonical and 21 variant direct native oracles); final claim disposition remains in [the acceptance ledger](claim-status.md). R1/R2 selected exact native binding and grammar pins in the production catalog, including source-local patches for selected modern syntax; [dependency qualification](native-dependency-qualification.md) owns their revisions, provenance and generated hashes. The qualification evidence is for the documented selected syntax and environments, rather than every construct in each language edition.
 
 ## R0 selected syntax targets (qualification pending)
 
