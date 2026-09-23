@@ -31,6 +31,8 @@ test('approval rejects stale identity and persistent or broadened authority', ()
   for (const changes of [{ proposedNetworkPolicyAmendments: [{ host: 'example.org', action: 'allow' }] }, { networkApprovalContext: {} }, { grantRoot: '/' }, { cwd: '/other' }]) {
     assert.throws(() => p.approval({ ...params, ...changes }, 't', 'u', '/workspace', 'item/commandExecution/requestApproval'), expectCode('CODEX_APPROVAL_UNSUPPORTED'));
   }
+  assert.throws(() => p.approval({ ...params, environmentId: 'secret-environment' }, 't', 'u', '/workspace', 'item/commandExecution/requestApproval'),
+    (error) => error?.code === 'CODEX_APPROVAL_UNSUPPORTED' && error.message.includes('environmentId') && !error.message.includes('secret-environment'));
 });
 test('terminal status is never inferred from a report or arbitrary response', () => {
   assert.equal(p.terminalTurn({ threadId: 't', turn: { id: 'u', status: 'failed', error: { message: 'native' } } }, 't', 'u'), 'failed');

@@ -69,11 +69,15 @@ export function approval(value: unknown, threadId: string, turnId: string, works
   const itemId = text(request.itemId, "approval.itemId", 256);
   // An execpolicy proposal is only a hint. The adapter can answer "accept" for this command
   // without accepting the proposal; managed network grants and broader roots remain unsupported.
-  if (request.proposedNetworkPolicyAmendments != null || request.networkApprovalContext != null ||
-      request.grantRoot != null || request.additionalPermissions != null ||
-      (request.environmentId != null) || (request.kind !== undefined && request.kind !== "command")) {
-    throw new BridgeError("CODEX_APPROVAL_UNSUPPORTED", "This approval would extend the admitted permission contract");
-  }
+  const unsupported = [
+    request.proposedNetworkPolicyAmendments != null && "proposedNetworkPolicyAmendments",
+    request.networkApprovalContext != null && "networkApprovalContext",
+    request.grantRoot != null && "grantRoot",
+    request.additionalPermissions != null && "additionalPermissions",
+    request.environmentId != null && "environmentId",
+    request.kind !== undefined && request.kind !== "command" && "kind",
+  ].filter((name): name is string => typeof name === "string");
+  if (unsupported.length) throw new BridgeError("CODEX_APPROVAL_UNSUPPORTED", `This approval would extend the admitted permission contract (${unsupported.join(", ")})`);
   if (method === "item/commandExecution/requestApproval") {
     const cwd = text(request.cwd, "approval.cwd");
     if (!isAbsolute(cwd) || resolve(cwd) !== resolve(workspace)) throw new BridgeError("CODEX_APPROVAL_UNSUPPORTED", "The command requests a different working directory");
