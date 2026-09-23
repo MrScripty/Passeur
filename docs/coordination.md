@@ -2,15 +2,18 @@
 
 ## Implementation status
 
-F2-F4 provide the control/store, Git-bound facade, and metadata session.
-F5 composes that actual session inside `RepositoryRuntime.coordinate`: the
-runtime supplies the binding, operation lifetime, lease checks, existing
-operator-credential authorization, and managed-task resource inventory.
+F2-F5 provide the controls, Git binding, metadata session and runtime composition.
+F6 adds the private `coordination` request on the existing elected listener and
+`ServiceClient.coordinate` / `PasseurFrontend.coordinate`. It uses the same
+connection-derived principal and runtime-owned operation. No second listener,
+execution scheduler, schema implementation or authority store is introduced.
 
-No elected-listener operation or public CLI/MCP command is registered yet.
-Actual host authentication through that new route, managed task/announcement
-linkage, operator adoption, retirement guards, native parsing and complete
-installed acceptance remain unfinished. This is not the end-to-end feature.
+The client/authentication/route/runtime path is exercised with a fixture listener;
+the complete actual elected-listener test is supplied but unavailable in the
+package mirror. Full pinned and legacy-client verification remains required.
+No CLI/MCP metadata tool is registered yet. Managed task linkage, operator
+recovery, retirement guards, parsers and structural reporting remain unfinished.
+This is not the complete structural-coordination feature.
 
 Plan authority: [Plan 2A](plans/structural-change-coordination/plan.md).
 Evidence: [F5 verification](plans/structural-change-coordination/reports/f5-verification.md),
@@ -340,3 +343,48 @@ See F5 verification for actual runtime/metadata/Git execution with fixture task
 inventory, election/recovery and principals. Public authentication, actual
 TaskStore codecs, parser extraction, installed behavior and complete pinned
 application checking were not replaced by those tests. Plan 2B is unselected.
+
+## Authenticated metadata wire (F6)
+
+The existing hello handshake establishes the repository/state/profile binding,
+canonical source view and parent identity derived from the private owner token.
+`service/peer-auth.ts` owns those checks; the listener retains duplicate,
+in-flight, closed-connection and generation decisions. A syntactically valid
+actor supplied in metadata arguments is rejected. The new route cannot grant
+operator initialization permission or access to another parent's private work.
+
+`ServiceClient.coordinate` captures and decodes its argument before suspension.
+Its pending request stores the destination decoder for that exact request,
+parent and repository. The server routes the closed variant to
+`RepositoryRuntime.coordinate` and checks the correlated reply. Code-generation
+or a second hand-copied metadata schema is unnecessary. Existing task operations
+continue to use their existing `contracts/service.ts` schemas and meanings.
+Loading those legacy schemas and bootstrap helpers is lazy; an import failure
+remains a failure, never a permissive decoder or alternate execution path.
+
+The pending maps are the sole request-capacity owners. Each connection has 32
+ordinary slots and four protected control slots. Valid metadata receipt/release
+operations use the already-owned classification; native cancel/input/attach/stop
+operations use protected slots as well. Lane selection grants no permission.
+These ceilings do not claim protection from arbitrary malformed-frame flooding,
+machine-wide scheduling, or a measured throughput guarantee. Excess valid
+requests receive a correlated failure without consuming a slot or closing the
+otherwise usable connection. Duplicate outstanding IDs still close the invalid
+connection so an error cannot be confused with its original pending response.
+
+An observer's cancellation sends `cancel_wait`; the client retains correlation
+and capacity until a reply or connection closure accounts for it. Already
+admitted runtime work remains owned independently. Lost acknowledgments use
+existing operation keys and receipts; reconnect does not resend automatically.
+No code modification, merge, model inference, tests, builds or worker message
+is an effect of the metadata route. Parent token knowledge remains a same-user
+application boundary, not defense against arbitrary same-UID programs.
+
+The protocol version remains 1: an old listener returns its existing unsupported
+operation outcome. The normal frontend still requires matching build identities;
+there is no automatic replacement of a running incompatible service.
+
+See [F6 verification](plans/structural-change-coordination/reports/f6-verification.md).
+The required complete-repository test uses the actual guarded listener/runtime,
+real TaskStore and legacy status call. Its successful loading and execution are
+required before claiming that complete path or shipping public projections.

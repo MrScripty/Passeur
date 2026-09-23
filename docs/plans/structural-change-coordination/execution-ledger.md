@@ -176,3 +176,44 @@ are installed. `npm run check` passed, and `npm test` passed with 325 core,
 40 native and 97 frontend tests. `git diff --check` passed. This resolves the
 package mirror's full-check availability limit for this integration; native
 parser, public/installed workflow and independent acceptance remain blocked.
+
+## September 22, 2026 — F6 authenticated metadata transport
+
+Baseline `c8cfa95cec000fde3bd8e39dbe13834780ebfd0b` confirmed through the repository
+connection. The maintainer's F5 complete-checkout check/test evidence and earlier
+path/discovery fixes were preserved. The explicit continuation selects Plan 2A;
+[F6 admission](reports/f6-admission.md) records the bounded Blocked-to-Active
+re-plan. Only metadata wire composition is admitted; native qualification remains
+blocked. This is a sparse source mirror, not a synthetic upstream checkout.
+
+Connected the actual listener and ServiceClient to the existing metadata decoder,
+authentication and RepositoryRuntime. Added shared connection-capacity classification
+without another pending-state owner. Existing legacy schema interpretation remains
+with its current owner; public CLI/MCP tools and registrations were not modified.
+Added real-client/socket/runtime/Git/store tests with explicitly fixture listener,
+lease/recovery and task inventory. Added a separate full elected-listener test
+using actual production election and TaskStore; it cannot load here because the
+compiled legacy contract/dependency closure is unavailable.
+
+Final selected run from a path containing spaces: **254/254** (25 new and 229
+retained), zero skips/failures/cancellations/todos. All **215** recorded roots are
+absent. Three new helper modules and their actual dependency-free import closure
+pass strict TypeScript 5.8.3 checking. The changed listener/client's entire type
+graph and full pinned application remain unverified here. Seven unchanged F0
+foundation tests were not rerun. [F6 verification](reports/f6-verification.md)
+records exact commands and limitations; [F6 review](reports/f6-review.md) records
+same-author review and the two corrected development test expectations.
+
+F6 source is Implemented with partial verification; the plan returns to Blocked.
+No native parser/evaluator substitute, live account, installation, user-config
+edit, remote commit/push or user-worktree cleanup occurred. Integration belongs
+to the maintainer. Both plans are included; 2B is unchanged and unselected.
+
+## September 22, 2026 — F6 complete-checkout integration
+
+The supplied patch applied to the exact `c8cfa95` affected preimages. The
+complete repository checkout passed `npm run check` and `npm test`: 351 core,
+40 native and 97 frontend tests. The core run includes the new elected-listener
+case that could not load in the sparse mirror. `git diff --check` passed. This
+closes F6's pinned/elected test availability gap for this checkout; CLI/MCP,
+native parsing, installed workflow and independent acceptance remain open.

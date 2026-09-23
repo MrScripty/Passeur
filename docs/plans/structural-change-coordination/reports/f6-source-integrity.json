@@ -1,0 +1,68 @@
+{
+  "baseline_commit": "c8cfa95cec000fde3bd8e39dbe13834780ebfd0b",
+  "proof": "Each changed existing file preimage matches the pinned GitHub blob identity. Sparse source mirror, not a complete checkout.",
+  "preimages": [
+    {
+      "path": "src/service/client.ts",
+      "git_blob_sha1": "31129a8ad0ac726d5406d0a68a48e77ed1ef9ebd",
+      "sha256": "daf5e3309ab5547d88fe952176c3c0af2bcf15b7200e8beb7ae6a985d85a1a05",
+      "bytes": 11699
+    },
+    {
+      "path": "src/service/server.ts",
+      "git_blob_sha1": "55f12e2d501128634676383246b3a353d7da4fef",
+      "sha256": "95cde77182512be8897bcbc58a7447ac30bd61593f04a629930fb6ea782bfbcb",
+      "bytes": 15737
+    },
+    {
+      "path": "tsconfig.core.json",
+      "git_blob_sha1": "6ad1cfe75251ff7bdfd8fd6957db3fc13e4d459a",
+      "sha256": "a1e8f72144727a575e755482b7f94c1529c32006f4abecfc50b57a893f16c184",
+      "bytes": 1028
+    },
+    {
+      "path": "docs/coordination.md",
+      "git_blob_sha1": "63fe7cae2dd5f2833575a944475e09ff0e498ea9",
+      "sha256": "053d2930970be59a67c14d5822cf410feb1355d8e485c8085b03142f34434d6f",
+      "bytes": 20639
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/plan.md",
+      "git_blob_sha1": "28bd929888ea2cbe6906d339fde1a46735f35496",
+      "sha256": "aa768aa4371f53a955d5717649e3d6a48f8ecab4a35fe48759ebf42eebc0285c",
+      "bytes": 47893
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/execution-ledger.md",
+      "git_blob_sha1": "c4ffd2d871956c0baa5c3bf478df9d799cf9f565",
+      "sha256": "306960bec6707a553153ce12249fbf8f4e45807b6ddfa58a3eee43e542ced652",
+      "bytes": 13006
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/issues.md",
+      "git_blob_sha1": "771505349af7ada1bd05f07d1e1e4c93841a2348",
+      "sha256": "cba63f19704c2fd89e67095b543bf0b34eb2dc39aba6dc5dab33e9a2528d999d",
+      "bytes": 17110
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/implementation-map.md",
+      "git_blob_sha1": "e349604ef9237e87166f8bc2978d66a6eaf8b507",
+      "sha256": "8b9fa1517fbcb5bca2721f403c8e8fb7e8aa995b56794bf43a3508ea4940e6f7",
+      "bytes": 17359
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/design-admission.md",
+      "git_blob_sha1": "7bdd247a59f815a7c30c9013d611b1aaf57cef29",
+      "sha256": "b31cb4f4ca3bf8b6589840398b54986c48fb00fff89fd6d4b7127aab8a2ba28e",
+      "bytes": 23777
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/contracts-and-workflow.md",
+      "git_blob_sha1": "1961257c3e68be784b65832a20e8cffbdc7471fa",
+      "sha256": "e283f4a0e2fe95f44f900b119a89e693e3015f5cefbc440374ef6086685fd80b",
+      "bytes": 29226
+    }
+  ],
+  "preserved_f5_verification_blob": "fb9eb7240045de20147ff3068ec8def874f03a04",
+  "qualification": "No signature-authenticity or complete-source claim."
+}

@@ -281,3 +281,23 @@ Applicability: applicable. Source baseline:
 
 The current change does not establish global simplicity/compliance or complete
 acceptance. F5 verification identifies the exact subject and remaining claims.
+
+## F6 composed-design delta
+
+The existing eight-probe admission remains authoritative; this delta applies to
+metadata transport only.
+
+| Probe | Decision and observed boundary |
+|---|---|
+| 1 — Independent concerns/dimensions | Runtime owns admitted operations; listener owns who is connected and where; canonical decoders own what messages mean; pending maps own when capacity is released. Git and control-store authority remain distinct. |
+| 2 — Necessary interleavings | Decode, reserve one pending entry, dispatch, correlate and release share one request-owner order. Handshake generation and parent identity remain paired. Source inspection does not acquire a transport lock or change task lifetime. |
+| 3 — Caller/root knowledge | A caller supplies one metadata request. The authenticated route supplies source/actor context; callers do not reconstruct leases, state filenames or Git ownership. Composition selects the existing runtime, not another coordinator. |
+| 4 — Representative change paths | A new metadata variant changes its canonical decoder/domain and relevant consumers. Connection limits change the shared capacity owner and tests. Legacy task-shape changes remain with the original schema owner. No copied Zod representation of metadata is added. |
+| 5 — Stable interfaces/hidden knowledge | The client accepts unknown input only through the canonical decoder; its pending entry retains a destination decoder for the exact invocation. Credentials and parser/internal state stay out of request payloads and diagnostics. |
+| 6 — Independent evolution/failure | Version 1 framing/task schemas are unchanged; older listeners return unsupported-operation. Metadata reads load no provider. Failed decoding or saturation fails the operation; disconnect ends observation while admitted runtime work remains owned. |
+| 7 — Deletion test | Shared auth/capacity/route helpers remove duplicated trust and ordering rules between the listener and its executable tests. Removing the metadata operation leaves the legacy schema calls on the same pending-request owner; no parallel store or scheduler remains. |
+| 8 — Cumulative complexity/evidence | The additions are three narrow helpers and one branch in the existing wire path. Actual client/auth/route/runtime/Git/store tests pass with explicit listener/task/lease seams; actual elected/pinned and performance gates remain unverified. Test count is not a simplicity claim. |
+
+This increment does not introduce parser, graph, evaluator, publisher, model
+orchestration or SDK substitute machinery. The fixture listener is test-only;
+the production service remains the sole elected listener.

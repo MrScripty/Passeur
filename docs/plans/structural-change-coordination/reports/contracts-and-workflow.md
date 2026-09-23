@@ -251,3 +251,24 @@ Canonical detailed behavior: [runtime composition](../../../coordination.md#runt
 Versioning: no stored task/result/control or public IPC/MCP schema changes here.
 Bootstrap and worktree inventory retain their old exported APIs through re-exports.
 The parser/host/native/full-pinned acceptance claims stay with their owning gates.
+
+## F6 private metadata transport refinement
+
+The new private operation name is `coordination`; its payload and result are the
+existing `CoordinationRequest` and request-correlated `CoordinationReply`, both
+version 1. CLI/MCP projections remain outside this increment. Source view and
+actor come from the authenticated hello, never from the operation. No framing,
+task, result or persisted-control schema is reinterpreted.
+
+Authentication is checked once by the connection owner; every metadata operation
+still passes the canonical request decoder and current runtime/source/permission
+owners. Destination validation checks the original request, parent, repository,
+command receipt and page continuation. The client keeps the correlation until an
+answer or closure even after its observer detaches. Private unknown operation
+handling remains compatible; matching-build policy governs normal frontend reuse.
+
+Capacity uses the actual pending maps: 32 ordinary plus four protected requests
+per connection. Metadata classification delegates to coordinationRequestLane;
+native cancel/input/attach/stop are protected as well. Saturation is a per-request
+error; duplicate active request IDs remain connection faults. No autonomous
+message, inference, merge or resource-retirement effect is introduced.

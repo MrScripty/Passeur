@@ -1,0 +1,72 @@
+{
+  "baseline": "c8cfa95cec000fde3bd8e39dbe13834780ebfd0b",
+  "subjects": [
+    {
+      "path": "src/service/client.ts",
+      "sha256": "fadb7ee0ab8dfa2b000f81feac94fbe58397058fb001d3201a5bb3502c4f6e36",
+      "bytes": 13480,
+      "execution": "selected_suite_or_import_closure"
+    },
+    {
+      "path": "src/service/coordination-route.ts",
+      "sha256": "2655f60dc0a05d33b770c40c6b379606230d08570f4a6af0b8e96ae71a86b338",
+      "bytes": 886,
+      "execution": "selected_suite_or_import_closure"
+    },
+    {
+      "path": "src/service/peer-auth.ts",
+      "sha256": "881a9c734b1b9e796f4e365261e35d410ca5e00d55969a018eb011627b029ebd",
+      "bytes": 1850,
+      "execution": "selected_suite_or_import_closure"
+    },
+    {
+      "path": "src/service/request-capacity.ts",
+      "sha256": "381e0904e7ac81b0b410420e7730de6a88a7c96205e04c08472ad98c2672bce5",
+      "bytes": 1392,
+      "execution": "selected_suite_or_import_closure"
+    },
+    {
+      "path": "src/service/server.ts",
+      "sha256": "270f7dda182e566854e6cf7bad8f9a5944c96a9093f61669f7c935331cdfa5a7",
+      "bytes": 16447,
+      "execution": "not_executed_dependency_closure_unavailable"
+    },
+    {
+      "path": "tests/core/coordination-authenticated.test.mjs",
+      "sha256": "98b518fe352173f044ff821d5dce50c844f0f436304575b7154ce710729d2d4a",
+      "bytes": 12928,
+      "execution": "selected_suite_or_import_closure"
+    },
+    {
+      "path": "tests/core/coordination-elected.test.mjs",
+      "sha256": "00e42ed71a77775c4ade21edf497836d1d3a98f7bc42539617c3f3c86f6fb95f",
+      "bytes": 4597,
+      "execution": "not_executed_dependency_closure_unavailable"
+    },
+    {
+      "path": "tests/core/coordination-request-capacity.test.mjs",
+      "sha256": "c739b5598591704a084537c621361953219b723c73b57f046eb79f8398cc2c99",
+      "bytes": 3056,
+      "execution": "selected_suite_or_import_closure"
+    },
+    {
+      "path": "tests/fixtures/structural/authenticated-peer.mjs",
+      "sha256": "0a886ef7c7e7815daaf16426afc8cb115c8ba65a37d89f9ec2e55d70ba51c7a6",
+      "bytes": 6387,
+      "execution": "selected_suite_or_import_closure"
+    },
+    {
+      "path": "tests/fixtures/structural/elected-coordination-peer.mjs",
+      "sha256": "326aff6cad3c32f476b8ecd478b81eca4576b9ce69f1440759f693c487c1bae0",
+      "bytes": 1111,
+      "execution": "not_executed_dependency_closure_unavailable"
+    },
+    {
+      "path": "tsconfig.core.json",
+      "sha256": "fe694e367098f74fa53aa60afb06d01d934f03a353fb9d466dfea36325352062",
+      "bytes": 1086,
+      "execution": "selected_suite_or_import_closure"
+    }
+  ],
+  "note": "Client/auth/route/runtime execution uses explicit listener/task/lease fixtures. Syntax checks do not prove elected behavior."
+}

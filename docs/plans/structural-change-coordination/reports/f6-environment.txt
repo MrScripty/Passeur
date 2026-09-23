@@ -1,0 +1,12 @@
+UTC 2026-09-22T23:40:34Z
+Linux 6.18.44 x86_64 GNU/Linux
+v22.16.0
+10.9.2
+Version 5.8.3
+git version 2.47.3
+Available Node declarations 25.1.0
+tree-sitter MODULE_NOT_FOUND
+zod MODULE_NOT_FOUND
+@modelcontextprotocol/sdk MODULE_NOT_FOUND
+proper-lockfile MODULE_NOT_FOUND
+registry.npmjs.org EAI_AGAIN

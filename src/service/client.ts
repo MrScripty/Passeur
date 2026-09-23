@@ -1,17 +1,18 @@
 import { createConnection } from "node:net";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { operationSchemas, responseSchemas, type Operation, type Response, type ServiceDescriptor, type FrontendStatus } from "../contracts/service.js";
+import type { Operation, Response, ServiceDescriptor, FrontendStatus } from "../contracts/service.js";
 import { RepositoryRuntime, resolveRepositoryBinding, type LaunchIntent, type ResolvedBinding } from "../core/repository-runtime.js";
 import type { RuntimeIdentity } from "../contracts/runtime.js";
 import type { ResultRequest } from "../contracts/types.js";
 import { BridgeError, diagnosticInfo } from "../core/errors.js";
 import { withAbort } from "../core/async.js";
-import { textChunk } from "../core/result.js";
-import { IpcConnection, type Frame } from "./transport.js";
-import { readDescriptor, existingOwner, launchService, type LaunchReservation } from "./bootstrap.js";
+import { IpcConnection, decodeFrame, type Frame } from "./transport.js";
+import type { LaunchReservation } from "./bootstrap.js";
+import { decodeCoordinationRequest, decodeCoordinationReply, type CoordinationReply } from "../contracts/coordination-service.js";
+import { assertRequestCapacity, serviceRequestLane, type RequestLane } from "./request-capacity.js";
 
-type Pending = { operation: Operation; resolve: (value: unknown) => void; reject: (error: unknown) => void };
+type Pending = { lane: RequestLane; accept: (value: unknown) => void; reject: (error: unknown) => void };
 export class ServiceClient {
   readonly #pending = new Map<string, Pending>();
   readonly connection: IpcConnection;
@@ -19,22 +20,28 @@ export class ServiceClient {
   #resolveReady!: () => void;
   #rejectReady!: (error: unknown) => void;
   #clientId: string | undefined;
+  readonly #parentId: string;
+  readonly #repositoryId: string;
   constructor(readonly descriptor: ServiceDescriptor, binding: ResolvedBinding, ownerToken: string) {
+    const hello = decodeFrame({ kind: "hello", protocol: 1, token: descriptor.token, owner_token: ownerToken,
+      repository_id: binding.repositoryId, state_root: binding.stateRoot, source_view: binding.project,
+      ...(binding.profilePath ? { profile_path: binding.profilePath } : {}) });
+    this.descriptor = Object.freeze({ ...descriptor });
+    this.#parentId = createHash("sha256").update(ownerToken).digest("hex");
+    this.#repositoryId = binding.repositoryId;
     this.ready = new Promise<void>((yes, no) => { this.#resolveReady = yes; this.#rejectReady = no; }); this.ready.catch(() => undefined);
     const socket = createConnection(descriptor.endpoint);
     this.connection = new IpcConnection(socket, (frame: Frame) => {
       if (frame.kind === "welcome" && !this.#clientId) {
-        if (frame.generation !== descriptor.generation) throw new BridgeError("SERVICE_GENERATION_CHANGED", "The endpoint belongs to another service generation");
+        if (frame.generation !== this.descriptor.generation) throw new BridgeError("SERVICE_GENERATION_CHANGED", "The endpoint belongs to another service generation");
         this.#clientId = frame.client_id; this.#resolveReady(); return;
       }
-      if (!this.#clientId || (frame.kind !== "response" && frame.kind !== "failure") || frame.generation !== descriptor.generation) throw new BridgeError("SERVICE_FRAME_INVALID", "Unexpected or stale service response");
+      if (!this.#clientId || (frame.kind !== "response" && frame.kind !== "failure") || frame.generation !== this.descriptor.generation) throw new BridgeError("SERVICE_FRAME_INVALID", "Unexpected or stale service response");
       const request = this.#pending.get(frame.id);
       if (!request) throw new BridgeError("SERVICE_CORRELATION_INVALID", "Service response has no outstanding request");
       this.#pending.delete(frame.id);
       if (frame.kind === "failure") { request.reject(new BridgeError(frame.error.code, frame.error.message)); return; }
-      const parsed = responseSchemas[request.operation].safeParse(frame.result);
-      if (!parsed.success) { request.reject(new BridgeError("SERVICE_RESULT_INVALID", "The service response violates the requested operation contract")); return; }
-      request.resolve(parsed.data);
+      request.accept(frame.result);
     }, () => {
       const failure = new BridgeError("SERVICE_DISCONNECTED", "Service observation was lost; recover accepted operations by their original keys");
       this.#rejectReady(failure);
@@ -42,29 +49,51 @@ export class ServiceClient {
       this.#pending.clear();
     });
     socket.once("connect", () => {
-      void this.connection.send({ kind: "hello", protocol: 1, token: descriptor.token, owner_token: ownerToken,
-        repository_id: binding.repositoryId, state_root: binding.stateRoot, source_view: binding.project,
-        ...(binding.profilePath ? { profile_path: binding.profilePath } : {}) }).catch((error) => this.connection.close(error));
+      void this.connection.send(hello).catch((error) => this.connection.close(error));
     });
   }
   async call<K extends Operation>(operation: K, args: unknown, signal?: AbortSignal): Promise<Response<K>> {
-    signal?.throwIfAborted(); await withAbort(this.ready, signal); signal?.throwIfAborted();
+    signal?.throwIfAborted();
+    const { operationSchemas, responseSchemas } = await import("../contracts/service.js");
     const parsed = operationSchemas[operation].safeParse(args);
     if (!parsed.success) throw new BridgeError("SERVICE_ARGUMENT_INVALID", "Operation arguments do not satisfy their contract");
-    if (this.#pending.size >= 32) throw new BridgeError("SERVICE_REQUEST_LIMIT", "The front end already has its maximum outstanding requests");
+    return this.#request(operation, parsed.data, value => {
+      const result = responseSchemas[operation].safeParse(value);
+      if (!result.success) throw new BridgeError("SERVICE_RESULT_INVALID", "The service response violates the requested operation contract");
+      return result.data as Response<K>;
+    }, serviceRequestLane(operation, parsed.data), signal);
+  }
+  coordinate(raw: unknown, signal?: AbortSignal): Promise<CoordinationReply> {
+    try {
+      signal?.throwIfAborted();
+      const request = decodeCoordinationRequest(raw);
+      return this.#request("coordination", request,
+        value => decodeCoordinationReply(request, this.#parentId, this.#repositoryId, value),
+        serviceRequestLane("coordination", request), signal);
+    } catch (error) { return Promise.reject(error); }
+  }
+  async #request<T>(operation: string, args: unknown, decode: (value: unknown) => T,
+    lane: RequestLane, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted(); await withAbort(this.ready, signal); signal?.throwIfAborted();
+    if (this.connection.isClosed) throw new BridgeError("SERVICE_DISCONNECTED", "The service connection is closed");
+    assertRequestCapacity(this.#pending.values(), lane);
     const id = randomUUID();
-    let resolve!: Pending["resolve"], reject!: Pending["reject"];
-    const result = new Promise<unknown>((yes, no) => { resolve = yes; reject = no; }); result.catch(() => undefined);
-    this.#pending.set(id, { operation, resolve, reject });
+    let accept!: Pending["accept"], reject!: Pending["reject"];
+    const result = new Promise<T>((yes, no) => {
+      reject = no;
+      accept = value => { try { yes(decode(value)); } catch (error) { no(error); } };
+    });
+    result.catch(() => undefined);
+    this.#pending.set(id, { lane, accept, reject });
     const abort = () => { void this.connection.send({ kind: "cancel_wait", id, generation: this.descriptor.generation }).catch(() => undefined); };
     signal?.addEventListener("abort", abort, { once: true });
     try {
-      const writing = this.connection.send({ kind: "request", id, generation: this.descriptor.generation, operation, arguments: parsed.data });
-      void writing.catch((error) => this.connection.close(error));
+      const writing = this.connection.send({ kind: "request", id, generation: this.descriptor.generation, operation, arguments: args });
+      void writing.catch((error) => { this.#pending.delete(id); reject(error); this.connection.close(error); });
       await withAbort(writing, signal);
       if (signal?.aborted) abort();
-      // The pending ID remains reserved after detachment until a reply or closure accounts for it.
-      return await withAbort(result, signal) as Response<K>;
+      // Detached observations keep their correlation/capacity until the reply or connection closure.
+      return await withAbort(result, signal);
     } finally { signal?.removeEventListener("abort", abort); }
   }
   close(): void { this.connection.close(); }
@@ -107,6 +136,7 @@ export class PasseurFrontend {
     if (this.#connecting) return this.#connecting;
     const attempt = (async () => {
       const binding = await this.#resolve();
+      const { readDescriptor, existingOwner, launchService } = await import("./bootstrap.js");
       let descriptor = await readDescriptor(binding), reservation: LaunchReservation | undefined;
       if (descriptor && await existingOwner(descriptor) && descriptor.profile_path !== binding.profilePath) throw new BridgeError("SERVICE_PROFILE_CONFLICT", "Use the same approved profile path for clients of this repository service");
       const live = descriptor ? await existingOwner(descriptor) : false;
@@ -145,11 +175,18 @@ export class PasseurFrontend {
     if (operation === "status" || operation === "prepare") this.#lastStatus = result as Response<"status">;
     return result;
   }
+  async coordinate(raw: unknown, signal?: AbortSignal): Promise<CoordinationReply> {
+    signal?.throwIfAborted();
+    const request = decodeCoordinationRequest(raw);
+    const client = await withAbort(this.#connect(), signal);
+    return client.coordinate(request, signal);
+  }
   async agents(offset: number, limit: number, signal?: AbortSignal) {
     if (this.#client && !this.#client.connection.isClosed) return this.#client.call("agents", { offset, limit }, signal);
     return this.#history.agents(offset, limit);
   }
   async retained(request: ResultRequest) {
+    const { textChunk } = await import("../core/result.js");
     // An immutable historical read remains possible without starting a provider or acquiring a service lease.
     const id = request.task_id ?? await this.#history.retainedTaskId(request.request_key!);
     await this.#history.authorizeTask(id, { owner_id: createHash("sha256").update(this.#ownerToken).digest("hex"), client_id: randomUUID() });

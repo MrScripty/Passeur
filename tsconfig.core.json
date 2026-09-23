@@ -33,6 +33,8 @@
     "src/service/coordination.ts",
     "src/service/transport.ts",
     "src/core/coordination-resources.ts",
-    "src/service/operator-token.ts"
+    "src/service/operator-token.ts",
+    "src/service/client.ts",
+    "src/service/server.ts"
   ]
 }

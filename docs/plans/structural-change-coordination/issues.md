@@ -118,3 +118,18 @@ The existing I-F3-05 fixture path fix and I-F4-06 transport build-root correctio
 were preserved from the current commit. The new findings are about F5 code;
 they are not attributed to the committed baseline. Operator access remains a
 same-user application policy, not protection from arbitrary same-UID code.
+
+## F6 current dispositions — September 22, 2026
+
+| ID | Finding / owner | Disposition and evidence |
+|---|---|---|
+| I-F6-01 | Authentication and request/reply matching must retain exact invocation identity across suspension. | New production helper/client copy context, decode request before waiting and correlate destination replies. Wrong parent/repository/content/continuation tests and mutation-after-submit tests pass. No behavior inference or extra credential authority. |
+| I-F6-02 | Ordinary wire requests could consume every slot needed for an explicit release or receipt. | Existing pending maps now reserve independently bounded ordinary/control capacity; both saturation directions pass. A downstream runtime limit may still reject work normally; no lane grants permission. Flood resilience is not claimed. |
+| I-F6-03 | One development test waited for a success reply after cancelling its observation; another expected a released burst to bypass the runtime's independent capacity. | Corrected the test oracles to observe durable runtime settlement and accept the precise runtime overload outcome. Limits and production semantics were not weakened. Exact cleanup and transient logs in F6 review. |
+| I-F6-04 | Actual elected listener, pinned schemas/lease/TaskStore and complete legacy client type graph cannot load in this mirror. | Full elected test is supplied in the core suite and was attempted, but failed before behavioral assertions due to missing compiled source/dependency closure. Keep complete-path/pinned claims blocked; fixture listener is not substitute proof. |
+| I-F6-06 | Unexecuted elected fixture initially omitted required runtime identity fields. | Source-contract review corrected it to use actual process fields through RuntimeIdentitySchema. No runtime failure/pass claim; complete elected execution still required. |
+| I-F6-05 | Public CLI/MCP projection, managed linkage/retirement, native grammar/extraction and installed performance remain unfinished. | No new public tool or structural-language capability is advertised. Next integration verifies F6 elected/pinned behavior before public projection; native M0 retains its owner. |
+
+The prior maintainer-recorded F5 full pinned success remains valid for that
+candidate only. No new baseline defect or independent external review is
+claimed from these tests.

@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:net";
-import { randomBytes, randomUUID, createHash, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { lstat, unlink, chmod } from "node:fs/promises";
 import type { RepositoryRuntime, ResolvedBinding } from "../core/repository-runtime.js";
 import type { RuntimeIdentity } from "../contracts/runtime.js";
@@ -7,7 +7,10 @@ import type { ResultRequest } from "../contracts/types.js";
 import { DescriptorSchema, operationSchemas, responseSchemas, type Arguments, type Operation } from "../contracts/service.js";
 import { BridgeError, diagnosticInfo, nativeCode } from "../core/errors.js";
 import { atomicJson } from "../store/task-store.js";
-import { canonicalProject, repositoryIdentity } from "../workspace/project.js";
+import { authenticateServicePeer } from "./peer-auth.js";
+import { routeCoordination } from "./coordination-route.js";
+import { decodeCoordinationRequest } from "../contracts/coordination-service.js";
+import { assertRequestCapacity, serviceRequestLane, type RequestLane } from "./request-capacity.js";
 import { assertElectionGuard, processIdentity } from "./process.js";
 import { preparePaths, readDescriptor } from "./bootstrap.js";
 import { IpcConnection, type Frame } from "./transport.js";
@@ -15,7 +18,7 @@ import type { ClientActor } from "../core/task-control.js";
 import { taskReceipt } from "../contracts/tasks.js";
 import { textChunk } from "../core/result.js";
 
-type Peer = { connection: IpcConnection; actor?: ClientActor; source?: string; authenticating: boolean; requests: Map<string, AbortController> };
+type Peer = { connection: IpcConnection; actor?: ClientActor; source?: string; authenticating: boolean; requests: Map<string, { controller: AbortController; lane: RequestLane }> };
 const errorValue = (error: unknown) => { const e = diagnosticInfo(error); return { code: e.code.slice(0, 128), message: (e.message || "Service operation failed").slice(0, 2048) }; };
 /** The elected process owns the runtime. Connection actors own no worker lifetime. */
 export async function runRepositoryService(runtime: RepositoryRuntime, binding: ResolvedBinding, identity: RuntimeIdentity, bootstrapInput: NodeJS.ReadableStream = process.stdin): Promise<void> {
@@ -140,35 +143,53 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
       if (frame.kind === "hello") {
         if (peer.actor || peer.authenticating) throw new BridgeError("SERVICE_HANDSHAKE_INVALID", "Duplicate handshake");
         peer.authenticating = true;
-        if (!timingSafeEqual(Buffer.from(frame.token, "hex"), Buffer.from(token, "hex")) || frame.repository_id !== binding.repositoryId || frame.state_root !== binding.stateRoot || frame.profile_path !== binding.profilePath) throw new BridgeError("SERVICE_BINDING_CONFLICT", "Service credentials or approved binding do not match");
-        const source = await canonicalProject(frame.source_view);
-        if ((await repositoryIdentity(source)).id !== binding.repositoryId) throw new BridgeError("SOURCE_VIEW_CONFLICT", "The client source view is not a member of the bound repository");
+        const authenticated = await authenticateServicePeer(frame, binding, token);
         if (connection.isClosed) return;
-        peer.source = source; peer.actor = { client_id: randomUUID(), owner_id: createHash("sha256").update(frame.owner_token).digest("hex") };
+        peer.source = authenticated.source_view; peer.actor = authenticated.actor;
         clearTimeout(handshakeTimer);
         await connection.send({ kind: "welcome", protocol: 1, generation, client_id: peer.actor.client_id }); return;
       }
       if (!peer.actor || !("generation" in frame) || frame.generation !== generation) throw new BridgeError("SERVICE_GENERATION_INVALID", "Unauthenticated or stale IPC message");
-      if (frame.kind === "cancel_wait") { peer.requests.get(frame.id)?.abort(new BridgeError("OBSERVATION_CANCELLED", "The client request stopped waiting")); return; }
+      if (frame.kind === "cancel_wait") { peer.requests.get(frame.id)?.controller.abort(new BridgeError("OBSERVATION_CANCELLED", "The client request stopped waiting")); return; }
       if (frame.kind !== "request") throw new BridgeError("SERVICE_FRAME_INVALID", "Unexpected client frame");
-      if (peer.requests.has(frame.id) || peer.requests.size >= 32) throw new BridgeError("SERVICE_REQUEST_LIMIT", "Duplicate or excessive connection requests");
-      if (!Object.hasOwn(operationSchemas, frame.operation)) {
-        await connection.send({ kind: "failure", id: frame.id, generation, error: { code: "SERVICE_OPERATION_UNSUPPORTED", message: "The requested service operation is not supported" } }); return;
+      // Duplicate IDs cannot be answered as a second request: the original correlation remains owned.
+      if (peer.requests.has(frame.id)) throw new BridgeError("SERVICE_REQUEST_LIMIT", "Duplicate connection request identity");
+      const operation = frame.operation;
+      let args: unknown, lane: RequestLane;
+      try {
+        if (operation === "coordination") args = decodeCoordinationRequest(frame.arguments);
+        else {
+          if (!Object.hasOwn(operationSchemas, operation)) throw new BridgeError("SERVICE_OPERATION_UNSUPPORTED", "The requested service operation is not supported");
+          const decoded = operationSchemas[operation as Operation].safeParse(frame.arguments);
+          if (!decoded.success) throw new BridgeError("SERVICE_ARGUMENT_INVALID", "The operation payload does not satisfy its complete contract");
+          args = decoded.data;
+        }
+        lane = serviceRequestLane(operation, args);
+        assertRequestCapacity(peer.requests.values(), lane);
+      } catch (error) {
+        await connection.send({ kind: "failure", id: frame.id, generation, error: errorValue(error) }); return;
       }
-      const operation = frame.operation as Operation, controller = new AbortController(); peer.requests.set(frame.id, controller);
+      const controller = new AbortController(); peer.requests.set(frame.id, { controller, lane });
       const work = (async () => {
         try {
-          const raw = await dispatch(operation, frame.arguments, peer, controller.signal);
-          const result = responseSchemas[operation].safeParse(raw);
-          if (!result.success) throw new BridgeError("SERVICE_RESULT_INVALID", "The operation did not produce its declared destination representation");
-          if (!connection.isClosed) await connection.send({ kind: "response", id: frame.id, generation, result: result.data });
+          let result: unknown;
+          if (operation === "coordination") {
+            result = await routeCoordination(runtime, { actor: peer.actor!, source_view: peer.source! }, binding.repositoryId, args, controller.signal);
+          } else {
+            const selected = operation as Operation;
+            const raw = await dispatch(selected, args, peer, controller.signal);
+            const decoded = responseSchemas[selected].safeParse(raw);
+            if (!decoded.success) throw new BridgeError("SERVICE_RESULT_INVALID", "The operation did not produce its declared destination representation");
+            result = decoded.data;
+          }
+          if (!connection.isClosed) await connection.send({ kind: "response", id: frame.id, generation, result });
         } catch (error) { if (!connection.isClosed) await connection.send({ kind: "failure", id: frame.id, generation, error: errorValue(error) }); }
         finally { peer.requests.delete(frame.id); }
       })();
       await track(work);
     }, () => {
       clearTimeout(handshakeTimer); peers.delete(peer); epoch++;
-      for (const request of peer.requests.values()) request.abort(new BridgeError("CLIENT_DETACHED", "Client detached; accepted execution remains service-owned"));
+      for (const request of peer.requests.values()) request.controller.abort(new BridgeError("CLIENT_DETACHED", "Client detached; accepted execution remains service-owned"));
       if (peer.actor) void track(runtime.detachClient(peer.actor.client_id)).catch((error) => console.error(errorValue(error).code));
       maybeExit();
     });

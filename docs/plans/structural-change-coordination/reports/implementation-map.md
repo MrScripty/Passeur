@@ -177,3 +177,25 @@ checking remains unavailable, not substituted by local declarations.
 installed scripts and Plan 2B remain read-only. Public elected-listener/host,
 managed task linkage, retirement guard, parser and installed acceptance are not
 advertised or waived. See [F5 verification](f5-verification.md).
+
+## F6 exact integrated write ownership
+
+Production modified: `src/service/server.ts`, `src/service/client.ts`.
+Production added: `src/service/peer-auth.ts`, `src/service/request-capacity.ts`,
+`src/service/coordination-route.ts`. Build discovery: `tsconfig.core.json`
+adds the actual client/listener compilation roots consumed by the tests.
+
+Tests added: `tests/core/coordination-authenticated.test.mjs`,
+`tests/core/coordination-request-capacity.test.mjs`,
+`tests/core/coordination-elected.test.mjs`; fixtures:
+`tests/fixtures/structural/authenticated-peer.mjs`,
+`tests/fixtures/structural/elected-coordination-peer.mjs`.
+
+Documentation: `docs/coordination.md`, current plan/ledger/issues, this map,
+contracts-and-workflow, design admission and F6-specific evidence. Existing F5
+verification/ledger source was refreshed byte-exactly before edits to preserve
+maintainer additions. The F5 report is unchanged in this patch.
+
+No changes to runtime/task/store schemas, grammar/dependency manifests, CLI/MCP,
+registrations, permissions, package metadata or native providers. Required native
+and elected/pinned verification remain separate from the fixture socket path.

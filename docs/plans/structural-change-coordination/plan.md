@@ -7,11 +7,11 @@
 | Plan status | `Blocked` |
 | Plan revision | `2A` — standalone code-only target |
 | Acceptance status | `blocked` |
-| Current phase | F5 runtime metadata composition implemented; native qualification, public wiring and objective acceptance remain blocked |
-| Exactly one next integration slice | **M0-S1 — qualify native parser dependencies and analysis, then wire authenticated public consumers to the runtime-owned session** |
+| Current phase | F6 authenticated metadata wire passes complete-checkout elected and pinned tests; CLI/MCP, native analysis and objective acceptance remain blocked |
+| Exactly one next integration slice | **M0-S1 — qualify native parser dependencies and analysis, then integrate authenticated CLI/MCP consumers with the tested runtime session** |
 | Canonical plan path | `docs/plans/structural-change-coordination/plan.md` |
 | Implementation invocation | Explicit `start`; subsequent `continue` or `verify` only in the states allowed by Planning |
-| Examined implementation | Passeur `accc19acab46da6e3310b878bcee0b77c37ecdd1` |
+| Examined implementation | Passeur `c8cfa95cec000fde3bd8e39dbe13834780ebfd0b` |
 | Adopted standards | MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
 | Prepared | September 21, 2026, America/Vancouver |
 | Product and acceptance owner | Passeur maintainer |
@@ -20,17 +20,19 @@
 
 [Execution ledger](execution-ledger.md) owns dated work/evidence. [Issues](issues.md) owns findings. [Contracts and workflow](reports/contracts-and-workflow.md) refines D1–D12. [Language qualification](reports/language-qualification.md) owns the required grammar/extraction matrix. [Implementation map](reports/implementation-map.md) owns exact slice write sets. [Verification](reports/verification.md) owns scenario procedures and oracle boundaries. [Sources and routing](reports/sources-and-routing.md) records examined sources and standards. None duplicates task-lifecycle authority.
 
-This is a partially implemented plan. The maintainer committed F4 and requested
-continuation. [F5 admission](reports/f5-admission.md) records the bounded
-Blocked-to-Active transition for actual runtime metadata composition and
-managed-resource exclusion. F5 is implemented with 236 passing selected tests,
-including the seven coordinator foundation regressions. Its new dependency-free
-module closure passes strict available-tool checking. Repository integration
-then passed the complete pinned application type check and test suite; the
-package author's sparse-checkout limitation remains recorded as its own evidence.
-[F5 verification](reports/f5-verification.md) records actual paths and limits.
-The plan returns to Blocked; no SC01–SC17 objective claim is marked accepted.
-Earlier evidence keeps its original scope. No remote or installed runtime changed.
+This is a partially implemented plan. The maintainer committed F5 as
+`c8cfa95cec000fde3bd8e39dbe13834780ebfd0b` and requested continuation.
+[F6 admission](reports/f6-admission.md) admits an independent authenticated
+metadata transport increment without waiving native M0. F6 connects the
+production listener, authentication, client and runtime metadata operation.
+Its selected 254 tests use the actual client/authentication/route/runtime/Git
+and coordination store with a fixture listener and explicit task/lease seams.
+The separately supplied actual elected-listener test could not load in the
+package author's sparse mirror. Repository integration ran it and the full
+pinned suite successfully; installed-path acceptance remains blocked. See
+[F6 verification](reports/f6-verification.md) for exact proof boundaries.
+The maintainer's earlier F5 evidence remains distinct from this F6 run.
+No SC01–SC17 objective claim is accepted from these partial results.
 
 This is a standalone implementation target. The implemented shared-service lifecycle retains its own authority and pending acceptance evidence. Before editing, inspect actual source, installed readers and durable state; choose explicit preservation, migration or rejection for any incompatible state. Plan selection grants no authority to erase records or rewrite history.
 
@@ -390,3 +392,23 @@ extractors, full pinned checks, installed host, performance and independent revi
 record the material evidence. TaskStore inventory, lease/recovery and principals
 are explicit test seams; real metadata storage and Git are exercised. A checked
 resource observation is not process fencing or a transaction with Git refs.
+
+## F6 delivered source increment — September 22, 2026
+
+**Goal:** route one completely decoded metadata operation from an authenticated
+connection through the existing runtime; preserve request/reply identity,
+observer-independent work, and bounded protected request capacity.
+**State:** Implemented source; selected verification and complete-checkout
+elected/pinned tests pass; overall acceptance remains Blocked.
+**Write authority:** [F6 admission](reports/f6-admission.md).
+**Evidence:** [F6 verification](reports/f6-verification.md) records 25 new and
+229 retained tests, 215 removed fixture roots, real-client boundary checks,
+limited strict compilation and the elected-test import failure in the sparse
+mirror. The subsequent complete-checkout result is recorded in that report.
+**Preserved contracts:** private framing v1, coordination request/reply v1,
+operator credential policy, task/result/store meaning and external integration.
+**Remaining gate:** unproven legacy client behavior beyond the current suite,
+CLI/MCP/registration, managed announcement linkage, native extractors,
+monitoring, retirement and installed
+qualification. No public metadata or structural-report tool is registered.
+Plan 2B remains an unchanged, unselected reference.
