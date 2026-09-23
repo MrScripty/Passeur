@@ -6,9 +6,9 @@ export const CONTROL_MAX_BYTES = 2 * 1024 * 1024;
 // More than the worst-case escaped closure receipt and its bounded counter changes.
 export const CONTROL_RELEASE_BYTES = 4096;
 const MAX_ENTITIES = 4096;
-const MAX_PARTIES = 64;
-const MAX_REGIONS = 256;
-const MAX_NOTE_BYTES = 16_384;
+export const MAX_PARTIES = 64;
+export const MAX_REGIONS = 256;
+export const MAX_NOTE_BYTES = 16_384;
 export type ParentId = string;
 export type Region = { kind: "file" | "subtree"; path: string };
 export type Subject = { kind: "work" | "case"; id: string };

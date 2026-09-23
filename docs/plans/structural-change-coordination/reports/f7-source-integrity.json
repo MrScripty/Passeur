@@ -1,0 +1,125 @@
+{
+  "baseline": "18a26fdb54434f9c516f030112ce7d4a616974f1",
+  "verification": "Connected current file/blob identities, not a full checkout",
+  "affected_preimages": [
+    {
+      "path": ".agents/skills/passeur-bridge/SKILL.md",
+      "git_blob_sha1": "63894fd10d7ebde3e004e1592061ea753e57a021",
+      "sha256": "31e78018b62f58484c316e2ef08ba0b5bffb200210575451621ff6b57393e204",
+      "bytes": 4067,
+      "mode": "100644"
+    },
+    {
+      "path": "docs/coordination.md",
+      "git_blob_sha1": "85785581ff29aa8aae177869e96fc84a71e3d87f",
+      "sha256": "dfedc5d7ae8043b44e5178e2ca354046b1c7b4cbe311a226b3d8df68dd91c17f",
+      "bytes": 23801,
+      "mode": "100644"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/execution-ledger.md",
+      "git_blob_sha1": "b21c3f785a282fbdc0ca165926615bd32b00ac7f",
+      "sha256": "71cd2bd8ebdb0e62c2c81037f4547c24c7afdc8367d83b9899bca3982b504350",
+      "bytes": 15664,
+      "mode": "100644"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/issues.md",
+      "git_blob_sha1": "f0bf405d20a4551444a3cd489571f49b9093e007",
+      "sha256": "b85cda82b4a44840b831e65fa7e710172be040c3ff35bc41d065787605865d3f",
+      "bytes": 19464,
+      "mode": "100644"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/plan.md",
+      "git_blob_sha1": "45e3153fb416daf2cca755946561bf0cc1690405",
+      "sha256": "d09dbcca61c789840f8dc28f16b21bd319d0f8adb58b0d0e0c707160a16322da",
+      "bytes": 49283,
+      "mode": "100644"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/design-admission.md",
+      "git_blob_sha1": "1bef377bbf0ed9f04467d831dccb384ce0204400",
+      "sha256": "48517d2d4a6498aba45abff217519eddd165dc41353724929ffec5e0d85f3a58",
+      "bytes": 26442,
+      "mode": "100644"
+    },
+    {
+      "path": "docs/plans/structural-change-coordination/reports/implementation-map.md",
+      "git_blob_sha1": "c9d6588f9a1f9008fd3dc41e34a8c79735faa5bf",
+      "sha256": "517b457806b228344393ff7144370d0c60d9babcb6b648efc330ab3d83cc80e9",
+      "bytes": 18524,
+      "mode": "100644"
+    },
+    {
+      "path": "passeur",
+      "git_blob_sha1": "541dd4b9c99f47235abcafe981fa45ea52d75f52",
+      "sha256": "3827f3f829cc1a1519c839465fdbf195f986f94f24675812b2575c6faa71c0a5",
+      "bytes": 932,
+      "mode": "100755"
+    },
+    {
+      "path": "src/cli.ts",
+      "git_blob_sha1": "8eedd7c4841e5a2cb30a1478853aa7e57ff0ce3e",
+      "sha256": "d69c43d9d0de0f5053ebc7ecd504849e8ef60839e21b89388520969f0a32e362",
+      "bytes": 27183,
+      "mode": "100644"
+    },
+    {
+      "path": "src/codex/config.ts",
+      "git_blob_sha1": "5651bae772650394358dee18aa17a9c1fbe2e096",
+      "sha256": "26f67bf44fc09e69299ac23337a57b38594be5a8816881de48e3afe794f8a539",
+      "bytes": 18904,
+      "mode": "100644"
+    },
+    {
+      "path": "src/contracts/coordination-control.ts",
+      "git_blob_sha1": "f4e2b0d171555667be3c0fde59d4e33b44ac04f5",
+      "sha256": "a62e92fb5e474b7cd4b93e47016ad9fcf9bfea128f5b3ec7b539c513c4711057",
+      "bytes": 22035,
+      "mode": "100644"
+    },
+    {
+      "path": "src/contracts/coordination-service.ts",
+      "git_blob_sha1": "3b3051f5944ac1ec49c6ebe534ab81c5053f1c89",
+      "sha256": "99fa37f38ffd673f09b0436899ecce7c35a18fcd04d4f25d298b19013bb3c2ec",
+      "bytes": 11605,
+      "mode": "100644"
+    },
+    {
+      "path": "src/mcp/server.ts",
+      "git_blob_sha1": "c9ef03b5cbae6738535648d973626c6f4e953dea",
+      "sha256": "78df5199264598da4eff6f48300d8540b3b7edc87386c9d1daf7544386a0a2bf",
+      "bytes": 13126,
+      "mode": "100644"
+    },
+    {
+      "path": "tsconfig.core.json",
+      "git_blob_sha1": "feee2ac01aa860a9f897f797aa260d5ece611eb0",
+      "sha256": "fe694e367098f74fa53aa60afb06d01d934f03a353fb9d466dfea36325352062",
+      "bytes": 1086,
+      "mode": "100644"
+    },
+    {
+      "path": "vitest.config.ts",
+      "git_blob_sha1": "1937164deabfa4697bd82dc43c2fe579b518e5bf",
+      "sha256": "e4bb58c8c4d3d83a382422c519fd058856ce4d3930e0a236073bbd72dfc2c3a0",
+      "bytes": 123,
+      "mode": "100644"
+    }
+  ],
+  "preserved_context": {
+    "tests/core/coordination-bound.test.mjs": {
+      "git_blob_sha1": "61470df9aeca1cefac21911bb5b1c6700f12dab1",
+      "sha256": "7efb861568f3ec7958b9e0a7615ca6ce4ea927c5193c0ca0959526f28d922ce5",
+      "bytes": 16790,
+      "mode": "100644"
+    },
+    "docs/plans/structural-change-coordination/reports/f6-verification.md": {
+      "git_blob_sha1": "adb6e2b8f5addbcb0afbd8b02ffb971cf7aa8549",
+      "sha256": "3bd4d30a3e1a9a8f9fc915fb223628364b0b4098505447cba637dc3add1dc48f",
+      "bytes": 5799,
+      "mode": "100644"
+    }
+  }
+}

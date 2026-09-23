@@ -199,3 +199,36 @@ maintainer additions. The F5 report is unchanged in this patch.
 No changes to runtime/task/store schemas, grammar/dependency manifests, CLI/MCP,
 registrations, permissions, package metadata or native providers. Required native
 and elected/pinned verification remain separate from the fixture socket path.
+
+
+## F7 exact public-consumer write ownership
+
+Production additions: `src/cli/coordination.ts`, `src/mcp/coordination.ts`,
+`src/mcp/coordination-operations.ts`. Production changes: `src/cli.ts`,
+`src/mcp/server.ts`, `src/codex/config.ts`, plus the unchanged-value bound exports
+in `src/contracts/coordination-control.ts` and borrowed endpoint interface in
+`src/contracts/coordination-service.ts`. No runtime/transport/store/task policy changes.
+
+Build discovery: `tsconfig.core.json` includes the actual metadata MCP/server,
+registration catalog and CLI helper roots imported by the new core tests.
+Evidence: `tests/core/coordination-public.test.mjs`, `coordination-cli.test.mjs`,
+`coordination-mcp.test.mjs`; `tests/integration/coordination-cli-entry.test.mjs`;
+`tests/fixtures/structural/public-requests.mjs`. The CLI entry test belongs in the
+existing built-application Vitest stage, not a core stage assuming dist exists.
+
+Docs: `docs/coordination.md`, `.agents/skills/passeur-bridge/SKILL.md`, this map,
+design admission, plan/ledger/issues and F7-specific reports. The active plan is
+compacted to current decisions/index; dated evidence remains with ledger/reports.
+The maintained F6 integration paragraphs and unchanged path fix are preserved.
+Plan 2B, dependencies/lockfiles, installed scripts and user configuration stay unchanged.
+
+F7 source review also admitted `vitest.config.ts`: its current include selects
+only `.test.ts`; add the exact new `.test.mjs` CLI file, not a broad pattern
+that would accidentally execute Node core tests under Vitest. This is the
+owning test-discovery contract, not an additional framework or workflow.
+
+F7 launcher consumer: add `coordinate` to the existing executable `passeur`
+action allowlist. `tests/core/coordination-launcher.test.mjs` executes the actual
+wrapper with a test-owned argument receiver to prove command/quoting behavior;
+it does not claim execution of the real CLI/runtime. No other launcher behavior
+or mode changes. The source preimage is Git-blob verified before editing.

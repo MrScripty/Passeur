@@ -1,0 +1,3 @@
+Strict selected closure; TypeScript 5.8.3; no substitute declarations.
+Command: tsc --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --typeRoots /opt/nvm/versions/node/v22.16.0/lib/node_modules/ts-node/node_modules/@types --noEmit src/mcp/coordination-operations.ts src/cli/coordination.ts
+Exit: 0

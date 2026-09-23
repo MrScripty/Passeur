@@ -1,0 +1,157 @@
+{
+  "note": "Available actual sparse sources; see verification for which paths executed or remained unavailable. Not a full checkout.",
+  "files": [
+    {
+      "path": "src/cli/coordination.ts",
+      "sha256": "24653be1e03947cfc6b133a0efcb55e5bb404440192652d7428dfbd754aa5998"
+    },
+    {
+      "path": "src/cli.ts",
+      "sha256": "67c50abc663749e62a241437c90645995fc808e20c4f335195012be18a9e1489"
+    },
+    {
+      "path": "src/codex/config.ts",
+      "sha256": "63f1952f5d69069a0897ad7cfc99be8cc9686b28db80121753b0f3b21dff2c52"
+    },
+    {
+      "path": "src/contracts/coordination-control.ts",
+      "sha256": "49f46292cef0de91d00d3d23705e4152ca2471140c99b50cf8c66b7dfeb2ccc3"
+    },
+    {
+      "path": "src/contracts/coordination-service.ts",
+      "sha256": "29a0313ca185f750482301f912cdad4e7fc1ec232bfd0d95bb61ba36f029969d"
+    },
+    {
+      "path": "src/coordination/bound-control.ts",
+      "sha256": "de6559413b07995efc3cca80350911f858547522ccc29932d56ee8282edeeec1"
+    },
+    {
+      "path": "src/coordination/control.ts",
+      "sha256": "4c4958f0d090de51960686c0dfe10de5e2f85606ddde4e8fd2b9e6cf1f164975"
+    },
+    {
+      "path": "src/coordination/notices.ts",
+      "sha256": "84cffdf43d9a092833203ad2a074fb9a61c2cce71281d3177b70a8713ac94bde"
+    },
+    {
+      "path": "src/coordination/repository.ts",
+      "sha256": "0a2f0c8b4a017e3d1a2e9af51fe44de703a750e90ff5406255134b9b899207fe"
+    },
+    {
+      "path": "src/core/async.ts",
+      "sha256": "59fe78dadca2b12a618d20b8585588a4d0b3d26bcec22c195822b02a9b4f339a"
+    },
+    {
+      "path": "src/core/coordination-resources.ts",
+      "sha256": "23411a060adaa71414d8256de589d6d1abb42d189484eef48837836545c727fd"
+    },
+    {
+      "path": "src/core/coordinator.ts",
+      "sha256": "d3b61767d398caf11bc61467c622789c9901321f056919f51048f829be2c0ff4"
+    },
+    {
+      "path": "src/core/errors.ts",
+      "sha256": "2c2414a0f2a09eaf89016ea099ea68eed5b0a39ba61bd7b9595858d9395164a3"
+    },
+    {
+      "path": "src/core/repository-runtime.ts",
+      "sha256": "d34a91cd55163d17ff63269c450e0898e3a498bc43a2d56f516c09922ea8669d"
+    },
+    {
+      "path": "src/core/task-control.ts",
+      "sha256": "64bee812d319299e51e5a34cbba1a3db30c3ed83bbae13e0709cdd1b3c420464"
+    },
+    {
+      "path": "src/mcp/coordination-operations.ts",
+      "sha256": "464c0e1adb14525a6ad8d9529357dcf8fff91955b9e2d352d50a889c8a26ea22"
+    },
+    {
+      "path": "src/mcp/coordination.ts",
+      "sha256": "678c0e48c239ae1832b95b83ec5b7fad673871ad9e7d4963551cce66f37f2d4f"
+    },
+    {
+      "path": "src/mcp/server.ts",
+      "sha256": "953b15ae2fc549a915a9afd99b502e82fba4cc43a855530af14a1e28ff9aa7e0"
+    },
+    {
+      "path": "src/observation/match.ts",
+      "sha256": "85f68adc9d0ad24da59259475bf8cb85a90ed2176a35f501151a04fe3db7044d"
+    },
+    {
+      "path": "src/observation/model.ts",
+      "sha256": "bc8dc748050c4965cfbe3bc640cf2f81a059fdf505eb0b0c9e8f11061cb3ffd0"
+    },
+    {
+      "path": "src/observation/report.ts",
+      "sha256": "ec68489f3390c8b548e2deac9f2fa3171163b5849a437e4cc06832f459ab8401"
+    },
+    {
+      "path": "src/observation/source.ts",
+      "sha256": "ca16440a397fd3a58272374b4388b81b5e53de5f6ecf5296e2f6cd641a8eddd2"
+    },
+    {
+      "path": "src/service/bootstrap.ts",
+      "sha256": "0596eab69b29a34b671f36b14683a8de948d3d7afd6f6c2a8773d361bbc72245"
+    },
+    {
+      "path": "src/service/client.ts",
+      "sha256": "fadb7ee0ab8dfa2b000f81feac94fbe58397058fb001d3201a5bb3502c4f6e36"
+    },
+    {
+      "path": "src/service/coordination-route.ts",
+      "sha256": "2655f60dc0a05d33b770c40c6b379606230d08570f4a6af0b8e96ae71a86b338"
+    },
+    {
+      "path": "src/service/coordination.ts",
+      "sha256": "f08d8e50e21cd4097c2330136d327d26cb71775a3142fa83afbcb8bb540353de"
+    },
+    {
+      "path": "src/service/operator-token.ts",
+      "sha256": "579ec5105aba4533c6d007e2bb27bc9c57cb06df834e0753644f368a71487d7b"
+    },
+    {
+      "path": "src/service/peer-auth.ts",
+      "sha256": "881a9c734b1b9e796f4e365261e35d410ca5e00d55969a018eb011627b029ebd"
+    },
+    {
+      "path": "src/service/process.ts",
+      "sha256": "41b3ad9cfca4c44debde30febe7466556d7d0fbf7dd5588337e00cd02a405ed0"
+    },
+    {
+      "path": "src/service/request-capacity.ts",
+      "sha256": "381e0904e7ac81b0b410420e7730de6a88a7c96205e04c08472ad98c2672bce5"
+    },
+    {
+      "path": "src/service/server.ts",
+      "sha256": "270f7dda182e566854e6cf7bad8f9a5944c96a9093f61669f7c935331cdfa5a7"
+    },
+    {
+      "path": "src/service/transport.ts",
+      "sha256": "3cd344f88ca8885cf5fa5ed3ccbf7ec3bd5aab98e2514f257b346c0d499b3e90"
+    },
+    {
+      "path": "src/store/atomic-json.ts",
+      "sha256": "47883a0fc7c6cf8720ad8a92c8189fbf1f5cb5bc3af257cc80b5aefdfee29b77"
+    },
+    {
+      "path": "src/store/coordination-store.ts",
+      "sha256": "b628e3a8c4b6c148b804aabd0571872592cf002225bab50da3eae8a456444dd0"
+    },
+    {
+      "path": "src/store/task-store.ts",
+      "sha256": "ba310b2f02db8b9a22dccfdc3c3afdcea6abcaacec7cc0891de17baa7c02aed5"
+    },
+    {
+      "path": "src/workspace/inventory.ts",
+      "sha256": "096f45da99ff9716a4abe55a3788706bfb6d792d13d291050fb1e21e26be4069"
+    },
+    {
+      "path": "src/workspace/project.ts",
+      "sha256": "f6ed566410bfb9ee091ca0e40c7373dd28fd71b917684efd30b7f3e3b991d8ce"
+    },
+    {
+      "path": "src/workspace/worktree.ts",
+      "sha256": "7ebd01b698084f80e5957c6b73fe465e02ccb82ec39a2171fd28ce4ed372fa5f"
+    }
+  ]
+}

@@ -301,3 +301,23 @@ metadata transport only.
 This increment does not introduce parser, graph, evaluator, publisher, model
 orchestration or SDK substitute machinery. The fixture listener is test-only;
 the production service remains the sole elected listener.
+
+
+## F7 composed-design delta
+
+Applicability: applicable. The public projection adds no metadata state owner.
+
+| Probe | Decision and observed boundary |
+|---|---|
+| 1 — Independent concerns | CLI file capture/confirmation, SDK schema presentation, authenticated frontend, metadata policy and source identity remain distinct. Native permission and note acknowledgment are separate authorities. |
+| 2 — Required interleaving | Decode/confirm precedes CLI connection effects; admitted work remains runtime-owned. No public callback executes under a new lock. Each paged read uses the existing current-authority/cursor rule. |
+| 3 — Caller/root knowledge | Parents supply a request in one of four meaningful groups; they need no store paths or actor fields. Operator CLI owns enable. Callers retain explicit revisions, keys and selected paging rather than hidden retries. |
+| 4 — Change locality | Semantic rules remain in the existing decoder; schemas project supported fields and call that decoder. Tool names feed the named-registration list. Tests cover projection/canonical agreement and require actual SDK generation. A new supported operation updates its owning group, not another state engine. |
+| 5 — Stable interfaces | Coordination-service v1, task/result schemas and authenticated route are unchanged. The small borrowed endpoint interface is shared by CLI/MCP; CLI does not import an MCP implementation. Scope/credentials are not supplied through JSON. |
+| 6 — Evolution/failure | Metadata can exist before native analysis. Missing parser is not a fake report; no report tool is exposed. Invalid input fails before dispatch, unclear source stays with its existing owner, and disconnect does not repeat a side effect. SDK/installed failure remains a named unverified gate. |
+| 7 — Deletion | Removing the shared handler would replicate complete group validation; removing the file reader would lose bounded no-follow capture and preconnection consent. Removing unused constant exports was preferred to inventing a global settings layer. Existing native task tools are unchanged. |
+| 8 — Cumulative machinery | Three small consumer modules, two declaration-only exports and existing entrypoint wiring. No generic RPC/schema generator, scheduler, database, compiler, model evaluator or new service. Four metadata tool schemas are the explicit discoverability cost; no per-edit messages or diary requirements follow. |
+
+Selected tests establish their named correctness boundaries, not optimality or
+universal standards compliance. Required real SDK, entrypoint, installed and
+independent-review evidence remains in F7 verification and the objective gates.

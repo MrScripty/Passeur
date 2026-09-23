@@ -3,7 +3,7 @@ import { canonicalHash } from "../core/async.js";
 import { CONTROL_MAX_BYTES, coordinationOperationKey, decodeCoordinationReceipt, decodeLimits,
   decodeRepositoryCommand, entityId, parentId, type Limits, type Receipt, type RepositoryCommand } from "./coordination-control.js";
 
-/** This is a prospective service operation, not an already registered CLI/MCP tool. */
+/** Versioned metadata operation; CLI/MCP project this contract without granting additional authority. */
 export const COORDINATION_SERVICE_VERSION = 1;
 export const COORDINATION_PAGE_BYTES = 8192;
 export const COORDINATION_MESSAGE_BYTES = 24_576;
@@ -24,6 +24,11 @@ export type CoordinationReply =
   | { schema_version: 1; kind: "receipt"; repository_id: string; receipt: Receipt }
   | { schema_version: 1; kind: "page"; repository_id: string; selector: CoordinationSelector; hash: string;
       offset: number; bytes: number; next_offset: number; total_bytes: number; eof: boolean; content: string };
+
+/** Borrowed client interface. Its implementation owns authenticated transport and reply validation. */
+export interface CoordinationEndpoint {
+  coordinate(request: unknown, signal?: AbortSignal): Promise<CoordinationReply>;
+}
 
 function invalid(message: string): never { throw new BridgeError("COORDINATION_SERVICE_INVALID", message); }
 function object(value: unknown): Record<string, unknown> {

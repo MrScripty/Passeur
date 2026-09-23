@@ -1,4 +1,4 @@
-# Internal parent coordination
+# Parent coordination
 
 ## Implementation status
 
@@ -8,12 +8,15 @@ F6 adds the private `coordination` request on the existing elected listener and
 connection-derived principal and runtime-owned operation. No second listener,
 execution scheduler, schema implementation or authority store is introduced.
 
-The client/authentication/route/runtime path is exercised with a fixture listener;
-the complete actual elected-listener test is supplied but unavailable in the
-package mirror. Full pinned and legacy-client verification remains required.
-No CLI/MCP metadata tool is registered yet. Managed task linkage, operator
-recovery, retirement guards, parsers and structural reporting remain unfinished.
-This is not the complete structural-coordination feature.
+F7 adds `coordinate --request FILE` to the CLI and four MCP metadata tools.
+They use the existing authenticated frontend, runtime and durable contracts.
+The committed F6 elected/pinned checks retain their scope. F7's selected local
+handler tests are not SDK/installed conformance; required public-consumer tests
+and complete pinned checks remain the deployment gate.
+
+Managed task linkage, forced metadata adoption, coordination-aware retirement,
+parsers and live structural reporting remain unfinished and unadvertised.
+This is a metadata capability, not the complete structural-coordination feature.
 
 Plan authority: [Plan 2A](plans/structural-change-coordination/plan.md).
 Evidence: [F5 verification](plans/structural-change-coordination/reports/f5-verification.md),
@@ -388,3 +391,97 @@ See [F6 verification](plans/structural-change-coordination/reports/f6-verificati
 The required complete-repository test uses the actual guarded listener/runtime,
 real TaskStore and legacy status call. Its successful loading and execution are
 required before claiming that complete path or shipping public projections.
+
+
+## Public metadata consumers (F7)
+
+The public consumers preserve coordination-service v1. The complete existing
+decoder owns identity syntax, UTF-8 bounds, variants and cross-field semantics;
+MCP input schemas project that contract and invoke it before dispatch. Runtime
+permission remains independent. Sources, task identities and operator tokens
+cannot be supplied as authority fields in a metadata payload.
+
+### Operator CLI
+
+`passeur coordinate --project PATH --request FILE [--profile FILE] [--state-root PATH] [--yes]`
+reads one bounded UTF-8 JSON request. Commands and initialization require
+`--yes`. Validation and confirmation checks occur before frontend connection or
+credential creation. The file is opened once with Linux no-follow/nonblocking
+flags, verified through that handle, bounded to 65,536 encoded bytes, and decoded
+through the stricter 24,576-byte message contract. File metadata checks detect
+observed races; they do not claim a transactional snapshot of a live editor.
+Symlinks at the selected file, nonregular objects and malformed input are refused.
+
+For identity/status/reads the existing operator credential is required unless
+`--yes` explicitly permits its creation. The CLI never silently substitutes a
+fresh ephemeral principal for a missing persistent operator identity. This is
+application policy for the existing same-user local service, not a security
+boundary against arbitrary same-UID programs.
+
+An example operator initialization file is:
+
+```json
+{"schema_version":1,"kind":"initialize","limits":{"works":32,"cases":16,"notes":32,"receipts":256,"note_bytes":16384}}
+```
+
+The limits are explicit choices, not inferred defaults. Reusing initialization
+with conflicting limits does not reconfigure or erase existing authority.
+After explicit enable, an identity request is:
+
+```json
+{"schema_version":1,"kind":"identity"}
+```
+
+The CLI emits the validated reply as JSON. It does not automatically retrieve
+all pages, issue repeat commands, start workers or run tests. Shutdown detaches
+its frontend; an admitted operation remains runtime-owned. Preserve the request
+and operation key when the reply is uncertain.
+
+### MCP tools
+
+| Tool | Selected metadata operations |
+|---|---|
+| `passeur_coordination` | Identity, metadata status and one authorized read page. |
+| `passeur_work` | External source-view registration, explicit sharing, closure. |
+| `passeur_notes` | Post note, acknowledge exact parties, author withdrawal. |
+| `passeur_reconciliation` | Claim target, select inputs, begin/settle reported external effect, consented transfer or release. |
+
+The tool root contains exactly one `request` field; its value is the existing
+service request. The separate groups expose operation-specific input shapes and
+refuse commands from another group. Initialization is absent from all MCP
+schemas and rejected by their callable handler. A model cannot add `approved`,
+`actor`, `workspace_id`, or a forged control capability.
+
+Registration of tools is inert: no service start, configuration read, parser or
+provider loading occurs merely during tool enumeration. A subsequent read may
+attach/start the service, as its description states. Existing host tool-approval
+and deny policy remains effective; metadata acknowledgments are not native
+human approval. Passeur emits no new model calls or routine agent messages.
+
+`read.content` is a JSON fragment. Concatenate unchanged-hash pages using returned
+byte offsets; do not parse each fragment as a separate document. Revoked access
+is checked on every page. A changed view refuses continuation; refresh from zero.
+The outer tool payload is independently bounded; request a smaller page on
+`RESPONSE_TOO_LARGE`. Command acknowledgment never means code acceptance.
+
+### Registration and capability boundary
+
+The named-registration catalog includes the four tools from their registration
+owner. Applying this code does not edit any personal configuration. An explicit
+normal re-registration updates an existing named server while retaining its
+approval/denial settings. Incompatible service builds still require controlled
+cutover. Existing task tools and persisted metadata retain their meanings.
+
+Only a parent's own external workspace is enrollable here. Managed worker task
+linkage, pre-start announcement reference submission, live watches/reports and
+forced recovery are not exposed. Source-derived context does not become a
+semantic judgment. Reconciliation leadership does not grant task ownership or
+permission to update the target. Keep the original resource-protection contract.
+
+### Verification boundary
+
+The focused F7 tests cover the real file reader, canonical decoder, public
+operation handlers and authenticated client/runtime/Git/store path with explicitly
+fixture listener/task/lease seams. SDK/schema/catalog and real compiled CLI tests
+use real dependencies and are supplied as separate required gates; they are not
+replaced by fixture SDK objects. See [F7 verification](plans/structural-change-coordination/reports/f7-verification.md).

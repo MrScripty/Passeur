@@ -1,0 +1,9 @@
+v22.16.0
+10.9.2
+git version 2.47.3
+Version 5.8.3
+25.1.0
+zod: MODULE_NOT_FOUND
+tree-sitter: MODULE_NOT_FOUND
+@modelcontextprotocol/sdk: MODULE_NOT_FOUND
+vitest: MODULE_NOT_FOUND

@@ -1,0 +1,248 @@
+{"test":"authenticated client identity is derived from its private token and does not initialize metadata","root":"/tmp/passeur-session-6OPjKG","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"wrong service credential never reaches runtime metadata admission","root":"/tmp/passeur-session-IfLuK7","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"real operator identity initializes while a separate authenticated parent is denied","root":"/tmp/passeur-session-4VIULN","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"message actor or approval fields are rejected locally before any wire request","root":"/tmp/passeur-session-qLLKDz","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"different real worktrees enroll under distinct authenticated parents with explicit sharing","root":"/tmp/passeur-session-QNlXoS","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"real runtime managed-resource guard rejects an authenticated external enrollment","root":"/tmp/passeur-session-OXu32e","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"authenticated competing target requests have only one accepted owner","root":"/tmp/passeur-session-F7IP81","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"lost acknowledgment reconnects by the same token and operation key without duplicate work","root":"/tmp/passeur-session-Qej838","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"observer cancellation after runtime admission does not cancel publication or lose correlation","root":"/tmp/passeur-session-fjMcBG","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"ordinary wire saturation preserves receipt capacity and keeps the connection usable","root":"/tmp/passeur-session-nKFato","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"wrong repository and parent replies are rejected rather than returned as trusted metadata","root":"/tmp/passeur-session-of6SVn","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"receipt content mismatch is rejected at the actual client destination boundary","root":"/tmp/passeur-session-l989NR","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a malformed continuation reply is rejected without poisoning later reads","root":"/tmp/passeur-session-mIni4W","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"mutating a request after submission cannot change its captured source or intent","root":"/tmp/passeur-session-DyE8Er","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"already-cancelled request produces no wire effect","root":"/tmp/passeur-session-j6T7i1","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"closed connection refuses new metadata promptly","root":"/tmp/passeur-session-n5kFrZ","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"handshake rejects foreign repository, state root, and profile without creating runtime state","root":"/tmp/passeur-session-cQVkXC","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"malformed or actor-bearing handshake never supplies a parent identity","root":"/tmp/passeur-session-c72N6R","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"control-lane saturation is bounded independently and leaves ordinary observation available","root":"/tmp/passeur-session-C3PMon","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"captured handshake binding and token are immutable across asynchronous source validation","root":"/tmp/passeur-session-1qUkbb","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"repository decoder rejects raw physical identity and actor/source injection","root":"/tmp/passeur-bound-EmRTLO","head":"1a38af114803b4440206a38a4127747eb956e220","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"registration derives source identity, preserves dirty work and keeps allowed input separate from current HEAD","root":"/tmp/passeur-bound-PGXSlQ","head":"bb557eec157508995cd3679e49ad1e026e0a9a0d","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"simultaneous parents cannot register different aliases of one workspace","root":"/tmp/passeur-bound-dRV6gi","head":"1a38af114803b4440206a38a4127747eb956e220","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"the resource authority can reject external enrollment before any coordination publication","root":"/tmp/passeur-bound-DDUw5N","head":"307bdc83cd12765629acee2e48c09bd8b097880c","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a missing resource authority cannot silently grant external enrollment","root":"/tmp/passeur-bound-IhsQES","head":"307bdc83cd12765629acee2e48c09bd8b097880c","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"registration refuses unavailable or non-commit bases without publishing a work record","root":"/tmp/passeur-bound-9fig2a","head":"307bdc83cd12765629acee2e48c09bd8b097880c","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"expected areas cannot direct later source analysis into Git administrative paths","root":"/tmp/passeur-bound-Y59WzO","head":"307bdc83cd12765629acee2e48c09bd8b097880c","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"decoded command and actor values cannot be changed during an external authority check","root":"/tmp/passeur-bound-t8G7bj","head":"307bdc83cd12765629acee2e48c09bd8b097880c","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"independent worktrees and different admitted bases retain their own identities","root":"/tmp/passeur-bound-YLNdHC","head":"19484781c56e1ba7a77fd7c86c7926f631d0c892","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"two parent principals coordinate exact real Git inputs without advancing any Git ref","root":"/tmp/passeur-bound-chxrku","head":"307bdc83cd12765629acee2e48c09bd8b097880c","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"invalid and symbolic targets cannot create independent leadership records","root":"/tmp/passeur-bound-qTQtlr","head":"320f1b931b08313a45684cc381e4c11249ab3939","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"target drift refuses a new external-operation marker and preserves source/control records","root":"/tmp/passeur-bound-VIiuUW","head":"0bb8d24a4b4f60dc283c5b4941193e8fca8b2a4b","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"selecting an unrelated sibling commit cannot relabel it as this workspace result","root":"/tmp/passeur-bound-b8o8Ea","head":"320f1b931b08313a45684cc381e4c11249ab3939","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"permission checks precede source lookup for a non-lead input-selection request","root":"/tmp/passeur-bound-7E23jc","head":"320f1b931b08313a45684cc381e4c11249ab3939","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a sharing revocation during real Git preflight is rechecked before source-dependent publication","root":"/tmp/passeur-bound-TCSwKU","head":"e20ebb746bb3e5d3b1268b7a1e77f5e96a1e6f02","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a case revision changing during real source inspection rejects the stale preparation","root":"/tmp/passeur-bound-RtbGS6","head":"e20ebb746bb3e5d3b1268b7a1e77f5e96a1e6f02","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"source-operation saturation does not block work revocation, closure or receipt lookup","root":"/tmp/passeur-bound-7m2Unr","head":"e20ebb746bb3e5d3b1268b7a1e77f5e96a1e6f02","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"explicit source cancellation before publication does not create a partial work registration","root":"/tmp/passeur-bound-7atogQ","head":"e20ebb746bb3e5d3b1268b7a1e77f5e96a1e6f02","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"metadata controls and retained receipts work after the bound source checkout is lost","root":"/tmp/passeur-bound-ffQqA0","head":"e20ebb746bb3e5d3b1268b7a1e77f5e96a1e6f02","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"cold-process reopen recomputes the same workspace identity and preserves operation-key uniqueness","root":"/tmp/passeur-bound-mu7MMY","head":"8d995f9bc8c74b1b6b041edd5866a7f0702b19bf","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a lost acceptance receipt does not replay integration intent after restart or target movement","root":"/tmp/passeur-bound-ifcZqi","head":"1d6b6417407d064b218043845a03e0cd4dccbcca","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"closing drains an accepted source operation and refuses new work without a task timer","root":"/tmp/passeur-bound-5rJ7u4","head":"bebbbbe763a147f0785877081f878ad1d635f617","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"source replacement during resource authorization cannot enroll the stale physical identity","root":"/tmp/passeur-bound-G4Ybmx","head":"bebbbbe763a147f0785877081f878ad1d635f617","outcome":"removed-discard-authorized-test-fixture"}
+{"kind":"created","root":"/tmp/passeur-cli-request-XhkZxl","test":"request file captures one UTF-8 JSON document with whitespace"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-XhkZxl","test":"request file captures one UTF-8 JSON document with whitespace"}
+{"kind":"created","root":"/tmp/passeur-cli-request-VXN9cA","test":"request file rejects empty"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-VXN9cA","test":"request file rejects empty"}
+{"kind":"created","root":"/tmp/passeur-cli-request-rohsjY","test":"request file rejects invalid JSON"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-rohsjY","test":"request file rejects invalid JSON"}
+{"kind":"created","root":"/tmp/passeur-cli-request-pShzhs","test":"request file rejects UTF-8"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-pShzhs","test":"request file rejects UTF-8"}
+{"kind":"created","root":"/tmp/passeur-cli-request-NXq3yx","test":"request file rejects BOM"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-NXq3yx","test":"request file rejects BOM"}
+{"kind":"created","root":"/tmp/passeur-cli-request-zd4Wu5","test":"request reader enforces encoded size before allocation and semantic size after JSON decoding"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-zd4Wu5","test":"request reader enforces encoded size before allocation and semantic size after JSON decoding"}
+{"kind":"created","root":"/tmp/passeur-cli-request-YVt4Z9","test":"symlinks and directories are rejected without reading another file"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-YVt4Z9","test":"symlinks and directories are rejected without reading another file"}
+{"kind":"created","root":"/tmp/passeur-cli-request-GRa26q","test":"FIFO rejection is nonblocking and preserves the object"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-GRa26q","test":"FIFO rejection is nonblocking and preserves the object"}
+{"kind":"created","root":"/tmp/passeur-cli-request-l8crnG","test":"missing file has the filesystem-owned diagnostic"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-l8crnG","test":"missing file has the filesystem-owned diagnostic"}
+{"kind":"created","root":"/tmp/passeur-cli-request-hFGyR3","test":"commands and initialization require explicit confirmation before connect; reads do not"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-hFGyR3","test":"commands and initialization require explicit confirmation before connect; reads do not"}
+{"kind":"created","root":"/tmp/passeur-cli-request-tZw1iV","test":"malformed or self-authorizing requests cannot cause connection even with --yes"}
+{"kind":"removed","root":"/tmp/passeur-cli-request-tZw1iV","test":"malformed or self-authorizing requests cannot cause connection even with --yes"}
+{"test":"CLI request is stable if its file changes while connection is established","root":"/tmp/passeur-session-nDsnD9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"operator CLI handler initializes through real authenticated runtime and does not load providers","root":"/tmp/passeur-session-LrO3GT","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"operator confirmation cannot give a different authenticated parent initialization authority","root":"/tmp/passeur-session-udZRHC","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"CLI registration reuses exact receipt on retry, not another registration","root":"/tmp/passeur-session-VsiAaZ","outcome":"removed-discard-authorized-test-fixture"}
+{"root":"/tmp/passeur-coordination-J0O6zU","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-9Ouiu9","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-342dKh","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-bkX4Uv","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-BcOR0f","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-mSmlHH","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-LcNAbb","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-1iOG4x","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-SgPI4l","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-PPj0HF","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-JmAMVs","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-4LeILY","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-ap4uhm","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-iiJNSd","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-68dSBy","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-KFERPc","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-UR9zLJ","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-Ag1khG","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-X27ism","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-en6qAE","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-X8hUru","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-5aScp2","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-FAfLRM","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-wtTXaP","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-SNPLHv","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-Ec8fvv","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-WyyRKY","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-sjV7Tg","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-Yqa9Kn","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-launcher-NORvQE","test":"launcher admits coordinate and preserves positional project and literal request arguments","outcome":"removed-test-owned-launcher-fixture"}
+{"root":"/tmp/passeur-launcher-B1tv0s","test":"launcher coordinate uses caller directory when no positional project is supplied","outcome":"removed-test-owned-launcher-fixture"}
+{"root":"/tmp/passeur-launcher-7il2DS","test":"existing launcher commands and unsupported-command rejection are preserved","outcome":"removed-test-owned-launcher-fixture"}
+{"test":"public handler passes one copied command to the existing authenticated endpoint","root":"/tmp/passeur-session-vlcDZP","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"public work reads remain private until explicit sharing and revocation is immediately enforced","root":"/tmp/passeur-session-nUqAC6","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"public note text stays attributed data and requires separate acknowledgment","root":"/tmp/passeur-session-w0eMNZ","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"competing public target claims preserve one lead without touching Git","root":"/tmp/passeur-session-uhc8Y0","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"sha1: root and linked workspace share repository but have independent stable identities","root":"/tmp/passeur-bound-8hKaYU","head":"d05c10d06fbf89cae80aecf7c90c0a528ca80c2d","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"sha1: exact object validation rejects wrong types and preserves missing-object failures","root":"/tmp/passeur-bound-RLpvtj","head":"d05c10d06fbf89cae80aecf7c90c0a528ca80c2d","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"sha256: root and linked workspace share repository but have independent stable identities","root":"/tmp/passeur-bound-67nOEC","head":"65fbb7881b7b1e28fa5c179e7875d8c4c43f547dec4f9e61c594179304565251","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"sha256: exact object validation rejects wrong types and preserves missing-object failures","root":"/tmp/passeur-bound-UmLsIK","head":"7f884a37e068a958c1d91f6cd041961470762f3eec4127172a8cfa6a4fc45f45","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"symlink aliases resolve to the same physical work identity","root":"/tmp/passeur-bound-nezJ4p","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"paths with spaces, quotes, Unicode and embedded newlines are not trimmed or shell interpreted","root":"/tmp/passeur-bound-XAsoAz","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a subdirectory cannot masquerade as a whole workspace","root":"/tmp/passeur-bound-KCHYNd","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a separate clone with the same commits is not this repository namespace","root":"/tmp/passeur-bound-a2H8li","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"detached worktrees have valid physical identities without inventing a branch","root":"/tmp/passeur-bound-k8TNw8","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"moving a workspace does not silently retarget an existing physical registration","root":"/tmp/passeur-bound-URvs5O","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a replaced source root does not inherit the original work identity","root":"/tmp/passeur-bound-Xlpe4O","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"old unverified metadata remains unavailable as a physical-workspace capability","root":"/tmp/passeur-bound-IxJvP2","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"selected commits must lie between the admitted input and the observed work head","root":"/tmp/passeur-bound-wpF3OK","head":"1734c14c2ba36a01c3a144527466a82ff32210b9","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"direct target lookup refuses missing refs, malformed refs, aliases and stale expected heads","root":"/tmp/passeur-bound-9yp1Rc","head":"15f0aa3dfed0d324515b0b26634ff6665d758d7b","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"explicit worktree inventory bounds are honored without mutating registrations","root":"/tmp/passeur-bound-lzRrw2","head":"9f0dc520e27e6b9b4886828b066c2a92b47c16fe","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"inspection preserves dirty work, index and refs and does not call configured fsmonitor or hooks","root":"/tmp/passeur-bound-LjvnsA","head":"9f0dc520e27e6b9b4886828b066c2a92b47c16fe","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"source validation respects explicit cancellation without changing control state","root":"/tmp/passeur-bound-oWzOSd","head":"9f0dc520e27e6b9b4886828b066c2a92b47c16fe","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"repository inspection remains available after the worktree that opened it is removed","root":"/tmp/passeur-bound-6Y9L1M","head":"9f0dc520e27e6b9b4886828b066c2a92b47c16fe","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"an unrelated unborn worktree does not block inspection of established workspaces","root":"/tmp/passeur-bound-yqeu6E","head":"9f0dc520e27e6b9b4886828b066c2a92b47c16fe","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"empty task inventory admits an independently verified external workspace","root":"/tmp/passeur-bound-Ee6Hj4","head":"9f0dc520e27e6b9b4886828b066c2a92b47c16fe","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"managed root is rejected even for completed retained work","root":"/tmp/passeur-bound-9ZlkvF","head":"9f0dc520e27e6b9b4886828b066c2a92b47c16fe","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"unrelated external workspace remains usable beside a known managed worktree","root":"/tmp/passeur-bound-BoBgZt","head":"45a348fd85b62fcad446d0b2d0b320d963a030b2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"candidate alias resolves to the same managed physical workspace","root":"/tmp/passeur-bound-x91MAO","head":"45a348fd85b62fcad446d0b2d0b320d963a030b2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"recorded symlink alias cannot authorize the underlying managed directory","root":"/tmp/passeur-bound-YWbyST","head":"45a348fd85b62fcad446d0b2d0b320d963a030b2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"moved managed worktree is located through its retained branch","root":"/tmp/passeur-bound-kqTgWH","head":"45a348fd85b62fcad446d0b2d0b320d963a030b2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"changed managed branch does not erase ownership of its original root","root":"/tmp/passeur-bound-y1IdYQ","head":"45a348fd85b62fcad446d0b2d0b320d963a030b2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"losing both resource anchors produces uncertainty rather than external admission","root":"/tmp/passeur-bound-qBqHyZ","head":"45a348fd85b62fcad446d0b2d0b320d963a030b2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"missing or unclassified resource evidence never becomes an empty ownership claim","root":"/tmp/passeur-bound-oiap8H","head":"45a348fd85b62fcad446d0b2d0b320d963a030b2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"explicit no-workspace and retired records do not retain active ownership","root":"/tmp/passeur-bound-35toq4","head":"45a348fd85b62fcad446d0b2d0b320d963a030b2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"cross-repository or inconsistent task/resource identity is refused","root":"/tmp/passeur-bound-cJKkS0","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"an excessive managed-record inventory is refused before per-record reads","root":"/tmp/passeur-bound-ySfv2N","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"worktree inspection applies its own bound separately from record count","root":"/tmp/passeur-bound-TsHXQV","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"ownership loss after the inventory await prevents an empty-inventory success","root":"/tmp/passeur-bound-pZra8g","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"cancelled source inspection observes cancellation instead of returning permission","root":"/tmp/passeur-bound-NDHp7h","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"unknown resource state and incomplete creating intent require reconciliation","root":"/tmp/passeur-bound-2pcN6G","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"reusing a former managed path cannot make the moved detached workspace externally eligible","root":"/tmp/passeur-bound-whF1GE","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"an independently registered nested worktree cannot borrow a managed workspace directory","root":"/tmp/passeur-bound-GGEZx9","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a retired resource label cannot override a nonterminal task state","root":"/tmp/passeur-bound-hAKrWQ","head":"d972329adbd65c36145c25088d8868ced1057eb4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"component-boundary comparison permits a similarly named sibling workspace","root":"/tmp/passeur-bound-Zfatsc","head":"c33c46e535bb04bfd63ecae222452f002fa7cfe8","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a containing external root cannot enroll over a retained nested task workspace","root":"/tmp/passeur-bound-v4gS8i","head":"c33c46e535bb04bfd63ecae222452f002fa7cfe8","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a no-resource disposition carrying an owned path is contradictory evidence","root":"/tmp/passeur-bound-eK3dCo","head":"c33c46e535bb04bfd63ecae222452f002fa7cfe8","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"runtime identity/status do not prepare tasks, initialize coordination, or load an execution profile","root":"/tmp/passeur-session-JMx1pH","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"existing operator credential authorizes initialization without loading the execution profile","root":"/tmp/passeur-session-QTrA73","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"ordinary authenticated parent cannot initialize or manufacture approval","root":"/tmp/passeur-session-SvbMgZ","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"missing credential is not created by a denied initialization request","root":"/tmp/passeur-session-WVA4kW","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"malformed request and cancelled admission never acquire runtime authority","root":"/tmp/passeur-session-GTueNy","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"two runtime parents register distinct real worktrees without shared task control","root":"/tmp/passeur-session-Lf9qu4","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"actual runtime resource inventory denies external enrollment of a managed task worktree","root":"/tmp/passeur-session-5E7qer","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"runtime continues to deny a moved managed workspace through its retained branch","root":"/tmp/passeur-session-mHewgs","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"unresolved resource evidence refuses new registration while receipt reads remain usable","root":"/tmp/passeur-session-RIfCHx","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"observer abort after admission retains the operation through publication and wakes settlement","root":"/tmp/passeur-session-uZA9HQ","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"shutdown retains its lease until an admitted resource inspection and command settle","root":"/tmp/passeur-session-nEjDvd","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"runtime drain refuses new work but permits case release and historical reads","root":"/tmp/passeur-session-OOBWGb","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"drain racing preparation prevents a not-yet-dispatched mutation","root":"/tmp/passeur-session-alK7GX","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"root lane capacity is bounded before preparation and receipt retrieval has separate capacity","root":"/tmp/passeur-session-ifyqRu","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"runtime holds copied actor, command and source values while preparation is suspended","root":"/tmp/passeur-session-nISAGV","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"lease compromise refuses an in-flight coordination mutation without losing historical evidence","root":"/tmp/passeur-session-2D05pt","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a new runtime reopens coordination and validates the existing operator rather than resetting state","root":"/tmp/passeur-session-OgFRJc","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"initialization rejects changed operator identity and preserves initialized bytes","root":"/tmp/passeur-session-FsYDZc","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"initialization failure does not poison a later authorized request","root":"/tmp/passeur-session-qyAmrE","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"advisory settlement callback failure does not invalidate a durable command receipt","root":"/tmp/passeur-session-2pUj95","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"preparation error preserves its diagnostic and leaves no coordination authority","root":"/tmp/passeur-session-TzwSSG","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"closure remains usable when the registered checkout was removed","root":"/tmp/passeur-session-txQP6o","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"readonly metadata access does not recreate a missing repository namespace","root":"/tmp/passeur-session-Sduskh","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"real framed connections share one metadata owner and retain separate parent authority","root":"/tmp/passeur-session-JR2nfV","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"two concurrent framed target claims create exactly one case and one leader","root":"/tmp/passeur-session-uaG7vF","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"publication followed by a dropped framed response recovers by receipt without repeating the command","root":"/tmp/passeur-session-0S8LyB","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"malformed operation arguments are refused by the real receiver and leave the connection usable","root":"/tmp/passeur-session-1hfM31","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a new peer process reopens retained metadata and releases a case after the source disappears","root":"/tmp/passeur-session-Si5vjX","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"identity and status do not initialize state or invoke source/resource authorization","root":"/tmp/passeur-session-35ejRB","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"explicit initialization is authorized, durable and idempotent without resetting its epoch","root":"/tmp/passeur-session-QZ66vv","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"denied initialization neither creates authority nor grants another principal permission","root":"/tmp/passeur-session-wdU79f","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"initialization permission callback permits reentrant read-only status without deadlock","root":"/tmp/passeur-session-3DmQrG","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"parallel initializations with differing limits publish one configuration and reject the other","root":"/tmp/passeur-session-WaBR7B","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a concurrent first status lookup cannot permanently poison explicit initialization","root":"/tmp/passeur-session-DRSLC8","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"authority lost while permission is pending prevents initialization","root":"/tmp/passeur-session-XL8GYc","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"aborting an initialization observer does not discard the service-owned initialization","root":"/tmp/passeur-session-bQ9yLG","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"service close waits for pending initialization and rejects new requests","root":"/tmp/passeur-session-BSVppR","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a pre-cancelled request performs no initialization or source operation","root":"/tmp/passeur-session-SjSWFL","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"mutable caller objects cannot change admitted parent, scope, or initialization limits","root":"/tmp/passeur-session-p88Hsy","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"real repository commands register external work and return an attributed retained receipt","root":"/tmp/passeur-session-SgtrGj","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"SHA-256 repository identities remain exact through the service representation","root":"/tmp/passeur-session-Tn2bOq","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"sharing does not confer command ownership and unauthorized reads remain indistinguishable from missing subjects","root":"/tmp/passeur-session-AZq2XC","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"notes retain attributed text and exact acknowledged parties through page retrieval","root":"/tmp/passeur-session-xL42pd","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"UTF-8 view pages reconstruct exact Unicode and preserve cursor byte positions","root":"/tmp/passeur-session-7GzxSi","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a changed selected view refuses mixed-page continuation","root":"/tmp/passeur-session-xcjktt","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"unrelated control changes do not invalidate a selected work view","root":"/tmp/passeur-session-oKTwVl","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"every page rechecks sharing before exposing content or accepting a known view hash","root":"/tmp/passeur-session-37ksdS","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"view identities cannot be reused between otherwise authorized parents","root":"/tmp/passeur-session-ddrNgL","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"invalid byte boundaries and out-of-range offsets are rejected at the page owner","root":"/tmp/passeur-session-BK2NCY","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"bounded reply pages can read a view larger than a single service message","root":"/tmp/passeur-session-nYNuby","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"invalid commands do not publish control state even when the envelope is well formed","root":"/tmp/passeur-session-TL0WeN","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a failed initial source binding does not poison a later valid registration","root":"/tmp/passeur-session-Rq2qLo","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"an unavailable source does not prevent metadata reads, release or receipt recovery on cold reopen","root":"/tmp/passeur-session-3fOKwM","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"read-only lookup distinguishes corrupt or incomplete state from never-enabled state","root":"/tmp/passeur-session-WgFbLD","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"an initialized directory disappearing cannot be silently recreated by this live session","root":"/tmp/passeur-session-SI767a","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"ordinary request saturation preserves explicit closure and receipt lookup capacity","root":"/tmp/passeur-session-l8U34G","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"drain blocks new work while preserving existing release and read operations","root":"/tmp/passeur-session-Z1NG4k","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a detached command continues through publication and survives service close/reopen","root":"/tmp/passeur-session-JVv5Bb","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"two parents select, hand off, and settle exact inputs without changing Git refs","root":"/tmp/passeur-session-yMsorB","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"reopening in a fresh process reads retained command evidence without needing a checkout","root":"/tmp/passeur-session-nWOjm3","outcome":"removed-discard-authorized-test-fixture"}
+{"root":"/tmp/passeur-store-test-CA6MmM","disposition":"removed-test-owned","kind":"coordination-root"}
+{"root":"/tmp/passeur-store-test-FlBIF0","disposition":"removed-test-owned","kind":"coordination-root"}
+{"root":"/tmp/passeur-coordination-nE2FAi","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-store-test-1ikBeU","disposition":"removed-test-owned","kind":"coordination-root"}
+{"root":"/tmp/passeur-coordination-RrgZzV","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-gpz2r2","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-R7NvSv","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-qzyBRM","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-LJF91M","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-GSxryf","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-kBj50i","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-cvw6oP","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-sR5dMN","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-j8khzZ","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-7JqB9S","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-n1gnr6","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-TdJuEp","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-9LQuXB","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-store-test-e0yhb2","disposition":"removed-test-owned","kind":"coordination-root"}
+{"root":"/tmp/passeur-coordination-LZS4Hv","disposition":"removed-test-owned","kind":"coordination-store"}
+{"root":"/tmp/passeur-coordination-uBMFon","disposition":"removed-test-owned","kind":"coordination-store"}
+{"test":"readonly operator lookup leaves an absent namespace absent","root":"/tmp/passeur-operator-PyCEqf","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"readonly operator lookup does not create a credential in an existing namespace","root":"/tmp/passeur-operator-Kec0br","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"explicit creation persists one private credential and repeated creation preserves its value","root":"/tmp/passeur-operator-XnaSj7","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"invalid credential bytes are rejected without repair or replacement","root":"/tmp/passeur-operator-3FMuls","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"oversized and short credentials are rejected by their bounded size contract","root":"/tmp/passeur-operator-jn6pi2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"a symlink credential does not inherit authority from its target bytes","root":"/tmp/passeur-operator-4YZA2v","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"group-readable credentials and nonprivate namespaces are rejected","root":"/tmp/passeur-operator-1G51Wx","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"directory aliases cannot silently redirect the operator identity","root":"/tmp/passeur-operator-d3faZ0","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"explicitly replaced valid credentials are observed without retaining an old cached token","root":"/tmp/passeur-operator-77Gxqm","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"exact sha1 commit bytes are independent of dirty checkout and current HEAD","root":"/tmp/passeur-source-ENpqsX","head":"838971a477470971cd55b5815639df8c7901d0c5","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"exact sha256 commit bytes are independent of dirty checkout and current HEAD","root":"/tmp/passeur-source-bZJwMI","head":"0a9a7078ab5f2c18a168f392401adb357f2c5389082aaf2d50d164089040f851","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"working captures retain their own bytes and context after another edit","root":"/tmp/passeur-source-MP0pZV","head":"0bef2cb60bdc80f635a74993d623e25a275643fb","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"commit absence and missing live source have different observations","root":"/tmp/passeur-source-31ZPnc","head":"0bef2cb60bdc80f635a74993d623e25a275643fb","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"source sampling does not follow final symlinks or intermediate directory symlinks","root":"/tmp/passeur-source-Pnjl9f","head":"ad9f2906fc68eb9196ddc7dfcd98cef1ecb8b9a8","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"directories and nonblocking special-file observations expose no source bytes","root":"/tmp/passeur-source-AOiys3","head":"a6d0af114d97ca4913a3730f190f35b190c0aef1","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"invalid paths are rejected before access, while literal Git pathspec characters remain literal","root":"/tmp/passeur-source-qFrUox","head":"32807a7c9402352f43c260ea0c1483cd37744b08","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"UTF-8 byte identity survives Git reads; invalid encodings are not lossy source observations","root":"/tmp/passeur-source-aK0UO2","head":"a3d0480689ba6d7b63924b1a1e20dc9e902a9603","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"source budgets and explicit cancellation reject without starting a usable observation","root":"/tmp/passeur-source-XMF59U","head":"fa54aa283ca52a925b0b6abb6c76a7220c84890d","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"commit observation rejects annotated tag objects and ignores Git replacement refs","root":"/tmp/passeur-source-YZ7aiP","head":"6486dd17c7fe8543c1d519a42f04cb2aa881bc1f","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"direct blob observation invokes no configured text converter or external diff","root":"/tmp/passeur-source-wAmsij","head":"0d1c4e55685df85a889570427e21117a7ece76a2","outcome":"removed-discard-authorized-test-fixture"}
+{"test":"source operations reject a subdirectory as an ambiguous registered worktree root","root":"/tmp/passeur-source-2GWUim","head":"fa54aa283ca52a925b0b6abb6c76a7220c84890d","outcome":"removed-discard-authorized-test-fixture"}

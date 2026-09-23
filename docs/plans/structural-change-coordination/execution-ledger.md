@@ -217,3 +217,43 @@ complete repository checkout passed `npm run check` and `npm test`: 351 core,
 case that could not load in the sparse mirror. `git diff --check` passed. This
 closes F6's pinned/elected test availability gap for this checkout; CLI/MCP,
 native parsing, installed workflow and independent acceptance remain open.
+
+
+## September 22, 2026 — F7 public metadata consumers
+
+Baseline `18a26fdb54434f9c516f030112ce7d4a616974f1` was read from the repository
+connection. Current F6 elected/pinned integration evidence was recovered and
+blob-verified, not replaced by the older archive's unverified wording. The
+maintainer's `fileURLToPath` fix is unchanged. The sparse mirror is not an upstream
+checkout and supplies no synthetic signed commit.
+
+The explicit continuation re-admitted independent F7 work (Blocked → Active),
+with the scope in [F7 admission](reports/f7-admission.md). Implemented the operator
+CLI and four metadata tool projections, shared decoder use, matching named-tool
+catalog, bounded request-file capture and usage guidance. No native parser,
+provider, evaluator, task/store schema, installed setting or Git merge changed.
+
+Final selected evidence: 304/304 (50 new, 254 retained), zero skips/failures;
+237 distinct recorded fixture roots absent. Pure handler/file/contract import
+closure passes strict available TypeScript 5.8.3 checking. Four real SDK tests
+and two compiled-CLI entrypoint tests are supplied but cannot load locally due
+to missing pinned dependencies; no substitute implementation is used. Complete
+changed-module/app checks and independent review remain required. Seven unchanged
+original coordinator tests were not rerun. Details: [F7 verification](reports/f7-verification.md).
+
+F7 source is implemented with selected local evidence. The overall plan returns
+to Blocked with F7-V1 as the next verification gate; no SC01–SC17 claim is closed.
+Historical implementation prose in plan.md was compacted to an evidence index.
+No remote write, installation, live account/configuration action or user-worktree
+cleanup occurred. Both plans remain in the delivery; 2B is unchanged/unselected.
+
+## September 22, 2026 — F7 complete-checkout integration
+
+The supplied patch applied to the exact `18a26fd` affected preimages. The
+updated Passeur usage skill passed skill validation and its documentation link
+resolves. `npm run check` and `npm test` passed in the complete checkout: 405
+core, 40 native and 99 frontend tests. The core run included the four actual
+SDK tests; the frontend run included the two compiled CLI entrypoint tests.
+`git diff --check` passed. This closes the F7 SDK/CLI/pinned test availability
+gap here; native parsing, managed task linkage, installed-host behavior and
+independent objective acceptance remain open.

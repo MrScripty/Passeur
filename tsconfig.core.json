@@ -35,6 +35,10 @@
     "src/core/coordination-resources.ts",
     "src/service/operator-token.ts",
     "src/service/client.ts",
-    "src/service/server.ts"
+    "src/service/server.ts",
+    "src/mcp/coordination.ts",
+    "src/mcp/server.ts",
+    "src/codex/config.ts",
+    "src/cli/coordination.ts"
   ]
 }

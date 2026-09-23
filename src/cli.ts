@@ -24,6 +24,7 @@ Usage: passeur <action> [options]
   migrate-profile --project PATH --yes
   service-start|service-status --project PATH
   service-stop --project PATH --operation-key KEY --yes [--cancel-tasks UUID,UUID]
+  coordinate --project PATH --request FILE [--yes]
   submit --project PATH --assignment FILE --yes
   tasks --project PATH [--request-key KEY] [--offset N] [--limit N]
   wait --project PATH --task UUID [--after-revision N] [--wait-ms N]
@@ -58,6 +59,10 @@ pins project/profile/state paths. Close external config editors while registerin
 Exit 0 means the requested action passed; 1 means failure or blocked required
 verification; 130/143 represent interruption by SIGINT/SIGTERM. Accepted assignments survive CLI/host closure. wait timeout cancels only observation.
 attach/input/cancel are explicit operator-control actions; never use them to bypass host human approvals.
+coordinate reads one bounded JSON request. Mutations (including initialize) require --yes.
+It manages metadata only: no analysis, agent messaging or Git integration. Read replies
+are bounded pages; continue explicitly with next_offset and the same expected_hash.
+Use an existing operator identity, or explicitly create it with --yes.
 Live agent compatibility is reported separately and is never implied by registration.
 `;
 
@@ -71,6 +76,7 @@ function integer(value: string | undefined, flag: string): number | undefined {
   return Number(value);
 }
 const options = {
+  request: { type: "string" },
   assignment: { type: "string" }, "request-key": { type: "string" }, "operation-key": { type: "string" }, "control-generation": { type: "string" },
   "input-id": { type: "string" }, answer: { type: "string" }, "after-revision": { type: "string" }, "wait-ms": { type: "string" }, "cancel-tasks": { type: "string" },
   project: { type: "string" }, profile: { type: "string" }, "state-root": { type: "string" }, "expected-repository-id": { type: "string" },
@@ -183,7 +189,7 @@ async function main(): Promise<void> {
     const { runtimeIdentity } = await import("./install/runtime.js");
     console.log(JSON.stringify(await runtimeIdentity(runtimeRoot))); return;
   }
-  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile", "service-run", "service-start", "service-stop", "service-status", "submit", "tasks", "wait", "attach", "cancel", "input"]);
+  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile", "service-run", "service-start", "service-stop", "service-status", "submit", "tasks", "wait", "attach", "cancel", "input", "coordinate"]);
   if (!actions.has(action)) throw new BridgeError("ACTION_UNSUPPORTED", `Unknown action: ${action}`);
   const { values } = decode(process.argv.slice(3));
   startupRequirementFromFlags(values.required, values.optional);
@@ -194,6 +200,7 @@ async function main(): Promise<void> {
     serve: bindingFlags, start: bindingFlags, inspect: bindingFlags, "service-run": bindingFlags,
     "service-start": bindingFlags, "service-status": bindingFlags,
     "service-stop": [...bindingFlags, "operation-key", "cancel-tasks", "yes"],
+    coordinate: [...bindingFlags, "request", "yes"],
     submit: [...bindingFlags, "assignment", "yes"], tasks: [...bindingFlags, "offset", "limit", "request-key"],
     wait: [...bindingFlags, "task", "after-revision", "wait-ms"],
     attach: [...bindingFlags, "task", "request-key", "operation-key", "yes"],
@@ -276,14 +283,19 @@ async function main(): Promise<void> {
   const connected = async () => {
     if (!frontend) {
       const binding = await resolveRepositoryBinding(intent, process.env, stop.signal);
-      frontend = new PasseurFrontend(intent, identity, fileURLToPath(import.meta.url), await operatorToken(binding, Boolean(values.yes) || action === "service-start"));
+      const credential = await operatorToken(binding, Boolean(values.yes) || action === "service-start");
+      if (action === "coordinate" && credential === undefined) throw new BridgeError("COORDINATION_OPERATOR_IDENTITY_UNAVAILABLE", "No persistent operator identity exists; use explicit --yes to create it before sharing or managing metadata");
+      frontend = new PasseurFrontend(intent, identity, fileURLToPath(import.meta.url), credential);
     }
     return frontend;
   };
   const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
   const mutation = () => { if (!values.yes) throw new BridgeError("MUTATION_AUTHORITY_REQUIRED", `${action} requires explicit operator --yes authority`); };
   try {
-    if (action === "inspect") print(await runtime.inspect());
+    if (action === "coordinate") {
+      const { runCoordinationCli } = await import("./cli/coordination.js");
+      print(await runCoordinationCli(required(values.request, "--request"), Boolean(values.yes), connected, stop.signal));
+    } else if (action === "inspect") print(await runtime.inspect());
     else if (action === "result") print(await runtime.result(required(values.task, "--task")));
     else if (action === "logs") {
       let offset = 0;

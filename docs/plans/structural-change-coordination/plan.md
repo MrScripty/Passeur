@@ -7,11 +7,11 @@
 | Plan status | `Blocked` |
 | Plan revision | `2A` — standalone code-only target |
 | Acceptance status | `blocked` |
-| Current phase | F6 authenticated metadata wire passes complete-checkout elected and pinned tests; CLI/MCP, native analysis and objective acceptance remain blocked |
-| Exactly one next integration slice | **M0-S1 — qualify native parser dependencies and analysis, then integrate authenticated CLI/MCP consumers with the tested runtime session** |
+| Current phase | F7 public metadata consumers pass complete-checkout SDK, CLI and pinned tests; native analysis and objective acceptance remain blocked |
+| Exactly one next integration slice | **M0-S1 — qualify native parser dependencies and language extraction before structural reporting integration** |
 | Canonical plan path | `docs/plans/structural-change-coordination/plan.md` |
 | Implementation invocation | Explicit `start`; subsequent `continue` or `verify` only in the states allowed by Planning |
-| Examined implementation | Passeur `c8cfa95cec000fde3bd8e39dbe13834780ebfd0b` |
+| Examined implementation | Passeur `18a26fdb54434f9c516f030112ce7d4a616974f1` |
 | Adopted standards | MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
 | Prepared | September 21, 2026, America/Vancouver |
 | Product and acceptance owner | Passeur maintainer |
@@ -20,19 +20,14 @@
 
 [Execution ledger](execution-ledger.md) owns dated work/evidence. [Issues](issues.md) owns findings. [Contracts and workflow](reports/contracts-and-workflow.md) refines D1–D12. [Language qualification](reports/language-qualification.md) owns the required grammar/extraction matrix. [Implementation map](reports/implementation-map.md) owns exact slice write sets. [Verification](reports/verification.md) owns scenario procedures and oracle boundaries. [Sources and routing](reports/sources-and-routing.md) records examined sources and standards. None duplicates task-lifecycle authority.
 
-This is a partially implemented plan. The maintainer committed F5 as
-`c8cfa95cec000fde3bd8e39dbe13834780ebfd0b` and requested continuation.
-[F6 admission](reports/f6-admission.md) admits an independent authenticated
-metadata transport increment without waiving native M0. F6 connects the
-production listener, authentication, client and runtime metadata operation.
-Its selected 254 tests use the actual client/authentication/route/runtime/Git
-and coordination store with a fixture listener and explicit task/lease seams.
-The separately supplied actual elected-listener test could not load in the
-package author's sparse mirror. Repository integration ran it and the full
-pinned suite successfully; installed-path acceptance remains blocked. See
-[F6 verification](reports/f6-verification.md) for exact proof boundaries.
-The maintainer's earlier F5 evidence remains distinct from this F6 run.
-No SC01–SC17 objective claim is accepted from these partial results.
+The maintainer committed F6 and requested continuation. [F7 admission](reports/f7-admission.md)
+records the scoped Blocked-to-Active decision and return to Blocked after delivery.
+[F7 verification](reports/f7-verification.md) records 304 selected passing tests
+in the package mirror and the subsequent successful SDK/CLI/full-suite run in
+this checkout. Source implementation is not objective acceptance. The committed
+F6 elected/pinned evidence remains separately in the ledger and F6 report.
+Native parsing, task linkage, monitoring, retirement,
+installed-host and independent acceptance retain their required gates.
 
 This is a standalone implementation target. The implemented shared-service lifecycle retains its own authority and pending acceptance evidence. Before editing, inspect actual source, installed readers and durable state; choose explicit preservation, migration or rejection for any incompatible state. Plan selection grants no authority to erase records or rewrite history.
 
@@ -258,157 +253,21 @@ Accept only after all non-deferred milestones are `Accepted` or explicitly super
 
 Move durable reporting/coordination contracts into `docs/structural-reporting.md` and `docs/coordination.md` under their admitted write owner, then compact this plan to a decision/evidence index. The new design provides factual coordination support; it does not certify delivered project code.
 
-## Implementation admission and bounded re-plan — September 21, 2026
+## 8. Current implementation index
 
-The maintainer explicitly requested implementation of Plan 2A and delivery of changed files. Operation `start` is admitted for this canonical path. The lead implementer for this working copy is the current implementation session. Plan 2B is included for reference only; no evaluator code, account use or source disclosure is authorized.
+| Increment | State and evidence |
+|---|---|
+| F0/F1 foundations | Implemented internally; [scoped evidence](reports/implementation-evidence.md). |
+| F2 durable metadata | Implemented; [control/store evidence](reports/f2-verification.md). |
+| F3 repository binding | Implemented; [Git/source evidence](reports/f3-verification.md). |
+| F4 metadata session | Implemented; [session evidence](reports/f4-verification.md). |
+| F5 runtime composition | Implemented; [local and maintainer integration evidence](reports/f5-verification.md). |
+| F6 authenticated transport | Implemented; [selected and committed elected/pinned evidence](reports/f6-verification.md). |
+| F7 public metadata consumers | Source implemented, selected tests passed; [remaining consumer gates](reports/f7-verification.md). |
 
-Connected repository reads confirmed baseline `f9a7c5d2d314580e5f7849982cf158397f9c11de`. Direct GitHub cloning and npm registry access fail with DNS resolution errors in this execution environment. The local Node Tree-sitter binding and required grammar artifacts are absent. The available TypeScript is 5.8.3 rather than the pinned 5.9.3. These are actual M0 qualification blockers, not permission to invent parser results, publish a guessed grammar lock, or claim full acceptance.
-
-Independent, reversible work is split out without weakening the requested target:
-
-- **F0-S1:** reproduce and fix the three inherited workspace-lifetime defects using verified baseline source, real disposable Git repositories/hooks, and a controlled worker/store boundary. Production write set: `src/core/coordinator.ts`, `src/workspace/worktree.ts`. Test: `tests/core/structural-foundation.test.mjs`; its test-only support `tests/fixtures/structural/foundation-store.mjs`. No execution, result, input, or persisted schema changes.
-- **F1-S1:** implement native-independent captured-source identity, declaration correspondence, bounded report formatting, and notice materiality as internal components. Production write set: `src/observation/model.ts`, `source.ts`, `match.ts`, `report.ts`, `src/coordination/notices.ts`; test: `tests/core/structural-primitives.test.mjs`; compilation discovery: `tsconfig.core.json`. The model is in-process only, not an accepted public/IPC codec. No incomplete parser or coordination tool is advertised.
-- Both slices may update this plan's ledger/issues, this re-plan, `reports/implementation-evidence.md`, `reports/source-integrity.json`, `reports/focused-test-results.txt`, `reports/environment.txt`, the implementation-map inventory, and `docs/structural-reporting.md`.
-
-The material reason for F0/F1 separation is independent verification while the native prerequisite is unavailable. F0/F1 completion does not satisfy M1's real parser/transport path or M2's language claims. The next native slice remains M0-S1; its actual dependency/ABI/package evidence is still required before that path is advertised. Original SC01–SC17 claims and all thirteen required language entries remain in force.
-
-The original ownership decomposition is retained: task lifecycle remains with the coordinator, source capture with its observation owner, and pure matching/rendering with the observation implementation. F1 introduces no execution scheduler, persistence database, public compatibility promise, code writer, or parser implementation. Deleting these internal components would move the same planned source/correspondence/formatting logic into the eventual helper/transport owners; their tests prove only their selected in-process and filesystem contracts.
-
-### Delivered increment state
-
-| Increment | Source state | Evidence and remaining acceptance |
-|---|---|---|
-| F0-S1 | Implemented | Seven controlled coordinator/workspace tests pass; three reproduce failures against the verified baseline. Real Git and hooks execute; the native worker and store are test-controlled. Full pinned suites and external review remain required. |
-| F1-S1 | Implemented internally | Twenty-six source/matching/reporting/materiality tests pass. New modules and their real import closure pass strict TypeScript 5.8.3 checking with available Node declarations. This is not the pinned application check or parser/transport qualification. |
-| M0-S1 | Blocked | Native Node Tree-sitter/grammars and pinned dependency resolution unavailable. Source-to-output language evidence cannot be run. |
-| M1–M5 | Planned | Helper/parser, CLI/MCP path, full language coverage, watchers, verified admission/task linkage, public notes/claims, retirement guards, installation and acceptance remain. F2 implements internal coordination controls/store; F3 adds the real-Git source gate. Actual service/task/retirement consumers and native analysis remain pending. |
-
-The native path resumes after M0 qualification and an owned transition back to `Active`. Independent work requires a bounded re-plan like F2, with exact source scope and evidence; a `continue` request alone does not erase a Blocked state. Review actual source drift before admitting further implementation. `verify` becomes applicable only after the complete objective has actually reached `Implemented` or `Verifying`. Plan 2B stays an unselected reference, not a second implementation authority.
-
-## F2 delivered increment — September 22, 2026
-
-Baseline `43e3a78a1736539e0fd565899c1bd1c52eae9b42` incorporates the maintainer's
-F0/F1 commit. The user's explicit continuation request was admitted through
-[the F2 re-plan](reports/f2-admission.md): Blocked → Active for the independently
-verifiable internal owner, without treating the native blocker as resolved.
-F2 is now `Implemented` with scoped local evidence; the overall plan returns
-to `Blocked` because the remaining selected path is unavailable here.
-
-**Goal:** implement the real-file coordination owner for metadata registration,
-sharing, attributed notes/agreements and stable target leadership.
-**Exact writes:** [F2 admission](reports/f2-admission.md).
-**Gate exercised:** 52 new real-file/control tests and 26 existing observation
-tests pass; strict checking of their actual module closure passes with the
-available, non-pinned toolchain.
-**Changed contracts:** new internal/persisted coordination v1; one unchanged
-atomic JSON primitive extracted and re-exported for existing TaskStore consumers.
-No existing task, result, CLI, MCP or IPC schema is changed.
-**Remaining gate:** service authentication/composition, verified source/task
-linkage, operator adoption, target/ref checks, retirement reservation, native
-parsers, pinned full checks, installed host and independent review.
-**Re-plan trigger:** those consumers require new authority or transaction
-semantics not represented by this internal contract.
-
-See [internal coordination](../../coordination.md) for implemented behavior,
-[F2 verification](reports/f2-verification.md) for exact proof boundaries, and
-[the current eight-probe delta](reports/design-admission.md#f2-composed-design-delta)
-for ownership and deletion analysis. SC09–SC15 remain unsatisfied: internal
-store tests do not establish the actual user workflow. No automatic parser
-substitute, evaluator, integration operation or public stub is introduced.
-
-## F3 delivered increment — September 22, 2026
-
-**Goal:** bind source-dependent coordination commands to real repository,
-worktree, commit/ancestry and target observations while preserving authority
-and metadata recovery. **State:** Implemented, scoped local verification;
-full objective remains Blocked. **Writes:** [F3 admission](reports/f3-admission.md).
-**Gate exercised:** 42 new real-Git/control tests plus 78 retained tests pass;
-strict actual-import-closure checking passes on the available non-pinned tools.
-**Changed contract:** new internal repository command projection; persisted
-v1, task/result meanings and public CLI/MCP/IPC remain unchanged.
-**Remaining gate:** trusted host/resource composition, managed task/announcement
-linkage, operator recovery, retirement reservation, native grammars/extractors,
-full pinned checks, live host workflow, performance and independent review.
-
-[F3 verification](reports/f3-verification.md) supplies the evidence limits;
-[the F3 design delta](reports/design-admission.md#f3-composed-design-delta)
-records all eight probes. Public tools remain unregistered. Git observations
-are not source pins, live-editor fences or a cross-store transaction. Source
-loss/saturation does not disable metadata closure, revocation, settlement or
-historical receipt lookup. Plan 2B is retained unchanged and unselected.
-
-
-## F4 delivered increment — September 22, 2026
-
-**Goal:** compose repository-bound controls and the durable store into one
-service-owned metadata session with complete request/reply decoding, explicit
-authorized initialization, bounded current-authority reads, retained command
-receipts, independent control capacity and observed shutdown.
-**State:** Implemented with scoped local evidence; objective remains Blocked.
-**Writes and admission:** [F4 admission](reports/f4-admission.md).
-**Gate exercised:** 55 new tests plus 120 retained regressions pass, including
-actual Unix-socket transport in separate processes and all selected cases in a
-source path containing spaces. The compiler check uses available, non-pinned
-tools and the real selected import closure.
-**Preserved meanings:** coordination state v1, task/result records, Git code
-identity and external integration. No public command is registered.
-**Remaining gate:** actual runtime election/actor/resource authority,
-CLI/MCP projection, task linkage, source observation/parser qualification,
-notification delivery, retirement ordering, installed workflow/performance,
-full pinned checks and independent review.
-**Re-plan trigger:** the actual consumers require different permission,
-publication, capacity or lifetime facts than this tested session represents.
-
-See [F4 evidence](reports/f4-verification.md),
-[request/session contract](../../coordination.md#service-owned-metadata-session-f4)
-and [all eight design probes](reports/design-admission.md#f4-composed-design-delta).
-A fixture listener is not a production service fallback. Initialization needs a
-runtime-owned permission callback; a valid request cannot grant it. Detached
-observers do not abandon admitted operations. Metadata readiness does not imply
-parser/provider/source readiness. Plan 2B remains unselected and unchanged.
-
-
-## F5 delivered increment — September 22, 2026
-
-**Goal:** actual RepositoryRuntime composition, operator-backed initialization,
-managed-workspace exclusion, bounded request admission and observed session drain.
-**State:** Implemented with local evidence; overall acceptance remains Blocked.
-**Writes/admission:** [F5 admission](reports/f5-admission.md).
-**Gate exercised:** 54 new tests, 175 retained control/observation/transport tests
-and seven controlled coordinator foundation tests: 236 pass, zero skips/failures.
-The new resource/token/inventory import closure passes strict TypeScript 5.8.3
-checking. The full application and entire modified runtime/bootstrap type graph
-remain unavailable; no SDK/contract declarations were fabricated.
-**Preserved contracts:** metadata v1, task/result and existing public surfaces;
-one canonical token reader and unchanged inventory re-export. No public command
-is registered. Plan 2B is unchanged and unselected.
-**Remaining gate:** elected-listener authentication, CLI/MCP operations, managed
-task/announcement linkage, retirement ordering, native grammars and all language
-extractors, full pinned checks, installed host, performance and independent review.
-
-[F5 verification](reports/f5-verification.md),
-[review](reports/f5-review.md), and
-[all eight design probes](reports/design-admission.md#f5-composed-design-delta)
-record the material evidence. TaskStore inventory, lease/recovery and principals
-are explicit test seams; real metadata storage and Git are exercised. A checked
-resource observation is not process fencing or a transaction with Git refs.
-
-## F6 delivered source increment — September 22, 2026
-
-**Goal:** route one completely decoded metadata operation from an authenticated
-connection through the existing runtime; preserve request/reply identity,
-observer-independent work, and bounded protected request capacity.
-**State:** Implemented source; selected verification and complete-checkout
-elected/pinned tests pass; overall acceptance remains Blocked.
-**Write authority:** [F6 admission](reports/f6-admission.md).
-**Evidence:** [F6 verification](reports/f6-verification.md) records 25 new and
-229 retained tests, 215 removed fixture roots, real-client boundary checks,
-limited strict compilation and the elected-test import failure in the sparse
-mirror. The subsequent complete-checkout result is recorded in that report.
-**Preserved contracts:** private framing v1, coordination request/reply v1,
-operator credential policy, task/result/store meaning and external integration.
-**Remaining gate:** unproven legacy client behavior beyond the current suite,
-CLI/MCP/registration, managed announcement linkage, native extractors,
-monitoring, retirement and installed
-qualification. No public metadata or structural-report tool is registered.
-Plan 2B remains an unchanged, unselected reference.
+These increments do not satisfy the complete SC01–SC17 claims. F7 exposes only
+existing metadata operations: external work registration, attributed notes and
+cooperative target leadership. Parser-backed reports, managed task enrollment,
+announcement linkage, live monitoring and forced adoption remain unadvertised.
+Plan 2B is unchanged and unselected. Dated details remain in the linked ledger
+and reports rather than competing with current authority here.

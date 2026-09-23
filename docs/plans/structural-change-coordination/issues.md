@@ -133,3 +133,32 @@ same-user application policy, not protection from arbitrary same-UID code.
 The prior maintainer-recorded F5 full pinned success remains valid for that
 candidate only. No new baseline defect or independent external review is
 claimed from these tests.
+
+
+## F7 current dispositions — September 22, 2026
+
+| ID | Finding / owner | Disposition / remaining evidence |
+|---|---|---|
+| I-F7-01 | Public discovery and runtime validation need matching operation groups, while initialization remains operator-only. | Four closed MCP groups project and invoke the canonical decoder; direct handler/group/authority tests pass. Actual SDK schema/catalog tests remain unexecuted locally. |
+| I-F7-02 | CLI consent checked after connection could create credentials/service state for an unauthorized request. | File decoding and explicit mutation confirmation precede the connection callback. Actual handler tests prove refusal before callback; compiled-entry tests remain a required gate. |
+| I-F7-03 | A request file may be a symlink, FIFO, huge, malformed or edited during reading. | Same-handle Linux bounded reads, no-follow/nonblocking flags and observed-change checks; file/FIFO/UTF-8 tests pass. This is captured input, not an atomic-editor guarantee. |
+| I-F7-04 | The archive mirror omitted the already committed F3 path correction; first retained tests consequently failed. | Restored the exact committed `fileURLToPath` bytes and verified Git blob 61470df9aeca1cefac21911bb5b1c6700f12dab1. Not a new source fix; excluded from patch. |
+| I-F7-05 | First new tests used two incorrect existing error/status names and an incorrect Git helper call shape. | Corrected fixture expectations to canonical COORDINATION_NOT_FOUND/not_enabled and array arguments. No production behavior was weakened to satisfy tests. |
+| I-F7-06 | SDK/Zod/Vitest, native parser, full checkout and pinned type closure are absent in this environment. | Preserve blocked public-consumer/full-suite/installed/native claims; actual test files are provided, not replaced by fake packages or declarations. F6 maintainer evidence is preserved as prior-candidate evidence. |
+
+The four metadata tools do not imply structural analysis, automatic parent
+notification, managed-worker enrollment, forced adoption or code acceptance.
+No new known production defect was hidden by passing the selected tests; missing
+higher-boundary evidence is still unavailable, not declared satisfied.
+
+**I-F7-07 — test discovery:** Source review found that the repository's Vitest
+configuration selects only `tests/**/*.test.ts`, excluding the new CLI `.mjs`
+file. Added its exact path to the existing include list. This was found by
+consumer inspection, not claimed as an executed Vitest failure; actual runner
+verification remains blocked locally. Core Node tests remain outside that include.
+
+**I-F7-08 — launcher consumer:** The existing executable wrapper rejected the
+new coordinate action. Two explicit wrapper tests failed against the verified
+unchanged allowlist, then passed after adding that action. The third test
+preserves an old action and unknown-action rejection. The test receiver proves
+argv/quoting only, not the real CLI. Launcher mode remains 100755.
