@@ -1,0 +1,9 @@
+
+> muse-bridge@0.1.0 build:runtime
+> tsx scripts/build-runtime.ts --source /tmp/passeur-structural-review-source-c3a8675 --output /tmp/passeur-structural-review-artifacts
+
+{
+  "candidate": "/tmp/passeur-structural-review-artifacts/396e2491901a5de712d4f81c30663b125301b92696fe3db0334176178109c1e4",
+  "installation": "not_run",
+  "note": "Candidate construction is not installed-host compatibility evidence."
+}

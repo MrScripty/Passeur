@@ -1,0 +1,16 @@
+
+> muse-bridge@0.1.0 test:installed
+> npm run build && vitest run tests/integration/mcp-startup.test.ts tests/integration/installed-runtime.test.ts tests/integration/registration-probe.test.ts
+
+
+> muse-bridge@0.1.0 build
+> tsc -p tsconfig.json
+
+
+ RUN  v4.1.11 /media/jeremy/OrangeCream/Linux Software/repos/owned/developer-tooling/Passeur
+
+
+ Test Files  3 passed (3)
+      Tests  6 passed (6)
+   Start at  14:49:25
+   Duration  2.00s (transform 413ms, setup 0ms, import 790ms, tests 3.68s, environment 0ms)

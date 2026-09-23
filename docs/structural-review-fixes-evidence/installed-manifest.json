@@ -1,0 +1,740 @@
+{
+  "schema_version": 2,
+  "state": "installed",
+  "package_name": "muse-bridge",
+  "package_version": "0.1.0",
+  "build_id": "396e2491901a5de712d4f81c30663b125301b92696fe3db0334176178109c1e4",
+  "source_revision": "c3a8675c4c6cab457020254d267cf31de700c211",
+  "source_dirty": false,
+  "lock_sha256": "06c8800008018ab34f80a8789c1db1c34519ae5d336ba753baa77c3161810f27",
+  "source_sha256": "e9d408e705f1df32b2f02655543b73e68db611524a933e0340c5e7dc268a3f47",
+  "build_node": "v24.12.0",
+  "build_typescript": "5.9.3",
+  "build_npm": "11.6.2",
+  "platform": "linux",
+  "architecture": "x64",
+  "cli": "dist/src/cli.js",
+  "dependencies": [
+    {
+      "location": "node_modules/@hono/node-server",
+      "name": "@hono/node-server",
+      "version": "2.1.1",
+      "sha256": "347941696330d8c12044a841c9d9629a71689cab58d1f7aef34e290ae9527441"
+    },
+    {
+      "location": "node_modules/@modelcontextprotocol/sdk",
+      "name": "@modelcontextprotocol/sdk",
+      "version": "1.30.0",
+      "sha256": "3cb670198d7046530ed334e838d13ae0d020265b8d52f7a07b97952c90882db5"
+    },
+    {
+      "location": "node_modules/@muse-code/sdk",
+      "name": "@muse-code/sdk",
+      "version": "1.3.0",
+      "sha256": "5e476ad3b8533076a7c0744d3cb5a2702f0b886ffce60f736b09832bbfc77644"
+    },
+    {
+      "location": "node_modules/@types/node",
+      "name": "@types/node",
+      "version": "24.7.2",
+      "sha256": "afcf36853d929a4d9b02080cf38bfad855ba80579362727eab79084bb428bad5"
+    },
+    {
+      "location": "node_modules/accepts",
+      "name": "accepts",
+      "version": "2.0.0",
+      "sha256": "e9864d0fe39770cd11a4562613bc7914be17dbf03a5484cdbb1baf8e783c0c9f"
+    },
+    {
+      "location": "node_modules/ajv",
+      "name": "ajv",
+      "version": "8.20.0",
+      "sha256": "46f07341573ee02ad0fd16f7b28d8d2fad302241bfe52eecaaf53e67a15c134c"
+    },
+    {
+      "location": "node_modules/ajv-formats",
+      "name": "ajv-formats",
+      "version": "3.0.1",
+      "sha256": "2499cb1b0de5a06713717b77e3bf898d3347aee832238908bcb3851e41402631"
+    },
+    {
+      "location": "node_modules/body-parser",
+      "name": "body-parser",
+      "version": "2.3.0",
+      "sha256": "8777441d8b6d9e564aa2e093b9532dda8798632a3264c90e0c3bb654b77ddcdb"
+    },
+    {
+      "location": "node_modules/body-parser/node_modules/content-type",
+      "name": "content-type",
+      "version": "2.1.0",
+      "sha256": "1c838523d341c2d4de97f6bce6b1e15f20fe59e9fe00b893096f743a90a02a45"
+    },
+    {
+      "location": "node_modules/bytes",
+      "name": "bytes",
+      "version": "3.1.2",
+      "sha256": "b8318de48d40c55ccbf4eb0f0c0595b1287f4408d2d9777227736a874b79592e"
+    },
+    {
+      "location": "node_modules/call-bind-apply-helpers",
+      "name": "call-bind-apply-helpers",
+      "version": "1.0.2",
+      "sha256": "7e3e0ec9a385cb9867f6da5f439102ed9858bcd13fb734075319aaaefb8d2a6c"
+    },
+    {
+      "location": "node_modules/call-bound",
+      "name": "call-bound",
+      "version": "1.0.4",
+      "sha256": "7cbb3c19afabc4df00f019fc513c580dffeff624477103dc1554abc0c09117bd"
+    },
+    {
+      "location": "node_modules/content-disposition",
+      "name": "content-disposition",
+      "version": "1.1.0",
+      "sha256": "3b4bfd4163c99520f5941ed0f41f3a02cbaa2988e456cca2b78b9c164f6973d9"
+    },
+    {
+      "location": "node_modules/content-type",
+      "name": "content-type",
+      "version": "1.0.5",
+      "sha256": "08268219a689f1c4042aa31b05ec3f621cf8dcdaa536852a010afd287e7c0851"
+    },
+    {
+      "location": "node_modules/cookie",
+      "name": "cookie",
+      "version": "0.7.2",
+      "sha256": "c4fe7bffb567450a25c8c61155c67075d8e7e72b727623c9721643b46ccc2fd9"
+    },
+    {
+      "location": "node_modules/cookie-signature",
+      "name": "cookie-signature",
+      "version": "1.2.2",
+      "sha256": "f2c68d0e53072755417e9970ff73e47033cd9ebf90831e1088b5bedeea2a0b6e"
+    },
+    {
+      "location": "node_modules/cors",
+      "name": "cors",
+      "version": "2.8.6",
+      "sha256": "7ec03eb45624d853b22001862af314a241bd935f4330acfce9e777ac1fbdcf2e"
+    },
+    {
+      "location": "node_modules/cross-spawn",
+      "name": "cross-spawn",
+      "version": "7.0.6",
+      "sha256": "2eb690d8f6e2d3d67a1bcf557d30c6bd8f41abcab44fc5da24e14bcc9b8b274e"
+    },
+    {
+      "location": "node_modules/debug",
+      "name": "debug",
+      "version": "4.4.3",
+      "sha256": "996581640ac4ad0cf7d562467955d750beb38ddf47d0d224debef47d6aeab60b"
+    },
+    {
+      "location": "node_modules/depd",
+      "name": "depd",
+      "version": "2.0.0",
+      "sha256": "71c2dbae5469a6a4c3b30d19d13a75842647bbd5b533365fd19efc34b2def1f9"
+    },
+    {
+      "location": "node_modules/dunder-proto",
+      "name": "dunder-proto",
+      "version": "1.0.1",
+      "sha256": "7a44604828baaf3bfd3f4095ca55637d0590e5e8d9d19d252b80302843155499"
+    },
+    {
+      "location": "node_modules/ee-first",
+      "name": "ee-first",
+      "version": "1.1.1",
+      "sha256": "c0db99451a9145c7643292e9327cc445c360fe56c4bd919654517be74467e1ca"
+    },
+    {
+      "location": "node_modules/encodeurl",
+      "name": "encodeurl",
+      "version": "2.0.0",
+      "sha256": "8675116d7175823850fd7cf41bfddaecc27e431bb005ac4d41d0361df20af92a"
+    },
+    {
+      "location": "node_modules/es-define-property",
+      "name": "es-define-property",
+      "version": "1.0.1",
+      "sha256": "fede87fd2b48d6adb61a552bbc90e5fa5670c2b79a8e285788b496b1827236ed"
+    },
+    {
+      "location": "node_modules/es-errors",
+      "name": "es-errors",
+      "version": "1.3.0",
+      "sha256": "3ce1ad2e1c34ecb506dfce0c091e45004521e766be4c3e75cfa447370aaef998"
+    },
+    {
+      "location": "node_modules/es-object-atoms",
+      "name": "es-object-atoms",
+      "version": "1.1.2",
+      "sha256": "bd6ff807f4eeb72dd028f148d10c20296ef5a8e097dff7ef15be4a706be514b5"
+    },
+    {
+      "location": "node_modules/escape-html",
+      "name": "escape-html",
+      "version": "1.0.3",
+      "sha256": "6cf8ef91ad336d71b9f2bfe25967e25649509f2280873075caf37f0d75413394"
+    },
+    {
+      "location": "node_modules/etag",
+      "name": "etag",
+      "version": "1.8.1",
+      "sha256": "2e9f82577a5edfcbab6c664b6d9353e9c448ece6f3e019699d7bee4de6aba6cf"
+    },
+    {
+      "location": "node_modules/eventsource",
+      "name": "eventsource",
+      "version": "3.0.7",
+      "sha256": "1c3eca71f7f1f90af373e248464a630ac557fddba840b1c795387505029a057c"
+    },
+    {
+      "location": "node_modules/eventsource-parser",
+      "name": "eventsource-parser",
+      "version": "3.1.1",
+      "sha256": "86f34e1cbd76b2672b07846d415f4f4468a6af35e9e384a6b484ca231c4c08c1"
+    },
+    {
+      "location": "node_modules/express",
+      "name": "express",
+      "version": "5.2.1",
+      "sha256": "8503518319c3380622382a011429d79b136ea35a53a0b7dba9c7480afb3ebad8"
+    },
+    {
+      "location": "node_modules/express-rate-limit",
+      "name": "express-rate-limit",
+      "version": "8.7.0",
+      "sha256": "33db0d03b0a30ded638bdf320f8d1f52a6c8bd3f87737aadb9d726536abdc5a6"
+    },
+    {
+      "location": "node_modules/fast-deep-equal",
+      "name": "fast-deep-equal",
+      "version": "3.1.3",
+      "sha256": "3f4d540e095c8e8b98ddbe82d13e0c413e06fb83bc59efdca8c009345837298c"
+    },
+    {
+      "location": "node_modules/fast-uri",
+      "name": "fast-uri",
+      "version": "3.1.8",
+      "sha256": "86b80fd15fb07fe6e23d2d7111db4fe13f5aeac50842d753d2ebcfb81023412b"
+    },
+    {
+      "location": "node_modules/finalhandler",
+      "name": "finalhandler",
+      "version": "2.1.1",
+      "sha256": "347acf583472c4d85ee7aec458636c52efd6bdd78b6626eeb509435ca50b5ee2"
+    },
+    {
+      "location": "node_modules/forwarded",
+      "name": "forwarded",
+      "version": "0.2.0",
+      "sha256": "5ddc5fa90dbd346b28c8bcafac15bc17f1a749cdee47e33c008218f646a531b2"
+    },
+    {
+      "location": "node_modules/fresh",
+      "name": "fresh",
+      "version": "2.0.0",
+      "sha256": "7b72d1e05481e69eff2f69f8a8d0530c063886183c2addec4927d19bb38fc2c2"
+    },
+    {
+      "location": "node_modules/function-bind",
+      "name": "function-bind",
+      "version": "1.1.2",
+      "sha256": "47090ec64ac9a64d440d1f07a53a23f37bdf4e46badfbe83f00af39405287709"
+    },
+    {
+      "location": "node_modules/get-intrinsic",
+      "name": "get-intrinsic",
+      "version": "1.3.0",
+      "sha256": "45d357c708bee9eca9e4545e8458730ee949a94d1f7793ac6338df05ab456d60"
+    },
+    {
+      "location": "node_modules/get-proto",
+      "name": "get-proto",
+      "version": "1.0.1",
+      "sha256": "bbd11447c36ceeb420e11d77215c03bbd4cbc814e9dc53190754a1b014af8736"
+    },
+    {
+      "location": "node_modules/gopd",
+      "name": "gopd",
+      "version": "1.2.0",
+      "sha256": "1a929909fd6f698f16807833364d2c0151de5d30339538e640754ee44deb8f79"
+    },
+    {
+      "location": "node_modules/graceful-fs",
+      "name": "graceful-fs",
+      "version": "4.2.11",
+      "sha256": "774fb0234feb71a40533bd50562da4025b7fbb9b5ed7ac395c3cd1daaac153ed"
+    },
+    {
+      "location": "node_modules/has-symbols",
+      "name": "has-symbols",
+      "version": "1.1.0",
+      "sha256": "d98c161da2f2d71fb553ad7410ace65f6b461711e1b4f7875b3e42c904e425d2"
+    },
+    {
+      "location": "node_modules/hasown",
+      "name": "hasown",
+      "version": "2.0.4",
+      "sha256": "c836c9b726ce0a93bae455d08f55152113cfd9ee74c652d62e6916c3157be620"
+    },
+    {
+      "location": "node_modules/hono",
+      "name": "hono",
+      "version": "4.13.8",
+      "sha256": "4dbdb92ae91253124e46924041d3b57e0cc82f34b7c02c620ef2c6356b66861e"
+    },
+    {
+      "location": "node_modules/http-errors",
+      "name": "http-errors",
+      "version": "2.0.1",
+      "sha256": "9ce2462c1e913540f569d13c356c21951d671e6155d9cd4d0e358c69c2df799e"
+    },
+    {
+      "location": "node_modules/iconv-lite",
+      "name": "iconv-lite",
+      "version": "0.7.3",
+      "sha256": "b3086fc91088b7e056b20f91f1723a4a5cb1c2468c3ca1cf14e6b94fbf027313"
+    },
+    {
+      "location": "node_modules/inherits",
+      "name": "inherits",
+      "version": "2.0.4",
+      "sha256": "c03bc9d9a8fd63a860cc136821dd265c04f076cc6a668cb84f64aa9fb77e15e1"
+    },
+    {
+      "location": "node_modules/ip-address",
+      "name": "ip-address",
+      "version": "10.7.2",
+      "sha256": "36f1605568681111c767a1e103e9eb874e421c780b0954d8e417cd08100e09f2"
+    },
+    {
+      "location": "node_modules/ipaddr.js",
+      "name": "ipaddr.js",
+      "version": "1.9.1",
+      "sha256": "ebef425cb7c0ec717712e287066c2025cd953bec596d0ec3e4e24fa7e81113d9"
+    },
+    {
+      "location": "node_modules/is-promise",
+      "name": "is-promise",
+      "version": "4.0.0",
+      "sha256": "ca9b3fa0ff17390f7acd09df736e38644f8f58a18b17fede9a35e3d7c09365e8"
+    },
+    {
+      "location": "node_modules/isexe",
+      "name": "isexe",
+      "version": "2.0.0",
+      "sha256": "c5b4ecd362bddeecdbe5ab9e398b39a22e77f350e1158535436830f10cf35122"
+    },
+    {
+      "location": "node_modules/jose",
+      "name": "jose",
+      "version": "6.2.12",
+      "sha256": "24f65d5f4590eb848a4dcce9fde0891f48a52f94d30f7c30cc4e2ca8bfbe0b9c"
+    },
+    {
+      "location": "node_modules/json-schema-traverse",
+      "name": "json-schema-traverse",
+      "version": "1.0.0",
+      "sha256": "9b9b017d11725035b5dae5bb4da95a7a43a551e5bf4e3fa92cda21864565f6af"
+    },
+    {
+      "location": "node_modules/json-schema-typed",
+      "name": "json-schema-typed",
+      "version": "8.0.2",
+      "sha256": "9d8f225ddd2d08a2e2e0fd18476ceb8d1ff2a8703a2c809cf3edc9f49d39584d"
+    },
+    {
+      "location": "node_modules/math-intrinsics",
+      "name": "math-intrinsics",
+      "version": "1.1.0",
+      "sha256": "4ddc0bfaa2453748eeb3023c0b545ca15480b1c75335182b6b189483f3b9807a"
+    },
+    {
+      "location": "node_modules/media-typer",
+      "name": "media-typer",
+      "version": "1.1.1",
+      "sha256": "9d5e2abf0ed9d482f622430f5fee4f6ebe8fe49bdaf78dad7d627096226355db"
+    },
+    {
+      "location": "node_modules/merge-descriptors",
+      "name": "merge-descriptors",
+      "version": "2.0.0",
+      "sha256": "9a3b403c5d02d34687ad49527c65a6da3c7b2d45d7f32ca04f48d623ee308234"
+    },
+    {
+      "location": "node_modules/mime-db",
+      "name": "mime-db",
+      "version": "1.54.0",
+      "sha256": "32c1f85e0600f8e41251260c7e1fdb80f1b3cf40c7edb3386418cf3269cd0a95"
+    },
+    {
+      "location": "node_modules/mime-types",
+      "name": "mime-types",
+      "version": "3.0.2",
+      "sha256": "2987504bc7b4c63056549810b0f0acb3404158f03069b4c465905054467c37de"
+    },
+    {
+      "location": "node_modules/ms",
+      "name": "ms",
+      "version": "2.1.3",
+      "sha256": "2472172d61ca7a7178fd1592af59fc13062745f6e2d5baf872d20255f6338ee9"
+    },
+    {
+      "location": "node_modules/negotiator",
+      "name": "negotiator",
+      "version": "1.1.0",
+      "sha256": "3185420c66807a721cd845392b88cd26e1cf13e518f18268da89b66738263407"
+    },
+    {
+      "location": "node_modules/negotiator/node_modules/content-type",
+      "name": "content-type",
+      "version": "2.1.0",
+      "sha256": "1c838523d341c2d4de97f6bce6b1e15f20fe59e9fe00b893096f743a90a02a45"
+    },
+    {
+      "location": "node_modules/node-addon-api",
+      "name": "node-addon-api",
+      "version": "8.9.2",
+      "sha256": "f85bdd0682a350c62dea828209f2480aae69fc6d6c81455c700a762fbb95b167"
+    },
+    {
+      "location": "node_modules/node-gyp-build",
+      "name": "node-gyp-build",
+      "version": "4.8.4",
+      "sha256": "52c73f057175cf2fbe23ab1f18aa6ad6694910af0b0083009602e6c4822e0edf"
+    },
+    {
+      "location": "node_modules/object-assign",
+      "name": "object-assign",
+      "version": "4.1.1",
+      "sha256": "2bfff0a7b8b7bd81182443f9eee53028180b0a63bf75582a534f9b7d83e74db5"
+    },
+    {
+      "location": "node_modules/object-inspect",
+      "name": "object-inspect",
+      "version": "1.13.4",
+      "sha256": "771ad5e3904da5c35c71a3a3a95b6e83c4fd550c24c5c47e2734624fb85a4931"
+    },
+    {
+      "location": "node_modules/on-finished",
+      "name": "on-finished",
+      "version": "2.4.1",
+      "sha256": "86da6566c015d7637466f9ac2215dc87ff27579c21e38ccd92ceebe64ea827ab"
+    },
+    {
+      "location": "node_modules/once",
+      "name": "once",
+      "version": "1.4.0",
+      "sha256": "64d25fb676f23d392b4bfb8e01e5dcec17689b815c7415a996a6948b04b4d336"
+    },
+    {
+      "location": "node_modules/parseurl",
+      "name": "parseurl",
+      "version": "1.3.3",
+      "sha256": "eaba807509f0a9f3231af6e78c817f82cbb934ec88f497251b54861f3bf10782"
+    },
+    {
+      "location": "node_modules/path-key",
+      "name": "path-key",
+      "version": "3.1.1",
+      "sha256": "bb5b50909437c10b11e8daeeba280f9f90ee3b9c0b3b2d4385d63476d18195c4"
+    },
+    {
+      "location": "node_modules/path-to-regexp",
+      "name": "path-to-regexp",
+      "version": "8.4.2",
+      "sha256": "25d2f7351af33ef377733e47005ce57eab427563560d7f0124456cca8a26d29a"
+    },
+    {
+      "location": "node_modules/pkce-challenge",
+      "name": "pkce-challenge",
+      "version": "5.0.1",
+      "sha256": "87adb4170a52f1272f52f53ebf66261692e9727c7d9e47f426e82b57052ccf6c"
+    },
+    {
+      "location": "node_modules/proper-lockfile",
+      "name": "proper-lockfile",
+      "version": "4.1.2",
+      "sha256": "882e637a622be14ca5106cc5a5c6d1a3926527746705f8abc1cc53b203c11e2f"
+    },
+    {
+      "location": "node_modules/proxy-addr",
+      "name": "proxy-addr",
+      "version": "2.0.8",
+      "sha256": "25dd501ee74f2ae0d4a5e29fb131c5226e53d2213decee578605424c2a7499f6"
+    },
+    {
+      "location": "node_modules/qs",
+      "name": "qs",
+      "version": "6.16.0",
+      "sha256": "0571993fd749082cbcc45c4e3822c05402f4c86c9f8770ed9a154e4c57d26ce3"
+    },
+    {
+      "location": "node_modules/range-parser",
+      "name": "range-parser",
+      "version": "1.3.0",
+      "sha256": "03b2e8cc6a35b4e3264ee3635b8d5a829ec15b157c0249df95d9fdceaef38a4b"
+    },
+    {
+      "location": "node_modules/raw-body",
+      "name": "raw-body",
+      "version": "3.0.2",
+      "sha256": "afd4034daaf65d30cad8080a436060cf918c9903ce4889b967a4e46eca37c55b"
+    },
+    {
+      "location": "node_modules/require-from-string",
+      "name": "require-from-string",
+      "version": "2.0.2",
+      "sha256": "55f380a9ad3b2cf363dcc8d3096f9c45c2a8e39de296b333021a9a33b58ffc3b"
+    },
+    {
+      "location": "node_modules/retry",
+      "name": "retry",
+      "version": "0.12.0",
+      "sha256": "9cb0f517c0c06476be42d534a1d97ffbb748f3bc7f8a2aae6896539046d6941c"
+    },
+    {
+      "location": "node_modules/router",
+      "name": "router",
+      "version": "2.2.0",
+      "sha256": "3a6637f61688850032fbd43ca2a94a57ef069b285fe85c2188c9e8ad70931ad6"
+    },
+    {
+      "location": "node_modules/safer-buffer",
+      "name": "safer-buffer",
+      "version": "2.1.2",
+      "sha256": "a927fdb18abd001eff017e5c1d917d9b6f3b5ea222ffbeeaee024a245afa40e2"
+    },
+    {
+      "location": "node_modules/send",
+      "name": "send",
+      "version": "1.2.1",
+      "sha256": "f3df78661bb358a6c1680a28ebab305d11ba2c5ec8910645e34715f75f87dce7"
+    },
+    {
+      "location": "node_modules/serve-static",
+      "name": "serve-static",
+      "version": "2.2.1",
+      "sha256": "c0b7e8ff5e9ec81c95af4a29af0de16eb76f7664e982cb747bea63f0f0fee7f6"
+    },
+    {
+      "location": "node_modules/setprototypeof",
+      "name": "setprototypeof",
+      "version": "1.2.0",
+      "sha256": "4cab7e9cf52923025ed55fbc67b940507e297fc02759ee115dcbbce7c40e5771"
+    },
+    {
+      "location": "node_modules/shebang-command",
+      "name": "shebang-command",
+      "version": "2.0.0",
+      "sha256": "ae9274a5128c13b3be95bd5790402406e5ff926a35098909fda188387490e371"
+    },
+    {
+      "location": "node_modules/shebang-regex",
+      "name": "shebang-regex",
+      "version": "3.0.0",
+      "sha256": "2e015000b570b7f078dd5733954544e8a547ce75aa1bfbeffb4c7a22fd868969"
+    },
+    {
+      "location": "node_modules/side-channel",
+      "name": "side-channel",
+      "version": "1.1.1",
+      "sha256": "cbd26efaefd58115e08bf2c4d5b290ced90e6eabdd3cc91f843cf0a71b6673e9"
+    },
+    {
+      "location": "node_modules/side-channel-list",
+      "name": "side-channel-list",
+      "version": "1.0.1",
+      "sha256": "4119c9e1490e74a929709c765d1d550b01315b4a9579431c7ee70c0c6459884f"
+    },
+    {
+      "location": "node_modules/side-channel-map",
+      "name": "side-channel-map",
+      "version": "1.0.1",
+      "sha256": "f2bdd63232e3ec514180881cee4063b1a495691a30acf5ca16a3ee587794c6fa"
+    },
+    {
+      "location": "node_modules/side-channel-weakmap",
+      "name": "side-channel-weakmap",
+      "version": "1.0.2",
+      "sha256": "bc5f468c175f55713e1dbfe359c9883efd338f1a3f7510d8f3fa792a90eebd03"
+    },
+    {
+      "location": "node_modules/signal-exit",
+      "name": "signal-exit",
+      "version": "3.0.7",
+      "sha256": "3b610925c0c6a65e7fe9bbe73f2359e728595aadd994d7776d8709ba3571c884"
+    },
+    {
+      "location": "node_modules/smol-toml",
+      "name": "smol-toml",
+      "version": "1.8.0",
+      "sha256": "83cadae8bef9caeb79e69689c23b8747dcc1250aa44e6e0100629f70ea87d3ad"
+    },
+    {
+      "location": "node_modules/statuses",
+      "name": "statuses",
+      "version": "2.0.2",
+      "sha256": "dd0aa0528c1ddfaf77992637980a7c78a1b407d94153def4d10fe7e39b3267f0"
+    },
+    {
+      "location": "node_modules/toidentifier",
+      "name": "toidentifier",
+      "version": "1.0.1",
+      "sha256": "62f8f6f9590aab77c8676590bf741f0fc0b42eab7ec20c736ecff59134920f27"
+    },
+    {
+      "location": "node_modules/tree-sitter",
+      "name": "tree-sitter",
+      "version": "0.25.1",
+      "sha256": "af7cdf32f7a209b4cc025da204ef8d39eec0f807a7d0698dfbe2f1b4353d795a"
+    },
+    {
+      "location": "node_modules/type-is",
+      "name": "type-is",
+      "version": "2.1.0",
+      "sha256": "9dcc519db4bda48db56d8907e75bdb4a5c749f061e36d59ecf993a5e46dedce0"
+    },
+    {
+      "location": "node_modules/type-is/node_modules/content-type",
+      "name": "content-type",
+      "version": "2.1.0",
+      "sha256": "1c838523d341c2d4de97f6bce6b1e15f20fe59e9fe00b893096f743a90a02a45"
+    },
+    {
+      "location": "node_modules/undici-types",
+      "name": "undici-types",
+      "version": "7.14.0",
+      "sha256": "843b18dfedc240ca961f7a213bed308b76a17d8beb06c293fbef423867923f36"
+    },
+    {
+      "location": "node_modules/unpipe",
+      "name": "unpipe",
+      "version": "1.0.0",
+      "sha256": "5b0e59b23216c5fce525ac30b45416a72c29c37630b5bec292a36020c09adfce"
+    },
+    {
+      "location": "node_modules/vary",
+      "name": "vary",
+      "version": "1.1.2",
+      "sha256": "14115a8bb78dcfb0ba2012be0c9ed92bb350375c6ceca07b9c481ca79e1bf012"
+    },
+    {
+      "location": "node_modules/which",
+      "name": "which",
+      "version": "2.0.2",
+      "sha256": "a502f6dedc7812d6f17f0a0a2e6b2f0f8112a586337a362d5a483e6525fa1070"
+    },
+    {
+      "location": "node_modules/wrappy",
+      "name": "wrappy",
+      "version": "1.0.2",
+      "sha256": "b921a2e23108af71e7c954b9c7b2bc893d8f7f48e04854d3c1870009655c966f"
+    },
+    {
+      "location": "node_modules/zod",
+      "name": "zod",
+      "version": "4.1.11",
+      "sha256": "261a9b1f22b62578582da3dbf38c6a6a603cd0e6d55cc836a555ef5531f9404e"
+    },
+    {
+      "location": "node_modules/zod-to-json-schema",
+      "name": "zod-to-json-schema",
+      "version": "3.25.2",
+      "sha256": "093bddf0652740e05090c9afeed31f754e4882d6f6bf34080edc9e5fc40fbb06"
+    }
+  ],
+  "sbom": "sbom.cdx.json",
+  "compiled_sha256": "0e3bd0b91d3786df7f4dec47acbedecfd0cc63f71c952972fb661a8816a3a117",
+  "node_abi": "137",
+  "napi": "10",
+  "libc": "glibc-2.39",
+  "parser_artifacts": [
+    {
+      "location": "node_modules/tree-sitter-rust",
+      "name": "tree-sitter-rust",
+      "version": "0.24.2",
+      "source_pin": "file:vendor/native-grammars/tree-sitter-rust-0.24.2.tgz#sha512-vWKw9ZCuefK60HkuICNG56LfRqWp1ZnlVe/Qe1ET5lrlIMzFy2B28V9Z8TkYOY/wg8mBcHhsnmm79FbnmDBYZw==",
+      "sha256": "6eb91995f8402be8c3dafc85577ec5df4eabb58ceffc60eda5a877377b39cd7c"
+    },
+    {
+      "location": "node_modules/tree-sitter-typescript",
+      "name": "tree-sitter-typescript",
+      "version": "0.23.2",
+      "source_pin": "https://registry.npmjs.org/tree-sitter-typescript/-/tree-sitter-typescript-0.23.2.tgz#sha512-e04JUUKxTT53/x3Uq1zIL45DoYKVfHH4CZqwgZhPg5qYROl5nQjV+85ruFzFGZxu+QeFVbRTPDRnqL9UbU4VeA==",
+      "sha256": "1c3e31f1e8050ed4195ea1652bf79d75b242b61685eaa4ccea116ba581f879a7"
+    },
+    {
+      "location": "node_modules/tree-sitter-javascript",
+      "name": "tree-sitter-javascript",
+      "version": "0.25.0",
+      "source_pin": "https://registry.npmjs.org/tree-sitter-javascript/-/tree-sitter-javascript-0.25.0.tgz#sha512-1fCbmzAskZkxcZzN41sFZ2br2iqTYP3tKls1b/HKGNPQUVOpsUxpmGxdN/wMqAk3jYZnYBR1dd/y/0avMeU7dw==",
+      "sha256": "907045cf7579e289f6016c650d6a117b8ef695d94f358905223591f8b64361cb"
+    },
+    {
+      "location": "node_modules/tree-sitter-python",
+      "name": "tree-sitter-python",
+      "version": "0.25.0",
+      "source_pin": "file:vendor/native-grammars/tree-sitter-python-0.25.0.tgz#sha512-n0Tc99g4dooGpX9biOcxwUpfFtTKCJQ4U6wA4WkPi3YtBvbk8nWn2NBkekIGM2SwtV6Sn+TZtVOHCB1wIbieoA==",
+      "sha256": "c221b87a1acbd9bddbb9de7e063deaf9aef0e2816da86ba73a25806b03796a67"
+    },
+    {
+      "location": "node_modules/@tree-sitter-grammars/tree-sitter-lua",
+      "name": "@tree-sitter-grammars/tree-sitter-lua",
+      "version": "0.4.1",
+      "source_pin": "https://registry.npmjs.org/@tree-sitter-grammars/tree-sitter-lua/-/tree-sitter-lua-0.4.1.tgz#sha512-EwagFaU6ZveVk18/Y8qUhZkkiBKnQ7dSCHbm//TUroLVKy3i1rOYGy/cNHtSkAb1eDvS1HhCLybH2S541Cya/g==",
+      "sha256": "73f036003cf1286b7a419f62e3b1520f94423874de6161e5b74f67ec00124d9e"
+    },
+    {
+      "location": "node_modules/@tree-sitter-grammars/tree-sitter-kotlin",
+      "name": "@tree-sitter-grammars/tree-sitter-kotlin",
+      "version": "1.1.0",
+      "source_pin": "file:vendor/native-grammars/tree-sitter-grammars-tree-sitter-kotlin-1.1.0.tgz#sha512-aPTRBQwTGHwLWK/rESRcRUy+T7ELlKGwztOvcTYn2fyXIiaviBWDpzJCjzC8L4GPff1+GgAePza5Rq+cY+TH/g==",
+      "sha256": "2e6e1a19fd39a1ee68ba05741ca8459bdfb21c65c29b61377828c578e0035a4f"
+    },
+    {
+      "location": "node_modules/tree-sitter-zig",
+      "name": "tree-sitter-zig",
+      "version": "1.1.2",
+      "source_pin": "https://codeload.github.com/tree-sitter-grammars/tree-sitter-zig/tar.gz/6479aa13f32f701c383083d8b28360ebd682fb7d#sha512-oF0MSpxVoHzqNINRoc7NwhoKH/2dQPIM2ym0zWHh87cn8LMcVgo0qet4oK7Xj82dSHGhB2VTwU6LmoLRN4njPw==",
+      "sha256": "875004acf72a2631b0a16333ab3cd6a777e106ceb138ba67ad62c6ec9d1feebc"
+    },
+    {
+      "location": "node_modules/tree-sitter-c-sharp",
+      "name": "tree-sitter-c-sharp",
+      "version": "0.23.5",
+      "source_pin": "file:vendor/native-grammars/tree-sitter-c-sharp-0.23.5.tgz#sha512-uVxOz5XBA8c4jpg/+VyGt6J74lwvggbZdOueBk164Hdl91OTaszQ4/PHMX66NfHcLtLH+JpVkFdHAjwZFjo6yg==",
+      "sha256": "b7ff87af8b55b65c8bb48ece3af72b13645667fccc0090f41ce929ce0ffcc122"
+    },
+    {
+      "location": "node_modules/tree-sitter-c",
+      "name": "tree-sitter-c",
+      "version": "0.24.2",
+      "source_pin": "file:vendor/native-grammars/tree-sitter-c-0.24.2.tgz#sha512-+vjc2RrNFmt6vN5CbVpS8G+4ShEWX09NYQrUEMj0VJbzrXnaFOrWtrq0kXUc3ZTppDuwbRP7NVRpO6woRvBlmQ==",
+      "sha256": "453285c94a7a9fa58aa51bb09704ceafaed3f3c5f22329bc1f4ffcf07f63cad8"
+    },
+    {
+      "location": "node_modules/tree-sitter-cpp",
+      "name": "tree-sitter-cpp",
+      "version": "0.23.4",
+      "source_pin": "file:vendor/native-grammars/tree-sitter-cpp-0.23.4.tgz#sha512-6hMQMF7uuOVNelGtBeBWciLjqIXjMJRW3mvXW+UbiZ3miUN6iw18nhmKxx0t+wDo548fRFxCW+Aq/UGP/X+Heg==",
+      "sha256": "014ed2906ad3eac641b01abad6d24d2c605814033ef9eaa1f679fbd77ccd72d7"
+    },
+    {
+      "location": "node_modules/tree-sitter-odin",
+      "name": "tree-sitter-odin",
+      "version": "1.3.0",
+      "source_pin": "https://registry.npmjs.org/tree-sitter-odin/-/tree-sitter-odin-1.3.0.tgz#sha512-Iop/NTLacWNsWzUV+FCW1AxV+6yDUPsYVz3LqqSkMfWpqL4hwYdKzOk+i0v5K14pFEe6DCb0YPSnaC0IPm43fQ==",
+      "sha256": "354ec618244d6e83ca03fc198746d20916a6c06680bc4be0db7849e0a9368ed0"
+    },
+    {
+      "location": "node_modules/@tree-sitter-grammars/tree-sitter-svelte",
+      "name": "@tree-sitter-grammars/tree-sitter-svelte",
+      "version": "1.0.2",
+      "source_pin": "https://registry.npmjs.org/@tree-sitter-grammars/tree-sitter-svelte/-/tree-sitter-svelte-1.0.2.tgz#sha512-akTvS9ClVhKDf5GtYgcTdPEssMd5TAC/f+TW3nKazVwAmuzUOOHyXz6L2soBF80NmpYhKy4oBBfoba5Yfq10lg==",
+      "sha256": "5c3da8726ecfd43b44d4bb90a41e82f5b299c4a65b1311e321565631ebc9ef7e"
+    }
+  ]
+}

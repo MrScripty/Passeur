@@ -144,6 +144,32 @@ selectors now precede event hints, non-source hints do not consume priority
 capacity, and the global priority set remains capped at 256. The reviewer
 confirmed those repairs and reported no further actionable finding.
 
-Clean installed qualification and any deployment decision remain separate from
-these source results. The archive authoring environment did not alter a user
-worktree, account, installed runtime or personal registration.
+## Clean installed qualification
+
+The committed source `c3a8675c4c6cab457020254d267cf31de700c211` built and
+installed as `396e2491901a5de712d4f81c30663b125301b92696fe3db0334176178109c1e4`
+with `source_dirty:false`. The [manifest](structural-review-fixes-evidence/installed-manifest.json)
+and [build log](structural-review-fixes-evidence/build.log) record its exact inputs.
+The [source-hidden installed probe](structural-review-fixes-evidence/installed-probe.json)
+passed 30 suffix routes, 106 independently authored public oracles, 13 canonical
+and 21 variant native oracles; it verified separate network/PID namespaces and
+no development source visible to the child. The [installed startup gates](structural-review-fixes-evidence/test-installed.log)
+passed six cases.
+
+Three existing test files were also run with only their production import paths
+redirected to this installed artifact: [compact receipts/pages, native TypeScript
+and TSX defaults, and a 270-file real-Git watcher/inventory](structural-review-fixes-evidence/installed-targeted.log).
+Those direct module checks do not claim source-hidden service execution. Separately,
+the actual installed stdio MCP endpoint [created and retrieved](structural-review-fixes-evidence/installed-mcp-pages.json)
+a 30,733-byte assignment in eight bounded pages, preserved its retry receipt,
+and refused an invalid continuation. Its disposable Git fixture and service were
+stopped and removed after the run.
+
+This follow-up did not redeploy Passeur, rerun live coding workers, or remeasure
+representative CPU, memory and control latency on the newly reachable large
+scope. The installed package is qualified for the named checks above; those
+unrun claims remain open for any deployment or wider performance assertion.
+The clean build checkout was disposable; the artifact and installed package are
+retained under `/tmp/passeur-structural-review-artifacts` and
+`/tmp/passeur-structural-review-installed` for review. No user worktree, account
+or personal registration was changed.
