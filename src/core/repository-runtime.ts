@@ -1501,8 +1501,12 @@ export class RepositoryRuntime {
       const release = this.#reserveTaskAssociation(taskId);
       try {
         const { acknowledgeStoppedTask } = await import("./recovery.js");
-        if (this.#coordinator?.isActive(taskId)) throw new BridgeError("TASK_ACTIVE", "A live task cannot be reconciled as stopped");
-        await acknowledgeStoppedTask(this.#store!, taskId, owner, reason);
+        await this.#controls!.withTaskMutation(taskId, async () => {
+          this.#assertOpen(); this.#assertAuthority();
+          await this.#authorizeCoordinationOperator(actor.owner_id, "recovery");
+          if (this.#coordinator?.isActive(taskId)) throw new BridgeError("TASK_ACTIVE", "A live task cannot be reconciled as stopped");
+          await acknowledgeStoppedTask(this.#store!, taskId, owner, reason);
+        });
         const remaining = await this.#store!.frozenReason();
         this.#phase = remaining ? "frozen" : "ready";
         this.#failure = remaining ? diagnosticInfo(new BridgeError("PROJECT_NEEDS_RECONCILIATION", remaining)) : undefined;

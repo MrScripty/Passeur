@@ -37,6 +37,10 @@ export class TaskControls {
   readonly #waiters = new Map<string, Set<Waiter>>();
   #waiting = 0;
   constructor(readonly store: ControlStore, public maxWaiters: number, public maxReceipts: number) {}
+  async withTaskMutation<T>(id: string, mutation: () => Promise<T>): Promise<T> {
+    try { return await this.#locks.run(id, mutation); }
+    finally { for (const waiter of this.#waiters.get(id) ?? []) waiter.resolve(); }
+  }
   async change<T>(id: string, change: (draft: TaskControl) => T): Promise<T> {
     const result = await this.#locks.run(id, async () => {
       const old = await this.store.readControl(id), draft = structuredClone(old);

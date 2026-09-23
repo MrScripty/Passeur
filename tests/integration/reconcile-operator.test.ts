@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "vitest";
-import { fixture } from "../fixtures/bridge.js";
+import { deferred, fixture } from "../fixtures/bridge.js";
 import { RepositoryRuntime, resolveRepositoryBinding } from "../../src/core/repository-runtime.js";
 import { baseResult } from "../../src/core/result.js";
 import { operatorToken } from "../../src/service/operator-token.js";
@@ -59,6 +59,54 @@ test("an offline operator reconciles a departed task owner without gaining task 
     await assert.rejects(runtime.reconcile(cancelled.task_id, "operator", "Stale operator identity", operator),
       { code: "COORDINATION_RECOVERY_FORBIDDEN" });
   } finally {
+    await runtime?.shutdown();
+    await f.dispose();
+  }
+});
+
+test("reconciliation serializes its control write with a reconnecting owner's cancellation", async () => {
+  const f = await fixture();
+  const intent = { project: f.root, stateRoot: f.state };
+  const gate = deferred(), writingResult = deferred();
+  let runtime: RepositoryRuntime | undefined;
+  try {
+    const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
+    const token = await operatorToken(binding, true);
+    assert.ok(token);
+    const operator = { owner_id: createHash("sha256").update(token).digest("hex"), client_id: randomUUID() };
+    class PausedStore extends TaskStore {
+      override async writeResult(...args: Parameters<TaskStore["writeResult"]>): Promise<void> {
+        writingResult.resolve();
+        await gate.promise;
+        return super.writeResult(...args);
+      }
+    }
+    const store = new PausedStore(binding.storeRoot);
+    await store.initialize();
+    const record = f.admission(f.request("reconcile-cancel-race"));
+    const control = f.initial(record.task_id);
+    control.phase = "active";
+    control.native.state = "observed_live";
+    await store.create(record, control);
+    runtime = new RepositoryRuntime(intent, { package_version: "fixture", build_id: "fixture", mode: "development",
+      node_version: process.version, node_executable: process.execPath, pid: process.pid, started_at: new Date().toISOString() },
+    { store: () => store, legacyRoots: async () => [] });
+
+    const reconciliation = runtime.reconcile(record.task_id, "operator", "Confirmed the worker process tree stopped", operator);
+    await writingResult.promise;
+    const cancellation = runtime.cancelTask(record.task_id, f.owner, control.control_generation,
+      "reconnected-owner-cancel", "Owner cancelled after reconnect");
+    const whilePaused = await Promise.race([cancellation.then(() => "settled"),
+      new Promise<string>(resolve => setTimeout(() => resolve("waiting"), 100))]);
+    assert.equal(whilePaused, "waiting");
+    gate.resolve();
+    await reconciliation;
+    await cancellation;
+    const saved = await store.readControl(record.task_id);
+    assert.ok(saved.receipts.some(receipt => receipt.operation_key === "reconnected-owner-cancel"));
+    assert.equal(saved.phase, "terminal");
+  } finally {
+    gate.resolve();
     await runtime?.shutdown();
     await f.dispose();
   }
