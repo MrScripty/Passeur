@@ -76,12 +76,22 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
     if (!parsed.success) throw new BridgeError("SERVICE_ARGUMENT_INVALID", "The operation payload does not satisfy its complete contract");
     const args = parsed.data;
     const actor = peer.actor!;
-    if (draining && (operation === "submit" || operation === "submit_batch" || operation === "prepare")) throw new BridgeError("SERVICE_DRAINING", "Service admission is closed; existing tasks can still be observed and controlled");
+    if (draining && (operation === "submit" || operation === "submit_batch" || operation === "submit_coordinated" || operation === "announce" || operation === "prepare")) throw new BridgeError("SERVICE_DRAINING", "Service admission is closed; existing tasks can still be observed and controlled");
     switch (operation) {
       case "status": return status();
       case "prepare": await runtime.prepare(signal); return status();
       case "agents": { const a = args as Arguments<"agents">; return runtime.agents(a.offset, a.limit); }
       case "submit": { const a = args as Arguments<"submit">; return { kind: "accepted", task: await runtime.submit(a.assignment, actor, peer.source!, signal) }; }
+      case "submit_coordinated": { const a = args as Arguments<"submit_coordinated">;
+        return { kind: "accepted", task: await runtime.submitCoordinated(a, actor, peer.source!, signal) }; }
+      case "announce": { const a = args as Arguments<"announce">;
+        return runtime.announce(a, actor, peer.source!, signal); }
+      case "announcement": { const a = args as Arguments<"announcement">;
+        return runtime.announcement(a.id, actor, peer.source!, signal); }
+      case "withdraw_announcement": { const a = args as Arguments<"withdraw_announcement">;
+        return runtime.withdrawAnnouncement(a.id, a.expected_revision, a.operation_key, actor, peer.source!); }
+      case "preflight": { const a = args as Arguments<"preflight">;
+        return runtime.preflightCoordinated(a, actor, peer.source!, signal); }
       case "submit_batch": {
         const a = args as Arguments<"submit_batch">, results = [];
         for (const assignment of a.assignments) {
@@ -119,6 +129,14 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
         const a = args as Arguments<"structural_detail">;
         return runtime.structuralDetail(a.work_id, a.report_id, a.side, a.start_byte, a.end_byte, actor, signal);
       }
+      case "structural_refresh": { const a = args as Arguments<"structural_refresh">; return runtime.structuralRefresh(a.work_id, actor, signal); }
+      case "structural_observation_status": { const a = args as Arguments<"structural_observation_status">; return runtime.structuralObservationStatus(a.work_id, actor); }
+      case "structural_notice_pull": { const a = args as Arguments<"structural_notice_pull">; return runtime.structuralNoticePull(actor, a.cursor, signal); }
+      case "structural_notice_ack": { const a = args as Arguments<"structural_notice_ack">; return runtime.structuralNoticeAck(actor, a.notice_id); }
+      case "structural_current": return runtime.structuralCurrent(actor);
+      case "structural_artifact_report": { const a = args as Arguments<"structural_artifact_report">; return runtime.structuralArtifactReport(actor, a.artifact_id); }
+      case "structural_artifact_detail": { const a = args as Arguments<"structural_artifact_detail">;
+        return runtime.structuralArtifactDetail(actor, a.artifact_id, a.side, a.start_byte, a.end_byte); }
       case "finalize": {
         const a = args as Arguments<"finalize">;
         for (const op of a.operations) await runtime.authorizeTask(op.task_id, actor);

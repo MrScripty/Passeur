@@ -1,0 +1,25 @@
+{
+  "input_declarations": [
+    ["class_declaration", "Box", [], "<attribute>\nclass Box<T>(val item: T)", 14, 144],
+    ["function_declaration", "get", ["Box"], "fun get(fallback: T = <default>): T", 75, 116],
+    ["property_declaration", "current", ["Box"], "val current: T = <default>", 121, 142],
+    ["function_declaration", "repeat2", [], "fun String.repeat2(times: Int = <default>): String", 146, 222],
+    ["type_alias", "Names", [], "typealias Names = List<String>", 224, 254]
+  ],
+  "changes": [
+    ["modified", "get", false, false, true],
+    ["modified", "repeat2", false, true, false]
+  ],
+  "incomplete_limitations": ["declaration_header_incomplete", "parse_error_or_missing_token"],
+  "advanced_declarations": [
+    ["class_declaration", "Service", "interface Service", 31, 88],
+    ["function_declaration", "run", "fun run(input: String): Boolean", 55, 86],
+    ["class_declaration", "Holder", "class Holder private constructor(val value: String = <default>)", 90, 210],
+    ["secondary_constructor", "constructor", "constructor(size: Int): this(size.toString())", 160, 208]
+  ],
+  "context_declarations": [
+    ["function_declaration", "read", "context(user: User) fun read(x: Int): Int", 10, 55],
+    ["property_declaration", "count", "context(user: User) val count: Int", 56, 100],
+    ["function_declaration", "old", "context(User) fun old(): Unit", 101, 133]
+  ]
+}

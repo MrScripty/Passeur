@@ -22,6 +22,58 @@ An Astra high planner, Luna high document scout and Sol xhigh architecture/secur
 
 All slices may update this plan directory's current plan, ledger, issues and their own reports. Historical F0–F9 reports remain immutable evidence except for an attributed correction/addendum at their owning source.
 
+## Active R2/R3 `continue` write reservations — September 22, 2026
+
+R1-S1 is committed as `7632a2e`; its gate evidence is recorded in the ledger. The plan remains Active and selects R2-S1 as the next integration slice. C5 permits disjoint R3 admission substrate work concurrently after R1, but its public/control integration remains with the lead until interfaces stabilize. All SC claims remain pending.
+
+| Owner | Exclusive writes in this wave | Boundary |
+|---|---|
+| Sol medium R2 framework and Python/Lua | `src/observation/native-extraction.ts`, new `language-common.ts`, new `language-python-lua.ts`, unique Python/Lua native test and fixture directories | Establish reusable native extractor interface while preserving Rust/TS; no catalog/helper/public edits. |
+| Sol medium R2 JS/React/Svelte | New `language-js-react-svelte.ts`, unique native test and `javascript`, `react`, `svelte5` fixture directories | Consume common native context; no shared catalog/helper/public edits; prove embedded ranges rather than wrapping invisible text. |
+| Sol medium R2 Kotlin/Zig/Odin | New `language-kotlin-zig-odin.ts`, unique native test and `kotlin`, `zig`, `odin` fixture directories | Consume common native context; no shared catalog/helper/public edits. |
+| Sol medium R2 C/C++/C# | New `language-c-family.ts`, unique native test and `c`, `cpp`, `csharp` fixture directories | Consume common native context; no shared catalog/helper/public edits; no preprocessing. |
+| Sol medium R2 Rust/TypeScript oracles and narrow recovery | Existing `tests/native/structural-native-functions.test.mjs`, `rust` and `typescript` fixture directories; after framework handoff, `src/observation/native-extraction.ts` | Expand L01/L02 cases and map conservative TS incomplete-header recovery and Rust 2024 foreign module AST once pinned grammar supports it. No other family/catalog edits. |
+| Sol medium R2 grammar qualification and repair | `package.json`, `package-lock.json`, `src/observation/native-parser.ts`, `src/install/runtime.ts`, `scripts/build-runtime.ts` if needed, new `vendor/native-grammars/**`, unique grammar tests, native dependency qualification report | First probed exact upstream sources read-only in `/tmp`; now owns reproducible pinned native upgrades/patch and full artifact identity. Delay shared dependency install until family test owners release the environment. |
+| Sol medium R3 backend admission | `src/contracts/tasks.ts`, `src/core/coordinator.ts`, `src/store/task-store.ts`, `src/store/record-codecs.ts`, optional new `src/store/announcement-store.ts`, unique linkage/announcement core tests | Durable private payload and exact task linkage before native eligibility; public/metadata integration returns to lead. |
+| Sol medium R3 metadata gate | `src/contracts/coordination-control.ts`, `src/coordination/control.ts`, `src/coordination/bound-control.ts`, optional `src/store/coordination-store.ts`, unique gated-preflight core test | Metadata bind under canonical ordering precedes TaskStore admission; exact settlement follows admission; no backend/public edits. |
+| Sol medium R3 public integration | `src/core/repository-runtime.ts`, `src/contracts/service.ts`, `src/service/server.ts`, `src/cli.ts`, `src/mcp/server.ts`, `src/codex/config.ts`, unique new coordinated submission public tests | Compose exact reserve → metadata bind → TaskStore admission → metadata settle → native eligibility, while preserving legacy operations. Lead released these shared public paths after R2 routing changes. |
+| Lead | Shared catalog/helper/public/service/metadata, compiler/package inputs, plan/evidence and integration | Wire R2 families only after interface handoff; own cross-slice contract decisions and acceptance. |
+
+Independent, bounded SC06/SC16 hardening has also been assigned without advancing the current R2-S1 plan phase:
+
+| Owner | Exclusive writes | Boundary |
+|---|---|---|
+| Sol medium mount boundary | `src/observation/source.ts`, `source-inventory.ts`, unique mount-boundary core test | Refuse Linux bind mount crossings within declared source; preserve root mount support and Git/no-follow proof. |
+| Sol medium resource bounds | `src/observation/helper.ts`, unique native resource test, representative benchmark script/workload | Fixed child RSS overload outcome and measurement; never signal coding workers or build an adaptive scheduler. |
+
+The Sol xhigh reviewer and Astra high planner remain read-only. New families receive disjoint paths after the common interface is established. No reviewer edits source.
+
+## R4 preparatory write reservations under Active `continue`
+
+R2-S1 remains the selected integration slice. These R4 components are admitted disjoint preparation; their source and focused checks do not advance SC07, SC08, SC10, SC12, or SC16.
+
+| Owner | Exclusive writes | Boundary |
+|---|---|---|
+| Sol medium monitor | New `src/observation/monitor.ts`, unique native monitor tests | One service-wide bounded watcher/inventory/analysis owner with generation-safe invalidation. |
+| Sol medium observation store | New `src/contracts/observation.ts`, `src/store/observation-store.ts`, unique core store/notice tests | Durable artifacts, recipient cursors, authority rechecks, bounded retention. |
+| Sol medium source grants | `src/contracts/coordination-control.ts`, `src/coordination/control.ts`, `bound-control.ts`, `src/service/coordination.ts`, unique grant tests | Explicit current-owner report/detail grants, metadata schema evolution and revocation. No public runtime writes. |
+| Sol medium public observation integration | `src/core/repository-runtime.ts`, `src/contracts/service.ts`, `src/service/server.ts`, `src/cli.ts`, `src/mcp/server.ts`, `src/codex/config.ts`, unique integration tests | Compose monitor, helper, store, grants, public notice/read operations and lifecycle hooks. No metadata writes. |
+| Lead | `src/service/request-capacity.ts`, compiler inputs, docs and integrated acceptance | Notice pull/ack use the control lane; observation analysis stays bounded separately. |
+
+The R4 store owner also owns `listCurrent`, `notifyExisting`, generation-bound retained evidence, and authorized per-path cursor gaps in `src/store/observation-store.ts` and `src/contracts/observation.ts`. The Sol medium correspondence owner added `src/observation/correspondence.ts` and its unique core test; runtime composition remains with the public integration owner. The public acceptance owner writes only `tests/integration/structural-notifications.test.ts` and `structural-sharing.test.ts`. A Sol xhigh reviewer examines these paths read-only.
+
+## R5 preparatory write reservations under Active `continue`
+
+R5 preparation does not select or verify an installed candidate until R2/R3/R4 source freezes and the identified build is clean.
+
+| Owner | Exclusive writes | Boundary |
+|---|---|---|
+| Sol medium installed acceptance | `scripts/probe-structural.ts`, `tests/integration/structural-installation.test.ts` | Real relocated CLI/MCP language route probe, native tamper, separate network/build-source isolation; final clean candidate held by lead. |
+| Sol medium migration evidence | `tests/integration/structural-migration.test.ts`, `tests/fixtures/structural/compatibility/**` | Historical metadata/task/result reopen and rejection; no production migration mutation. |
+| Sol medium doctor capability | `src/diagnostics/doctor.ts`, unique doctor integration test | Lazy explicit installed native readiness; no discovery prerequisite. |
+| Sol medium cutover acceptance | Unique structural-cutover integration/probe files | Actual older-reader/incompatible cutover and disposable publication-failure evidence. |
+| Sol medium docs and bridge skill | `docs/structural-reporting.md`, `coordination.md`, `shared-service.md`, `compatibility.md`, `recovery.md`, repository `.agents/skills/passeur-bridge/SKILL.md` | Public candidate guidance; lead applied the skill file through the host-writable mount after reviewing the exact patch. |
+
 ## R0-S1 — adoption and environment
 
 **Documentation writes:** this plan directory; the status/remaining-authority sections only of `docs/plans/structural-change-coordination/plan.md`, its `execution-ledger.md` and `issues.md`; `AGENTS.md` only if its actual plan routing must change. The independent shared-service plan is read-only unless an affected authoritative decision genuinely conflicts; record and obtain a bounded reconciliation decision rather than copying its policy.

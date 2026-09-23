@@ -1,0 +1,10 @@
+{
+  "container_name": "Counter",
+  "container_kind": "struct_specifier",
+  "name": "call",
+  "kind": "function_definition",
+  "signature": "auto call(this Counter& self, int x) -> int",
+  "parameters": ["this Counter& self", "int x"],
+  "result": "int",
+  "enclosing": ["Counter"]
+}

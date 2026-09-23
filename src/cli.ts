@@ -27,7 +27,19 @@ Usage: passeur <action> [options]
   coordinate --project PATH --request FILE [--yes] [--confirm-external-settled]
   structural-report --project PATH --work UUID
   structural-detail --project PATH --work UUID --report UUID --side input|observed --start-byte N --end-byte N
+  structural-refresh --project PATH --work UUID
+  structural-observation-status --project PATH --work UUID
+  structural-notice-pull --project PATH [--cursor N]
+  structural-notice-ack --project PATH --notice SHA256
+  structural-current --project PATH
+  structural-artifact-report --project PATH --artifact SHA256
+  structural-artifact-detail --project PATH --artifact SHA256 --side input|observed --start-byte N --end-byte N
   submit --project PATH --assignment FILE --yes
+  submit-coordinated --project PATH --request FILE --yes
+  announce --project PATH --request FILE --yes
+  announcement --project PATH --id UUID
+  withdraw-announcement --project PATH --id UUID --expected-revision N --operation-key KEY --yes
+  preflight --project PATH --request FILE
   tasks --project PATH [--request-key KEY] [--offset N] [--limit N]
   wait --project PATH --task UUID [--after-revision N] [--wait-ms N]
   attach --project PATH (--task UUID | --request-key KEY) --operation-key KEY --yes
@@ -81,6 +93,7 @@ function integer(value: string | undefined, flag: string): number | undefined {
 }
 const options = {
   request: { type: "string" }, "confirm-external-settled": { type: "boolean" }, work: { type: "string" }, report: { type: "string" },
+  id: { type: "string" }, "expected-revision": { type: "string" },
   side: { type: "string" }, "start-byte": { type: "string" }, "end-byte": { type: "string" },
   assignment: { type: "string" }, "request-key": { type: "string" }, "operation-key": { type: "string" }, "control-generation": { type: "string" },
   "input-id": { type: "string" }, answer: { type: "string" }, "after-revision": { type: "string" }, "wait-ms": { type: "string" }, "cancel-tasks": { type: "string" },
@@ -94,6 +107,7 @@ const options = {
   "server-name": { type: "string" }, runtime: { type: "string" }, "config-path": { type: "string" }, "replace-binding": { type: "string" },
   "adopt-unmanaged": { type: "boolean" }, "development-runtime": { type: "boolean" }, "verify-readiness": { type: "boolean" },
   "tool-timeout-sec": { type: "string" }, prepare: { type: "boolean" }, artifact: { type: "string" }, "install-root": { type: "string" },
+  cursor: { type: "string" }, notice: { type: "string" },
 } as const;
 type Values = ReturnType<typeof decode>["values"];
 function decode(args: string[]) { return parseArgs({ args, options, strict: true, allowPositionals: false }); }
@@ -194,7 +208,7 @@ async function main(): Promise<void> {
     const { runtimeIdentity } = await import("./install/runtime.js");
     console.log(JSON.stringify(await runtimeIdentity(runtimeRoot))); return;
   }
-  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile", "service-run", "service-start", "service-stop", "service-status", "submit", "tasks", "wait", "attach", "cancel", "input", "coordinate", "structural-report", "structural-detail"]);
+  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile", "service-run", "service-start", "service-stop", "service-status", "submit", "submit-coordinated", "announce", "announcement", "withdraw-announcement", "preflight", "tasks", "wait", "attach", "cancel", "input", "coordinate", "structural-report", "structural-detail", "structural-refresh", "structural-observation-status", "structural-notice-pull", "structural-notice-ack", "structural-current", "structural-artifact-report", "structural-artifact-detail"]);
   if (!actions.has(action)) throw new BridgeError("ACTION_UNSUPPORTED", `Unknown action: ${action}`);
   const { values } = decode(process.argv.slice(3));
   startupRequirementFromFlags(values.required, values.optional);
@@ -208,7 +222,17 @@ async function main(): Promise<void> {
     coordinate: [...bindingFlags, "request", "yes", "confirm-external-settled"],
     "structural-report": [...bindingFlags, "work"],
     "structural-detail": [...bindingFlags, "work", "report", "side", "start-byte", "end-byte"],
+    "structural-refresh": [...bindingFlags, "work"],
+    "structural-observation-status": [...bindingFlags, "work"],
+    "structural-notice-pull": [...bindingFlags, "cursor"],
+    "structural-notice-ack": [...bindingFlags, "notice"],
+    "structural-current": bindingFlags,
+    "structural-artifact-report": [...bindingFlags, "artifact"],
+    "structural-artifact-detail": [...bindingFlags, "artifact", "side", "start-byte", "end-byte"],
     submit: [...bindingFlags, "assignment", "yes"], tasks: [...bindingFlags, "offset", "limit", "request-key"],
+    "submit-coordinated": [...bindingFlags, "request", "yes"], announce: [...bindingFlags, "request", "yes"],
+    announcement: [...bindingFlags, "id"], "withdraw-announcement": [...bindingFlags, "id", "expected-revision", "operation-key", "yes"],
+    preflight: [...bindingFlags, "request"],
     wait: [...bindingFlags, "task", "after-revision", "wait-ms"],
     attach: [...bindingFlags, "task", "request-key", "operation-key", "yes"],
     cancel: [...bindingFlags, "task", "control-generation", "operation-key", "reason", "yes"],
@@ -291,7 +315,7 @@ async function main(): Promise<void> {
     if (!frontend) {
       const binding = await resolveRepositoryBinding(intent, process.env, stop.signal);
       const credential = await operatorToken(binding, Boolean(values.yes) || action === "service-start");
-      if ((action === "coordinate" || action === "structural-report" || action === "structural-detail") && credential === undefined) throw new BridgeError("COORDINATION_OPERATOR_IDENTITY_UNAVAILABLE", "No persistent operator identity exists for this work");
+      if ((action === "coordinate" || action.startsWith("structural-") || action === "submit-coordinated" || action === "announce" || action === "announcement" || action === "withdraw-announcement" || action === "preflight") && credential === undefined) throw new BridgeError("COORDINATION_OPERATOR_IDENTITY_UNAVAILABLE", "No persistent operator identity exists for this work");
       frontend = new PasseurFrontend(intent, identity, fileURLToPath(import.meta.url), credential);
     }
     return frontend;
@@ -306,6 +330,23 @@ async function main(): Promise<void> {
     else if (action === "structural-detail") print(await (await connected()).call("structural_detail", {
       work_id: required(values.work, "--work"), report_id: required(values.report, "--report"),
       side: required(values.side, "--side"), start_byte: integer(required(values["start-byte"], "--start-byte"), "--start-byte")!,
+      end_byte: integer(required(values["end-byte"], "--end-byte"), "--end-byte")!,
+    }, stop.signal));
+    else if (action === "structural-refresh") print(await (await connected()).call("structural_refresh", { work_id: required(values.work, "--work") }, stop.signal));
+    else if (action === "structural-observation-status") print(await (await connected()).call("structural_observation_status", { work_id: required(values.work, "--work") }, stop.signal));
+    else if (action === "structural-notice-pull") print(await (await connected()).call("structural_notice_pull", {
+      cursor: integer(values.cursor ?? "0", "--cursor")!,
+    }, stop.signal));
+    else if (action === "structural-notice-ack") print(await (await connected()).call("structural_notice_ack", {
+      notice_id: required(values.notice, "--notice"),
+    }, stop.signal));
+    else if (action === "structural-current") print(await (await connected()).call("structural_current", {}, stop.signal));
+    else if (action === "structural-artifact-report") print(await (await connected()).call("structural_artifact_report", {
+      artifact_id: required(values.artifact, "--artifact"),
+    }, stop.signal));
+    else if (action === "structural-artifact-detail") print(await (await connected()).call("structural_artifact_detail", {
+      artifact_id: required(values.artifact, "--artifact"), side: required(values.side, "--side"),
+      start_byte: integer(required(values["start-byte"], "--start-byte"), "--start-byte")!,
       end_byte: integer(required(values["end-byte"], "--end-byte"), "--end-byte")!,
     }, stop.signal));
     else if (action === "inspect") print(await runtime.inspect());
@@ -338,6 +379,17 @@ async function main(): Promise<void> {
         mutation();
         const { readProfileJson } = await import("./core/profile.js");
         print(await f.call("submit", await readProfileJson(required(values.assignment, "--assignment")), stop.signal));
+      } else if (action === "submit-coordinated" || action === "announce" || action === "preflight") {
+        if (action !== "preflight") mutation();
+        const { readProfileJson } = await import("./core/profile.js");
+        const request = await readProfileJson(required(values.request, "--request"));
+        print(await f.call(action === "submit-coordinated" ? "submit_coordinated" : action, request, stop.signal));
+      } else if (action === "announcement") {
+        print(await f.call("announcement", { schema_version: 1, id: required(values.id, "--id") }, stop.signal));
+      } else if (action === "withdraw-announcement") {
+        mutation(); print(await f.call("withdraw_announcement", { schema_version: 1, id: required(values.id, "--id"),
+          expected_revision: integer(required(values["expected-revision"], "--expected-revision"), "--expected-revision"),
+          operation_key: required(values["operation-key"], "--operation-key") }, stop.signal));
       } else if (action === "tasks") print(await f.call("tasks", { schema_version: 1, offset: integer(values.offset, "--offset") ?? 0, limit: integer(values.limit, "--limit") ?? 8, ...(values["request-key"] ? { request_key: values["request-key"] } : {}) }, stop.signal));
       else if (action === "wait") print(await f.call("wait", { schema_version: 1, task_id: required(values.task, "--task"), after_revision: integer(values["after-revision"], "--after-revision") ?? 0, wait_ms: integer(values["wait-ms"], "--wait-ms") ?? 20_000 }, stop.signal));
       else if (action === "attach") {

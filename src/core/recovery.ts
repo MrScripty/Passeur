@@ -10,9 +10,29 @@ export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
   for (const record of await store.list()) {
     let state = await store.readState(record.task_id);
     let saved = await store.readResult(record.task_id);
-    if ("schema_version" in record && record.schema_version === 4) {
+    if ("schema_version" in record && (record.schema_version === 4 || record.schema_version === 5)) {
       const control = await store.readControl(record.task_id);
       const resource = await store.readResource(record.task_id);
+      if (record.schema_version === 5 && !await store.readCoordinatedLink(record.task_id)) {
+        if (saved || control.native.state !== "not_started") {
+          await store.freeze(`Task ${record.task_id} has native or result evidence before coordinated linkage settled`);
+          continue;
+        }
+        // The metadata binding may have published before interruption. Preserve this accepted
+        // task and its cancel intent for exact link reconciliation; never infer a native run.
+        control.phase = "needs_attention";
+        control.attention = "Accepted coordinated task awaits exact metadata link settlement; do not resubmit or replay native work.";
+        control.revision++; control.updated_at = now(); await store.writeControl(record.task_id, control);
+        continue;
+      }
+      if (record.schema_version === 5 && control.cancel && control.native.state === "not_started" && !saved) {
+        // Link settlement can precede publication of the cancelled terminal result.
+        // An exact retry may finish that never-started cancellation after reopen.
+        control.phase = "needs_attention";
+        control.attention = "Coordinated cancellation was accepted before native start; reconcile its exact linked terminal result.";
+        control.revision++; control.updated_at = now(); await store.writeControl(record.task_id, control);
+        continue;
+      }
       if (saved?.schema_version === 4 && (saved.worker_stop !== "unconfirmed" || resource?.stop_reconciled) && (!control.inputs.some((i) => i.state === "delivery_unknown" || i.state === "answer_intent") || resource?.stop_reconciled)) {
         if (control.cancel && saved.execution_status === "completed") { await store.freeze(`Task ${record.task_id} has conflicting completion and cancellation evidence`); continue; }
         if (control.phase !== "terminal") {

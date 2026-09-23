@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { canonicalHash, KeyedMutex } from "./async.js";
 import { BridgeError } from "./errors.js";
-import type { TaskControl, TaskObservation, DurableRequest, ControlReceipt, InputData, PendingInput } from "../contracts/tasks.js";
+import type { TaskControl, TaskObservation, CurrentDurableRequest, ControlReceipt, InputData, PendingInput } from "../contracts/tasks.js";
 
 /** The store publishes a whole control invariant. Callbacks and native execution run outside these locks. */
 export interface ControlStore {
   readControl(id: string): Promise<TaskControl>;
   writeControl(id: string, state: TaskControl): Promise<void>;
-  durableRequest(id: string): Promise<DurableRequest>;
+  durableRequest(id: string): Promise<CurrentDurableRequest>;
 }
 export type ClientActor = { owner_id: string; client_id: string };
 export type WaitResult = { kind: "changed" | "terminal" | "input_required" | "wait_elapsed"; task: TaskObservation };
@@ -22,7 +22,7 @@ export function owns(state: TaskControl, actor: Pick<ClientActor, "owner_id">, g
   if (state.owner_id !== actor.owner_id) throw new BridgeError("TASK_CONTROL_CONFLICT", "This connection does not control the task; use human-confirmed attach");
   if (generation !== undefined && generation !== state.control_generation) throw new BridgeError("STALE_CONTROL", "Task control changed; read a fresh observation");
 }
-function observation(record: DurableRequest, state: TaskControl): TaskObservation {
+function observation(record: CurrentDurableRequest, state: TaskControl): TaskObservation {
   return { schema_version: 1, task_id: record.task_id, request_key: record.request.request_key,
     agent_id: record.request.agent_id, source_view: record.source_view, revision: state.revision,
     control_generation: state.control_generation, phase: state.phase, ...(state.outcome ? { outcome: state.outcome } : {}),

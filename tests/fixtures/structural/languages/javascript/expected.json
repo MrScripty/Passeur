@@ -1,0 +1,14 @@
+{
+  "input_declarations": [
+    ["generator_function_declaration", "stream", [], "export async function* stream({limit = <default>}, ...rest)"],
+    ["arrow_function", "twice", [], "export const twice = (n = <default>) =>"],
+    ["class_declaration", "Box", [], "class Box"],
+    ["field_definition", "field", ["Box"], "field = <default>"],
+    ["field_definition", "#private", ["Box"], "#private = <default>"],
+    ["method_definition", "open", ["Box"], "open(x = <default>)"]
+  ],
+  "input_ranges": [[109, 177], [178, 216], [217, 288], [229, 245], [247, 259], [261, 286]],
+  "changed_ranges": [[109, 181], [182, 220], [221, 292], [233, 249], [251, 263], [265, 290]],
+  "changed": { "stream": [true, true] },
+  "incomplete_limitations": ["parse_error_or_missing_token"]
+}

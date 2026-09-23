@@ -1,6 +1,6 @@
-# Acceptance ledger — September 22, 2026, after R1-S1
+# Acceptance ledger — September 23, 2026, after the R2/R3/R4 source checkpoint
 
-The full claim definitions, environments and procedures remain in [the plan](../plan.md#4-objective-acceptance-population) and [verification report](verification-and-release.md). R1's real native/public vertical path is implemented and its integrated regression is recorded in the execution ledger. F9 checks and R1 slice checks are supporting evidence only. None of SC01–SC17 is satisfied for the final structural-coordination objective.
+The full claim definitions, environments and procedures remain in [the plan](../plan.md#4-objective-acceptance-population) and [verification report](verification-and-release.md). R1–R4 source and the complete-checkout native/public regression are implemented and recorded in the execution ledger. Three final-artifact tests remain gated, and required installed/live evidence is absent. None of SC01–SC17 is satisfied for the final structural-coordination objective.
 
 | Claim | Current status | Decisive outstanding gate |
 |---|---|---|

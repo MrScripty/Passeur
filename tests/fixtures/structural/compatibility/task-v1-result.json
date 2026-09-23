@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "task_id": "22222222-2222-4222-8222-222222222222",
+  "request_key": "historical-v1-key",
+  "execution_status": "completed",
+  "worker_stop": "confirmed",
+  "worker_assessment": "met",
+  "summary": "Historical result retained",
+  "blockers": [],
+  "questions": [],
+  "model": { "requested": "historical-model" },
+  "workspace": { "kind": "source_read_only", "stale": false },
+  "changed_files": [],
+  "checks": [],
+  "artifacts": [],
+  "output_truncated": false
+}

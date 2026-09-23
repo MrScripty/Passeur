@@ -1,0 +1,7 @@
+{
+  "dialect": "javascript",
+  "input": "input.mjs",
+  "changed": "changed.mjs",
+  "incomplete": "incomplete.mjs",
+  "expectations": "expected.json"
+}

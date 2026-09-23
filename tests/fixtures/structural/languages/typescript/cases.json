@@ -5,6 +5,10 @@
   "input": "input.ts",
   "changed": "changed.ts",
   "incomplete": "incomplete.ts",
+  "population_mts": "population.mts",
+  "population_mts_changed": "population_changed.mts",
+  "population_cts": "population.cts",
+  "population_cts_changed": "population_changed.cts",
   "expectations": "expected.json",
   "review_note": "The named type edit does not imply a change in its unchanged written use. Import text is outside declarations."
 }

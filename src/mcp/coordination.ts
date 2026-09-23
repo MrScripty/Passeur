@@ -38,6 +38,16 @@ const work = z.discriminatedUnion("kind", [
     readers: people.describe("Other parent identities explicitly permitted to read this work; omit the owner from this list."),
   }).strict(),
   z.object({ kind: z.literal("share_work"), operation_key: operationKey, work_id: entity, expected_revision: revision, readers: people }).strict(),
+  z.object({ kind: z.literal("grant_source"), operation_key: operationKey, work_id: entity, expected_revision: revision,
+    recipients: z.array(z.object({ recipient: parent, scope: z.enum(["report", "detail"]) }).strict()).max(MAX_PARTIES)
+      .describe("Exact recipients and source scope. An empty list revokes all grants; ordinary work readers receive no source access."),
+  }).strict(),
+  z.object({ kind: z.literal("watch_source"), operation_key: operationKey, work_id: entity, expected_revision: revision,
+    watchers: z.array(z.object({ recipient: parent,
+      regions: z.array(z.object({ kind: z.enum(["file", "subtree"]), path: z.string() }).strict()).min(1).max(MAX_REGIONS),
+      dialect_overrides: z.array(z.object({ path: z.string(), dialect: z.enum(["jsx", "c", "cpp"]) }).strict()).max(MAX_REGIONS).optional(),
+    }).strict()).max(MAX_PARTIES).describe("Exact recipient and watched regions. Empty list revokes watches; .js JSX and .h C/C++ require exact file overrides."),
+  }).strict(),
   z.object({ kind: z.literal("close_work"), operation_key: operationKey, work_id: entity, expected_revision: revision }).strict(),
 ]);
 const notes = z.discriminatedUnion("kind", [

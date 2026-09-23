@@ -1,0 +1,22 @@
+diff --git a/grammar.js b/grammar.js
+index 6d830e1..e35c499 100644
+--- a/grammar.js
++++ b/grammar.js
+@@ -472,10 +472,16 @@ module.exports = grammar({
+     ),
+     type_parameter: $ => seq(
+       '[',
+-      commaSep1($.type),
++      commaSep1(choice($.type, $.default_type_parameter)),
+       optional(','),
+       ']',
+     ),
++    // Python 3.13+ (PEP 696): a declaration may supply a type parameter default.
++    default_type_parameter: $ => seq(
++      field('name', choice($.identifier, $.splat_type)),
++      '=',
++      field('default', $.type),
++    ),
+ 
+     parenthesized_list_splat: $ => prec(PREC.parenthesized_list_splat, seq(
+       '(',

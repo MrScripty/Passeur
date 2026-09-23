@@ -5,7 +5,9 @@ import { BridgeError } from "../core/errors.js";
 import { CoordinationStore } from "../store/coordination-store.js";
 import { CoordinationControl, type CoordinationActor, type RetirementReservation } from "../coordination/control.js";
 import { RepositoryCoordination, type BindingLimits, type CoordinationConnection, type ExternalWorkspaceAuthority, type ManagedWorkspaceAuthority } from "../coordination/bound-control.js";
-import { decodeLimits, parentId, type Limits } from "../contracts/coordination-control.js";
+import { decodeLimits, decodeAnnouncementInput, decodeSubmissionPreflightInput, decodeSubmissionBindInput,
+  internalCoordinationOperationKey, publicCoordinationOperationKey, parentId, type Limits, type Receipt,
+  type AnnouncementRecord, type SubmissionBinding, type Region } from "../contracts/coordination-control.js";
 import type { Work } from "../contracts/coordination-control.js";
 import { COORDINATION_VIEW_BYTES, coordinationRequestLane, decodeCoordinationReply, decodeCoordinationRequest,
   type CoordinationReply, type CoordinationRequest, type CoordinationSelector } from "../contracts/coordination-service.js";
@@ -56,6 +58,87 @@ export class CoordinationService {
   get pendingCount(): number { return this.#pending.size; }
   get draining(): boolean { return this.#draining; }
 
+  announce(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<AnnouncementRecord> {
+    const input = decodeAnnouncementInput(raw), sourceView = connection.source_view;
+    return this.#submission(connection, "ordinary", true, signal, (control, actor) => {
+      this.#matchSourceView(sourceView, input.source_view); return control.announce(actor, input);
+    });
+  }
+  announcement(connection: CoordinationConnection, id: string, signal?: AbortSignal): Promise<AnnouncementRecord> {
+    return this.#submission(connection, "control", false, signal, (control, actor) => control.announcement(actor, id));
+  }
+  withdrawAnnouncement(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<AnnouncementRecord> {
+    return this.#submission(connection, "control", false, signal, (control, actor) => control.withdrawAnnouncement(actor, raw));
+  }
+  preflight(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<{
+    decision_identity: string; overlaps: Array<{ kind: "work" | "announcement" | "binding"; id: string; areas: Region[] }> }> {
+    const input = decodeSubmissionPreflightInput(raw), sourceView = connection.source_view;
+    return this.#submission(connection, "ordinary", false, signal, (control, actor) => {
+      this.#matchSourceView(sourceView, input.source_view); return control.preflight(actor, input);
+    });
+  }
+  bindSubmission(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<SubmissionBinding> {
+    const input = decodeSubmissionBindInput(raw), sourceView = connection.source_view;
+    return this.#submission(connection, "ordinary", true, signal, (control, actor) => {
+      this.#matchSourceView(sourceView, input.source_view); return control.bindSubmission(actor, input);
+    });
+  }
+  settleSubmission(connection: CoordinationConnection, raw: unknown): Promise<SubmissionBinding> {
+    return this.#submission(connection, "control", false, undefined, (control, actor) => control.settleSubmission(actor, raw));
+  }
+  releaseUnadmittedBinding(connection: CoordinationConnection, raw: unknown): Promise<SubmissionBinding> {
+    return this.#submission(connection, "control", false, undefined, (control, actor) => control.releaseUnadmittedBinding(actor, raw));
+  }
+  terminalSubmissionBinding(connection: CoordinationConnection, raw: unknown): Promise<SubmissionBinding> {
+    return this.#submission(connection, "control", false, undefined, (control, actor) => control.terminalSubmissionBinding(actor, raw));
+  }
+  /** Elected service path: F9 performs the same resource checks after durable coordinated admission. */
+  enrollPreparedManagedWork(connection: CoordinationConnection, taskId: string, operationKey: string): Promise<Receipt> {
+    const key = internalCoordinationOperationKey(operationKey), sourceView = connection.source_view, ownerId = connection.owner_id;
+    return this.#submission(connection, "ordinary", false, undefined, async control => {
+      const opened = this.#opened;
+      if (!opened || opened.control !== control) throw new BridgeError("COORDINATION_STATE_INVALID", "Metadata owner changed during enrollment");
+      const bound = await this.#source(opened, sourceView);
+      return bound.executeInternal({ owner_id: ownerId, source_view: sourceView },
+        { kind: "register_managed_work", operation_key: key, task_id: taskId });
+    });
+  }
+  submissionBinding(connection: CoordinationConnection, taskId: string, signal?: AbortSignal): Promise<SubmissionBinding> {
+    return this.#submission(connection, "control", false, signal, (control, actor) => control.submissionBinding(actor, taskId));
+  }
+  submissionBindingByRequestKey(connection: CoordinationConnection, requestKey: string, signal?: AbortSignal): Promise<SubmissionBinding | undefined> {
+    return this.#submission(connection, "control", false, signal, (control, actor) => control.submissionBindingByRequestKey(actor, requestKey));
+  }
+  #matchSourceView(authenticatedSourceView: string, submittedSourceView: string): void {
+    if (submittedSourceView !== authenticatedSourceView) throw new BridgeError("COORDINATION_SOURCE_VIEW_CONFLICT", "Submission source view differs from the authenticated connection");
+  }
+  #submission<T>(connection: CoordinationConnection, lane: "ordinary" | "control", newWork: boolean,
+    signal: AbortSignal | undefined, action: (control: CoordinationControl, actor: CoordinationActor) => Promise<T>): Promise<T> {
+    let actor: CoordinationActor;
+    try {
+      throwIfAborted(signal);
+      actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+      if (typeof connection.source_view !== "string" || !isAbsolute(connection.source_view) || connection.source_view.includes("\0")) {
+        throw new BridgeError("COORDINATION_SOURCE_VIEW_INVALID", "Use the source view supplied by the authenticated service connection");
+      }
+      if (this.#closing) throw new BridgeError("COORDINATION_SERVICE_CLOSED", "Coordination no longer accepts requests");
+      if (newWork && this.#draining) throw new BridgeError("COORDINATION_SERVICE_DRAINING", "New coordination work is closed during drain");
+      this.#authority.assertOwned();
+      if (lane === "control" ? this.#controls >= this.#limits.control_requests : this.#ordinary >= this.#limits.ordinary_requests) {
+        throw new BridgeError(lane === "control" ? "COORDINATION_CONTROL_CAPACITY" : "COORDINATION_SERVICE_CAPACITY", "The selected request lane is at capacity");
+      }
+    } catch (error) { return Promise.reject(error); }
+    if (lane === "control") this.#controls++; else this.#ordinary++;
+    const operation = (async () => {
+      const opened = await this.#open(); this.#authority.assertOwned();
+      return action(opened.control, actor);
+    })();
+    this.#pending.add(operation);
+    const settled = () => { this.#pending.delete(operation); if (lane === "control") this.#controls--; else this.#ordinary--; };
+    void operation.then(settled, settled);
+    return withAbort(operation, signal);
+  }
+
   /** Metadata sharing never grants source evidence; only the current work owner may request the initial report path. */
   async ownedSourceWork(ownerId: string, workId: string): Promise<Work> {
     if (this.#closing) throw new BridgeError("COORDINATION_SERVICE_CLOSED", "Coordination no longer accepts source reads");
@@ -70,6 +153,26 @@ export class CoordinationService {
     return work;
   }
 
+  /** Internal observation path. The metadata owner remains the source of current recipient scope. */
+  async authorizeSourceRead(recipientId: string, workId: string, scope: "report" | "detail"): Promise<Work> {
+    if (this.#closing) throw new BridgeError("COORDINATION_SERVICE_CLOSED", "Coordination no longer accepts source reads");
+    this.#authority.assertOwned();
+    const actor = Object.freeze({ owner_id: parentId(recipientId) });
+    const opened = await this.#open();
+    const work = await opened.control.sourceWork(actor, workId, scope);
+    this.#authority.assertOwned();
+    return work;
+  }
+
+  /** Internal observation store composition uses the elected metadata store identity. */
+  async observationStore(): Promise<CoordinationStore> {
+    if (this.#closing) throw new BridgeError("COORDINATION_SERVICE_CLOSED", "Coordination no longer accepts observation stores");
+    this.#authority.assertOwned();
+    const opened = await this.#open();
+    this.#authority.assertOwned();
+    return opened.store;
+  }
+
   /** Request loss detaches the observer; the admitted operation remains owned until it settles. */
   handle(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<CoordinationReply> {
     let request: CoordinationRequest, actor: CoordinationActor, captured: CoordinationConnection;
@@ -81,6 +184,8 @@ export class CoordinationService {
       }
       captured = Object.freeze({ ...actor, source_view: connection.source_view });
       request = decodeCoordinationRequest(raw);
+      if (request.kind === "command") publicCoordinationOperationKey(request.command.operation_key);
+      if (request.kind === "recover_metadata") publicCoordinationOperationKey(request.recovery.operation_key);
       if (this.#closing) throw new BridgeError("COORDINATION_SERVICE_CLOSED", "Coordination no longer accepts requests");
       if (this.#draining && (request.kind === "initialize" || request.kind === "command" && coordinationRequestLane(request) === "ordinary")) {
         throw new BridgeError("COORDINATION_SERVICE_DRAINING", "New coordination work is closed; reads and release/recovery controls remain available");

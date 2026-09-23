@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
 import { installRuntime, installedEntry, readManifest, verifyInstalledNativePackages } from "../../src/install/runtime.js";
+import { probeStructuralInstallation } from "../../scripts/probe-structural.js";
 
 // Set PASSEUR_NATIVE_CANDIDATE to a real clean V2 build. This test intentionally
 // uses its complete parser/dependency closure, not a substitute manifest.
@@ -52,3 +53,27 @@ it.skipIf(!candidate)("refuses altered native binding bytes at publication and i
     });
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 120_000);
+
+it.skipIf(!candidate)("runs every required language through the relocated installed CLI and an installed stdio MCP route", async () => {
+  const root = await mkdtemp(join(tmpdir(), "passeur-native-language-install-"));
+  try {
+    const selected = await readManifest(candidate!);
+    expect(selected.schema_version).toBe(2);
+    expect(selected.source_dirty).toBe(false);
+    const hostNetns = process.env.PASSEUR_HOST_NETNS_ID;
+    const sourceMarker = process.env.PASSEUR_BUILD_SOURCE_MARKER;
+    expect(hostNetns, "Record host /proc/self/ns/net before entering a network-isolated runner").toMatch(/^net:\[\d+\]$/);
+    expect(sourceMarker, "Hide the disposable build-source marker from the installed runner").toBeTruthy();
+    const installed = await installRuntime(candidate!, join(root, "installed ü with spaces"));
+    const result = await probeStructuralInstallation({ installed: installed.root,
+      fixtures: join(process.cwd(), "tests/fixtures/structural/languages"),
+      hostNetns: hostNetns!, sourceSnapshotMarker: sourceMarker! });
+    expect(result.candidate_build_id).toBe(selected.build_id);
+    expect((result.rows as unknown[]).length).toBe(30);
+    expect(result.stdio_mcp_report).toBe("observed");
+    expect(result.stdio_mcp_detail).toBe("observed");
+    expect(result.guarded_build_tool_attempts).toBe(0);
+    expect(result.network_namespace_enforced).toBe(true);
+    expect(result.source_snapshot_hidden).toBe(true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 1_200_000);

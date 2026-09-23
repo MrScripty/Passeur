@@ -1,0 +1,13 @@
+{
+  "jsx_declarations": [["function_declaration", "Card", [], "export function Card({title = <default>})"]],
+  "jsx_input_ranges": [[44, 112]],
+  "jsx_changed_ranges": [[44, 112]],
+  "jsx_body_only": [false, true, false],
+  "tsx_declarations": [["function_declaration", "TypedCard", [], "export function TypedCard({title}: {title: string}): JSX.Element"]],
+  "tsx_input_ranges": [[10, 103]],
+  "tsx_changed_ranges": [[10, 103]],
+  "tsx_body_only": [false, true, false],
+  "configured_jsx_js": ["function_declaration", "ConfiguredCard", "export function ConfiguredCard({title = <default>})", [10, 89]],
+  "configured_jsx_js_changed_range": [10, 89],
+  "incomplete_limitations": ["parse_error_or_missing_token"]
+}

@@ -1,0 +1,12 @@
+{
+  "names": ["N", "choose", "Worker", "Worker", "~Worker", "run", "operator()", "operator[]", "Callback"],
+  "kinds": ["namespace_definition", "function_definition", "class_specifier", "declaration", "declaration", "function_definition", "field_declaration", "function_definition", "alias_declaration"],
+  "choose_signature": "template<class T> requires Good<T>\nauto choose(T value = <default>) -> T",
+  "choose_parameters": ["T value = <default>"],
+  "choose_result": "T",
+  "run_enclosing": ["N", "Worker"],
+  "run_result": "int",
+  "first_start_byte": 13,
+  "first_source": "namespace N {\ntemplate<class T> requires Good<T>\nauto choose(T value = T{}) -> T { return value; }\nclass Worker {\npublic:\n  Worker(int id);\n  ~Worker();\n  auto run(int x) const -> int { return x + 1; }\n  auto operator()(int x) -> int;\n  static int operator[](int x) { return x; }\n};\nusing Callback = int(*)(int);\n}",
+  "limitations": []
+}

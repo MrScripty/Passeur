@@ -44,12 +44,47 @@ export const SubmitBatchSchema = z.object({ schema_version: z.literal(1), assign
     "batch receipt would exceed its response budget; submit smaller independent batches");
 export const SubmissionIdentitySchema = z.object({ schema_version: z.literal(1), source_view: path, assignment: AssignmentSchema }).strict();
 export type SubmissionIdentity = z.output<typeof SubmissionIdentitySchema>;
+export const AnnouncementReferenceSchema = z.object({ id: TaskIdSchema, revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict();
+export const CoordinatedSubmissionIdentitySchema = z.object({
+  schema_version: z.literal(2), source_view: path, assignment: AssignmentSchema,
+  announcement: AnnouncementReferenceSchema.optional(), expected_decision_identity: hash.optional(),
+}).strict();
+export type CoordinatedSubmissionIdentity = z.output<typeof CoordinatedSubmissionIdentitySchema>;
+export function coordinatedMaterialIdentity(value: CoordinatedSubmissionIdentity): Omit<CoordinatedSubmissionIdentity, "expected_decision_identity"> {
+  const { expected_decision_identity: _gate, ...material } = value;
+  return material;
+}
+export const CoordinatedLinkSchema = z.object({
+  schema_version: z.literal(1), task_id: TaskIdSchema, request_key: key, owner_id: hash,
+  intent_hash: hash, decision_identity: hash, link_hash: hash, announcement: AnnouncementReferenceSchema.optional(),
+}).strict();
+export type CoordinatedLink = z.output<typeof CoordinatedLinkSchema>;
+export const CoordinatedLinkSettlementSchema = z.object({ schema_version: z.literal(1), link: CoordinatedLinkSchema,
+  state: z.literal("settled"), settled_at: instant }).strict();
+export type CoordinatedLinkSettlement = z.output<typeof CoordinatedLinkSettlementSchema>;
 export const DurableRequestSchema = z.object({
   schema_version: z.literal(4), task_id: TaskIdSchema, project_id: z.string().min(1).max(256),
   canonical_hash: hash, accepted_at: instant, request: AssignmentSchema,
   source_view: path, initial_owner: hash, execution: LifecycleSnapshotSchema,
 }).strict();
 export type DurableRequest = z.output<typeof DurableRequestSchema>;
+export const CoordinatedDurableRequestSchema = DurableRequestSchema.omit({ schema_version: true }).extend({ schema_version: z.literal(5),
+  linkage: CoordinatedLinkSchema });
+export type CoordinatedDurableRequest = z.output<typeof CoordinatedDurableRequestSchema>;
+export type CurrentDurableRequest = DurableRequest | CoordinatedDurableRequest;
+export const AnnouncementPayloadSchema = z.object({
+  schema_version: z.literal(1), id: TaskIdSchema, revision: z.literal(1), owner_id: hash,
+  source_view: path, assignment: AssignmentSchema, published_at: instant,
+}).strict().refine((v) => Buffer.byteLength(JSON.stringify(v)) <= 262_144, "announcement exceeds 256 KiB");
+export type AnnouncementPayload = z.output<typeof AnnouncementPayloadSchema>;
+export const AnnouncementControlSchema = z.object({ schema_version: z.literal(1), id: TaskIdSchema,
+  revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  state: z.enum(["unresolved", "withdrawn", "linked"]),
+  task_id: TaskIdSchema.optional(), updated_at: instant,
+}).strict().superRefine((v,c) => {
+  if ((v.state === "linked") !== (v.task_id !== undefined)) c.addIssue({ code: "custom", message: "linked announcement requires exact task" });
+});
+export type AnnouncementControl = z.output<typeof AnnouncementControlSchema>;
 export const ApprovalDataSchema = z.object({
   id: z.string().min(1).max(256), tool: z.string().min(1).max(256), raw_args: z.string().max(16_384),
   subject: z.record(z.string(), z.unknown()).refine((v) => Buffer.byteLength(JSON.stringify(v)) <= 8192, "input subject exceeds 8 KiB"),

@@ -1,0 +1,22 @@
+{
+  "input_declarations": [
+    ["variable_declaration", "Point", [], "pub const Point = struct", 42, 174],
+    ["container_field", "x", ["Point"], "x: i32", 73, 79],
+    ["container_field", "y", ["Point"], "y: i32 = <default>", 85, 95],
+    ["function_declaration", "move", ["Point"], "pub fn move(self: *Point, dx: i32) void", 102, 171],
+    ["function_declaration", "add", [], "pub fn add(comptime T: type, x: T) T", 176, 230],
+    ["variable_declaration", "Choice", [], "pub const Choice = enum", 232, 274],
+    ["container_field", "first", ["Choice"], "first", 258, 263],
+    ["container_field", "second", ["Choice"], "second", 265, 271]
+  ],
+  "changes": [
+    ["modified", "y", false, false, true],
+    ["modified", "add", false, true, false]
+  ],
+  "incomplete_limitations": ["declaration_body_incomplete", "parse_error_or_missing_token"],
+  "advanced_declarations": [
+    ["function_declaration", "load", "pub fn load(reader: anytype) ![]const u8", 12, 83],
+    ["function_declaration", "copy", "pub fn copy(noalias dst: []u8, noalias src: []const u8) void", 85, 148],
+    ["function_declaration", "select", "pub fn select(comptime T: type, ptr: *[4]T) ?T", 150, 217]
+  ]
+}

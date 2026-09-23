@@ -11,16 +11,20 @@ execution scheduler, schema implementation or authority store is introduced.
 F7 adds `coordinate --request FILE` to the CLI and four MCP metadata tools.
 They use the existing authenticated frontend, runtime and durable contracts.
 The committed F6 and F7 elected/SDK/CLI/pinned checks retain their recorded
-scope. F8 adds the operator-only recovery contract below. Its complete-checkout pinned/elected/compiled-CLI checks are recorded in the
-F8 report. Those results do not qualify the changed F9 candidate; its real
-TaskStore/SDK and complete pinned checks remain deployment gates.
+scope. F8 adds the operator-only recovery contract below. Its original
+complete-checkout pinned/elected/compiled-CLI checks are recorded in the F8
+report. These are historical slice results; the completion plan owns final
+source, installed and real-host acceptance.
 
 F9 adds explicit enrollment of prepared managed implementation tasks and
-selection-aware retirement. Automatic pre-start announcements, submit linkage,
-parsers and live structural reporting remain unfinished and unadvertised.
-This is a metadata capability, not the complete structural-coordination feature.
+selection-aware retirement. The structural completion candidate adds versioned
+coordinated submission, announcement linkage, source grants, watches and reports
+on the same service. Acceptance remains open until its named native, public,
+installed and real-host evidence passes.
 
-Plan authority: [Plan 2A](plans/structural-change-coordination/plan.md).
+Completion authority: [structural coordination completion](plans/structural-coordination-completion/plan.md).
+The original [Plan 2A](plans/structural-change-coordination/plan.md) remains the
+historical F0–F9 record; Plan 2B remains unselected.
 Evidence: [F5 verification](plans/structural-change-coordination/reports/f5-verification.md),
 [F4 verification](plans/structural-change-coordination/reports/f4-verification.md),
 [F3 verification](plans/structural-change-coordination/reports/f3-verification.md)
@@ -71,8 +75,8 @@ The facade requires an `ExternalWorkspaceAuthority` supplied by the resource
 owner: repository membership alone does not permit enrollment of a managed
 worker's directory. Its callback runs outside control locks, followed by another
 physical-identity observation. F5 supplies the runtime task-resource inventory
-policy. Its real TaskStore/elected-host qualification and public entrypoint remain
-pending. Low-level `register_work` accepts verified metadata only and
+policy. The later F5–F9 and completion sections describe TaskStore, elected-host
+and public integration. Low-level `register_work` accepts verified metadata only and
 must not be exposed directly to client payloads. Existing unverified metadata
 labels remain readable/closable but cannot be used as source proof.
 
@@ -85,8 +89,8 @@ available after a checkout disappears and under source-operation saturation.
 A missing or changed checkout does not silently close a registration.
 
 `selectedCases` remains informational, not a Git pin or permission to retire a
-worktree. The future resource owner must serialize case selection/retirement and
-verify exact retained protection before any resource effect. Git, TaskStore and
+worktree. The F9 resource owner serializes case selection/retirement and
+verifies exact retained protection before any resource effect. Git, TaskStore and
 coordination JSON are not one atomic transaction.
 
 The caller chooses the trusted, existing private state root. The current threat
@@ -104,9 +108,10 @@ delete a source directory, assert inactivity, or revoke all existing readers.
 A separate sharing update can revoke those readers, including after closure.
 
 A reader may inspect shared metadata and add its own attributed notes. Reading
-does not grant control of the work. `overlaps` reports only exact-file/subtree
-relationships between currently disclosed active records. It is not a semantic
-assessment and does not implement atomic announcement-to-task admission.
+does not grant control of the work or source access. `overlaps` reports only
+exact-file/subtree relationships between currently disclosed active records.
+The coordinated submission path separately binds a current overlap decision
+before durable task admission; neither result is a semantic assessment.
 
 ## Notes and agreements
 
@@ -178,7 +183,7 @@ transaction.
 ## Capacity and shutdown
 
 Limits bound retained works, cases, notes, receipts, note bytes and the total
-serialized record. Supported v1/v2/v3 records share a 2 MiB representation bound and
+serialized record. Supported v1–v6 records share a 2 MiB representation bound and
 4096 maximum entities per configured collection. Admission reserves receipt
 slots and conservatively sized bytes for active-work closure, complete reader
 revocation, agreement withdrawal, and pending-effect settlement/case release.
@@ -211,10 +216,8 @@ gates are recorded in F3 verification.
 `service/coordination.ts::CoordinationService` owns one metadata session under
 the elected repository runtime. It composes the existing `CoordinationStore`,
 `CoordinationControl` and lazy `RepositoryCoordination`; it does not own a
-listener, election, worker, parser, model or project build. The production
-`RepositoryRuntime` has not yet been wired to instantiate it. The actual
-initialization and managed-workspace policies remain the runtime/resource
-owners' obligations. Tests supply explicit policies rather than silent defaults.
+listener, election, worker, parser, model or project build. `RepositoryRuntime`
+instantiates this session under its existing binding and admission policy.
 
 The constructor takes the resolved canonical repository/store binding,
 `assertOwned`, an asynchronous initialization-authorization callback, the
@@ -270,16 +273,14 @@ then closes its bound/control/store owner. It does not kill tasks or release
 case ownership because of elapsed time. Lost source directories do not disable
 metadata closure or receipt reads, including on fresh-process reopening.
 
-### Pending production consumers
+### F4 qualification boundary (historical)
 
-The existing runtime/server/client, CLI/MCP registration and protocol negotiation
-are unchanged. A test peer runs the actual existing `IpcConnection` and new
-session over a real Unix socket but deliberately supplies fixture identity,
-initialization permission and resource policies. It does not prove production
-authentication/election, real host consent, provider behavior, managed task
-linkage, retirement protection, installed packaging or performance. No dormant
-public flag or command claims this capability is available. Those consumers
-must be completed and qualified together before the feature is advertised.
+F4 tested the metadata session over the existing `IpcConnection` and a real
+Unix socket with fixture identity, initialization permission and resource
+policies. That evidence established its session contract, not production
+authentication, election, managed task linkage, installed packaging or real
+host behavior. Later sections record F5–F9 integration; the completion plan
+owns the current candidate and remaining acceptance claims.
 
 
 ## Runtime composition (F5)
@@ -332,8 +333,8 @@ release coordination claims or prevent source-independent metadata closure.
 Read-only worktree inventory now has the narrow `workspace/inventory.ts` owner;
 `workspace/worktree.ts` re-exports the same function and type. The inventory
 implementation is unchanged. Git/source facts remain observations, not locks
-against external ref edits. F5 does not provide task enrollment or serialize
-case selection against resource retirement; those consumers remain required.
+against external ref edits. F5 alone did not provide task enrollment or
+serialize case selection against resource retirement; F9 added those controls.
 
 ### Resource and evidence limits
 
@@ -475,10 +476,11 @@ approval/denial settings. Incompatible service builds still require controlled
 cutover. Existing task tools and persisted metadata retain their meanings.
 
 External enrollment accepts only a parent's own source view. F9 adds the
-separate task-owner enrollment path below. Pre-start announcement submission
-and live watches/reports remain unavailable; operator recovery stays CLI-only.
-Source-derived context does not become a semantic judgment. Reconciliation leadership does not grant task ownership or
-permission to update the target. Keep the original resource-protection contract.
+separate task-owner enrollment path below. The completion candidate provides
+pre-start announcement submission and watched reports through the existing
+service; operator recovery stays CLI-only. Source-derived context does not
+become a semantic judgment. Reconciliation leadership does not grant task
+ownership or permission to update the target. Keep the original resource-protection contract.
 
 ### Verification boundary
 
@@ -585,13 +587,13 @@ The operator read selector intentionally excludes arbitrary note-content reads.
 
 The first successful recovery of a schema-v1 record atomically publishes
 control schema v2, the exact metadata delta, and an immutable recovery receipt.
-Recovery of an existing v2 or managed-enrollment v3 record retains that version. Read-only inspection, failed
+Recovery of an existing supported version retains that version. Read-only inspection, failed
 authorization, stale commands, capacity refusal and ordinary commands leave a
 v1 store in v1. Version-2 records retain the existing data and ordinary receipts
 and append `recoveries`; the enable marker, task records, native lifecycle and
-private framing versions are unchanged. Readers accept v1, v2 and v3; writers
-retain the current supported version except for the explicit recovery/enrollment
-migration triggers. No background migration or second database is introduced.
+private framing versions are unchanged. At F8, readers accepted v1, v2 and v3; the completion candidate also reads
+newer announcement, grant and watch schemas. Writers preserve a supported
+version except for explicit feature-triggered migration. No background migration or second database is introduced.
 
 A recovery receipt contains the operator identity, original decoded command,
 canonical request hash and resulting global metadata revision. The versioned
@@ -619,15 +621,15 @@ limit changes, not opportunistic deletion of retained receipts.
 
 Old v1-only binaries reject v2. After recovery has occurred, rolling back the
 executable cannot restore write compatibility: retain the records and use a
-reader capable of the stored version (v2 or v3), or an independently qualified
+reader capable of the actual stored version, or an independently qualified
 downgrade. Replacing
 control.json with an old backup would discard accepted authority and is not a
 recovery operation. Git effects and task execution are outside this metadata
 transaction, and no fencing of unmediated same-user programs is promised.
 
 See [F8 verification](plans/structural-change-coordination/reports/f8-verification.md)
-for actual test paths and limits. SDK/CLI/elected and pinned checks for this
-candidate must pass before deployment; previous-candidate passes do not prove it.
+for its original test paths and limits. The [completion verification record](plans/structural-coordination-completion/reports/verification-and-release.md)
+owns the current SDK/CLI/elected, installed and native acceptance population.
 
 ## Managed-task enrollment and selected-result retirement (F9)
 
@@ -677,9 +679,10 @@ the same task again. Reading that receipt is not renewed task authority.
 
 ### State version and recovery
 
-The first successful managed enrollment atomically publishes coordination
-control schema 3, its work record, and its ordinary operation receipt. Records
-in schemas 1 and 2 remain unchanged by inspection, refusal, or ordinary commands.
+The first successful managed enrollment on a v1/v2 store atomically publishes
+coordination control schema 3, its work record, and its ordinary operation
+receipt; an existing newer store retains its supported version. Records in
+schemas 1 and 2 remain unchanged by inspection, refusal, or ordinary commands.
 Schema 3 retains all existing work, notes, agreements, cases, ordinary receipts
 and operator-recovery history; subsequent operator recovery keeps schema 3.
 Decoding checks each managed attribution against its unique immutable enrollment
@@ -728,9 +731,69 @@ prevention guarantee.
 
 ### Scope and verification
 
-Enrollment is explicit after workspace preparation. This increment does not
-automatically announce tasks, submit by announcement reference, alter a running
-worker's instructions, monitor code, or deliver new notices. Those remain Plan
-2A milestones. F9's [verification](plans/structural-change-coordination/reports/f9-verification.md)
+F9 enrollment remains explicit after workspace preparation. The completion
+candidate adds coordinated pre-start linkage and observation separately; it
+does not alter a running worker's instructions. F9's [verification](plans/structural-change-coordination/reports/f9-verification.md)
 separates selected real-Git/metadata/runtime tests from actual TaskStore/SDK,
 complete pinned, installed/native and independent acceptance gates.
+
+## Coordinated admission and source authority (completion candidate)
+
+The admission extension uses the existing elected listener and parent identity. An
+ordinary `passeur_submit` remains schema 1. `passeur_submit_coordinated` takes
+`{ "request": { "schema_version": 2, "kind": "inline", "assignment": ... } }`
+or a `kind: "reference"` request with an exact
+`announcement: { "id": UUID, "revision": N }`. The CLI reads the inner JSON
+from `submit-coordinated --project PATH --request FILE --yes`. The assignment
+is the existing assignment schema; its objective and admitted allowed paths
+supply the coordinated intent and declared areas. Missing areas yield limited
+overlap evidence, not inferred scope. A failed coordinated admission is reported
+as such; callers should resolve its decision before submitting new work.
+
+`passeur_preflight` / `preflight --request FILE` reads the currently relevant
+overlap set and a `decision_identity`. Put that digest in the optional
+`expected_decision_identity` field of the same schema-2 request when freshness
+is required. An unrelated note does not invalidate the decision; a new relevant
+overlap before binding returns `COORDINATION_CHANGED` without admitting a task.
+After binding, later overlaps are observations. `passeur_announce` /
+`announce --request FILE --yes` publishes one immutable assignment with a stable
+operation key, explicit readers and an exact source view. `passeur_announcement`
+and `announcement --id UUID` inspect a visible announcement and its assignment;
+`passeur_withdraw_announcement` and `withdraw-announcement` withdraw an
+unresolved one by exact revision and stable key. An announcement has no worker.
+Submitting by reference uses its stored payload without repeating the prompt.
+
+Task capacity is reserved before metadata binding. TaskStore schema 5 admits
+the exact task ID, owner, key, intent hash and linkage before native execution.
+The metadata binding then settles before the queued task becomes eligible to
+start. A crash or uncertain reply is reconciled through the original request
+key and exact identities; an accepted task is never reconstructed from a fresh
+prompt or automatically replayed. A linked task remains service-owned across
+caller loss. A pre-workspace announcement becomes an F9 managed work record
+only after the task's prepared workspace can be verified. Task adoption and
+metadata ownership are distinct; source authority is rechecked against current
+task control. The original attribution and historical receipts remain intact.
+
+`passeur_work` adds `grant_source` and `watch_source` under the existing
+`schema_version: 1, kind: "command"` wrapper. The current work owner supplies a
+stable operation key, work ID and expected revision. `grant_source` replaces
+its exact recipient list with `report` or `detail` scopes; an empty list revokes
+all and clears existing watches. `watch_source` replaces exact recipient/region watches. It accepts optional
+exact-file `dialect_overrides` for `.js` as `jsx` and `.h` as `c` or `cpp`.
+Grant recipients must be explicit; metadata readers are separate. A watch
+requires current source authority, and it neither expands declared work areas
+nor grants source access itself. Share, close and metadata adoption clear grants
+and watches. Managed task-control changes invalidate earlier source access.
+Current authorization is checked on each report, detail, artifact and notice
+operation. See [structural reporting](structural-reporting.md) for the public
+CLI/MCP retrieval routes and limits.
+
+Control schemas 4, 5 and 6 add announcement/binding, source grant and watch
+representations while preserving supported older records. Task schema 5 is a
+coordinated immutable request; older task results and ordinary schema-4
+requests retain their meanings. Old binaries cannot safely write new schemas.
+An installed upgrade must retain the actual state namespace and use a compatible
+reader/writer; a profile backup is not a store downgrade. Metadata recovery
+remains an explicit operator action and does not adopt a native task. The
+[completion verification record](plans/structural-coordination-completion/reports/verification-and-release.md)
+separates source implementation from final acceptance.

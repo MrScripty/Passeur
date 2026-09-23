@@ -87,7 +87,7 @@ async function run(command: string, args: string[], cwd: string): Promise<string
 async function sourceFacts(source: string): Promise<{ revision: string; dirty: boolean; hash: string }> {
   const revision = (await run("git", ["rev-parse", "HEAD"], source)).trim();
   const dirty = Boolean((await run("git", ["status", "--porcelain=v1", "--untracked-files=all"], source)).trim());
-  const files = (await run("git", ["ls-files", "-z", "--", "src", "scripts/build-runtime.ts", "tsconfig.json", "package.json", "package-lock.json", "LICENSE"], source)).split("\0").filter(Boolean).sort();
+  const files = (await run("git", ["ls-files", "-z", "--", "src", "scripts/build-runtime.ts", "tsconfig.json", "package.json", "package-lock.json", "LICENSE", "vendor/native-grammars"], source)).split("\0").filter(Boolean).sort();
   const hash = createHash("sha256");
   for (const file of files) {
     const path = join(source, file);
@@ -277,6 +277,15 @@ export async function buildRuntimeCandidate(sourcePath: string, outputParentPath
         typeof metadata.version !== "string" || typeof locked.resolved !== "string" || typeof locked.integrity !== "string" ||
         !(await readdir(path)).some(file => /^LICENSE(?:\..+)?$/i.test(file))) {
       throw new BridgeError("BUILD_PARSER_MISMATCH", "Parser package differs from the selected lock or omits its license", { path });
+    }
+    if (locked.resolved.startsWith("file:")) {
+      const archiveLocation = locked.resolved.slice(5);
+      const archivePath = resolve(source, archiveLocation);
+      if (!archiveLocation.startsWith("vendor/native-grammars/") || !archiveLocation.endsWith(".tgz") ||
+          !contained(source, archivePath) || !(await lstat(archivePath)).isFile() ||
+          `sha512-${createHash("sha512").update(await readFile(archivePath)).digest("base64")}` !== locked.integrity) {
+        throw new BridgeError("BUILD_PARSER_MISMATCH", "Vendored parser source archive differs from its lock integrity", { path: archivePath });
+      }
     }
     parserArtifacts.push({ location, name, version: metadata.version, source_pin: `${locked.resolved}#${locked.integrity}`,
       sha256: await hashTree(path) });

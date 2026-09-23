@@ -1,0 +1,45 @@
+{
+  "coverage": "complete",
+  "declarations": [
+    {
+      "kind": "function_declaration", "name": "greet", "enclosing": [],
+      "range": { "start_byte": 39, "end_byte": 121 },
+      "signature": "local function greet(x, ...)", "parameters": ["x", "..."],
+      "result": { "state": "not_declared" }, "default_count": 0
+    },
+    {
+      "kind": "function_declaration", "name": "nested", "enclosing": ["greet"],
+      "range": { "start_byte": 70, "end_byte": 106 },
+      "signature": "local function nested()", "parameters": [],
+      "result": { "state": "not_declared" }, "default_count": 0,
+      "direct_body_text": "return x"
+    },
+    {
+      "kind": "function_declaration", "name": "Box:get", "enclosing": [],
+      "range": { "start_byte": 123, "end_byte": 157 },
+      "signature": "function Box:get(x)", "parameters": ["x"],
+      "result": { "state": "not_declared" }, "default_count": 0,
+      "direct_body_text": "return x"
+    },
+    {
+      "kind": "function_declaration", "name": "Box.read", "enclosing": [],
+      "range": { "start_byte": 159, "end_byte": 200 },
+      "signature": "function Box.read(self, x)", "parameters": ["self", "x"],
+      "result": { "state": "not_declared" }, "default_count": 0,
+      "direct_body_text": "return x"
+    },
+    {
+      "kind": "variable_declaration", "name": "value", "enclosing": [],
+      "range": { "start_byte": 202, "end_byte": 230 },
+      "signature": "local value = <default>", "parameters": [],
+      "result": { "state": "not_declared" }, "default_count": 1
+    }
+  ],
+  "changed": {
+    "greet": { "declaration_changed": false, "body_changed": true, "default_changed": false },
+    "value": { "declaration_changed": false, "body_changed": false, "default_changed": true }
+  },
+  "incomplete_limitations": ["declaration_body_incomplete", "parse_error_or_missing_token"],
+  "ambiguous_change_count": 4,
+  "added_name": "added"
+}

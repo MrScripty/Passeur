@@ -1,0 +1,20 @@
+{
+  "coverage": "complete",
+  "declarations": [
+    {
+      "name": "value",
+      "signature": "value: list[  <comment>\n int] = <default>",
+      "result": { "state": "declared", "syntax": "list[  <comment>\n int]" }
+    },
+    {
+      "name": "build",
+      "signature": "def build() -> list[  <comment>\n int]:",
+      "result": { "state": "declared", "syntax": "list[  <comment>\n int]" }
+    },
+    {
+      "name": "Alias",
+      "signature": "type Alias = list[  <comment>\n int]",
+      "result": { "state": "declared", "syntax": "list[  <comment>\n int]" }
+    }
+  ]
+}

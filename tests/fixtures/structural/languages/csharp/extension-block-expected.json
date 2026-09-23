@@ -1,0 +1,7 @@
+{
+  "names": ["Extensions", "string", "LengthPlus"],
+  "kinds": ["class_declaration", "extension_declaration", "property_declaration"],
+  "receiver": ["string text"],
+  "property_enclosing": ["Extensions", "string"],
+  "property_result": "int"
+}

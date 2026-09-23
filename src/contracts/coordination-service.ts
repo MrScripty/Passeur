@@ -1,7 +1,7 @@
 import { BridgeError } from "../core/errors.js";
 import { canonicalHash } from "../core/async.js";
 import { CONTROL_MAX_BYTES, coordinationOperationKey, decodeCoordinationReceipt, decodeLimits,
-  decodeRepositoryCommand, decodeRecoveryCommand, decodeRecoveryReceipt, entityId, parentId, type RecoveryCommand, type RecoveryReceipt, type Limits, type Receipt, type RepositoryCommand } from "./coordination-control.js";
+  decodeRepositoryCommand, decodePublicRecoveryCommand, decodeRecoveryReceipt, entityId, parentId, type RecoveryCommand, type RecoveryReceipt, type Limits, type Receipt, type RepositoryCommand } from "./coordination-control.js";
 
 /** Versioned metadata operation; CLI/MCP project this contract without granting additional authority. */
 export const COORDINATION_SERVICE_VERSION = 1;
@@ -100,7 +100,7 @@ export function decodeCoordinationRequest(value: unknown): CoordinationRequest {
       fields(v, ["schema_version", "kind", "command"]); result = { schema_version: 1, kind: v.kind, command: decodeRepositoryCommand(v.command) }; break;
     case "recover_metadata":
       fields(v, ["schema_version", "kind", "recovery"]);
-      result = { schema_version: 1, kind: v.kind, recovery: decodeRecoveryCommand(v.recovery) }; break;
+      result = { schema_version: 1, kind: v.kind, recovery: decodePublicRecoveryCommand(v.recovery) }; break;
     case "read": case "recovery_read": {
       fields(v, ["schema_version", "kind", "selector", "offset", "limit", "expected_hash"]);
       const offset = boundedInteger(v.offset, COORDINATION_VIEW_BYTES), expected_hash = v.expected_hash === null ? null : digest(v.expected_hash);
@@ -123,7 +123,9 @@ export function coordinationRequestLane(request: CoordinationRequest): "ordinary
   if (request.kind !== "command") return "ordinary";
   const c = request.command;
   return c.kind === "close_work" || c.kind === "release_case" || c.kind === "record_external_settlement"
-    || c.kind === "withdraw_note" || c.kind === "share_work" && c.readers.length === 0 ? "control" : "ordinary";
+    || c.kind === "withdraw_note" || c.kind === "share_work" && c.readers.length === 0
+    || c.kind === "grant_source" && c.recipients.length === 0
+    || c.kind === "watch_source" && c.watchers.length === 0 ? "control" : "ordinary";
 }
 
 /** Complete destination proof, including the request/actor/selector relation. */

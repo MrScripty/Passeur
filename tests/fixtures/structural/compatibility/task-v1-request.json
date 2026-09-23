@@ -1,0 +1,15 @@
+{
+  "task_id": "22222222-2222-4222-8222-222222222222",
+  "project_id": "historical-project",
+  "canonical_hash": "historical-v1-hash",
+  "accepted_at": "2025-01-01T00:00:00.000Z",
+  "deadline_at": "2025-01-01T00:01:00.000Z",
+  "request": {
+    "schema_version": 1,
+    "request_key": "historical-v1-key",
+    "mode": "review",
+    "objective": "Inspect retained result",
+    "context": "Historical fixture",
+    "acceptance_criteria": ["Keep retained evidence"]
+  }
+}

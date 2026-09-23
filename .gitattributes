@@ -1,0 +1,2 @@
+vendor/native-grammars/*.patch whitespace=-blank-at-eol
+tests/fixtures/structural/languages/c/bitint.c whitespace=cr-at-eol

@@ -23,7 +23,7 @@ const capturedSource = z.object({ status: z.literal("present"), source, mode: z.
   consistency: z.enum(["immutable_git_blob", "sampled_file_not_atomic"]), blob_oid: z.string().optional() }).strict();
 const request = z.object({ version: z.literal(HELPER_PROTOCOL_VERSION), kind: z.literal("extract"),
   job_id: z.string().regex(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
-  dialect: z.enum(["rust", "typescript", "tsx"]), file: capturedSource }).strict();
+  dialect: z.enum(["rust", "typescript", "tsx", "javascript", "jsx", "python", "lua", "kotlin", "zig", "csharp", "c", "cpp", "odin", "svelte5"]), file: capturedSource }).strict();
 
 /** Decode before parsing; never treat an IPC object's claimed byte length or hash as evidence. */
 export function decodeHelperRequest(raw: unknown): { job_id: string; dialect: NativeDialect; file: SourceFile } {

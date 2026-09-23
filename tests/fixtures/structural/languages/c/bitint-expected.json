@@ -1,0 +1,7 @@
+{
+  "name": "bits",
+  "kind": "declaration",
+  "signature": "_BitInt(17) bits;",
+  "result": "_BitInt(17)",
+  "range": { "start_byte": 12, "end_byte": 29 }
+}

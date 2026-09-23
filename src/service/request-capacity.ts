@@ -10,7 +10,9 @@ export const CONNECTION_CONTROL_REQUESTS = 4;
 export function serviceRequestLane(operation: string, args: unknown): RequestLane {
   if (operation === "coordination") return coordinationRequestLane(decodeCoordinationRequest(args));
   return operation === "cancel" || operation === "input_claim" || operation === "input_answer"
-    || operation === "input_dismiss" || operation === "attach" || operation === "stop" ? "control" : "ordinary";
+    || operation === "input_dismiss" || operation === "attach" || operation === "stop"
+    || operation === "withdraw_announcement" || operation === "announcement"
+    || operation === "structural_notice_pull" || operation === "structural_notice_ack" ? "control" : "ordinary";
 }
 
 /** The existing pending-request map is the sole reservation owner. */

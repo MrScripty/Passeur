@@ -1,0 +1,13 @@
+{
+  "names": ["N", "Box", "Box", "Run", "Name", "Count", "Seed"],
+  "kinds": ["file_scoped_namespace_declaration", "record_declaration", "constructor_declaration", "method_declaration", "property_declaration", "property_declaration", "field_declaration"],
+  "record_parameters": ["T Value"],
+  "method_enclosing": ["N", "Box"],
+  "method_signature": "<attribute>\n    public int Run(ref int x, int offset = <default>)",
+  "method_parameters": ["ref int x", "int offset = <default>"],
+  "method_result": "int",
+  "property_initializer_digests": 1,
+  "first_start_byte": 33,
+  "first_source": "namespace N;",
+  "limitations": []
+}

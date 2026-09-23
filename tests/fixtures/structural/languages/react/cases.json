@@ -1,0 +1,12 @@
+{
+  "jsx_dialect": "jsx",
+  "jsx_input": "input.jsx",
+  "jsx_changed": "changed.jsx",
+  "tsx_dialect": "tsx",
+  "tsx_input": "input.tsx",
+  "tsx_changed": "changed.tsx",
+  "configured_jsx_js": "configured.jsx.js",
+  "configured_jsx_js_changed": "configured_changed.jsx.js",
+  "incomplete": "incomplete.jsx",
+  "expectations": "expected.json"
+}

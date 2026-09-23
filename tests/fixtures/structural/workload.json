@@ -1,0 +1,13 @@
+{
+  "description": "Component workload: actual Git capture plus native extraction of five language fixture pairs and two current Passeur TypeScript files. Public service and installed-host measurements are separate acceptance runs.",
+  "public_paths": ["project/repository-runtime.ts", "project/source.ts", "rust/sample.rs", "svelte/sample.svelte"],
+  "pairs": [
+    { "dialect": "typescript", "input": "tests/fixtures/structural/languages/typescript/input.ts", "observed": "tests/fixtures/structural/languages/typescript/changed.ts", "path": "typescript/sample.ts" },
+    { "dialect": "rust", "input": "tests/fixtures/structural/languages/rust/input.rs", "observed": "tests/fixtures/structural/languages/rust/changed.rs", "path": "rust/sample.rs" },
+    { "dialect": "cpp", "input": "tests/fixtures/structural/languages/cpp/input.cpp", "observed": "tests/fixtures/structural/languages/cpp/changed.cpp", "path": "cpp/sample.cpp" },
+    { "dialect": "c", "input": "tests/fixtures/structural/languages/c/input.c", "observed": "tests/fixtures/structural/languages/c/changed.c", "path": "c/sample.c" },
+    { "dialect": "svelte5", "input": "tests/fixtures/structural/languages/svelte5/input.svelte", "observed": "tests/fixtures/structural/languages/svelte5/changed.svelte", "path": "svelte/sample.svelte" },
+    { "dialect": "typescript", "input": "src/core/repository-runtime.ts", "observed": "src/core/repository-runtime.ts", "append_comment": true, "path": "project/repository-runtime.ts" },
+    { "dialect": "typescript", "input": "src/observation/source.ts", "observed": "src/observation/source.ts", "append_comment": true, "path": "project/source.ts" }
+  ]
+}

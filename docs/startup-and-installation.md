@@ -1,27 +1,33 @@
 # Shared-service installation and cutover
 
-This candidate targets the existing `18c8eb9` layout. It is not yet live-qualified. Read [compatibility](compatibility.md) and [shared service](shared-service.md) first.
+This procedure targets the [structural completion candidate](plans/structural-coordination-completion/plan.md), whose acceptance remains open. Read [compatibility](compatibility.md), [shared service](shared-service.md) and [structural reporting](structural-reporting.md) first. The supported service environment is qualified Linux on local filesystems, with the candidate's exact Node ABI, architecture, libc and native grammar bundle.
 
-1. Apply/review the source patch in the complete checkout, then run `npm ci`, `npm run check`, `npm test`, and `npm run build:runtime`. No dependency pins were changed. Linux and util-linux flock are required for service execution.
-2. Follow the existing exact-artifact installation procedure below. Do not overwrite an installed build or redirect a running process. The same installed CLI now supplies the stdio front end and guarded `service-run` child; distribution already includes the complete compiled source tree.
+1. Review the complete source and lockfile. Provision the exact pinned dependencies under explicit authority with `npm ci`, then run `npm run check` and `npm test`. Commit the reviewed result through ordinary hooks before building a clean candidate. The native Node binding and pinned grammar packages are build inputs. Linux and util-linux flock are required for service execution.
+2. Build a clean candidate with `npm run build:runtime -- --source "$PWD" --output /absolute/disposable/artifact-output`. Use an output root outside the source tree. Install its returned candidate path into a separate user-owned root using the CLI procedure below. Neither build, discovery nor normal execution installs dependencies. Do not overwrite an installed build or redirect a running process.
 3. Account for tasks and close old connection-owned servers normally. Do not delete their leases or select another state root.
-4. From the selected installed CLI, run `migrate-profile --project ABSOLUTE_PROJECT --profile ABSOLUTE_PROFILE --yes`. It writes a validated profile3 and exact backup. Do not restore an old profile and assume the new store can be downgraded.
+4. From the selected installed CLI, run `migrate-profile --project ABSOLUTE_PROJECT --profile ABSOLUTE_PROFILE --yes` when the profile needs migration. It writes a validated profile3 and exact backup. Current structural metadata v6 and coordinated task v5 require a capable reader; an older reader must refuse without changing bytes. A backup is evidence, not a downgrade path.
 5. Update the existing named registration using `register-codex` with its unchanged project/profile/state/server-name binding and explicit `--runtime`. Required/optional policy and existing permission settings are preserved unless an authorized flag changes them. Use the existing fingerprint/adoption procedure for conflicting unmanaged entries.
-6. Start fresh Codex clients. Call `passeur_status` (frontend and service identities differ), `passeur_prepare`, then the new submit/wait tools. Two compatible linked worktree clients share one service; materially different profiles/builds conflict visibly.
+6. Start fresh Codex clients. Call `passeur_status` (frontend and service identities differ), `passeur_prepare`, then the task and coordination tools. Two compatible linked worktree clients share one service; materially different profiles/builds conflict visibly. Verify the actual installed native parser separately with `doctor`; parser readiness does not determine task readiness or retained-result access.
 
 The old four delegation entrypoints now reject execution and direct clients to submit/wait/input/cancel. Registration probes enumerate this catalog and inspect status2 without creating tasks. `probe:service -- --project PATH --profile FILE --state-root ROOT --runtime ABSOLUTE_INSTALLED_CLI --yes` exercises two real local front ends/one service without inference after building. `probe:agents` is separately opt-in live work and leaves accepted tasks alive when its observation finishes; retain the returned IDs and explicitly adopt/control them from the real host.
 
 `service-stop --project PATH --profile FILE --state-root ROOT --operation-key KEY --yes` closes service admission and drains without a task deadline. To explicitly cancel named tasks, use `--cancel-tasks ID[,ID...] --yes --operation-key KEY` only with the required task-control authority. Ordinary front-end exit never forwards a service-stop request.
 
+## Installed acceptance
+
+Use [installed acceptance](installed-acceptance.md) for the clean artifact, relocated offline all-language probe, schema cutover, named host and resource runs. The installed CLI's `doctor --project PATH` reports each grammar's selected-artifact readiness without preparing or authenticating a worker; `--prepare --yes` separately requests task preparation. The installed parser manifest records source pins, native hashes, Node ABI/N-API and libc. A mismatched or missing component produces a capability diagnostic. It does not authorize a fallback to development modules.
+
+`PASSEUR_OBSERVATION_MONITOR=off` disables the optional background monitor for the SC16 same-machine baseline; the default is `on`. Set it on the service environment before startup and restore normal monitoring after measurement. It is an observation setting, not a worker lifetime or task-control limit. See [resource behavior](plans/structural-coordination-completion/reports/resource-behavior.md).
+
 ## Historical installation reference
 
-The artifact installation, named-registration edit and backup mechanics below remain the reference. References below to task schema3/profile2, single-connection ownership or indefinite delegation are superseded by [task lifecycle](task-lifecycle.md), not a second supported execution path.
+The artifact installation, named-registration edit and backup mechanics below remain the reference. Earlier task/profile and connection-owned descriptions are superseded by [task lifecycle](task-lifecycle.md).
 
 # Discoverable startup and installed runtime
 
 ## Availability and coordination
 
-Passeur connects its fixed eleven-tool MCP interface before it resolves the project, reads the execution profile, accesses task state, or loads Muse. A functioning Node/MCP installation is still required. A broken executable or missing essential dependency cannot expose its own tools.
+Passeur connects its fixed MCP catalog before it resolves the project, reads the execution profile, accesses task state, or loads Muse and the native parser bundle. A functioning Node/MCP installation is still required. A broken executable or missing essential dependency cannot expose its own tools.
 
 `passeur_status` is read-only. It returns the running identity, configured binding and observed coordination/profile/approval state. `not_checked` is not success. Provider compatibility is deliberately not inferred from versions, configuration or a readiness check.
 
@@ -43,7 +49,7 @@ npm test
 
 `npm test` first builds the real CLI, then runs the core and Vitest suites. The new real-stdio tests require that compiled CLI. A narrower check is `npm run test:installed`. These are tests of Passeur, not a new policy for delegated product projects.
 
-The source update was not fully dependency-checked in its preparation environment. See the plan's `reports/implementation-evidence.md`; live acceptance remains outstanding.
+These commands check the selected source, not installed or live acceptance. The [completion claim status](plans/structural-coordination-completion/reports/claim-status.md) records the current candidate and remaining evidence.
 
 ## Build and install a runtime
 
@@ -61,7 +67,7 @@ node dist/src/cli.js install \
   --install-root "$HOME/.local/share/passeur/runtimes" --yes
 ```
 
-The installed directory includes compiled code, locked production dependencies, licenses in their packages, a CycloneDX inventory and a runtime manifest. Node is an external dependency. Existing build directories are not overwritten. No automatic garbage collection removes older installations.
+The installed directory includes compiled code and helper, locked production dependencies and native grammar artifacts, package licenses, a CycloneDX inventory and a runtime manifest with native identities. Node is an external dependency. Existing build directories are not overwritten. No automatic garbage collection removes older installations.
 
 `--allow-dirty` on `build:runtime` creates an explicitly developmental candidate, not an installable production artifact. Development checkout registration requires `--development-runtime`; it is not an implicit fallback.
 
@@ -111,13 +117,13 @@ Responses/stderr are bounded and redact common credential patterns. Do not put s
 
 ## Compatibility and rollback
 
-This source change keeps task schema 2, supported schema-1 history, retained results, explicit dispositions and the existing worker adapter. It does not move state. Stop/drain existing known coordinators before switching registrations to a different installed build. Rollback selects an existing previous runtime explicitly; it does not reset records or imply every older runtime can interpret newer state.
+The structural candidate adds metadata schema v6 and coordinated task schema v5 while retaining supported historical meanings. Stop/drain existing known coordinators before switching registrations to a different installed build. An old binary must refuse unsupported new records without rewriting them. Rollback selects an existing previous runtime only where that reader is compatible with the actual state; it does not reset records. Follow [recovery](recovery.md) for uncertain native work.
 
 The artifact installation contract is not tamper-proof against a user editing their own files. Linux evidence does not establish Windows/macOS, network-filesystem, multi-user or process-fencing guarantees. Complete [installed acceptance](installed-acceptance.md) before treating the setup as operationally accepted.
 
 
 ## Registered-agent extension
 
-The installed allowlist now includes seven neutral operations (`passeur_status`, `passeur_prepare`, `passeur_agents`, `passeur_delegate`, `passeur_delegate_batch`, `passeur_result`, `passeur_finalize`) and the four supported legacy Muse operations. Re-register the exact new installed runtime under the existing server name/binding through the procedure above. Do not leave an old six-tool allowlist and mistake hidden neutral tools for a missing provider.
+The installed MCP catalog includes the task, coordination and structural operations as well as supported legacy entrypoints. Re-register the exact new installed runtime under the existing server name/binding through the procedure above. Confirm the complete actual catalog in a fresh host session; an older allowlist can hide new tools.
 
 Agent profiles remain lazily loaded. [Registered-agent configuration](registered-agents.md) owns explicit profile edits, version migration and controlled restart requirements. The existing package manifest/install code supplies the adapter dependency closure; verify the actual installed candidate without relying on its source checkout. Build/runtime identity, server name, agent ID and native vendor client identifier remain distinct.

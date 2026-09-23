@@ -1,0 +1,38 @@
+diff --git a/grammar.js b/grammar.js
+index 7cdde6e..dc1ceaa 100644
+--- a/grammar.js
++++ b/grammar.js
+@@ -594,6 +594,7 @@ module.exports = grammar({
+       $.macro_type_specifier,
+       $.sized_type_specifier,
+       $.primitive_type,
++      $.bitint_type,
+       $._type_identifier,
+     ),
+ 
+@@ -608,6 +609,7 @@ module.exports = grammar({
+         field('type', optional(choice(
+           prec.dynamic(-1, $._type_identifier),
+           $.primitive_type,
++          $.bitint_type,
+         ))),
+         repeat1(choice(
+           'signed',
+@@ -627,6 +629,7 @@ module.exports = grammar({
+         field('type', optional(choice(
+           prec.dynamic(-1, $._type_identifier),
+           $.primitive_type,
++          $.bitint_type,
+         ))),
+         repeat(choice(
+           'signed',
+@@ -637,6 +640,9 @@ module.exports = grammar({
+       ),
+     ),
+ 
++    // C23 bit-precise integer type; the width is an integer constant expression.
++    bitint_type: $ => seq('_BitInt', '(', field('width', $.expression), ')'),
++
+     primitive_type: _ => token(choice(
+       'bool',
+       'char',

@@ -61,7 +61,7 @@ export async function launchService(binding: ResolvedBinding, exactCli: string):
     "--state-root", binding.stateRoot, "--expected-repository-id", binding.repositoryId,
     ...(binding.profilePath ? ["--profile", binding.profilePath] : [])];
   const child = spawn("flock", args, { stdio: ["pipe", "ignore", "ignore"], detached: true, shell: false,
-    env: Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR"].flatMap((k) => process.env[k] === undefined ? [] : [[k, process.env[k]]])) });
+    env: Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR", "PASSEUR_OBSERVATION_MONITOR"].flatMap((k) => process.env[k] === undefined ? [] : [[k, process.env[k]]])) });
   child.on("error", () => reject(new BridgeError("SERVICE_START_FAILED", "The guarded service executable could not be launched")));
   child.on("exit", (code) => { if (code !== 0 && code !== 1) reject(new BridgeError("SERVICE_START_FAILED", "Guarded service startup exited; inspect the exact installed runtime and dependencies")); });
   child.stdin!.on("error", () => undefined);

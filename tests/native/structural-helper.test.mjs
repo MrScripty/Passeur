@@ -72,7 +72,7 @@ test('invalid captured source is rejected at admission or by the real child, the
     const wrongLength = { ...captured('function f() { return 1; }'), byte_length: 1 };
     await assert.rejects(helper.extract(wrongLength, 'typescript'), { code: 'SOURCE_TOO_LARGE' });
     const wrongHash = { ...captured('function f() { return 1; }'), content_sha256: 'a'.repeat(64) };
-    await assert.rejects(helper.extract(wrongHash, 'typescript'), { code: 'STRUCTURAL_ANALYSIS_INCOMPLETE' });
+    await assert.rejects(helper.extract(wrongHash, 'typescript'), { code: 'STRUCTURAL_HELPER_REQUEST_INVALID' });
     const recovered = await helper.extract(captured('function recovered() { return 2; }', 2), 'typescript');
     assert.equal(recovered.declarations[0].name, 'recovered');
   } finally { await helper.close(); }

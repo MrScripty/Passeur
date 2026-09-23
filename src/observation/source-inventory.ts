@@ -5,17 +5,17 @@ import { BridgeError, nativeCode } from "../core/errors.js";
 import { throwIfAborted } from "../core/async.js";
 import { MAX_REGIONS, type Region } from "../contracts/coordination-control.js";
 import { gitWithoutLazyFetch } from "../workspace/project.js";
-import { validateSourcePath } from "./source.js";
+import { assertSourceMount, sourceMountId, validateSourcePath } from "./source.js";
+import { isStructuralSourcePath } from "./language-routing.js";
 
 export type SourceInventory = Readonly<{ paths: string[]; limitations: string[] }>;
 
 const MAX_FILES = 256;
 const MAX_ENTRIES = 4096;
 const MAX_DEPTH = 24;
-const SOURCE_EXTENSION = /\.(?:rs|ts|tsx|mts|cts)$/;
 const GIT_READ_FLAGS = ["--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false"];
 
-function sourcePath(path: string): boolean { return SOURCE_EXTENSION.test(path); }
+function sourcePath(path: string): boolean { return isStructuralSourcePath(path); }
 function inside(root: string, actual: string): boolean {
   const suffix = relative(root, actual);
   return suffix !== ".." && !suffix.startsWith("../") && !isAbsolute(suffix);
@@ -56,17 +56,18 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
 
   const limitations = new Set<string>();
   const candidates = new Set<string>();
-  const repositoryBoundaries = new Set<string>();
-  const beneathBoundary = (path: string): boolean =>
-    [...repositoryBoundaries].some(boundary => path === boundary || path.startsWith(`${boundary}/`));
-  const blockBoundary = (path: string): void => {
-    repositoryBoundaries.add(path);
-    limitations.add("nested_repository_boundary");
+  const sourceBoundaries = new Map<string, string>();
+  const beneathBoundary = (path: string): string | undefined =>
+    [...sourceBoundaries].find(([boundary]) => path === boundary || path.startsWith(`${boundary}/`))?.[1];
+  const blockBoundary = (path: string, reason = "nested_repository_boundary"): void => {
+    sourceBoundaries.set(path, reason);
+    limitations.add(reason);
     for (const candidate of candidates) if (candidate === path || candidate.startsWith(`${path}/`)) candidates.delete(candidate);
   };
   const add = (path: string): void => {
     if (!sourcePath(path) || !admitted(path, areas)) return;
-    if (beneathBoundary(path)) { limitations.add("nested_repository_boundary"); return; }
+    const boundary = beneathBoundary(path);
+    if (boundary) { limitations.add(boundary); return; }
     // The Git helper decodes stdout as UTF-8. A replacement character cannot prove the original path bytes.
     if (path.includes("\ufffd")) { limitations.add("source_path_unrepresentable"); return; }
     try { validateSourcePath(path); } catch { limitations.add("source_path_unrepresentable"); return; }
@@ -130,6 +131,7 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
   let entries = 0;
   let stopped = false;
   const handles: FileHandle[] = [];
+  let worktreeMountId: string;
   async function walk(handle: FileHandle, prefix: string, depth: number): Promise<void> {
     throwIfAborted(signal);
     await currentDescriptorPath(handle, root);
@@ -169,6 +171,14 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
       }
       handles.push(child);
       try {
+        try { await assertSourceMount(child, worktreeMountId); }
+        catch (error) {
+          if (error instanceof BridgeError && error.code === "SOURCE_MOUNT_BOUNDARY") {
+            blockBoundary(path, "mounted_source_boundary");
+            continue;
+          }
+          throw error;
+        }
         const stat = await child.stat();
         await currentDescriptorPath(handle, root);
         await currentDescriptorPath(child, root);
@@ -184,6 +194,7 @@ export async function listDeclaredSourcePaths(workspaceRoot: string, inputCommit
   const rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   handles.push(rootHandle);
   try {
+    worktreeMountId = await sourceMountId(rootHandle);
     await walk(rootHandle, "", 0);
   } catch (error) {
     if (error instanceof BridgeError && error.code === "STRUCTURAL_INVENTORY_RACE") limitations.add("source_inventory_race");

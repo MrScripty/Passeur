@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { Assignment } from "../contracts/agents.js";
-import type { LifecyclePolicy, LifecycleResult, SubmissionIdentity, DurableRequest, TaskObservation } from "../contracts/tasks.js";
+import { CoordinatedSubmissionIdentitySchema, CoordinatedLinkSchema, coordinatedMaterialIdentity, TaskIdSchema } from "../contracts/tasks.js";
+import type { LifecyclePolicy, LifecycleResult, SubmissionIdentity, CoordinatedSubmissionIdentity, CurrentDurableRequest, CoordinatedDurableRequest, CoordinatedLink, TaskObservation } from "../contracts/tasks.js";
 import { TaskControls, initialControl, owns, type ClientActor } from "./task-control.js";
 import { InputBroker } from "./input-broker.js";
 import type { AgentRegistry, SelectedAgent } from "../agents/registry.js";
@@ -15,8 +16,47 @@ import type { TaskStore } from "../store/task-store.js";
 import { collectChanges, createDiff, createManifest, observeDelivery, prepareWorkspace, type Workspace } from "../workspace/worktree.js";
 import { currentRevision, digestFiles, sourceStatus } from "../workspace/project.js";
 
-type Entry = { selected: SelectedAgent; record: DurableRequest; controller: AbortController;
+type Entry = { selected: SelectedAgent; record: CurrentDurableRequest; controller: AbortController;
   stage: "queued" | "running" | "settling"; done: Promise<void>; resolve: () => void };
+export type CoordinatedReservation = Readonly<{ task_id: string; request_key: string; owner_id: string;
+  intent_hash: string; payload_digest: string; source_view: string; announcement?: { id: string; revision: number };
+  status: "reserved" | "admitted" }>;
+type PendingReservation = { token: CoordinatedReservation; identity: CoordinatedSubmissionIdentity; selected: SelectedAgent };
+/** Reconciles durable linkage and a never-started cancellation from retained admission alone. */
+export async function reconcileCoordinatedRecord(store: TaskStore, record: CoordinatedDurableRequest,
+  exactDecision: CoordinatedLink, liveControls?: TaskControls): Promise<boolean> {
+  const link = CoordinatedLinkSchema.parse(exactDecision);
+  const retained = await store.durableRequest(record.task_id);
+  if (retained.schema_version !== 5 || canonicalHash(retained) !== canonicalHash(record) ||
+    canonicalHash(retained.linkage) !== canonicalHash(link)) {
+    throw new BridgeError("COORDINATION_LINK_CONFLICT", "Reconciliation requires the exact retained task and metadata binding");
+  }
+  if (retained.linkage.announcement) await store.changeAnnouncement(retained.linkage.announcement.id,
+    retained.linkage.owner_id, { kind: "link", task_id: retained.task_id, revision: retained.linkage.announcement.revision });
+  await store.settleCoordinatedLink(retained.linkage);
+  const controls = liveControls ?? new TaskControls(store, retained.execution.policy.max_waiters, retained.execution.policy.max_control_receipts);
+  return settleNeverStartedCoordinatedCancellation(store, retained, controls);
+}
+async function settleNeverStartedCoordinatedCancellation(store: TaskStore, record: CoordinatedDurableRequest,
+  controls: TaskControls): Promise<boolean> {
+  const id = record.task_id, state = await store.readControl(id);
+  if (!state.cancel || state.phase === "terminal" || state.native.state !== "not_started") return false;
+  if (!await store.readCoordinatedLink(id)) return false;
+  const saved = await store.readResult(id);
+  if (saved && (saved.schema_version !== 4 || saved.execution_status !== "cancelled" || saved.worker_stop !== "not_started")) {
+    throw new BridgeError("COORDINATION_CANCELLATION_CONFLICT", "Retained result contradicts never-started cancellation");
+  }
+  if (!saved) {
+    const result = { ...baseResult(id, record.request, record.execution), execution_status: "cancelled" as const,
+      summary: "Cancelled before coordinated native startup", native_evidence: state.native };
+    await store.writeResult(id, result);
+  }
+  await controls.change(id, (s) => {
+    if (!s.cancel || s.native.state !== "not_started") throw new BridgeError("COORDINATION_CANCELLATION_CONFLICT", "Never-started cancellation evidence changed");
+    s.phase = "terminal"; s.outcome = "cancelled"; s.settled_outcome = "cancelled"; delete s.attention;
+  });
+  return true;
+}
 const now = () => new Date().toISOString();
 export function assignmentPrompt(request: Assignment, id: string, workspace: Workspace): string {
   return `Complete one independent Passeur assignment.\nTask: ${id}\nMode: ${request.mode}\nWorkspace: ${workspace.path}\nObjective: ${request.objective}\nContext:\n${request.context}\nAcceptance criteria:\n${request.acceptance_criteria.join("\n")}\nContext files:\n${request.context_files?.join("\n") ?? "none"}\nAllowed paths:\n${request.allowed_paths?.join("\n") ?? "follow assignment scope"}\nRead applicable repository instructions. Perform the scoped checks those instructions require. Preserve hooks, signing, shared configuration and other workers. ${request.mode === "implement" ? "Stage only intended changes and create ordinary commits on this task branch. Do not modify target refs, integrate other work, bypass hooks or manufacture empty commits." : "Inspect only; do not write or run shell commands."}\n${workerMessageInstructions} Passeur observes Git; the caller owns broader acceptance and integration.`;
@@ -29,12 +69,16 @@ export class Coordinator {
   readonly inputs: InputBroker;
   readonly #admission = new Mutex();
   readonly #entries = new Map<string, Entry>();
+  readonly #reservations = new Map<string, PendingReservation>();
   #queue: Entry[] = [];
   #active = 0;
   #closing = false;
   #frozen: string | undefined;
   #pump: Promise<void> | undefined;
   onSettled?: () => void;
+  /** Signals the exact terminal task; the subscriber owns metadata retries and asynchronous failure. */
+  onTaskSettled?: (taskId: string) => void;
+  onCoordinatedWorkspacePrepared?: (record: CoordinatedDurableRequest, workspace: Workspace) => Promise<void>;
   constructor(readonly project: string, readonly projectId: string, readonly policy: LifecyclePolicy,
     readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority: () => void = () => {}, controls?: TaskControls) {
     this.policy = structuredClone(policy); Object.freeze(this.policy.implementation); Object.freeze(this.policy);
@@ -44,7 +88,7 @@ export class Coordinator {
   isActive(id: string): boolean { return this.#entries.has(id); }
   get activeCount(): number { return this.#active; }
   get queuedCount(): number { return this.#queue.length; }
-  get outstandingCount(): number { return this.#entries.size; }
+  get outstandingCount(): number { return this.#entries.size + this.#reservations.size; }
   get frozenReason(): string | undefined { return this.#frozen; }
   async assertMutationAllowed(): Promise<void> {
     this.assertAuthority();
@@ -64,21 +108,23 @@ export class Coordinator {
     let taskId = "";
     await this.#admission.run(async () => {
       signal.throwIfAborted();
+      if (this.#reservations.has(identity.assignment.request_key)) throw new BridgeError("REQUEST_KEY_CONFLICT", "Request key has a pending coordinated admission");
       const prior = await this.store.find({ request_key: identity.assignment.request_key });
       if (prior) {
-        if (!("schema_version" in prior) || prior.schema_version !== 4) throw new BridgeError("LEGACY_REQUEST_KEY", "Use historical result access; this key cannot start a new execution");
+        if (!("schema_version" in prior) || prior.schema_version !== 4 && prior.schema_version !== 5) throw new BridgeError("LEGACY_REQUEST_KEY", "Use historical result access; this key cannot start a new execution");
         owns(await this.store.readControl(prior.task_id), actor);
         if (prior.canonical_hash !== hash) throw new BridgeError("REQUEST_KEY_CONFLICT", "Request key names different material intent or source view");
         taskId = prior.task_id; return;
       }
       await this.assertMutationAllowed();
-      let unfinished = 0;
-      for (const record of await this.store.list()) if ((await this.store.readState(record.task_id)).phase !== "terminal") unfinished++;
+      let unfinished = this.#reservations.size;
+      for (const record of await this.store.list()) if ((await this.store.readState(record.task_id)).phase !== "terminal" &&
+        this.#reservations.get(record.request.request_key)?.token.task_id !== record.task_id) unfinished++;
       if (unfinished >= this.policy.max_workers + this.policy.max_queued_tasks) throw new BridgeError("CAPACITY_EXCEEDED", "Repository worker and queue capacity is full");
       const selected = this.registry.select(identity.assignment, this.policy);
       signal.throwIfAborted();
       const id = randomUUID();
-      const record: DurableRequest = { schema_version: 4, task_id: id, project_id: this.projectId, canonical_hash: hash,
+      const record: CurrentDurableRequest = { schema_version: 4, task_id: id, project_id: this.projectId, canonical_hash: hash,
         accepted_at: now(), source_view: identity.source_view, initial_owner: actor.owner_id, request: identity.assignment, execution: selected.snapshot };
       // The request and initial control share one publication boundary, before any native/Git effects.
       await this.store.create(record, initialControl(id, actor.owner_id));
@@ -89,15 +135,176 @@ export class Coordinator {
     this.#kick();
     return this.controls.read(taskId, actor);
   }
+  /** Capacity and identity are captured before metadata ordering; no lock crosses that external decision. */
+  async reserveCoordinated(identity: CoordinatedSubmissionIdentity, actor: ClientActor, signal: AbortSignal): Promise<CoordinatedReservation> {
+    return this.#reserveCoordinated(identity, actor, signal);
+  }
+  /** Reuse metadata's exact published task identity after an interrupted bind/admission frontier. */
+  async recoverCoordinatedReservation(identity: CoordinatedSubmissionIdentity, actor: ClientActor, taskId: string, signal: AbortSignal): Promise<CoordinatedReservation> {
+    TaskIdSchema.parse(taskId);
+    return this.#reserveCoordinated(identity, actor, signal, taskId);
+  }
+  async #reserveCoordinated(identity: CoordinatedSubmissionIdentity, actor: ClientActor, signal: AbortSignal, recoveredId?: string): Promise<CoordinatedReservation> {
+    signal.throwIfAborted();
+    identity = CoordinatedSubmissionIdentitySchema.parse(identity);
+    const intent_hash = canonicalHash(coordinatedMaterialIdentity(identity)), payload_digest = canonicalHash(identity.assignment);
+    return this.#admission.run(async () => {
+      signal.throwIfAborted();
+      const key = identity.assignment.request_key;
+      const prior = await this.store.find({ request_key: key });
+      if (prior) {
+        if (!("schema_version" in prior) || prior.schema_version !== 5) throw new BridgeError("REQUEST_KEY_CONFLICT", "Request key belongs to a different submission contract");
+        owns(await this.store.readControl(prior.task_id), actor);
+        if (prior.canonical_hash !== intent_hash || prior.initial_owner !== actor.owner_id) throw new BridgeError("REQUEST_KEY_CONFLICT", "Request key names another coordinated intent");
+        if (recoveredId && prior.task_id !== recoveredId) throw new BridgeError("COORDINATION_LINK_CONFLICT", "Metadata binding names another admitted task");
+        return { task_id: prior.task_id, request_key: key, owner_id: actor.owner_id, intent_hash, payload_digest,
+          source_view: identity.source_view, ...(identity.announcement ? { announcement: identity.announcement } : {}), status: "admitted" };
+      }
+      const existing = this.#reservations.get(key);
+      if (existing) {
+        if (existing.token.intent_hash !== intent_hash || existing.token.owner_id !== actor.owner_id) throw new BridgeError("REQUEST_KEY_CONFLICT", "Request key has another pending coordinated intent");
+        if (recoveredId && existing.token.task_id !== recoveredId) throw new BridgeError("COORDINATION_LINK_CONFLICT", "Metadata binding names another reserved task");
+        return existing.token;
+      }
+      await this.assertMutationAllowed();
+      let unfinished = this.#reservations.size;
+      for (const record of await this.store.list()) if ((await this.store.readState(record.task_id)).phase !== "terminal" &&
+        this.#reservations.get(record.request.request_key)?.token.task_id !== record.task_id) unfinished++;
+      if (unfinished >= this.policy.max_workers + this.policy.max_queued_tasks) throw new BridgeError("CAPACITY_EXCEEDED", "Repository worker and queue capacity is full");
+      const selected = this.registry.select(identity.assignment, this.policy);
+      signal.throwIfAborted();
+      const token: CoordinatedReservation = Object.freeze({ task_id: recoveredId ?? randomUUID(), request_key: key,
+        owner_id: actor.owner_id, intent_hash, payload_digest, source_view: identity.source_view,
+        ...(identity.announcement ? { announcement: structuredClone(identity.announcement) } : {}), status: "reserved" });
+      this.#reservations.set(key, { token, identity, selected });
+      return token;
+    });
+  }
+  /** The metadata owner has already published its exact binding before this durable admission. */
+  async commitReserved(reservation: CoordinatedReservation, decision: { decision_identity: string; link_hash: string }): Promise<TaskObservation> {
+    if (!/^[a-f0-9]{64}$/.test(decision.decision_identity) || !/^[a-f0-9]{64}$/.test(decision.link_hash)) throw new BridgeError("COORDINATION_LINK_INVALID", "Expected exact metadata decision hashes");
+    return this.#admission.run(async () => {
+      const competing = await this.store.find({ request_key: reservation.request_key });
+      if (competing && competing.task_id !== reservation.task_id) throw new BridgeError("REQUEST_KEY_CONFLICT", "Request key was admitted under another task identity");
+      const prior = await this.store.find({ task_id: reservation.task_id });
+      if (prior) {
+        if (!("schema_version" in prior) || prior.schema_version !== 5 || prior.canonical_hash !== reservation.intent_hash ||
+          prior.linkage.decision_identity !== decision.decision_identity || prior.linkage.link_hash !== decision.link_hash ||
+          prior.initial_owner !== reservation.owner_id || prior.request.request_key !== reservation.request_key) {
+          throw new BridgeError("COORDINATION_LINK_CONFLICT", "Existing admission differs from metadata binding");
+        }
+        return this.controls.read(prior.task_id, { owner_id: reservation.owner_id, client_id: "coordinated-admission" });
+      }
+      await this.assertMutationAllowed();
+      const pending = this.#reservations.get(reservation.request_key);
+      if (!pending || pending.token !== reservation) throw new BridgeError("COORDINATION_RESERVATION_STALE", "Exact reserved task identity is no longer available");
+      if (reservation.announcement) {
+        const announced = await this.store.readAnnouncement(reservation.announcement.id);
+        if (!announced || announced.payload.owner_id !== reservation.owner_id || announced.payload.source_view !== reservation.source_view ||
+          canonicalHash(announced.payload.assignment) !== reservation.payload_digest ||
+          announced.control.state === "withdrawn" || announced.control.state === "linked" && announced.control.task_id !== reservation.task_id) {
+          throw new BridgeError("ANNOUNCEMENT_CHANGED", "Announcement reference no longer names this exact assignment");
+        }
+      }
+      const link = { schema_version: 1 as const, task_id: reservation.task_id, request_key: reservation.request_key,
+        owner_id: reservation.owner_id, intent_hash: reservation.intent_hash,
+        decision_identity: decision.decision_identity, link_hash: decision.link_hash,
+        ...(reservation.announcement ? { announcement: reservation.announcement } : {}) };
+      const { link_hash, ...binding } = link;
+      if (canonicalHash(binding) !== link_hash) throw new BridgeError("COORDINATION_LINK_CONFLICT", "Metadata link hash does not identify this exact binding");
+      const record: CoordinatedDurableRequest = { schema_version: 5, task_id: reservation.task_id,
+        project_id: this.projectId, canonical_hash: reservation.intent_hash, accepted_at: now(),
+        source_view: reservation.source_view, initial_owner: reservation.owner_id,
+        request: pending.identity.assignment, execution: pending.selected.snapshot, linkage: link };
+      await this.store.create(record, initialControl(record.task_id, reservation.owner_id));
+      // Accepted but deliberately absent from the execution queue until metadata settlement.
+      return this.controls.read(record.task_id, { owner_id: reservation.owner_id, client_id: "coordinated-admission" });
+    });
+  }
+  /** The caller supplies the already-settled metadata identity; only an exact match starts this task. */
+  async activateLinked(reservation: CoordinatedReservation, decision: { decision_identity: string; link_hash: string }): Promise<TaskObservation> {
+    return this.#admission.run(async () => {
+      const record = await this.store.durableRequest(reservation.task_id);
+      if (record.schema_version !== 5 || record.linkage.request_key !== reservation.request_key ||
+        record.linkage.owner_id !== reservation.owner_id || record.linkage.intent_hash !== reservation.intent_hash ||
+        record.linkage.decision_identity !== decision.decision_identity || record.linkage.link_hash !== decision.link_hash) {
+        throw new BridgeError("COORDINATION_LINK_CONFLICT", "Metadata settlement does not match durable admission");
+      }
+      await this.#settleLinkedRecord(record);
+      return this.controls.read(record.task_id, { owner_id: reservation.owner_id, client_id: "coordinated-admission" });
+    }).then((observation) => { this.#kick(); return observation; });
+  }
+  /** Elected-service reconciliation after exact metadata settlement; returns no task-control projection. */
+  async reconcileCoordinatedLink(taskId: string, requestKey: string, decisionIdentity: string, linkHash: string): Promise<void> {
+    TaskIdSchema.parse(taskId);
+    this.assertAuthority();
+    await this.#admission.run(async () => {
+      const record = await this.store.durableRequest(taskId);
+      if (record.schema_version !== 5 || record.linkage.request_key !== requestKey ||
+        record.linkage.decision_identity !== decisionIdentity || record.linkage.link_hash !== linkHash) {
+        throw new BridgeError("COORDINATION_LINK_CONFLICT", "Reconciliation does not identify the immutable task and metadata binding");
+      }
+      await this.#settleLinkedRecord(record);
+    });
+    this.#kick();
+  }
+  async #settleLinkedRecord(record: CoordinatedDurableRequest): Promise<void> {
+    if (await reconcileCoordinatedRecord(this.store, record, record.linkage, this.controls)) this.#notifyTaskSettled(record.task_id);
+    const pending = this.#reservations.get(record.request.request_key);
+    if (pending && pending.token.task_id === record.task_id && !this.#entries.has(record.task_id)) {
+      const state = await this.store.readControl(record.task_id);
+      if (state.phase === "queued" && state.native.state === "not_started") {
+        let resolve!: () => void; const done = new Promise<void>((yes) => { resolve = yes; });
+        const entry: Entry = { selected: pending.selected, record, controller: new AbortController(), stage: "queued", done, resolve };
+        this.#entries.set(record.task_id, entry); this.#queue.push(entry);
+      }
+      this.#reservations.delete(record.request.request_key);
+    }
+  }
+  async releaseUnadmitted(reservation: CoordinatedReservation): Promise<void> {
+    await this.#admission.run(async () => {
+      const pending = this.#reservations.get(reservation.request_key);
+      if (!pending || pending.token !== reservation) return;
+      if (await this.store.find({ task_id: reservation.task_id })) throw new BridgeError("COORDINATION_ALREADY_ADMITTED", "Accepted task cannot be released with its reservation");
+      this.#reservations.delete(reservation.request_key);
+    });
+  }
   async cancel(id: string, actor: ClientActor, generation: number, operation: string, reason: string) {
     const receipt = await this.controls.cancel(id, actor, generation, operation, reason);
     if (receipt.outcome === "accepted") {
-      const entry = this.#entries.get(id);
-      if (entry) entry.controller.abort(new BridgeError("TASK_CANCELLED", reason));
-      else await this.#cancelRecoveredQueue(id);
+      await this.#admission.run(async () => {
+        const entry = this.#entries.get(id);
+        if (entry) { entry.controller.abort(new BridgeError("TASK_CANCELLED", reason)); return; }
+        const record = await this.store.durableRequest(id);
+        if (record.schema_version === 5) await this.#settleNeverStartedCoordinatedCancellation(id);
+        else await this.#cancelRecoveredQueue(id);
+      });
       this.#kick();
     }
     return receipt;
+  }
+  async #settleNeverStartedCoordinatedCancellation(id: string): Promise<void> {
+    const record = await this.store.durableRequest(id);
+    if (record.schema_version !== 5) return;
+    const state = await this.store.readControl(id);
+    if (!state.cancel || state.phase === "terminal" || state.native.state !== "not_started") return;
+    if (!await this.store.readCoordinatedLink(id)) {
+      await this.controls.change(id, (s) => {
+        if (s.cancel && s.native.state === "not_started" && s.phase !== "terminal") {
+          s.phase = "needs_attention";
+          s.attention = "Cancellation is retained while exact coordinated link settlement remains pending";
+        }
+      });
+      return;
+    }
+    if (await settleNeverStartedCoordinatedCancellation(this.store, record, this.controls)) this.#notifyTaskSettled(id);
+  }
+  #notifyTaskSettled(id: string): void {
+    try { this.onTaskSettled?.(id); }
+    catch (error) {
+      // Notification failure cannot rewrite a retained terminal task or its native outcome.
+      void this.store.appendEvent(id, { kind: "terminal_notification_failed", error: errorInfo(error) }).catch(() => undefined);
+    }
   }
   async #cancelRecoveredQueue(id: string): Promise<void> {
     const state = await this.store.readControl(id);
@@ -123,11 +330,14 @@ export class Coordinator {
     });
   }
   async #run(entry: Entry, slot: boolean): Promise<void> {
-    try { await this.#execute(entry); }
+    let terminal = false;
+    try { await this.#execute(entry); terminal = (await this.store.readControl(entry.record.task_id)).phase === "terminal"; }
     catch (error) { await this.#freeze(`Task ${entry.record.task_id} cannot preserve authoritative evidence: ${errorInfo(error).message}`); }
     finally {
       await this.#admission.run(() => { this.#entries.delete(entry.record.task_id); if (slot) this.#active--; });
-      entry.resolve(); this.#kick(); this.onSettled?.();
+      entry.resolve(); this.#kick();
+      if (terminal) this.#notifyTaskSettled(entry.record.task_id);
+      this.onSettled?.();
     }
   }
   async #event(id: string, event: WorkerEvent): Promise<void> {
@@ -168,6 +378,7 @@ export class Coordinator {
     const phase = async (next: "starting" | "active" | "finalizing") => this.controls.change(id, (s) => { if (!s.cancel) s.phase = next; });
     try {
       controller.signal.throwIfAborted(); this.assertAuthority(); await phase("starting");
+      if ((await this.store.readControl(id)).cancel) throw new BridgeError("TASK_CANCELLED", "Task was cancelled before preparation");
       // Active-task ownership protects this unique workspace; hooks run outside repository administration.
       workspace = await prepareWorkspace(record.source_view, request, this.policy, this.projectId, id, {
         signal: controller.signal, assertAuthority: this.assertAuthority,
@@ -181,12 +392,20 @@ export class Coordinator {
       const resource = await this.store.readResource(id);
       await this.store.writeResource(id, resource ? { ...resource, state: "pending", updated_at: now() }
         : { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
+      if (record.schema_version === 5 && workspace.kind === "task_worktree") {
+        if (!this.onCoordinatedWorkspacePrepared) throw new BridgeError("COORDINATION_ATTACHMENT_UNAVAILABLE", "Coordinated task has no prepared-workspace attachment owner");
+        await this.onCoordinatedWorkspacePrepared(record, workspace);
+      }
       const before = await digestFiles(workspace.path, request.context_files ?? []);
       const beforeStatus = await sourceStatus(workspace.path, false, controller.signal), revision = await currentRevision(workspace.path, controller.signal);
       if (request.mode === "review" && revision) result.workspace.base_commit = revision;
       controller.signal.throwIfAborted(); this.assertAuthority();
+      if ((await this.store.readControl(id)).cancel) throw new BridgeError("TASK_CANCELLED", "Task was cancelled before native startup");
       // Persist the run intent before startup. A crash after this point cannot claim never-started safety.
-      await this.controls.change(id, (s) => { s.native.state = "unknown"; if (!s.cancel) s.phase = "active"; });
+      await this.controls.change(id, (s) => {
+        if (s.cancel) throw new BridgeError("TASK_CANCELLED", "Task was cancelled before native startup");
+        s.native.state = "unknown"; s.phase = "active";
+      });
       result.worker_stop = "unconfirmed";
       const run = await entry.selected.worker.run({ request, task_id: id, workspace: workspace.path, policy: this.policy,
         prompt: assignmentPrompt(request, id, workspace), signal: controller.signal,

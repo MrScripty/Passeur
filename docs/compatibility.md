@@ -1,3 +1,15 @@
+# Structural coordination completion candidate — September 23, 2026
+
+Status: **Active; acceptance open.** The source candidate adds schema-2 coordinated submission, immutable announcements, TaskStore schema-5 linkage, metadata source grants and watches, native structural reports, monitored notices and exact retained artifacts. Ordinary schema-1 submission and historical result meanings remain available. The current [completion plan](plans/structural-coordination-completion/plan.md) and its [verification record](plans/structural-coordination-completion/reports/verification-and-release.md) own SC01–SC17 evidence. Passing partial source checks do not qualify installed host behavior, native language rows, real two-parent/three-worker acceptance or the final reviewed artifact.
+
+Installed capability depends on an exact native bundle and supported Linux service environment. The candidate packages pinned Tree-sitter grammar sources/binaries, native helper output and extractor identities into the runtime build; installation and actual host attachment must be verified against that artifact. A missing native analysis bundle cannot block task-control or retained-result access. A service with older readers cannot safely write newer task/coordination records; preserve the namespace and use a compatible build during controlled handover. See [coordination](coordination.md), [structural reporting](structural-reporting.md) and [recovery](recovery.md).
+
+## Historical records below
+
+The following sections retain their original scope and dates. They are not new completion evidence.
+
+---
+
 # Shared-service lifecycle candidate — September 20, 2026
 
 Status: **Verifying; acceptance blocked.** This candidate replaces connection-owned delegation with one Linux repository service and durable tasks. It requires explicit profile3 migration and the submit/wait/input/cancel/attach API. Legacy delegation tools reject new execution; historical results remain readable.

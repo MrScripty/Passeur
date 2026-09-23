@@ -1,0 +1,13 @@
+{
+  "dialect": "python",
+  "input": "input.py",
+  "changed": "changed.py",
+  "incomplete": "incomplete.py",
+  "ambiguous_before": "ambiguous-before.py",
+  "ambiguous_after": "ambiguous-after.py",
+  "added_before": "added-before.py",
+  "added_after": "added-after.py",
+  "comment_annotations": "comment-annotations.py",
+  "comment_expectations": "comment-expected.json",
+  "expectations": "expected.json"
+}

@@ -3,10 +3,10 @@ import { mkdir, open, readFile, readdir, realpath, rename, stat, unlink } from "
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FinalizeReceipt, HistoricalRequest, ResourceRecord, StoredResult } from "../contracts/types.js";
-import { KeyedMutex, stableHash } from "../core/async.js";
+import { KeyedMutex, canonicalHash, stableHash } from "../core/async.js";
 import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
-import type { DurableRequest, TaskControl } from "../contracts/tasks.js";
-import { TaskControlSchema } from "../contracts/tasks.js";
+import type { CurrentDurableRequest, CoordinatedLink, CoordinatedLinkSettlement, AnnouncementPayload, AnnouncementControl, TaskControl } from "../contracts/tasks.js";
+import { AnnouncementPayloadSchema, AnnouncementControlSchema, CoordinatedLinkSettlementSchema, TaskControlSchema, TaskIdSchema } from "../contracts/tasks.js";
 import type { TaskState } from "../core/state.js";
 import { decodeRequest, decodeState, decodeResult, decodeResource, decodeReceipt, decodeSafety, assertResultAdmission } from "./record-codecs.js";
 
@@ -15,12 +15,13 @@ export type LegacyStoredRequest = {
   accepted_at: string; deadline_at: string; request: HistoricalRequest;
   execution?: import("../contracts/agents.js").ExecutionSnapshot;
 };
-export type StoredRequest = LegacyStoredRequest | DurableRequest;
+export type StoredRequest = LegacyStoredRequest | CurrentDurableRequest;
 export { atomicJson } from "./atomic-json.js";
 export type { MutationAuthority } from "./atomic-json.js";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A bounded read rejects oversized authoritative records without labeling or quarantining them as corrupt.
 const MAX_RECORD_BYTES = 8 * 1024 * 1024;
+const MAX_ANNOUNCEMENTS = 4096;
 const absent = (error: unknown) => nativeCode(error) === "ENOENT";
 
 /** Low-level persistence. Production mutation callers supply their current lease authority. */
@@ -88,10 +89,93 @@ export class TaskStore {
     const directory = await open(join(this.root, "tasks"), "r");
     try { await directory.sync(); } finally { await directory.close(); }
   }
-  async durableRequest(id: string): Promise<DurableRequest> {
+  async durableRequest(id: string): Promise<CurrentDurableRequest> {
     const record = await this.find({ task_id: id });
-    if (!record || !("schema_version" in record) || record.schema_version !== 4) throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "Use historical result access for this record");
+    if (!record || !("schema_version" in record) || record.schema_version !== 4 && record.schema_version !== 5) throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "Use historical result access for this record");
     return record;
+  }
+  async readCoordinatedLink(id: string): Promise<CoordinatedLinkSettlement | undefined> {
+    const record = await this.durableRequest(id);
+    if (record.schema_version !== 5) throw new BridgeError("COORDINATION_LINK_UNAVAILABLE", "Task has no coordinated admission");
+    const value = await this.#json(join(this.taskDir(id), "coordination-link.json"));
+    if (value === undefined) return undefined;
+    const decoded = CoordinatedLinkSettlementSchema.safeParse(value);
+    if (!decoded.success || stableHash(decoded.data.link) !== stableHash(record.linkage)) throw new BridgeError("STORE_CORRUPT", "Coordinated link settlement contradicts admission");
+    return decoded.data;
+  }
+  async settleCoordinatedLink(link: CoordinatedLink): Promise<CoordinatedLinkSettlement> {
+    return this.#writes.run(link.task_id, async () => {
+      const record = await this.durableRequest(link.task_id);
+      if (record.schema_version !== 5 || stableHash(record.linkage) !== stableHash(link)) throw new BridgeError("COORDINATION_LINK_CONFLICT", "Link settlement does not match immutable task admission");
+      const old = await this.readCoordinatedLink(link.task_id);
+      if (old) return old;
+      const settled: CoordinatedLinkSettlement = { schema_version: 1, link: record.linkage, state: "settled", settled_at: new Date().toISOString() };
+      await this.#write(join(this.taskDir(link.task_id), "coordination-link.json"), settled);
+      return settled;
+    });
+  }
+  async publishAnnouncement(payload: AnnouncementPayload): Promise<AnnouncementPayload> {
+    const valid = AnnouncementPayloadSchema.parse(payload);
+    return this.#writes.run("announcements", async () => {
+      const prior = await this.readAnnouncement(valid.id);
+      if (prior) {
+        if (stableHash(prior.payload) !== stableHash(valid)) throw new BridgeError("ANNOUNCEMENT_CONFLICT", "Announcement ID names another immutable payload");
+        return prior.payload;
+      }
+      this.authority?.();
+      const parent = join(this.root, "announcements");
+      await mkdir(parent, { recursive: true, mode: 0o700 });
+      if ((await this.#directories(parent)).filter((entry) => entry.isDirectory() && uuid.test(entry.name)).length >= MAX_ANNOUNCEMENTS) {
+        throw new BridgeError("ANNOUNCEMENT_CAPACITY", "The bounded announcement store is full; inspect explicit dispositions");
+      }
+      const temporary = join(parent, `.creating-${valid.id}-${randomUUID()}`);
+      await mkdir(temporary, { mode: 0o700 });
+      await this.#write(join(temporary, "payload.json"), valid);
+      const control: AnnouncementControl = { schema_version: 1, id: valid.id, revision: 1, state: "unresolved", updated_at: valid.published_at };
+      await this.#write(join(temporary, "control.json"), control);
+      this.authority?.();
+      await rename(temporary, join(parent, valid.id));
+      const directory = await open(parent, "r");
+      try { await directory.sync(); } finally { await directory.close(); }
+      return valid;
+    });
+  }
+  async readAnnouncement(id: string): Promise<{ payload: AnnouncementPayload; control: AnnouncementControl } | undefined> {
+    if (!uuid.test(id)) throw new BridgeError("INVALID_ANNOUNCEMENT_ID", "Expected a UUID announcement ID");
+    const dir = join(this.root, "announcements", id);
+    const rawPayload = await this.#json(join(dir, "payload.json"));
+    if (rawPayload === undefined) {
+      try { await stat(dir); } catch (error) { if (absent(error)) return undefined; throw filesystemFailure(error, "announcement.stat", dir); }
+      throw new BridgeError("STORE_INCOMPLETE", "Published announcement lacks its immutable payload");
+    }
+    const payload = AnnouncementPayloadSchema.safeParse(rawPayload);
+    const control = AnnouncementControlSchema.safeParse(await this.#required(join(dir, "control.json")));
+    if (!payload.success || !control.success || payload.data.id !== id || control.data.id !== id) throw new BridgeError("STORE_CORRUPT", "Announcement payload/control identity is invalid");
+    return { payload: payload.data, control: control.data };
+  }
+  async changeAnnouncement(id: string, owner: string, action: { kind: "withdraw" } | { kind: "link"; task_id: string; revision: number }): Promise<AnnouncementControl> {
+    if (action.kind === "link") TaskIdSchema.parse(action.task_id);
+    return this.#writes.run(`announcement:${id}`, async () => {
+      const entry = await this.readAnnouncement(id);
+      if (!entry) throw new BridgeError("ANNOUNCEMENT_NOT_FOUND", "Announcement does not exist");
+      if (entry.payload.owner_id !== owner) throw new BridgeError("ANNOUNCEMENT_OWNER_CONFLICT", "Announcement belongs to another parent");
+      const previous = entry.control;
+      if (action.kind === "link" && previous.state === "linked" && previous.task_id === action.task_id) return previous;
+      if (previous.state !== "unresolved") throw new BridgeError("ANNOUNCEMENT_CHANGED", "Announcement changed before disposition");
+      if (action.kind === "link") {
+        const task = await this.durableRequest(action.task_id);
+        // The reference revision belongs to metadata authority; this private control has its own revision.
+        if (task.schema_version !== 5 || task.linkage.announcement?.id !== id || task.linkage.announcement.revision !== action.revision ||
+          task.initial_owner !== owner || task.source_view !== entry.payload.source_view ||
+          canonicalHash(task.request) !== canonicalHash(entry.payload.assignment)) {
+          throw new BridgeError("ANNOUNCEMENT_LINK_CONFLICT", "Task admission does not name this immutable announcement");
+        }
+      }
+      const next: AnnouncementControl = { schema_version: 1, id, revision: previous.revision + 1,
+        state: action.kind === "withdraw" ? "withdrawn" : "linked", ...(action.kind === "link" ? { task_id: action.task_id } : {}), updated_at: new Date().toISOString() };
+      await this.#write(join(this.root, "announcements", id, "control.json"), AnnouncementControlSchema.parse(next));
+      return next;
+    });
   }
   async readControl(id: string): Promise<TaskControl> {
     const state = await this.readState(id);

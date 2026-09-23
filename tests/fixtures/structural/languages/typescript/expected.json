@@ -8,5 +8,30 @@
     ["Item", true, false, false],
     ["mapper", false, true, true]
   ],
-  "incomplete_limitations": ["parse_error_or_missing_token"]
+  "incomplete_limitations": ["parse_error_or_missing_token"],
+  "population_mts_declarations": [
+    ["interface_declaration", "Store", [], "export interface Store<T>"],
+    ["property_signature", "value", ["Store"], "value?: T"],
+    ["method_signature", "set", ["Store"], "set(value: T): void"],
+    ["class_declaration", "Box", [], "export class Box<T>"],
+    ["method_definition", "constructor", ["Box"], "constructor(public value: T)"],
+    ["method_definition", "get", ["Box"], "get(): T"],
+    ["type_alias_declaration", "Key", [], "export type Key<T = <default>> = readonly T[];"],
+    ["function_signature", "convert", [], "export function convert<T>(value: T, flag?: boolean): T;"],
+    ["function_declaration", "convert", [], "export function convert<T>(value: T, flag?: boolean): T"],
+    ["arrow_function", "pick", [], "export const pick = ({x}: {x: number} = <default>, ...rest: number[]): number =>"]
+  ],
+  "population_mts_changes": [
+    ["arrow_function", "pick", false, true, true],
+    ["function_declaration", "convert", true, false, false],
+    ["function_signature", "convert", true, false, false],
+    ["property_signature", "value", true, false, false],
+    ["type_alias_declaration", "Key", false, false, true]
+  ],
+  "population_cts_declarations": [
+    ["function_declaration", "sum", [], "export function sum(a: number, b: number): number"]
+  ],
+  "population_cts_changes": [
+    ["function_declaration", "sum", true, true, false]
+  ]
 }

@@ -1,0 +1,11 @@
+{
+  "row": "L11",
+  "dialect": "odin",
+  "selected_syntax": "Odin dev-2026-09 procedures, named and tuple results, procedure groups, polymorphic and tagged parameters, records/unions/enums",
+  "input": "declarations.odin",
+  "changed": "changed.odin",
+  "incomplete": "incomplete.odin",
+  "advanced": "advanced.odin",
+  "expectations": "expected.json",
+  "review_note": "Written syntax on the pinned native grammar; Odin compiler execution is outside this row's admitted environment."
+}

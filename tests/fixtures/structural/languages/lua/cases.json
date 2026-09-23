@@ -1,0 +1,11 @@
+{
+  "dialect": "lua",
+  "input": "input.lua",
+  "changed": "changed.lua",
+  "incomplete": "incomplete.lua",
+  "ambiguous_before": "ambiguous-before.lua",
+  "ambiguous_after": "ambiguous-after.lua",
+  "added_before": "added-before.lua",
+  "added_after": "added-after.lua",
+  "expectations": "expected.json"
+}

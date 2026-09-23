@@ -1,10 +1,13 @@
 {
   "row": "L01",
   "dialect": "rust",
-  "selected_syntax": "Rust 2024-compatible source syntax accepted by tree-sitter-rust 0.24.0",
+  "selected_syntax": "Rust edition 2024 source syntax on pinned tree-sitter-rust 0.24.2",
   "input": "input.rs",
   "changed": "changed.rs",
   "incomplete": "incomplete.rs",
+  "edition_2024": "edition2024.rs",
+  "population": "population.rs",
+  "population_changed": "population_changed.rs",
   "expectations": "expected.json",
-  "review_note": "Expected names, scopes, signatures and changes are source-level observations; no macro expansion or type resolution."
+  "review_note": "Expected names, scopes, signatures, ranges and changes are source-level observations; no macro expansion or type resolution. edition2024.rs compiles with rustc 1.92.0 --edition 2024 and is parsed by the pinned 0.24.2 grammar. L01 remains pending independent oracle and installed-path qualification."
 }

@@ -1,7 +1,9 @@
 import { BridgeError } from "../core/errors.js";
 import { throwIfAborted } from "../core/async.js";
 import { validateSourcePath } from "../observation/source.js";
-import { decodeRepositoryCommand, parentId, type Receipt, type Selection, type Work, type ManagedWork, type Region } from "../contracts/coordination-control.js";
+import { decodeRepositoryCommand, decodeInternalRepositoryCommand, decodeAnnouncementInput, decodeSubmissionPreflightInput, decodeSubmissionBindInput,
+  parentId, type Receipt, type Selection, type Work, type ManagedWork, type Region,
+  type AnnouncementRecord, type SubmissionBinding } from "../contracts/coordination-control.js";
 import { CoordinationControl, type CoordinationActor } from "./control.js";
 import { CoordinationRepository, type WorkspaceFacts } from "./repository.js";
 
@@ -43,10 +45,64 @@ export class RepositoryCoordination {
     return new RepositoryCoordination(repository, control, externalAuthority, limits.max_source_operations, managedAuthority);
   }
 
+  async announce(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<AnnouncementRecord> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) }), input = decodeAnnouncementInput(raw);
+    this.#assertSourceView(connection, input.source_view);
+    return this.#track(async () => { throwIfAborted(signal); return this.control.announce(actor, input); });
+  }
+  async announcement(connection: CoordinationConnection, id: string): Promise<AnnouncementRecord> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+    return this.#track(() => this.control.announcement(actor, id));
+  }
+  async withdrawAnnouncement(connection: CoordinationConnection, raw: unknown): Promise<AnnouncementRecord> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+    return this.#track(() => this.control.withdrawAnnouncement(actor, raw));
+  }
+  async preflight(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<{
+    decision_identity: string; overlaps: Array<{ kind: "work" | "announcement" | "binding"; id: string; areas: Region[] }> }> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) }), input = decodeSubmissionPreflightInput(raw);
+    this.#assertSourceView(connection, input.source_view);
+    return this.#track(async () => { throwIfAborted(signal); return this.control.preflight(actor, input); });
+  }
+  async bindSubmission(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<SubmissionBinding> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) }), input = decodeSubmissionBindInput(raw);
+    this.#assertSourceView(connection, input.source_view);
+    return this.#track(async () => { throwIfAborted(signal); return this.control.bindSubmission(actor, input); });
+  }
+  async settleSubmission(connection: CoordinationConnection, raw: unknown): Promise<SubmissionBinding> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+    return this.#track(() => this.control.settleSubmission(actor, raw));
+  }
+  async releaseUnadmittedBinding(connection: CoordinationConnection, raw: unknown): Promise<SubmissionBinding> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+    return this.#track(() => this.control.releaseUnadmittedBinding(actor, raw));
+  }
+  async terminalSubmissionBinding(connection: CoordinationConnection, raw: unknown): Promise<SubmissionBinding> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+    return this.#track(() => this.control.terminalSubmissionBinding(actor, raw));
+  }
+  async submissionBinding(connection: CoordinationConnection, taskId: string): Promise<SubmissionBinding> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+    return this.#track(() => this.control.submissionBinding(actor, taskId));
+  }
+  async submissionBindingByRequestKey(connection: CoordinationConnection, requestKey: string): Promise<SubmissionBinding | undefined> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+    return this.#track(() => this.control.submissionBindingByRequestKey(actor, requestKey));
+  }
+  #assertSourceView(connection: CoordinationConnection, sourceView: string): void {
+    if (sourceView !== connection.source_view) throw new BridgeError("COORDINATION_SOURCE_VIEW_CONFLICT", "Submission source view differs from the authenticated connection");
+  }
+
   async execute(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<Receipt> {
+    return this.#execute(connection, raw, false, signal);
+  }
+  async executeInternal(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<Receipt> {
+    return this.#execute(connection, raw, true, signal);
+  }
+  async #execute(connection: CoordinationConnection, raw: unknown, internal: boolean, signal?: AbortSignal): Promise<Receipt> {
     // Decode/copy synchronously so a caller cannot change request identity during asynchronous Git work.
     const actor: CoordinationActor = Object.freeze({ owner_id: parentId(connection.owner_id) });
-    const sourceView = connection.source_view, command = decodeRepositoryCommand(raw);
+    const sourceView = connection.source_view, command = internal ? decodeInternalRepositoryCommand(raw) : decodeRepositoryCommand(raw);
     return this.#track(async () => {
       throwIfAborted(signal);
       if (command.kind === "register_managed_work") {

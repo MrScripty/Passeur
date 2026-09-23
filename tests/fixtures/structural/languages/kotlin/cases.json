@@ -1,0 +1,12 @@
+{
+  "row": "L06",
+  "dialect": "kotlin",
+  "selected_syntax": "Kotlin 2.3 declarations, named context parameters, extension receivers and constructor delegation on the qualified patched Kotlin native grammar",
+  "input": "declarations.kt",
+  "changed": "changed.kt",
+  "incomplete": "incomplete.kt",
+  "advanced": "advanced.kt",
+  "context": "context.kt",
+  "expectations": "expected.json",
+  "review_note": "Written source syntax only. Direct tests use the production native dispatch. Compiler validity and installed bundle qualification are separate evidence."
+}

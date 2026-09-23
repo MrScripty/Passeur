@@ -1,0 +1,22 @@
+{
+  "input_declarations": [
+    ["function_declaration", "shared", ["module script"], "function shared(x = <default>)"],
+    ["function_declaration", "hello", ["instance script 1"], "export function hello(name: string): string"],
+    ["svelte_props_binding", "$props", ["instance script 1"], "let {title = <default>}: Props = <initializer>;"],
+    ["snippet_statement", "card", [], "{#snippet card(item: string = <default>)}"]
+  ],
+  "input_ranges": [[47, 83], [111, 171], [172, 214], [224, 286]],
+  "changed_ranges": [[47, 83], [111, 171], [172, 214], [224, 298]],
+  "script_js": ["function_declaration", "scriptJs", "export function scriptJs(value = <default>)", [10, 63]],
+  "script_js_changed_range": [10, 67],
+  "script_ts": ["function_declaration", "scriptTs", "export function scriptTs(value: number = <default>): number", [10, 79]],
+  "script_ts_changed_range": [10, 83],
+  "changed": { "card": [true, true] },
+  "nested_declarations": [
+    ["outer", []],
+    ["row", ["outer"]],
+    ["row", []]
+  ],
+  "region_changed": true,
+  "incomplete_limitations": ["snippet_parameters_unavailable"]
+}

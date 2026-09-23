@@ -1,0 +1,13 @@
+{
+  "dialect": "svelte5",
+  "input": "input.svelte",
+  "changed": "changed.svelte",
+  "incomplete": "incomplete.svelte",
+  "nested": "nested.svelte",
+  "nested_changed": "nested_changed.svelte",
+  "script_js": "component.svelte.js",
+  "script_js_changed": "component_changed.svelte.js",
+  "script_ts": "component.svelte.ts",
+  "script_ts_changed": "component_changed.svelte.ts",
+  "expectations": "expected.json"
+}

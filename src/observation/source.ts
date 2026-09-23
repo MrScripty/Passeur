@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, open, realpath, readlink, type FileHandle } from "node:fs/promises";
+import { lstat, open, readFile, realpath, readlink, type FileHandle } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { BridgeError, nativeCode } from "../core/errors.js";
@@ -104,6 +104,26 @@ async function descriptorPath(handle: FileHandle, root: string, expected?: strin
   }
 }
 
+/** Linux mount identity belongs to the open descriptor, including same-device bind mounts. */
+export async function sourceMountId(handle: FileHandle): Promise<string> {
+  let info: string;
+  try { info = await readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8"); }
+  catch (cause) { throw new BridgeError("SOURCE_MOUNT_ID_UNAVAILABLE", "The source descriptor mount identity could not be established", { cause }); }
+  return parseSourceMountId(info);
+}
+
+export function parseSourceMountId(info: string): string {
+  const ids = [...info.matchAll(/^mnt_id:[ \t]*(\d+)[ \t]*$/gm)];
+  if (ids.length !== 1) throw new BridgeError("SOURCE_MOUNT_ID_UNAVAILABLE", "The source descriptor has no unique Linux mount identity");
+  return ids[0]![1]!;
+}
+
+export async function assertSourceMount(handle: FileHandle, worktreeMountId: string): Promise<void> {
+  if (await sourceMountId(handle) !== worktreeMountId) {
+    throw new BridgeError("SOURCE_MOUNT_BOUNDARY", "Source capture cannot cross the registered worktree mount boundary");
+  }
+}
+
 async function assertNoGitlink(root: string, commits: readonly string[], path: string, signal?: AbortSignal): Promise<void> {
   const parts = path.split("/");
   const ancestors = parts.map((_, index) => parts.slice(0, index + 1).join("/"));
@@ -165,6 +185,7 @@ export async function captureWorkingFile(workspace: WorkspaceCapture, path: stri
   try {
     handles.push(await open(repo.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
     await descriptorPath(handles[0]!, repo.root, repo.root);
+    const worktreeMountId = await sourceMountId(handles[0]!);
     const parts = path.split("/");
     for (let index = 0; index < parts.length - 1; index++) {
       throwIfAborted(options.signal);
@@ -173,6 +194,7 @@ export async function captureWorkingFile(workspace: WorkspaceCapture, path: stri
       handles.push(next);
       const expected = resolve(repo.root, ...parts.slice(0, index + 1));
       await descriptorPath(next, repo.root, expected);
+      await assertSourceMount(next, worktreeMountId);
       await assertNoNestedMarker(next);
       directories.push({ handle: next, expected, ctimeNs: (await next.stat({ bigint: true })).ctimeNs });
     }
@@ -185,6 +207,7 @@ export async function captureWorkingFile(workspace: WorkspaceCapture, path: stri
       throw error;
     }
     handles.push(handle);
+    await assertSourceMount(handle, worktreeMountId);
     const before = await handle.stat({ bigint: true });
     if (!before.isFile()) return Object.freeze({ status: "non_source", source, entry_kind: before.isDirectory() ? "directory" : "special" });
     await descriptorPath(handle, repo.root, resolve(repo.root, path));

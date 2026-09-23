@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository_id": "structural-compatibility-fixture",
+  "epoch": "11111111-1111-4111-8111-111111111111",
+  "revision": 0,
+  "limits": { "works": 64, "cases": 64, "notes": 256, "receipts": 1024, "note_bytes": 4096 },
+  "works": [],
+  "cases": [],
+  "notes": [],
+  "receipts": []
+}

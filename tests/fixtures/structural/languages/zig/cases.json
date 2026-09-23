@@ -1,0 +1,11 @@
+{
+  "row": "L07",
+  "dialect": "zig",
+  "selected_syntax": "Zig 0.15.1 functions, containers, comptime/noalias, anytype, error unions, pointer/array/optional types",
+  "input": "declarations.zig",
+  "changed": "changed.zig",
+  "incomplete": "incomplete.zig",
+  "advanced": "advanced.zig",
+  "expectations": "expected.json",
+  "review_note": "Written source syntax only; no comptime execution or type resolution. Ambiguous identifier constants remain explicitly incomplete."
+}

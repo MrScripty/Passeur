@@ -7,18 +7,18 @@ import { BridgeError } from "../core/errors.js";
 
 /** Fixed development grammar identities. Installed bundles must provide these same pinned artifacts. */
 const grammars = Object.freeze({
-  rust: { package: "tree-sitter-rust", version: "0.24.0" },
+  rust: { package: "tree-sitter-rust", version: "0.24.2" },
   typescript: { package: "tree-sitter-typescript", export: "typescript", version: "0.23.2" },
   tsx: { package: "tree-sitter-typescript", export: "tsx", version: "0.23.2" },
   javascript: { package: "tree-sitter-javascript", version: "0.25.0" },
   jsx: { package: "tree-sitter-javascript", version: "0.25.0" },
-  python: { package: "tree-sitter-python", version: "0.25.0" },
+  python: { package: "tree-sitter-python", version: "26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64+pep696-6923bb25", packageVersion: "0.25.0" },
   lua: { package: "@tree-sitter-grammars/tree-sitter-lua", version: "0.4.1" },
-  kotlin: { package: "@tree-sitter-grammars/tree-sitter-kotlin", version: "1.1.0" },
+  kotlin: { package: "@tree-sitter-grammars/tree-sitter-kotlin", version: "3dea6dfa9c0129deb7c4315afbda806c85c41667+context-3ee76081", packageVersion: "1.1.0" },
   zig: { package: "tree-sitter-zig", version: "6479aa13f32f701c383083d8b28360ebd682fb7d", packageVersion: "1.1.2" },
-  csharp: { package: "tree-sitter-c-sharp", version: "0.23.5" },
-  c: { package: "tree-sitter-c", version: "0.24.1" },
-  cpp: { package: "tree-sitter-cpp", version: "0.23.4" },
+  csharp: { package: "tree-sitter-c-sharp", version: "9150f7d56bb47f1a809fa23623f1ba1413e93fa9", packageVersion: "0.23.5" },
+  c: { package: "tree-sitter-c", version: "b780e47fc780ddc8da13afa35a3f4ed5c157823d+c23-bitint-3bdaa8a3", packageVersion: "0.24.2" },
+  cpp: { package: "tree-sitter-cpp", version: "c009222808634c1014f82438d4883753516a2c24", packageVersion: "0.23.4" },
   odin: { package: "tree-sitter-odin", version: "1.3.0" },
   svelte5: { package: "@tree-sitter-grammars/tree-sitter-svelte", version: "1.0.2" },
 } as const);

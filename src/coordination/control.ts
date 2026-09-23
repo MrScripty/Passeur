@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { canonicalHash, Mutex } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
-import { MANAGED_CONTROL_SCHEMA, CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
-  coordinationOperationKey, controlReceiptCount, recoveryReceipts, decodeRecoveryCommand, MAX_PARTIES, type RecoveryCommand, type RecoveryReceipt, type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
+import { MANAGED_CONTROL_SCHEMA, SUBMISSION_CONTROL_SCHEMA, SOURCE_GRANT_CONTROL_SCHEMA, SOURCE_WATCH_CONTROL_SCHEMA, CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
+  coordinationOperationKey, controlReceiptCount, recoveryReceipts, decodeRecoveryCommand, MAX_PARTIES, MAX_REGIONS, type RecoveryCommand, type RecoveryReceipt, type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
+import { announcements, submissionBindings, submissionEvents, decodeAnnouncementInput, decodeAnnouncementWithdrawalInput,
+  decodeSubmissionPreflightInput, decodeSubmissionBindInput, decodeSubmissionDispositionInput, decodeSubmissionTerminalInput,
+  type AnnouncementRecord, type SubmissionBinding, type SubmissionEvent, type SubmissionPreflightInput } from "../contracts/coordination-control.js";
 import type { CoordinationStore } from "../store/coordination-store.js";
 
 /** The caller is the authenticated service actor, never an actor field taken from a command. */
@@ -18,6 +21,187 @@ export class CoordinationControl {
   constructor(private readonly store: CoordinationStore) {}
 
   get repositoryId(): string { return this.store.repositoryId; }
+
+  async announce(actor: CoordinationActor, raw: unknown): Promise<AnnouncementRecord> {
+    const owner = parentId(actor.owner_id), input = decodeAnnouncementInput(raw), hash = canonicalHash({ owner, kind: "announce", input });
+    if (input.readers.includes(owner)) throw new BridgeError("COORDINATION_INVALID", "Announcement owner cannot be its own reader");
+    return this.#ordering.run(async () => {
+      this.store.assertMutable(); const current = await this.store.snapshot();
+      const prior = sameSubmissionKey(current, owner, input.operation_key, hash);
+      if (prior) {
+        const item = announcements(current).find(a => a.id === prior.item_id);
+        if (!item || prior.kind !== "announce") throw new BridgeError("COORDINATION_KEY_CONFLICT", "Key names another submission operation");
+        return structuredClone(item);
+      }
+      if (announcements(current).some(a => a.id === input.id) || submissionBindings(current).some(b => b.task_id === input.id)) {
+        throw new BridgeError("COORDINATION_ANNOUNCEMENT_EXISTS", "Announcement identity is already retained");
+      }
+      const next = submissionState(current);
+      const item: AnnouncementRecord = { id: input.id, owner, revision: 1, state: "unresolved", payload_ref: input.id,
+        payload_digest: input.payload_digest, source_view: input.source_view, assignment_hash: input.assignment_hash,
+        areas: input.areas, readers: input.readers };
+      next.announcements.push(item); appendSubmissionEvent(next, "announce", owner, input.operation_key, input.id, hash);
+      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+    });
+  }
+
+  async announcement(actor: CoordinationActor, id: string): Promise<AnnouncementRecord> {
+    const owner = parentId(actor.owner_id), announcementId = entityId(id);
+    return this.#ordering.run(async () => {
+      const item = announcements(await this.store.snapshot()).find(a => a.id === announcementId);
+      if (!item || item.owner !== owner && !item.readers.includes(owner)) return unavailable();
+      return structuredClone(item);
+    });
+  }
+
+  async withdrawAnnouncement(actor: CoordinationActor, raw: unknown): Promise<AnnouncementRecord> {
+    const owner = parentId(actor.owner_id), input = decodeAnnouncementWithdrawalInput(raw), hash = canonicalHash({ owner, kind: "withdraw", input });
+    return this.#ordering.run(async () => {
+      this.store.assertMutable(); const current = await this.store.snapshot();
+      const prior = sameSubmissionKey(current, owner, input.operation_key, hash);
+      if (prior) {
+        const item = announcements(current).find(a => a.id === prior.item_id);
+        if (!item || prior.kind !== "withdraw") throw new BridgeError("COORDINATION_KEY_CONFLICT", "Key names another submission operation");
+        return structuredClone(item);
+      }
+      const next = submissionState(current), item = next.announcements.find(a => a.id === input.id);
+      if (!item || item.owner !== owner) return unavailable();
+      if (item.revision !== input.expected_revision) throw new BridgeError("COORDINATION_STALE_REVISION", "Announcement revision changed");
+      if (item.state !== "unresolved") throw new BridgeError("COORDINATION_ANNOUNCEMENT_HELD", "Only an unresolved announcement may be withdrawn");
+      item.state = "withdrawn"; item.revision++;
+      appendSubmissionEvent(next, "withdraw", owner, input.operation_key, item.id, hash);
+      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+    });
+  }
+
+  /** Advisory evidence; a gated caller must pass this identity to bindSubmission. */
+  async preflight(actor: CoordinationActor, raw: unknown): Promise<{ decision_identity: string; overlaps: Array<{ kind: "work" | "announcement" | "binding"; id: string; areas: Region[] }> }> {
+    const owner = parentId(actor.owner_id), input = decodeSubmissionPreflightInput(raw);
+    return this.#ordering.run(async () => {
+      const state = await this.store.snapshot();
+      return structuredClone(submissionDecision(state, owner, input));
+    });
+  }
+
+  async bindSubmission(actor: CoordinationActor, raw: unknown): Promise<SubmissionBinding> {
+    const owner = parentId(actor.owner_id), input = decodeSubmissionBindInput(raw), hash = canonicalHash({ owner, kind: "bind", input });
+    return this.#ordering.run(async () => {
+      this.store.assertMutable(); const current = await this.store.snapshot();
+      const prior = sameSubmissionKey(current, owner, input.operation_key, hash);
+      if (prior) {
+        const item = submissionBindings(current).find(b => b.task_id === prior.item_id);
+        if (!item || prior.kind !== "bind") throw new BridgeError("COORDINATION_KEY_CONFLICT", "Key names another submission operation");
+        return structuredClone(item);
+      }
+      if (submissionBindings(current).some(b => b.task_id === input.task_id || b.owner === owner && b.request_key === input.request_key && b.state !== "released")) {
+        throw new BridgeError("COORDINATION_BINDING_CONFLICT", "Task or request key is already bound");
+      }
+      const decision = submissionDecision(current, owner, input);
+      if (input.expected_decision_identity && input.expected_decision_identity !== decision.decision_identity) {
+        throw new BridgeError("COORDINATION_CHANGED", "Relevant authorized overlap changed before task admission");
+      }
+      const next = submissionState(current), announcement = input.announcement
+        ? next.announcements.find(a => a.id === input.announcement!.id) : undefined;
+      if (input.announcement) {
+        if (!announcement || announcement.owner !== owner) return unavailable();
+        if (announcement.revision !== input.announcement.revision || announcement.state !== "unresolved") {
+          throw new BridgeError("COORDINATION_CHANGED", "Announcement authority changed before binding");
+        }
+        if (announcement.payload_digest !== input.payload_digest || announcement.source_view !== input.source_view
+          || announcement.assignment_hash !== input.assignment_hash || canonicalHash(announcement.areas) !== canonicalHash(input.areas)) {
+          throw new BridgeError("COORDINATION_BINDING_CONFLICT", "Announced immutable assignment differs from submitted intent");
+        }
+      }
+      const link = { schema_version: 1, task_id: input.task_id, request_key: input.request_key,
+        owner_id: owner, intent_hash: input.intent_hash, decision_identity: decision.decision_identity,
+        ...(input.announcement ? { announcement: input.announcement } : {}) };
+      const item: SubmissionBinding = { task_id: input.task_id, request_key: input.request_key, owner,
+        intent_hash: input.intent_hash, decision_identity: decision.decision_identity, link_hash: canonicalHash(link),
+        source_view: input.source_view, input_oid: input.input_oid, areas: input.areas,
+        ...(input.announcement ? { announcement: input.announcement } : {}), state: "bound" };
+      next.bindings.push(item);
+      if (announcement) { announcement.state = "bound"; announcement.task_id = input.task_id; announcement.revision++; }
+      appendSubmissionEvent(next, "bind", owner, input.operation_key, item.task_id, hash);
+      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+    });
+  }
+
+  async settleSubmission(actor: CoordinationActor, raw: unknown): Promise<SubmissionBinding> {
+    return this.#disposeSubmission(actor, raw, "settle");
+  }
+  /** Only the admission owner calls release after proving no durable task admission. */
+  async releaseUnadmittedBinding(actor: CoordinationActor, raw: unknown): Promise<SubmissionBinding> {
+    return this.#disposeSubmission(actor, raw, "release");
+  }
+  /** The elected runtime supplies evidence read from its authoritative terminal TaskControl. */
+  async terminalSubmissionBinding(actor: CoordinationActor, raw: unknown): Promise<SubmissionBinding> {
+    const owner = parentId(actor.owner_id), input = decodeSubmissionTerminalInput(raw), hash = canonicalHash({ owner, kind: "terminal", input });
+    return this.#ordering.run(async () => {
+      this.store.assertMutable(); const current = await this.store.snapshot();
+      const prior = sameSubmissionKey(current, owner, input.operation_key, hash);
+      if (prior) {
+        const item = submissionBindings(current).find(b => b.task_id === prior.item_id);
+        if (!item || prior.kind !== "terminal") throw new BridgeError("COORDINATION_KEY_CONFLICT", "Key names another submission operation");
+        return structuredClone(item);
+      }
+      const next = submissionState(current), item = next.bindings.find(b => b.task_id === input.task_id);
+      if (!item || item.owner !== owner) return unavailable();
+      if (item.request_key !== input.request_key || item.link_hash !== input.link_hash) {
+        throw new BridgeError("COORDINATION_BINDING_CONFLICT", "Terminal evidence names a different task link");
+      }
+      if (item.state !== "settled") throw new BridgeError("COORDINATION_BINDING_SETTLED", "Only a settled binding may receive terminal evidence");
+      item.state = "terminal"; item.terminal = input.terminal;
+      appendSubmissionEvent(next, "terminal", owner, input.operation_key, item.task_id, hash);
+      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+    });
+  }
+  async #disposeSubmission(actor: CoordinationActor, raw: unknown, kind: "settle" | "release"): Promise<SubmissionBinding> {
+    const owner = parentId(actor.owner_id), input = decodeSubmissionDispositionInput(raw), hash = canonicalHash({ owner, kind, input });
+    return this.#ordering.run(async () => {
+      this.store.assertMutable(); const current = await this.store.snapshot();
+      const prior = sameSubmissionKey(current, owner, input.operation_key, hash);
+      if (prior) {
+        const item = submissionBindings(current).find(b => b.task_id === prior.item_id);
+        if (!item || prior.kind !== kind) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Key names another submission operation");
+        return structuredClone(item);
+      }
+      const next = submissionState(current), item = next.bindings.find(b => b.task_id === input.task_id);
+      if (!item || item.owner !== owner) return unavailable();
+      if (item.request_key !== input.request_key || item.link_hash !== input.link_hash) {
+        throw new BridgeError("COORDINATION_BINDING_CONFLICT", "Task, request key and link hash must identify one exact binding");
+      }
+      if (item.state !== "bound") throw new BridgeError("COORDINATION_BINDING_SETTLED", "Binding already has another disposition");
+      item.state = kind === "settle" ? "settled" : "released";
+      const announcement = item.announcement ? next.announcements.find(a => a.id === item.announcement!.id) : undefined;
+      if (item.announcement) {
+        if (!announcement || announcement.owner !== owner || announcement.task_id !== item.task_id || announcement.state !== "bound") {
+          throw new BridgeError("COORDINATION_BINDING_CONFLICT", "Announcement no longer identifies this exact bound task");
+        }
+        announcement.revision++;
+        if (kind === "settle") announcement.state = "linked";
+        else { announcement.state = "unresolved"; delete announcement.task_id; }
+      }
+      appendSubmissionEvent(next, kind, owner, input.operation_key, item.task_id, hash);
+      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+    });
+  }
+
+  async submissionBinding(actor: CoordinationActor, taskId: string): Promise<SubmissionBinding> {
+    const owner = parentId(actor.owner_id), id = entityId(taskId);
+    return this.#ordering.run(async () => {
+      const item = submissionBindings(await this.store.snapshot()).find(b => b.task_id === id);
+      if (!item || item.owner !== owner) return unavailable();
+      return structuredClone(item);
+    });
+  }
+  async submissionBindingByRequestKey(actor: CoordinationActor, rawRequestKey: unknown): Promise<SubmissionBinding | undefined> {
+    const owner = parentId(actor.owner_id), requestKey = coordinationOperationKey(rawRequestKey);
+    return this.#ordering.run(async () => {
+      const matches = submissionBindings(await this.store.snapshot()).filter(b => b.owner === owner && b.request_key === requestKey);
+      const active = matches.find(b => b.state !== "released");
+      return structuredClone(active ?? matches.at(-1));
+    });
+  }
 
   /** A receipt lookup never consults a workspace or restores old control authority. */
   async receipt(actor: CoordinationActor, key: unknown): Promise<Receipt | undefined> {
@@ -38,6 +222,9 @@ export class CoordinationControl {
       const state = await this.store.snapshot();
       if (recoveryReceipts(state).some(r => r.operator === owner && r.command.operation_key === command.operation_key)) {
         throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already identifies operator recovery");
+      }
+      if (submissionEvents(state).some(e => e.owner === owner && e.key === command.operation_key)) {
+        throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already identifies submission authority");
       }
       const prior = state.receipts.find(r => r.owner === owner && r.key === command.operation_key);
       if (prior) {
@@ -67,6 +254,9 @@ export class CoordinationControl {
       if (recoveryReceipts(current).some(r => r.operator === owner && r.command.operation_key === command.operation_key)) {
         throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already identifies operator recovery");
       }
+      if (submissionEvents(current).some(e => e.owner === owner && e.key === command.operation_key)) {
+        throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already identifies submission authority");
+      }
       const prior = current.receipts.find(r => r.owner === owner && r.key === command.operation_key);
       if (prior) {
         if (prior.request_hash !== hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already names different intent");
@@ -86,8 +276,23 @@ export class CoordinationControl {
         }
       }
       if (command.kind === "register_task_work" && this.#retirements.has(command.managed.task_id)) throw new BridgeError("COORDINATION_RETIREMENT_ACTIVE", "The task is being retired");
-      const next: ControlState = command.kind === "register_task_work"
-        ? { ...structuredClone(current), schema_version: MANAGED_CONTROL_SCHEMA, recoveries: structuredClone([...recoveryReceipts(current)]) }
+      const next: ControlState = command.kind === "watch_source"
+        ? current.schema_version === SOURCE_WATCH_CONTROL_SCHEMA ? structuredClone(current)
+          : { ...structuredClone(current), schema_version: SOURCE_WATCH_CONTROL_SCHEMA,
+              recoveries: structuredClone([...recoveryReceipts(current)]),
+              announcements: structuredClone([...announcements(current)]),
+              bindings: structuredClone([...submissionBindings(current)]),
+              submission_events: structuredClone([...submissionEvents(current)]) }
+        : command.kind === "grant_source"
+        ? current.schema_version >= SOURCE_GRANT_CONTROL_SCHEMA ? structuredClone(current)
+          : { ...structuredClone(current), schema_version: SOURCE_GRANT_CONTROL_SCHEMA,
+              recoveries: structuredClone([...recoveryReceipts(current)]),
+              announcements: structuredClone([...announcements(current)]),
+              bindings: structuredClone([...submissionBindings(current)]),
+              submission_events: structuredClone([...submissionEvents(current)]) }
+        : command.kind === "register_task_work"
+        ? current.schema_version >= SUBMISSION_CONTROL_SCHEMA ? structuredClone(current)
+          : { ...structuredClone(current), schema_version: MANAGED_CONTROL_SCHEMA, recoveries: structuredClone([...recoveryReceipts(current)]) }
         : structuredClone(current);
       const result = apply(next, owner, command);
       next.revision++;
@@ -115,9 +320,13 @@ export class CoordinationControl {
       if (current.receipts.some(r => r.owner === operator && r.key === recovery.operation_key)) {
         throw new BridgeError("COORDINATION_KEY_CONFLICT", "Recovery key already identifies an ordinary operation");
       }
+      if (submissionEvents(current).some(e => e.owner === operator && e.key === recovery.operation_key)) {
+        throw new BridgeError("COORDINATION_KEY_CONFLICT", "Recovery key already identifies submission authority");
+      }
       if (recovery.epoch !== current.epoch) throw new BridgeError("COORDINATION_STALE_EPOCH", "Recovery belongs to a different initialized coordination store");
-      const next: ControlState & { schema_version: 2 | 3 } = {
-        ...structuredClone(current), schema_version: current.schema_version === MANAGED_CONTROL_SCHEMA ? MANAGED_CONTROL_SCHEMA : 2, recoveries: structuredClone([...recoveryReceipts(current)]),
+      const next: Exclude<ControlState, { schema_version: 1 }> = current.schema_version === 4 || current.schema_version === 5 || current.schema_version === 6 ? structuredClone(current) : {
+        ...structuredClone(current), schema_version: current.schema_version === MANAGED_CONTROL_SCHEMA ? MANAGED_CONTROL_SCHEMA : 2,
+        recoveries: structuredClone([...recoveryReceipts(current)]),
       };
       applyRecovery(next, recovery);
       next.revision++;
@@ -155,6 +364,18 @@ export class CoordinationControl {
   async work(actor: CoordinationActor, id: string): Promise<Work> {
     const owner = parentId(actor.owner_id), workId = entityId(id);
     return this.#ordering.run(async () => structuredClone(visibleWork(await this.store.snapshot(), owner, workId)));
+  }
+  async sourceWork(actor: CoordinationActor, id: string, scope: "report" | "detail"): Promise<Work> {
+    const recipient = parentId(actor.owner_id), workId = entityId(id);
+    return this.#ordering.run(async () => {
+      const work = (await this.store.snapshot()).works.find(w => w.id === workId);
+      if (!work || work.state !== "active") throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Current source work is unavailable");
+      const grant = work.source_grants?.find(g => g.recipient === recipient && g.work_revision === work.revision);
+      if (work.owner !== recipient && (!grant || scope === "detail" && grant.scope !== "detail")) {
+        throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Current source scope does not authorize this recipient");
+      }
+      return structuredClone(work);
+    });
   }
   async note(actor: CoordinationActor, id: string): Promise<Note & { agreement: "not_applicable" | "pending" | "acknowledged" | "withdrawn" }> {
     const owner = parentId(actor.owner_id), noteId = entityId(id);
@@ -225,6 +446,53 @@ export class CoordinationControl {
     await this.#ordering.run(() => this.store.close());
   }
 }
+function submissionState(current: ControlState): Extract<ControlState, { schema_version: 4 | 5 | 6 }> {
+  return current.schema_version === 4 || current.schema_version === 5 || current.schema_version === 6 ? structuredClone(current) : {
+    ...structuredClone(current), schema_version: SUBMISSION_CONTROL_SCHEMA,
+    recoveries: structuredClone([...recoveryReceipts(current)]), announcements: [], bindings: [], submission_events: [],
+  };
+}
+function sameSubmissionKey(state: ControlState, owner: ParentId, key: string, hash: string): SubmissionEvent | undefined {
+  if (state.receipts.some(r => r.owner === owner && r.key === key)
+    || recoveryReceipts(state).some(r => r.operator === owner && r.command.operation_key === key)) {
+    throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key names another retained metadata action");
+  }
+  const prior = submissionEvents(state).find(e => e.owner === owner && e.key === key);
+  if (prior && prior.request_hash !== hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key names different submission intent");
+  return prior;
+}
+function appendSubmissionEvent(next: Extract<ControlState, { schema_version: 4 | 5 | 6 }>, kind: SubmissionEvent["kind"],
+  owner: ParentId, key: string, item_id: string, request_hash: string): void {
+  next.revision++;
+  next.submission_events.push({ kind, owner, key, item_id, request_hash, revision: next.revision });
+}
+function submissionDecision(state: ControlState, owner: ParentId, input: SubmissionPreflightInput): {
+  decision_identity: string; overlaps: Array<{ kind: "work" | "announcement" | "binding"; id: string; areas: Region[] }> } {
+  const announcement = input.announcement ? announcements(state).find(a => a.id === input.announcement!.id) : undefined;
+  if (input.announcement && (!announcement || announcement.owner !== owner)) return unavailable();
+  if (announcement && (announcement.revision !== input.announcement!.revision || announcement.state !== "unresolved"
+    || announcement.source_view !== input.source_view
+    || canonicalHash(announcement.areas) !== canonicalHash(input.areas))) {
+    throw new BridgeError("COORDINATION_CHANGED", "Announcement changed before the requested preflight");
+  }
+  const overlaps = [
+    ...state.works.filter(w => w.state === "active" && canReadWork(owner, w))
+      .map(w => ({ kind: "work" as const, id: w.id, revision: w.revision,
+        areas: w.areas.filter(area => input.areas.some(b => overlap(area, b))) })).filter(w => w.areas.length),
+    ...announcements(state).filter(a => a.state === "unresolved" && a.id !== input.announcement?.id
+      && (a.owner === owner || a.readers.includes(owner)))
+      .map(a => ({ kind: "announcement" as const, id: a.id, revision: a.revision,
+        areas: a.areas.filter(area => input.areas.some(b => overlap(area, b))) })).filter(a => a.areas.length),
+    ...submissionBindings(state).filter(b => (b.state === "bound" || b.state === "settled") &&
+      (b.owner === owner || b.announcement && announcements(state).some(a => a.id === b.announcement!.id && a.readers.includes(owner)))
+      && !state.works.some(w => w.managed?.task_id === b.task_id && canReadWork(owner, w)))
+      .map(b => ({ kind: "binding" as const, id: b.task_id, revision: b.announcement?.revision ?? 0,
+        areas: b.areas.filter(area => input.areas.some(other => overlap(area, other))) })).filter(b => b.areas.length),
+  ].sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
+  const decision_identity = canonicalHash({ owner, source_view: input.source_view, input_oid: input.input_oid,
+    intent_hash: input.intent_hash, areas: input.areas, announcement: input.announcement ?? null, overlaps });
+  return { decision_identity, overlaps: overlaps.map(({ kind, id, areas }) => ({ kind, id, areas })) };
+}
 function unavailable(): never { throw new BridgeError("COORDINATION_NOT_FOUND", "The subject is unavailable under current sharing authority"); }
 function canReadWork(parent: ParentId, work: Work): boolean { return work.owner === parent || work.readers.includes(parent); }
 function visibleWork(state: ControlState, parent: ParentId, id: string): Work {
@@ -280,14 +548,34 @@ function apply(state: ControlState, parent: ParentId, command: Command): { entit
         object_format: command.object_format, intent: command.intent, areas: command.areas, readers: command.readers });
       return { entity: { kind: "work", id }, item_id: id };
     }
-    case "share_work": case "close_work": {
+    case "share_work": case "close_work": case "grant_source": case "watch_source": {
       const work = ownWork(state, parent, command.work_id, command.expected_revision);
       if (command.kind === "share_work") {
         if (command.readers.includes(parent)) throw new BridgeError("COORDINATION_INVALID", "The owner is not a separate reader");
         work.readers = command.readers;
+        if (work.source_grants) work.source_grants = [];
+        if (work.source_watches) work.source_watches = [];
+      } else if (command.kind === "grant_source") {
+        if (work.state !== "active") throw new BridgeError("COORDINATION_WORK_CLOSED", "Closed work cannot grant source access");
+        if (command.recipients.some(r => r.recipient === parent)) throw new BridgeError("COORDINATION_INVALID", "The owner already has source access");
+        work.source_grants = command.recipients.map(r => ({ ...r, work_revision: work.revision + 1 }));
+        if (work.source_watches) work.source_watches = [];
+      } else if (command.kind === "watch_source") {
+        if (work.state !== "active") throw new BridgeError("COORDINATION_WORK_CLOSED", "Closed work cannot publish source watches");
+        for (const watcher of command.watchers) if (watcher.recipient !== parent
+          && !work.source_grants?.some(g => g.recipient === watcher.recipient && g.work_revision === work.revision)) {
+          throw new BridgeError("COORDINATION_FORBIDDEN", "A source watcher requires current report or detail source access");
+        }
+        if (command.watchers.reduce((sum, watcher) => sum + watcher.regions.length, 0) > MAX_REGIONS) {
+          throw new BridgeError("COORDINATION_INVALID", "Source watches exceed the bounded region inventory");
+        }
+        work.source_watches = command.watchers.map(watcher => ({ ...watcher, work_revision: work.revision + 1 }));
+        if (work.source_grants) work.source_grants = work.source_grants.map(grant => ({ ...grant, work_revision: work.revision + 1 }));
       } else {
         if (work.state === "closed") throw new BridgeError("COORDINATION_WORK_CLOSED", "Work was already explicitly closed");
         work.state = "closed";
+        if (work.source_grants) work.source_grants = [];
+        if (work.source_watches) work.source_watches = [];
       }
       work.revision++; return { entity: { kind: "work", id: work.id }, item_id: work.id };
     }
@@ -362,6 +650,8 @@ function applyRecovery(state: ControlState, command: RecoveryCommand): void {
       work.owner = command.new_owner;
       work.readers = work.readers.filter(p => p !== command.new_owner);
     } else work.state = "closed";
+    if (work.source_grants) work.source_grants = [];
+    if (work.source_watches) work.source_watches = [];
     work.revision++;
     return;
   }

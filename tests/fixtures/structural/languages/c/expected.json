@@ -1,0 +1,11 @@
+{
+  "names": ["sum", "sum", "Handler", "Point", "x", "y", "selected", "selected"],
+  "kinds": ["function_definition", "declaration", "type_definition", "struct_specifier", "field_declaration", "field_declaration", "function_definition", "function_definition"],
+  "sum_signature": "<attribute> int sum(int a, int b)",
+  "sum_parameters": ["int a", "int b"],
+  "sum_result": "int",
+  "first_start_byte": 29,
+  "first_source": "[[nodiscard]] int sum(int a, int b) { return a + b; }",
+  "selected_branch_count": 2,
+  "limitations": ["preprocessor_alternatives_unresolved"]
+}

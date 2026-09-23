@@ -1,4 +1,4 @@
-import { DurableRequestSchema, LifecycleSnapshotSchema, NativeEvidenceSchema, TaskControlSchema, SubmissionIdentitySchema } from "../contracts/tasks.js";
+import { DurableRequestSchema, CoordinatedDurableRequestSchema, CoordinatedSubmissionIdentitySchema, coordinatedMaterialIdentity, LifecycleSnapshotSchema, NativeEvidenceSchema, TaskControlSchema, SubmissionIdentitySchema } from "../contracts/tasks.js";
 import { AssignmentSchema, ExecutionSnapshotSchema, ExecutionIdentitySchema } from "../contracts/agents.js";
 import { canonicalHash, stableHash } from "../core/async.js";
 import { z } from "zod";
@@ -132,11 +132,20 @@ function identity(actual: string, expected: string, stage: string): void {
 
 export function decodeRequest(value: unknown, id: string): StoredRequest {
   if (recordObject(value) && value.schema_version !== undefined) {
-    version(value, [4], "store.request");
-    const r = parse(DurableRequestSchema, value, "store.request");
+    version(value, [4, 5], "store.request");
+    const r = value.schema_version === 5 ? parse(CoordinatedDurableRequestSchema, value, "store.request") : parse(DurableRequestSchema, value, "store.request");
     identity(r.task_id, id, "store.request");
-    const intent = SubmissionIdentitySchema.parse({ schema_version: 1, source_view: r.source_view, assignment: r.request });
+    const intent = r.schema_version === 5
+      ? coordinatedMaterialIdentity(CoordinatedSubmissionIdentitySchema.parse({ schema_version: 2, source_view: r.source_view, assignment: r.request,
+        ...(r.linkage.announcement ? { announcement: r.linkage.announcement } : {}) }))
+      : SubmissionIdentitySchema.parse({ schema_version: 1, source_view: r.source_view, assignment: r.request });
     if (r.canonical_hash !== canonicalHash(intent) || r.execution.agent_id !== r.request.agent_id || r.execution.configuration_fingerprint !== canonicalHash(r.execution.configuration)) throw new BridgeError("STORE_CORRUPT", "Durable admission identity mismatch");
+    if (r.schema_version === 5 && (r.linkage.task_id !== r.task_id || r.linkage.request_key !== r.request.request_key ||
+      r.linkage.owner_id !== r.initial_owner || r.linkage.intent_hash !== r.canonical_hash)) throw new BridgeError("STORE_CORRUPT", "Coordinated admission linkage contradicts the request");
+    if (r.schema_version === 5) {
+      const { link_hash, ...binding } = r.linkage;
+      if (link_hash !== canonicalHash(binding)) throw new BridgeError("STORE_CORRUPT", "Coordinated link hash does not identify the metadata binding");
+    }
     return r;
   }
   if (recordObject(value)) version(value.request, [1, 2, 3], "store.request");
@@ -181,7 +190,7 @@ export function decodeSafety(value: unknown): { reason: string; at: string } {
 export function assertResultAdmission(result: StoredResult, admission: StoredRequest): void {
   identity(result.task_id, admission.task_id, "store.result.admission");
   identity(result.request_key, admission.request.request_key, "store.result.request_key");
-  if ("schema_version" in admission && admission.schema_version === 4) {
+  if ("schema_version" in admission && (admission.schema_version === 4 || admission.schema_version === 5)) {
     if (result.schema_version !== 4 || canonicalHash(result.identity.snapshot) !== canonicalHash(admission.execution)) throw new BridgeError("STORE_CORRUPT", "Result differs from durable admission");
     if (admission.request.mode === "review" && result.delivery.status !== "not_applicable" || result.delivery.base_commit && admission.request.mode === "implement" && result.delivery.base_commit !== admission.request.base_commit || result.delivery.target_ref && result.delivery.target_ref !== admission.request.target_ref) throw new BridgeError("STORE_CORRUPT", "Result delivery contradicts admission");
     return;

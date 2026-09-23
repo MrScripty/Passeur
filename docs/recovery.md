@@ -85,3 +85,36 @@ muse-bridge cleanup --project /absolute/repository --task TASK_UUID --yes
 ```
 
 Assignment identity, terminal result, resource disposition and idempotency receipts remain. Pending, retained, historical and uncertain resources keep their evidence. The offline command must obtain the same common-repository lease; it cannot race the running server.
+
+## Coordinated submission and observation recovery (completion candidate)
+
+For a lost coordinated-submit response, inspect the original stable request key
+under the authorized task owner. A bound metadata record and TaskStore schema-5
+request carry the exact task ID, owner, key and link hashes. Service startup
+reconciles their persisted state before native eligibility. A task admitted
+before link settlement remains queued or needs attention until its exact link
+can be settled; an uncertain native run is never restarted to repair metadata.
+Conflicting evidence remains visible for operator investigation. Repeating a
+new submission with a different key risks duplicate work and is not recovery.
+The accepted task remains service-owned if its submitting client disconnects.
+
+An unresolved announcement can be inspected or explicitly withdrawn at its
+current revision. A linked announcement remains historical and cannot be
+withdrawn to cancel its task. Use task cancellation with current control
+generation for actual native stop. Metadata owner adoption, native task attach,
+source grants and case leadership remain separate authorities. Source grants
+and watches are cleared on metadata sharing, closure and adoption; managed
+source reads also require current task control. A historical receipt or stored
+artifact ID is not current source permission.
+
+The observation store publishes an immutable artifact before a notice can
+reference it. Notice pull repeats an unacknowledged identity; acknowledge it
+explicitly after processing. A pruned cursor returns a gap and current
+snapshot. Missing or evicted working captures return unavailable rather than
+being reconstructed from the current path. Committed input can be read from
+retained local Git objects under current authority. Observation failures or
+resource pressure may leave analysis incomplete; they do not stop coding
+workers or release task ownership. Retain new control, task and observation
+state when upgrading; an old executable or copied backup does not downgrade
+its schema. See [structural reporting](structural-reporting.md) and the
+[completion verification record](plans/structural-coordination-completion/reports/verification-and-release.md).

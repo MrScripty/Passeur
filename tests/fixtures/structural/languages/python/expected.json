@@ -1,0 +1,45 @@
+{
+  "coverage": "complete",
+  "declarations": [
+    {
+      "kind": "decorated_definition", "name": "run", "enclosing": [],
+      "range": { "start_byte": 38, "end_byte": 183 },
+      "signature": "<attribute>\nasync def run[T = <default>](a: int, /, b: str = <default>, *, flag: bool = <default>) -> str:",
+      "parameters": ["a: int", "/", "b: str = <default>", "*", "flag: bool = <default>"],
+      "result": { "state": "declared", "syntax": "str" }, "default_count": 4,
+      "direct_body_text": "return b"
+    },
+    {
+      "kind": "class_definition", "name": "Box", "enclosing": [],
+      "range": { "start_byte": 185, "end_byte": 292 },
+      "signature": "class Box[T = <default>]:", "parameters": [],
+      "result": { "state": "not_declared" }, "default_count": 1
+    },
+    {
+      "kind": "assignment", "name": "value", "enclosing": ["Box"],
+      "range": { "start_byte": 218, "end_byte": 242 },
+      "signature": "value: T = <default>", "parameters": [],
+      "result": { "state": "declared", "syntax": "T" }, "default_count": 1
+    },
+    {
+      "kind": "function_definition", "name": "get", "enclosing": ["Box"],
+      "range": { "start_byte": 247, "end_byte": 292 },
+      "signature": "def get(self) -> T:", "parameters": ["self"],
+      "result": { "state": "declared", "syntax": "T" }, "default_count": 0,
+      "direct_body_text": "return self.value"
+    },
+    {
+      "kind": "type_alias_statement", "name": "Alias", "enclosing": [],
+      "range": { "start_byte": 294, "end_byte": 332 },
+      "signature": "type Alias[T = <default>] = list[T]", "parameters": [],
+      "result": { "state": "declared", "syntax": "list[T]" }, "default_count": 1
+    }
+  ],
+  "changed": {
+    "run": { "declaration_changed": false, "body_changed": true, "default_changed": true },
+    "Alias": { "declaration_changed": true, "body_changed": false, "default_changed": false }
+  },
+  "incomplete_limitations": ["declaration_body_incomplete", "parse_error_or_missing_token"],
+  "ambiguous_change_count": 4,
+  "added_name": "added"
+}

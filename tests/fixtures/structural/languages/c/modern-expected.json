@@ -1,0 +1,6 @@
+{
+  "names": ["count", "number", "nullish"],
+  "types": ["typeof(int)", "int", "int"],
+  "number_signature": "int number = <default>;",
+  "nullish_parameters": ["void"]
+}

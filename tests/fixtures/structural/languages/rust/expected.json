@@ -11,5 +11,38 @@
     ["transform", false, true, false],
     ["value", true, false, false]
   ],
-  "incomplete_limitations": ["parse_error_or_missing_token"]
+  "incomplete_limitations": ["parse_error_or_missing_token"],
+  "edition_2024_declarations": [
+    ["foreign_mod_item", "extern \"C\"", [], "unsafe extern \"C\""],
+    ["function_signature_item", "native", ["extern \"C\""], "pub fn native(x: i32) -> i32;"],
+    ["function_item", "exported", [], "<attribute>\npub extern \"C\" fn exported(x: i32) -> i32"]
+  ],
+  "edition_2024_ranges": [[0, 55], [24, 53], [57, 129]],
+  "edition_2024_native_nodes": ["foreign_mod_item", "attribute_item", "function_item"],
+  "population_declarations": [
+    ["struct_item", "Record", [], "pub struct Record<T = <default>>"],
+    ["field_declaration", "data", ["Record"], "pub data: T"],
+    ["enum_item", "Choice", [], "pub enum Choice"],
+    ["enum_variant", "A", ["Choice"], "A"],
+    ["enum_variant", "B", ["Choice"], "B(u8)"],
+    ["enum_variant", "C", ["Choice"], "C { n: u8 }"],
+    ["type_item", "Label", [], "pub type Label<'a> = &'a str;"],
+    ["trait_item", "Work", [], "pub trait Work"],
+    ["function_signature_item", "execute", ["Work"], "fn execute(&self, input: i32) -> i32;"],
+    ["struct_item", "Worker", [], "pub struct Worker;"],
+    ["impl_item", "Work for Worker", [], "impl Work for Worker"],
+    ["function_item", "execute", ["Work for Worker"], "fn execute(&self, input: i32) -> i32"],
+    ["function_item", "fetch", [], "pub async fn fetch<'a, T>(mut source: T) -> usize\nwhere T: Iterator<Item = &'a str> + Clone"],
+    ["function_item", "abi", [], "pub unsafe extern \"C\" fn abi(x: i32) -> i32"],
+    ["function_item", "r#gen", [], "pub fn r#gen() -> i32"]
+  ],
+  "population_changes": [
+    ["enum_variant", "A", true, false, false],
+    ["field_declaration", "data", true, false, false],
+    ["function_item", "fetch", true, true, false],
+    ["function_item", "r#gen", false, true, false],
+    ["struct_item", "Record", false, false, true],
+    ["type_item", "Label", true, false, false]
+  ],
+  "population_region_changed": true
 }

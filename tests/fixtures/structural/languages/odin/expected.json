@@ -1,0 +1,27 @@
+{
+  "input_declarations": [
+    ["struct_declaration", "Point", [], "Point :: struct", 46, 89],
+    ["field", "x", ["Point"], "x: int", 68, 74],
+    ["field", "y", ["Point"], "y: int", 80, 86],
+    ["procedure_declaration", "add", [], "add :: proc(x: int, y: int = <default>) -> int", 91, 150],
+    ["procedure_declaration", "(Point) .move", [], "(Point) .move :: proc(self: ^Point, dx: int)", 152, 217],
+    ["const_declaration", "Id", [], "Id :: int", 219, 228],
+    ["enum_declaration", "Color", [], "Color :: enum", 229, 256],
+    ["identifier", "Red", ["Color"], "Red", 245, 248],
+    ["identifier", "Blue", ["Color"], "Blue", 250, 254]
+  ],
+  "changes": [
+    ["modified", "add", false, true, true]
+  ],
+  "incomplete_limitations": ["declaration_header_incomplete", "parse_error_or_missing_token"],
+  "advanced_declarations": [
+    ["procedure_declaration", "pair", "pair :: proc(x: int) -> (first: int, ok: bool)", 14, 83],
+    ["procedure_declaration", "identity", "identity :: proc($T: typeid, value: T) -> T", 85, 149],
+    ["procedure_declaration", "copy", "copy :: proc(#no_alias src: []u8, #no_alias dst: []u8)", 151, 208],
+    ["overloaded_procedure_declaration", "group", "group :: proc{pair, identity}", 209, 238],
+    ["union_declaration", "Blob", "Blob :: union", 239, 268],
+    ["type", "int", "int", 255, 258],
+    ["type", "string", "string", 260, 266],
+    ["procedure_declaration", "tagged", "<attribute> tagged :: proc()", 269, 317]
+  ]
+}
