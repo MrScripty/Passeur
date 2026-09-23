@@ -84,6 +84,17 @@ describe.runIf(process.platform === "linux")("Codex adapter through an actual co
       expect(await readFile(join(home, "fixture-decision"), "utf8")).toBe("accept");
     }, true);
   });
+  it("the reserved local execution environment still requires one exact human approval", async () => {
+    await scenario("local-environment", async (adapter, run, home) => {
+      run.approve = async (request) => {
+        expect(request.workspace).toBe(run.workspace);
+        expect(request.choices.map((choice) => choice.scope)).toEqual(["once", "once"]);
+        return { choice_id: "accept" };
+      };
+      expect(await adapter.run(run)).toMatchObject({ status: "completed", worker_stop: "confirmed" });
+      expect(await readFile(join(home, "fixture-decision"), "utf8")).toBe("accept");
+    }, true);
+  });
   it("network policy proposals remain unsupported", async () => {
     await scenario("network-amendment", async (adapter, run) => expect(await adapter.run(run)).toMatchObject({ status: "failed", error: { code: "CODEX_APPROVAL_UNSUPPORTED" } }), true);
   });

@@ -68,13 +68,14 @@ export function approval(value: unknown, threadId: string, turnId: string, works
   const request = correlate(value, threadId, turnId);
   const itemId = text(request.itemId, "approval.itemId", 256);
   // An execpolicy proposal is only a hint. The adapter can answer "accept" for this command
-  // without accepting the proposal; managed network grants and broader roots remain unsupported.
+  // without accepting the proposal. Codex's reserved local environment identifies the task-owned
+  // app-server executor; other environments, managed network grants and broader roots are unsupported.
   const unsupported = [
     request.proposedNetworkPolicyAmendments != null && "proposedNetworkPolicyAmendments",
     request.networkApprovalContext != null && "networkApprovalContext",
     request.grantRoot != null && "grantRoot",
     request.additionalPermissions != null && "additionalPermissions",
-    request.environmentId != null && "environmentId",
+    request.environmentId != null && request.environmentId !== "local" && "environmentId",
     request.kind !== undefined && request.kind !== "command" && "kind",
   ].filter((name): name is string => typeof name === "string");
   if (unsupported.length) throw new BridgeError("CODEX_APPROVAL_UNSUPPORTED", `This approval would extend the admitted permission contract (${unsupported.join(", ")})`);
