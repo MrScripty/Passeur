@@ -15,9 +15,22 @@ const code = (expected) => (error) => error?.code === expected;
 
 test('envelopes preserve ID domains and reject ambiguous authority', () => {
   assert.deepEqual(decodeEnvelope({ id: '7', result: { ok: true } }), { id: '7', result: { ok: true } });
-  for (const value of [[], { id: 1, result: null, error: {} }, { id: NaN, result: null }, { method: 'x', id: {} }, { id: 1, result: null, jsonrpc: '2.0' }]) {
+  assert.deepEqual(decodeEnvelope({ method: 'remoteControl/status/changed', params: {}, emittedAtMs: 1 }), { method: 'remoteControl/status/changed', params: {} });
+  for (const value of [[], { id: 1, result: null, error: {} }, { id: NaN, result: null }, { method: 'x', id: {} },
+    { method: 'x', id: 1, emittedAtMs: 1 }, { method: 'x', emittedAtMs: -1 }, { method: 'x', emittedAtMs: '1' },
+    { id: 1, result: null, jsonrpc: '2.0' }]) {
     assert.throws(() => decodeEnvelope(value), code('CODEX_PROTOCOL_INVALID'));
   }
+});
+test('real pipe accepts the installed Codex notification timestamp without exposing it to callbacks', async () => {
+  const received = [];
+  const transport = peer('timestamp-notification', { notification: (message) => { received.push(message); } });
+  try {
+    assert.deepEqual(await transport.request('go', {}, budget()), {});
+    assert.deepEqual(received, [{ method: 'remoteControl/status/changed', params: { status: 'idle' } }]);
+    assert.equal(await transport.close(1500), true);
+    assert.equal(transport.operationFailure, undefined);
+  } finally { await transport.close(1500); }
 });
 test('real pipe reassembles split UTF-8 and correlates responses', async () => {
   const transport = peer('split');

@@ -329,12 +329,14 @@ test('restart reports deterministically omitted active work beyond monitor capac
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   assert.equal(afterClose.capacity_omitted_count, 0);
-  assert.equal(afterClose.state, 'observed');
+  assert.equal(afterClose.state, 'observed', JSON.stringify({ afterClose, selectedId, omittedId }));
   let laterId, laterRoot;
+  const earlierOmittedIds = [];
   for (let index = 0; index < 8; index++) {
     const root = await fixture.linked(`capacity-after-release-${index}`);
     const later = await resumed.coordinate(command({ kind: 'register_external_work', operation_key: key(),
       input_oid: fixture.base, intent: 'Later capacity work', areas: [{ kind: 'file', path: 'source.ts' }], readers: [] }), owner, root);
+    if (laterId) earlierOmittedIds.push(laterId);
     laterId = later.receipt.item_id;
     laterRoot = root;
     if (laterId < omittedId) break;
@@ -348,6 +350,10 @@ test('restart reports deterministically omitted active work beyond monitor capac
   assert.ok(status.limitations.includes('observation_capacity'), JSON.stringify(status));
   assert.equal((await resumed.structuralObservationStatus(omittedId, owner)).state, 'observed',
     'the watcher already admitted for this work remains attached regardless of UUID sort order');
+  for (const earlierId of earlierOmittedIds) {
+    await resumed.coordinate(command({ kind: 'close_work', operation_key: key(), work_id: earlierId,
+      expected_revision: 1 }), owner, fixture.root);
+  }
 
   let entered, release;
   const attaching = new Promise(resolve => { entered = resolve; });

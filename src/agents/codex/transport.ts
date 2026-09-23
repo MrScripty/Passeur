@@ -25,8 +25,12 @@ export function decodeEnvelope(value: unknown): NativeMessage | Response {
   if (!record(value)) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Native frame must be an object");
   const frame: Record<string, unknown> = value;
   if ("method" in frame) {
+    // Codex 0.155.1 includes this delivery timestamp on notifications. It is
+    // transport metadata, so validate and discard it before dispatch.
+    const notification = !("id" in frame);
     if (typeof frame.method !== "string" || !frame.method || frame.method.length > 256 ||
-        Object.keys(frame).some((key) => !["method", "params", "id"].includes(key)) ||
+        Object.keys(frame).some((key) => !["method", "params", "id", ...(notification ? ["emittedAtMs"] : [])].includes(key)) ||
+        ("emittedAtMs" in frame && (!Number.isSafeInteger(frame.emittedAtMs) || (frame.emittedAtMs as number) < 0)) ||
         ("id" in frame && !id(frame.id))) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Invalid native request envelope");
     return { method: frame.method, params: frame.params, ...("id" in frame ? { id: frame.id as Id } : {}) };
   }

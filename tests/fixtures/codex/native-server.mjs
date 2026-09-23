@@ -13,6 +13,7 @@ else {
     if (mode === 'bad-utf8') return process.stdout.write(Buffer.from([0xff, 10]));
     if (mode === 'oversize') return process.stdout.write(`${'x'.repeat(1_048_577)}\n`);
     if (mode === 'unmatched') return send({ id: 'absent', result: null });
+    if (mode === 'timestamp-notification') send({ method: 'remoteControl/status/changed', params: { status: 'idle' }, emittedAtMs: Date.now() });
     if (mode === 'approval' && frame.method === 'start') {
       send({ id: 91, method: 'permission', params: { operation: 'one' } });
       send({ id: frame.id, result: 'started' });
