@@ -8,16 +8,20 @@ import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import type { NativeDialect } from "../.passeur-native/src/observation/native-parser.js";
+import type { NativeDialect } from "../src/observation/native-parser.js";
 
 const run = promisify(execFile);
 type Pair = Readonly<{ dialect: NativeDialect; input: string; observed: string; path: string; append_comment?: boolean }>;
 if (process.argv[2] === "public") await publicBenchmark();
 else if (process.argv.length > 2) throw new Error("Usage: npx tsx scripts/benchmark-structural.ts [public --runtime-root ABSOLUTE_PATH]");
 else {
-const { NativeAnalysisHelper } = await import("../.passeur-native/src/observation/helper.js");
-const { compareCapturedWork } = await import("../.passeur-native/src/observation/comparison.js");
-const { captureWorkingFile, readCommittedFile } = await import("../.passeur-native/src/observation/source.js");
+// The benchmark executes the generated native build. Resolve it at runtime so the
+// ordinary TypeScript build also works before tsconfig.native.json is compiled.
+const nativeBuildRoot = resolve(".passeur-native/src/observation");
+const nativeModule = (name: string) => pathToFileURL(join(nativeBuildRoot, `${name}.js`)).href;
+const { NativeAnalysisHelper } = await import(nativeModule("helper"));
+const { compareCapturedWork } = await import(nativeModule("comparison"));
+const { captureWorkingFile, readCommittedFile } = await import(nativeModule("source"));
 type Sample = Readonly<{ wall_ms: number; parent_cpu_ms: number; sampled_child_cpu_ms: number;
   peak_parent_rss_bytes: number; peak_child_rss_bytes: number; parent_context_bytes: number; reports: number }>;
 const workloadPath = resolve("tests/fixtures/structural/workload.json");

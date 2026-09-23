@@ -260,8 +260,20 @@ export async function buildRuntimeCandidate(sourcePath: string, outputParentPath
   for (const path of [...new Set(paths)].sort()) {
     const location = relative(source, path).split(sep).join("/");
     if (!location.startsWith("node_modules/") || !contained(source, await realpath(path)) || (await lstat(path)).isSymbolicLink()) throw new BridgeError("BUILD_DEPENDENCY_LINK_UNSUPPORTED", "Runtime dependencies must be installed within the selected source tree", { path });
-    const metadata = await json(join(path, "package.json"));
     const resolvedPackage = lock.packages[location];
+    // node-gyp writes these Makefiles beside scoped grammar packages. npm ls
+    // reports that directory as a package, though it has no package metadata
+    // or lock entry. It is a build byproduct, not part of the runtime closure.
+    if (location === "node_modules/@tree-sitter-grammars/node-addon-api" && !resolvedPackage) {
+      const files = await readdir(path);
+      const generated = new Set(["node_addon_api.Makefile", "node_addon_api_maybe.target.mk",
+        "node_addon_api_except.target.mk", "node_addon_api.target.mk", "node_addon_api_except_all.target.mk"]);
+      if (files.length === generated.size && files.every(file => generated.has(file))) {
+        const kinds = await Promise.all(files.map(file => lstat(join(path, file))));
+        if (kinds.every(kind => kind.isFile())) continue;
+      }
+    }
+    const metadata = await json(join(path, "package.json"));
     if (!object(resolvedPackage) || resolvedPackage.version !== metadata.version || typeof metadata.name !== "string" || typeof metadata.version !== "string") throw new BridgeError("BUILD_DEPENDENCY_MISMATCH", "Installed dependency does not match the selected lock", { path });
     dependencies.push({ location, name: metadata.name, version: metadata.version, sha256: await hashTree(path) });
   }
@@ -317,7 +329,11 @@ export async function buildRuntimeCandidate(sourcePath: string, outputParentPath
     }
     await assertNoSymlinks(stage);
     await verifyDependencyTree(stage);
-    const sbom = await run("npm", ["sbom", "--omit=dev", "--sbom-format=cyclonedx"], source);
+    // Native grammar builds can leave package-shaped Makefile directories in
+    // source node_modules. Generate npm's component list from the exact lock;
+    // the installed bytes and grammar pins are added below from the verified
+    // staged inventory.
+    const sbom = await run("npm", ["sbom", "--package-lock-only", "--omit=dev", "--sbom-format=cyclonedx"], source);
     const bom: unknown = JSON.parse(sbom);
     if (!object(bom) || bom.bomFormat !== "CycloneDX" || !Array.isArray(bom.components)) throw new BridgeError("SBOM_INVALID", "npm did not produce the selected CycloneDX inventory");
     bom.components.push(...dependencies.map(dependency => ({ type: "library",
