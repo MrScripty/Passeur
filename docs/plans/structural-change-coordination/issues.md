@@ -1,5 +1,7 @@
 # Initial findings and dispositions
 
+Remaining M0–M5 and SC01–SC17 obligations are now tracked by `docs/plans/structural-coordination-completion/issues.md`; entries below remain historical evidence and are not silently closed by the transfer. F0–F9 findings retain their recorded dispositions. Plan 2B remains unchanged and unselected.
+
 All findings below are planning/source observations unless explicitly stated otherwise. They are not reproduced runtime failures. Severity denotes consequence for this objective, not an independently verified incident priority. The lead rechecks exact source in M0 before changing implementation.
 
 | ID | Finding / evidence | Relevance and owner | Disposition / required evidence |

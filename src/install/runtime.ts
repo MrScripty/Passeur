@@ -9,6 +9,33 @@ import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
 const exec = promisify(execFile);
 const digest = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const parserPackages = ["tree-sitter-rust", "tree-sitter-typescript", "tree-sitter-javascript", "tree-sitter-python",
+  "@tree-sitter-grammars/tree-sitter-lua", "@tree-sitter-grammars/tree-sitter-kotlin", "tree-sitter-zig",
+  "tree-sitter-c-sharp", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-odin",
+  "@tree-sitter-grammars/tree-sitter-svelte"] as const;
+function nativeEnvironment(): { node_abi: string; napi: string; libc: string } {
+  const report = process.report.getReport() as { header?: { glibcVersionRuntime?: string } };
+  const version = report.header?.glibcVersionRuntime;
+  if (process.platform !== "linux" || typeof version !== "string" || !process.versions.modules || !process.versions.napi) {
+    throw new BridgeError("BUILD_NATIVE_PLATFORM_UNSUPPORTED", "The parser bundle currently requires qualified Linux/glibc and Node ABI/N-API facts");
+  }
+  return { node_abi: process.versions.modules, napi: process.versions.napi, libc: `glibc-${version}` };
+}
+async function hashTree(root: string): Promise<string> {
+  const hash = createHash("sha256");
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const path = join(directory, entry.name), label = relative(root, path).split(sep).join("/");
+      if (entry.name === "node_modules") continue;
+      if (entry.isSymbolicLink()) throw new BridgeError("BUILD_DEPENDENCY_LINK_UNSUPPORTED", "Native parser artifacts may not contain symlinks", { path });
+      if (entry.isDirectory()) { hash.update(`D:${label}\n`); await visit(path); }
+      else if (entry.isFile()) { const bytes = await readFile(path); hash.update(`F:${label}:${bytes.length}:`); hash.update(bytes); }
+      else throw new BridgeError("BUILD_SOURCE_UNSUPPORTED", "Parser artifact contains a special file", { path });
+    }
+  };
+  await visit(root);
+  return hash.digest("hex");
+}
 async function json(path: string): Promise<Record<string, unknown>> {
   let contents: string;
   try { contents = await readFile(path, "utf8"); }
@@ -33,7 +60,7 @@ async function assertNoSymlinks(root: string): Promise<void> {
 export async function readManifest(root: string): Promise<RuntimeManifest> {
   const path = join(root, "runtime-manifest.json");
   const value = await json(path);
-  if (Number.isInteger(value.schema_version) && value.schema_version !== 1) throw new BridgeError("RUNTIME_VERSION_UNSUPPORTED", "Unsupported runtime manifest version", { path });
+  if (Number.isInteger(value.schema_version) && value.schema_version !== 1 && value.schema_version !== 2) throw new BridgeError("RUNTIME_VERSION_UNSUPPORTED", "Unsupported runtime manifest version", { path });
   const decoded = RuntimeManifestSchema.safeParse(value);
   if (!decoded.success) throw new BridgeError("RUNTIME_MANIFEST_INVALID", "Runtime manifest does not satisfy the installed artifact contract", { path });
   return decoded.data;
@@ -55,7 +82,7 @@ export async function runtimeIdentity(root: string): Promise<RuntimeIdentity> {
 
 async function run(command: string, args: string[], cwd: string): Promise<string> {
   try { return (await exec(command, args, { cwd, encoding: "utf8", timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })).stdout; }
-  catch (cause) { throw new BridgeError("RUNTIME_PROCEDURE_FAILED", `Runtime procedure failed: ${command} ${args[0] ?? ""}`, { cause, stage: "runtime.build" }); }
+  catch (cause) { throw new BridgeError("RUNTIME_PROCEDURE_FAILED", `Runtime procedure failed: ${command} ${args[0] ?? ""}`, { cause, stage: "runtime.build", path: cwd }); }
 }
 async function sourceFacts(source: string): Promise<{ revision: string; dirty: boolean; hash: string }> {
   const revision = (await run("git", ["rev-parse", "HEAD"], source)).trim();
@@ -86,6 +113,64 @@ async function verifyDependencyTree(root: string): Promise<void> {
   await run("npm", ["ls", "--all", "--omit=dev", "--json"], root);
 }
 
+function manifestBuildId(manifest: RuntimeManifest): string {
+  const facts = { source_revision: manifest.source_revision, source_dirty: manifest.source_dirty, source_sha256: manifest.source_sha256,
+    lock_sha256: manifest.lock_sha256, package_name: manifest.package_name, package_version: manifest.package_version,
+    build_node: manifest.build_node, build_typescript: manifest.build_typescript, build_npm: manifest.build_npm,
+    platform: manifest.platform, architecture: manifest.architecture, dependencies: manifest.dependencies,
+    ...(manifest.schema_version === 2 ? { compiled_sha256: manifest.compiled_sha256, node_abi: manifest.node_abi,
+      napi: manifest.napi, libc: manifest.libc, parser_artifacts: manifest.parser_artifacts } : {}) };
+  return digest(JSON.stringify(facts));
+}
+
+/** Called in the native child immediately before loading a parser package. */
+export async function verifyInstalledNativePackages(rootPath: string, grammarName: string, expectedBuildId?: string): Promise<void> {
+  const root = await realpath(rootPath);
+  try {
+    const manifestFile = await lstat(join(root, "runtime-manifest.json"));
+    if (!manifestFile.isFile()) throw new BridgeError("RUNTIME_MANIFEST_INVALID", "Native runtime manifest is not a regular file");
+  }
+  catch (error) {
+    if (nativeCode(error) === "ENOENT") {
+      if (expectedBuildId) throw new BridgeError("RUNTIME_MANIFEST_INVALID", "Selected installed native runtime manifest is missing");
+      return;
+    }
+    throw error;
+  }
+  const manifest = await readManifest(root);
+  if (expectedBuildId && manifest.build_id !== expectedBuildId) {
+    throw new BridgeError("RUNTIME_IDENTITY_MISMATCH", "Native child selected a different installed build");
+  }
+  if (manifest.schema_version !== 2 || manifest.state !== "installed" || manifest.source_dirty) {
+    throw new BridgeError("RUNTIME_PARSER_INVALID", "Selected runtime has no installed native parser inventory");
+  }
+  if (manifestBuildId(manifest) !== manifest.build_id) throw new BridgeError("RUNTIME_IDENTITY_MISMATCH", "Native parser inventory does not match the selected build");
+  const environment = nativeEnvironment();
+  if (manifest.platform !== process.platform || manifest.architecture !== process.arch ||
+      manifest.node_abi !== environment.node_abi || manifest.napi !== environment.napi || manifest.libc !== environment.libc) {
+    throw new BridgeError("RUNTIME_NATIVE_TARGET_UNSUPPORTED", "The selected native parser targets another runtime environment");
+  }
+  if (!parserPackages.includes(grammarName as typeof parserPackages[number])) {
+    throw new BridgeError("RUNTIME_PARSER_INVALID", "Requested grammar is outside the installed parser catalog");
+  }
+  const engine = manifest.dependencies.find(dependency => dependency.location === "node_modules/tree-sitter" && dependency.name === "tree-sitter");
+  const grammar = manifest.parser_artifacts.find(artifact => artifact.name === grammarName && artifact.location === `node_modules/${grammarName}`);
+  if (!engine || !("sha256" in engine) || !grammar ||
+      manifest.dependencies.filter(dependency => dependency.location === "node_modules/tree-sitter").length !== 1 ||
+      manifest.parser_artifacts.filter(artifact => artifact.name === grammarName).length !== 1) {
+    throw new BridgeError("RUNTIME_PARSER_INVALID", "Selected native parser packages are absent or ambiguous in the artifact inventory");
+  }
+  const enginePath = join(root, engine.location), grammarPath = join(root, grammar.location);
+  let matches = false;
+  try {
+    matches = (await lstat(enginePath)).isDirectory() && (await lstat(grammarPath)).isDirectory() &&
+      await hashTree(enginePath) === engine.sha256 && await hashTree(grammarPath) === grammar.sha256;
+  } catch (error) { if (nativeCode(error) !== "ENOENT") throw error; }
+  if (!matches) {
+    throw new BridgeError("RUNTIME_PARSER_MISMATCH", "Selected native parser binding or grammar bytes differ from the installed manifest");
+  }
+}
+
 /** Check the selected artifact's metadata and actual installed dependency identities at publication. */
 async function validateArtifact(root: string, manifest: RuntimeManifest): Promise<void> {
   const pkg = await json(join(root, "package.json"));
@@ -100,6 +185,9 @@ async function validateArtifact(root: string, manifest: RuntimeManifest): Promis
     locations.add(dependency.location);
     const metadata = await json(join(path, "package.json"));
     if (metadata.name !== dependency.name || metadata.version !== dependency.version) throw new BridgeError("RUNTIME_DEPENDENCY_MISMATCH", "Artifact dependency differs from its manifest", { path });
+    if (manifest.schema_version === 2 && "sha256" in dependency && await hashTree(path) !== dependency.sha256) {
+      throw new BridgeError("RUNTIME_DEPENDENCY_MISMATCH", "Installed production dependency bytes differ from the manifest", { path });
+    }
   }
   await verifyDependencyTree(root);
   const paths = (await run("npm", ["ls", "--all", "--omit=dev", "--parseable"], root)).trim().split(/\r?\n/).filter((path) => path && resolve(path) !== root);
@@ -109,13 +197,49 @@ async function validateArtifact(root: string, manifest: RuntimeManifest): Promis
     const difference = observed.find((path, index) => path !== expected[index]) ?? expected[observed.length] ?? "none";
     throw new BridgeError("RUNTIME_DEPENDENCY_MISMATCH", `Dependency inventory does not match the complete runtime closure (${observed.length} observed, ${expected.length} declared; first difference: ${difference})`);
   }
+  if (manifest.schema_version === 2) {
+    const environment = nativeEnvironment();
+    if (manifest.node_abi !== environment.node_abi || manifest.napi !== environment.napi || manifest.libc !== environment.libc) {
+      throw new BridgeError("RUNTIME_NATIVE_TARGET_UNSUPPORTED", "The installed parser bundle targets another Node ABI/N-API or libc");
+    }
+    if (await hashTree(join(root, "dist/src")) !== manifest.compiled_sha256) {
+      throw new BridgeError("RUNTIME_COMPILED_MISMATCH", "Compiled runtime bytes differ from the manifest");
+    }
+    const lock: unknown = JSON.parse(lockBytes.toString("utf8"));
+    if (!object(lock) || !object(lock.packages)) throw new BridgeError("RUNTIME_IDENTITY_MISMATCH", "Parser bundle lock metadata is invalid");
+    const names = new Set<string>();
+    for (const artifact of manifest.parser_artifacts) {
+      if (!parserPackages.includes(artifact.name as typeof parserPackages[number]) || names.has(artifact.name) ||
+          artifact.location !== `node_modules/${artifact.name}` || locations.has(artifact.location)) {
+        throw new BridgeError("RUNTIME_PARSER_INVALID", "Parser inventory contains an unexpected or duplicate package");
+      }
+      names.add(artifact.name);
+      const location = join(root, artifact.location), metadata = await json(join(location, "package.json"));
+      const locked = lock.packages[artifact.location];
+      if (!object(locked) || metadata.name !== artifact.name || metadata.version !== artifact.version ||
+          locked.version !== artifact.version || `${locked.resolved}#${locked.integrity}` !== artifact.source_pin ||
+          await hashTree(location) !== artifact.sha256 ||
+          !(await readdir(location)).some(name => /^LICENSE(?:\..+)?$/i.test(name))) {
+        throw new BridgeError("RUNTIME_PARSER_MISMATCH", "Installed parser source, binary or license differs from its pinned identity", { path: location });
+      }
+    }
+    if (names.size !== parserPackages.length) throw new BridgeError("RUNTIME_PARSER_INVALID", "The parser bundle omits a required grammar package");
+  }
   const bom = await json(join(root, manifest.sbom));
   if (bom.bomFormat !== "CycloneDX") throw new BridgeError("SBOM_INVALID", "Runtime has no valid CycloneDX inventory");
-  const facts = { source_revision: manifest.source_revision, source_dirty: manifest.source_dirty, source_sha256: manifest.source_sha256,
-    lock_sha256: manifest.lock_sha256, package_name: manifest.package_name, package_version: manifest.package_version,
-    build_node: manifest.build_node, build_typescript: manifest.build_typescript, build_npm: manifest.build_npm,
-    platform: manifest.platform, architecture: manifest.architecture, dependencies: manifest.dependencies };
-  if (digest(JSON.stringify(facts)) !== manifest.build_id) throw new BridgeError("RUNTIME_IDENTITY_MISMATCH", "Artifact build identity differs from its declared inputs");
+  if (manifest.schema_version === 2) {
+    const components = bom.components;
+    if (!Array.isArray(components) || manifest.dependencies.some(dependency => !components.some((component: unknown) =>
+      object(component) && component["bom-ref"] === `urn:passeur:runtime-dependency:${encodeURIComponent(dependency.location)}` &&
+      component.name === dependency.name && component.version === dependency.version &&
+      Array.isArray(component.hashes) && component.hashes.some(hash => object(hash) && hash.alg === "SHA-256" && hash.content === dependency.sha256))) ||
+      manifest.parser_artifacts.some(artifact => !components.some((component: unknown) =>
+      object(component) && component.name === artifact.name && component.version === artifact.version &&
+      Array.isArray(component.hashes) && component.hashes.some(hash => object(hash) && hash.alg === "SHA-256" && hash.content === artifact.sha256)))) {
+      throw new BridgeError("SBOM_INVALID", "CycloneDX inventory omits a hashed production dependency or pinned native parser artifact");
+    }
+  }
+  if (manifestBuildId(manifest) !== manifest.build_id) throw new BridgeError("RUNTIME_IDENTITY_MISMATCH", "Artifact build identity differs from its declared inputs");
 }
 
 /** Build from already provisioned, pinned dependencies. This procedure never installs packages. */
@@ -132,14 +256,30 @@ export async function buildRuntimeCandidate(sourcePath: string, outputParentPath
   await verifyDependencyTree(source);
   const npmVersion = (await run("npm", ["--version"], source)).trim();
   const paths = (await run("npm", ["ls", "--all", "--omit=dev", "--parseable"], source)).trim().split(/\r?\n/).filter((path) => path && resolve(path) !== source);
-  const dependencies: RuntimeManifest["dependencies"] = [];
+  const dependencies: { location: string; name: string; version: string; sha256: string }[] = [];
   for (const path of [...new Set(paths)].sort()) {
     const location = relative(source, path).split(sep).join("/");
     if (!location.startsWith("node_modules/") || !contained(source, await realpath(path)) || (await lstat(path)).isSymbolicLink()) throw new BridgeError("BUILD_DEPENDENCY_LINK_UNSUPPORTED", "Runtime dependencies must be installed within the selected source tree", { path });
     const metadata = await json(join(path, "package.json"));
     const resolvedPackage = lock.packages[location];
     if (!object(resolvedPackage) || resolvedPackage.version !== metadata.version || typeof metadata.name !== "string" || typeof metadata.version !== "string") throw new BridgeError("BUILD_DEPENDENCY_MISMATCH", "Installed dependency does not match the selected lock", { path });
-    dependencies.push({ location, name: metadata.name, version: metadata.version });
+    dependencies.push({ location, name: metadata.name, version: metadata.version, sha256: await hashTree(path) });
+  }
+  const parserArtifacts: { location: string; name: string; version: string; source_pin: string; sha256: string }[] = [];
+  for (const name of parserPackages) {
+    const location = `node_modules/${name}`, path = join(source, location);
+    if ((await lstat(path)).isSymbolicLink() || !contained(source, await realpath(path))) {
+      throw new BridgeError("BUILD_PARSER_LINK_UNSUPPORTED", "Parser package must be a regular installed directory", { path });
+    }
+    const metadata = await json(join(path, "package.json"));
+    const locked = lock.packages[location];
+    if (!object(locked) || metadata.name !== name || metadata.version !== locked.version ||
+        typeof metadata.version !== "string" || typeof locked.resolved !== "string" || typeof locked.integrity !== "string" ||
+        !(await readdir(path)).some(file => /^LICENSE(?:\..+)?$/i.test(file))) {
+      throw new BridgeError("BUILD_PARSER_MISMATCH", "Parser package differs from the selected lock or omits its license", { path });
+    }
+    parserArtifacts.push({ location, name, version: metadata.version, source_pin: `${locked.resolved}#${locked.integrity}`,
+      sha256: await hashTree(path) });
   }
   await mkdir(outputParent, { recursive: true, mode: 0o700 });
   const stage = await mkdtemp(join(outputParent, ".passeur-candidate-"));
@@ -157,19 +297,37 @@ export async function buildRuntimeCandidate(sourcePath: string, outputParentPath
       await mkdir(dirname(to), { recursive: true, mode: 0o700 });
       await cp(from, to, { recursive: true, errorOnExist: true, force: false,
         filter: (candidate) => !relative(from, candidate).split(sep).includes("node_modules") });
+      if (await hashTree(to) !== dependency.sha256) throw new BridgeError("BUILD_DEPENDENCY_MISMATCH", "Copied production dependency bytes changed during staging", { path: to });
+    }
+    for (const artifact of parserArtifacts) {
+      const from = join(source, artifact.location), to = join(stage, artifact.location);
+      await mkdir(dirname(to), { recursive: true, mode: 0o700 });
+      await cp(from, to, { recursive: true, errorOnExist: true, force: false,
+        filter: candidate => !relative(from, candidate).split(sep).includes("node_modules") });
+      if (await hashTree(to) !== artifact.sha256) throw new BridgeError("BUILD_PARSER_MISMATCH", "Copied parser bytes changed during staging", { path: to });
     }
     await assertNoSymlinks(stage);
     await verifyDependencyTree(stage);
-    const sbom = await run("npm", ["sbom", "--omit=dev", "--sbom-format=cyclonedx"], stage);
+    const sbom = await run("npm", ["sbom", "--omit=dev", "--sbom-format=cyclonedx"], source);
     const bom: unknown = JSON.parse(sbom);
-    if (!object(bom) || bom.bomFormat !== "CycloneDX") throw new BridgeError("SBOM_INVALID", "npm did not produce the selected CycloneDX inventory");
-    await writeFile(join(stage, "sbom.cdx.json"), sbom, { flag: "wx", mode: 0o600 });
+    if (!object(bom) || bom.bomFormat !== "CycloneDX" || !Array.isArray(bom.components)) throw new BridgeError("SBOM_INVALID", "npm did not produce the selected CycloneDX inventory");
+    bom.components.push(...dependencies.map(dependency => ({ type: "library",
+      "bom-ref": `urn:passeur:runtime-dependency:${encodeURIComponent(dependency.location)}`,
+      name: dependency.name, version: dependency.version,
+      hashes: [{ alg: "SHA-256", content: dependency.sha256 }],
+      properties: [{ name: "passeur:runtime-location", value: dependency.location }] })));
+    bom.components.push(...parserArtifacts.map(artifact => ({ type: "library", name: artifact.name, version: artifact.version,
+      hashes: [{ alg: "SHA-256", content: artifact.sha256 }],
+      externalReferences: [{ type: "distribution", url: artifact.source_pin.split("#")[0] }] })));
+    await writeFile(join(stage, "sbom.cdx.json"), `${JSON.stringify(bom, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     const after = await sourceFacts(source);
     if (before.revision !== after.revision || before.hash !== after.hash || (!allowDirty && after.dirty)) throw new BridgeError("BUILD_SOURCE_CHANGED", "Selected source changed during artifact construction");
+    const compiled_sha256 = await hashTree(join(stage, "dist/src"));
     const facts = { source_revision: before.revision, source_dirty: before.dirty, source_sha256: before.hash,
       lock_sha256: digest(lockBytes), package_name: pkg.name, package_version: pkg.version,
-      build_node: process.version, build_typescript: compilerPackage.version, build_npm: npmVersion, platform: process.platform, architecture: process.arch, dependencies };
-    const manifest: RuntimeManifest = { schema_version: 1, state: "candidate", ...facts,
+      build_node: process.version, build_typescript: compilerPackage.version, build_npm: npmVersion, platform: process.platform, architecture: process.arch, dependencies,
+      compiled_sha256, ...nativeEnvironment(), parser_artifacts: parserArtifacts };
+    const manifest: RuntimeManifest = { schema_version: 2, state: "candidate", ...facts,
       build_id: digest(JSON.stringify(facts)), cli: "dist/src/cli.js", sbom: "sbom.cdx.json" };
     await writeFile(join(stage, "runtime-manifest.json"), `${JSON.stringify(RuntimeManifestSchema.parse(manifest), null, 2)}\n`, { flag: "wx", mode: 0o600 });
     await verifyRuntimeStartup(stage, manifest);
@@ -230,6 +388,10 @@ export async function installRuntime(candidatePath: string, installRootPath: str
 export async function installedEntry(rootPath: string): Promise<{ root: string; entry: string; manifest: RuntimeManifest }> {
   const root = await realpath(rootPath), manifest = await readManifest(root);
   if (manifest.state !== "installed" || manifest.source_dirty) throw new BridgeError("RUNTIME_NOT_INSTALLED", "Select an installed clean runtime or explicitly choose development registration");
+  // Selection is an explicit registration action. Verify the V2 bytes before a
+  // native parser can be advertised; ordinary identity and retained-result
+  // reads remain independent of parser package loading.
+  if (manifest.schema_version === 2) { await assertNoSymlinks(root); await validateArtifact(root, manifest); }
   const entry = join(root, manifest.cli);
   try { if (!(await lstat(entry)).isFile()) throw new BridgeError("RUNTIME_ENTRY_INVALID", "Installed CLI is not a regular file"); }
   catch (error) { throw filesystemFailure(error, "runtime.entry", entry); }

@@ -11,7 +11,7 @@ import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
 import { inspectStartupRequirement, resolveStartupRequirement, type StartupPolicyEvidence, type StartupPolicyObservation } from "./startup-policy.js";
 
 const exec = promisify(execFile);
-export const CODEX_ENABLED_TOOLS = ["passeur_status", "passeur_prepare", "passeur_agents", "passeur_submit", "passeur_submit_batch", "passeur_tasks", "passeur_wait", "passeur_cancel", "passeur_attach", "passeur_input", "passeur_result", "passeur_finalize", "passeur_delegate", "passeur_delegate_batch", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize", ...COORDINATION_TOOL_NAMES] as const;
+export const CODEX_ENABLED_TOOLS = ["passeur_status", "passeur_prepare", "passeur_agents", "passeur_submit", "passeur_submit_batch", "passeur_tasks", "passeur_wait", "passeur_cancel", "passeur_attach", "passeur_input", "passeur_result", "passeur_structural_report", "passeur_structural_detail", "passeur_finalize", "passeur_delegate", "passeur_delegate_batch", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize", ...COORDINATION_TOOL_NAMES] as const;
 export type CodexMcpRegistration = {
   server_name: string;
   command: string; args: string[]; cwd: string; env: Record<string, string>;

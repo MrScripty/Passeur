@@ -27,6 +27,7 @@ const empty = z.object({}).strict();
 const claim = z.object({ task_id: TaskIdSchema, input_id: TaskIdSchema, control_generation: z.number().int().positive() }).strict();
 const claimIdentity = claim.extend({ claim_id: z.string().uuid() });
 const answer = claimIdentity.extend({ operation_key: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/), answer: z.string().min(1).max(16_384) });
+const workId = z.string().uuid();
 /** Every private operation is closed and decoded before the handler receives it. */
 export const operationSchemas = {
   status: empty, prepare: empty, agents: AgentCatalogRequestSchema,
@@ -34,6 +35,9 @@ export const operationSchemas = {
   cancel: CancelRequestSchema, attach: AttachRequestSchema,
   input_claim: claim, input_dismiss: claimIdentity, input_answer: answer,
   retained: ResultRequestSchema, finalize: FinalizeRequestSchema,
+  structural_report: z.object({ work_id: workId }).strict(),
+  structural_detail: z.object({ work_id: workId, report_id: z.string().uuid(), side: z.enum(["input", "observed"]),
+    start_byte: z.number().int().nonnegative().safe(), end_byte: z.number().int().nonnegative().safe() }).strict(),
   cleanup: z.object({ task_id: TaskIdSchema }).strict(),
   reconcile: z.object({ task_id: TaskIdSchema, owner: z.string().min(1).max(256), reason: z.string().min(1).max(2048) }).strict(),
   stop: z.object({ cancel_tasks: z.array(TaskIdSchema).max(144).default([]), operation_key: z.string().min(1).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/) }).strict(),
@@ -51,6 +55,12 @@ export const responseSchemas = {
   submit_batch: z.object({ results: z.array(z.union([z.object({ request_key: z.string(), task: TaskReceiptSchema }).strict(), z.object({ request_key: z.string(), error: FailureSchema }).strict()])).max(144) }).strict(),
   tasks: taskPage, wait, cancel: ControlReceiptSchema, attach: z.object({ receipt: ControlReceiptSchema, task: TaskObservationSchema }).strict(), input_claim: PendingInputSchema,
   input_dismiss: z.object({ kind: z.literal("presentation_released") }).strict(), input_answer: ControlReceiptSchema, retained,
+  structural_report: z.object({ schema_version: z.literal(1), work_id: workId,
+    reports: z.array(z.object({ report_id: z.string().uuid(), path: z.string().min(1).max(4096), dialect: z.enum(["rust", "typescript", "tsx"]), text: z.string().max(65536) }).strict()).max(4),
+    limitations: z.array(z.string().max(256)).max(16) }).strict(),
+  structural_detail: z.object({ schema_version: z.literal(1), work_id: workId, report_id: z.string().uuid(), side: z.enum(["input", "observed"]),
+    start_byte: z.number().int().nonnegative().safe(), end_byte: z.number().int().nonnegative().safe(),
+    content_sha256: z.string().regex(/^[a-f0-9]{64}$/), text: z.string().max(8192) }).strict(),
   finalize: z.object({ results: z.array(z.union([z.object({ task_id: TaskIdSchema, operation_key: z.string(), state: z.string(), resource_state: z.string() }).strict(), z.object({ task_id: TaskIdSchema, operation_key: z.string(), error: FailureSchema }).strict()])).max(8) }).strict(),
   cleanup: z.object({ kind: z.literal("collected") }).strict(), reconcile: z.object({ kind: z.literal("reconciled"), status: ServiceStatusSchema }).strict(),
   stop: z.object({ kind: z.literal("draining"), outstanding: z.boolean() }).strict(),

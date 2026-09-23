@@ -13,6 +13,14 @@
     "src/codex/startup-policy.ts",
     "src/service/transport.ts",
     "src/service/process.ts",
+    "src/observation/ranges.ts",
+    "src/observation/native-parser.ts",
+    "src/observation/native-extraction.ts",
+    "src/observation/match.ts",
+    "src/observation/helper-protocol.ts",
+    "src/observation/helper-main.ts",
+    "src/observation/helper.ts",
+    "src/observation/comparison.ts",
     "src/workspace/project.ts",
     "src/approvals/native.ts"
   ]

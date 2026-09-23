@@ -1,0 +1,10 @@
+{
+  "row": "L01",
+  "dialect": "rust",
+  "selected_syntax": "Rust 2024-compatible source syntax accepted by tree-sitter-rust 0.24.0",
+  "input": "input.rs",
+  "changed": "changed.rs",
+  "incomplete": "incomplete.rs",
+  "expectations": "expected.json",
+  "review_note": "Expected names, scopes, signatures and changes are source-level observations; no macro expansion or type resolution."
+}

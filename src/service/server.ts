@@ -111,6 +111,14 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
         const chunk = textChunk(buffer, buffer.length, a.encoding);
         return { task_id, offset: a.offset, bytes: chunk.bytes, next_offset: a.offset + chunk.bytes, eof: buffer.length === 0, encoding: a.encoding, content: chunk.content };
       }
+      case "structural_report": {
+        const a = args as Arguments<"structural_report">;
+        return runtime.structuralReport(a.work_id, actor, peer.source!, signal);
+      }
+      case "structural_detail": {
+        const a = args as Arguments<"structural_detail">;
+        return runtime.structuralDetail(a.work_id, a.report_id, a.side, a.start_byte, a.end_byte, actor, signal);
+      }
       case "finalize": {
         const a = args as Arguments<"finalize">;
         for (const op of a.operations) await runtime.authorizeTask(op.task_id, actor);

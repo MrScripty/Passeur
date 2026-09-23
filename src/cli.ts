@@ -25,6 +25,8 @@ Usage: passeur <action> [options]
   service-start|service-status --project PATH
   service-stop --project PATH --operation-key KEY --yes [--cancel-tasks UUID,UUID]
   coordinate --project PATH --request FILE [--yes] [--confirm-external-settled]
+  structural-report --project PATH --work UUID
+  structural-detail --project PATH --work UUID --report UUID --side input|observed --start-byte N --end-byte N
   submit --project PATH --assignment FILE --yes
   tasks --project PATH [--request-key KEY] [--offset N] [--limit N]
   wait --project PATH --task UUID [--after-revision N] [--wait-ms N]
@@ -78,7 +80,8 @@ function integer(value: string | undefined, flag: string): number | undefined {
   return Number(value);
 }
 const options = {
-  request: { type: "string" }, "confirm-external-settled": { type: "boolean" },
+  request: { type: "string" }, "confirm-external-settled": { type: "boolean" }, work: { type: "string" }, report: { type: "string" },
+  side: { type: "string" }, "start-byte": { type: "string" }, "end-byte": { type: "string" },
   assignment: { type: "string" }, "request-key": { type: "string" }, "operation-key": { type: "string" }, "control-generation": { type: "string" },
   "input-id": { type: "string" }, answer: { type: "string" }, "after-revision": { type: "string" }, "wait-ms": { type: "string" }, "cancel-tasks": { type: "string" },
   project: { type: "string" }, profile: { type: "string" }, "state-root": { type: "string" }, "expected-repository-id": { type: "string" },
@@ -191,7 +194,7 @@ async function main(): Promise<void> {
     const { runtimeIdentity } = await import("./install/runtime.js");
     console.log(JSON.stringify(await runtimeIdentity(runtimeRoot))); return;
   }
-  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile", "service-run", "service-start", "service-stop", "service-status", "submit", "tasks", "wait", "attach", "cancel", "input", "coordinate"]);
+  const actions = new Set(["serve", "start", "setup", "configure", "register-codex", "doctor", "inspect", "result", "logs", "finalize", "cleanup", "reconcile", "install", "agents", "configure-agent", "migrate-profile", "service-run", "service-start", "service-stop", "service-status", "submit", "tasks", "wait", "attach", "cancel", "input", "coordinate", "structural-report", "structural-detail"]);
   if (!actions.has(action)) throw new BridgeError("ACTION_UNSUPPORTED", `Unknown action: ${action}`);
   const { values } = decode(process.argv.slice(3));
   startupRequirementFromFlags(values.required, values.optional);
@@ -203,6 +206,8 @@ async function main(): Promise<void> {
     "service-start": bindingFlags, "service-status": bindingFlags,
     "service-stop": [...bindingFlags, "operation-key", "cancel-tasks", "yes"],
     coordinate: [...bindingFlags, "request", "yes", "confirm-external-settled"],
+    "structural-report": [...bindingFlags, "work"],
+    "structural-detail": [...bindingFlags, "work", "report", "side", "start-byte", "end-byte"],
     submit: [...bindingFlags, "assignment", "yes"], tasks: [...bindingFlags, "offset", "limit", "request-key"],
     wait: [...bindingFlags, "task", "after-revision", "wait-ms"],
     attach: [...bindingFlags, "task", "request-key", "operation-key", "yes"],
@@ -286,7 +291,7 @@ async function main(): Promise<void> {
     if (!frontend) {
       const binding = await resolveRepositoryBinding(intent, process.env, stop.signal);
       const credential = await operatorToken(binding, Boolean(values.yes) || action === "service-start");
-      if (action === "coordinate" && credential === undefined) throw new BridgeError("COORDINATION_OPERATOR_IDENTITY_UNAVAILABLE", "No persistent operator identity exists; use explicit --yes to create it before sharing or managing metadata");
+      if ((action === "coordinate" || action === "structural-report" || action === "structural-detail") && credential === undefined) throw new BridgeError("COORDINATION_OPERATOR_IDENTITY_UNAVAILABLE", "No persistent operator identity exists for this work");
       frontend = new PasseurFrontend(intent, identity, fileURLToPath(import.meta.url), credential);
     }
     return frontend;
@@ -297,7 +302,13 @@ async function main(): Promise<void> {
     if (action === "coordinate") {
       const { runCoordinationCli } = await import("./cli/coordination.js");
       print(await runCoordinationCli(required(values.request, "--request"), Boolean(values.yes), connected, stop.signal, Boolean(values["confirm-external-settled"])));
-    } else if (action === "inspect") print(await runtime.inspect());
+    } else if (action === "structural-report") print(await (await connected()).call("structural_report", { work_id: required(values.work, "--work") }, stop.signal));
+    else if (action === "structural-detail") print(await (await connected()).call("structural_detail", {
+      work_id: required(values.work, "--work"), report_id: required(values.report, "--report"),
+      side: required(values.side, "--side"), start_byte: integer(required(values["start-byte"], "--start-byte"), "--start-byte")!,
+      end_byte: integer(required(values["end-byte"], "--end-byte"), "--end-byte")!,
+    }, stop.signal));
+    else if (action === "inspect") print(await runtime.inspect());
     else if (action === "result") print(await runtime.result(required(values.task, "--task")));
     else if (action === "logs") {
       let offset = 0;

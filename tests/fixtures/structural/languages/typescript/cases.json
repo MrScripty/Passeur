@@ -1,0 +1,10 @@
+{
+  "row": "L02",
+  "dialect": "typescript",
+  "selected_syntax": "TypeScript 5.9 source syntax accepted by tree-sitter-typescript 0.23.2",
+  "input": "input.ts",
+  "changed": "changed.ts",
+  "incomplete": "incomplete.ts",
+  "expectations": "expected.json",
+  "review_note": "The named type edit does not imply a change in its unchanged written use. Import text is outside declarations."
+}

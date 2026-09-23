@@ -1,0 +1,12 @@
+{
+  "input_declarations": [
+    ["type_alias_declaration", "Item", [], "export type Item = string;"],
+    ["function_declaration", "take", [], "export function take(value: Item): Item"],
+    ["arrow_function", "mapper", [], "export const mapper = (x: number = <default>): number =>"]
+  ],
+  "changes": [
+    ["Item", true, false, false],
+    ["mapper", false, true, true]
+  ],
+  "incomplete_limitations": ["parse_error_or_missing_token"]
+}

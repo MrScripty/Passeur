@@ -48,6 +48,8 @@ test('runtime stores an explicit UTF-8 objective prefix and never copies unrelat
   await f.enroll(task);const work=await f.get('work',task.id,f.ordinary);
   assert.equal(work.intent,'a'.repeat(4095));assert.equal(work.managed.intent_truncated,true);
   assert.deepEqual(work.areas,[]);assert.equal(work.managed.areas_source,'not_declared');
+  const report=await f.runtime.structuralReport(task.id,f.ordinary,f.root);
+  assert.deepEqual(report.reports,[]);assert.ok(report.limitations.includes('source_scope_not_declared'));
   assert.ok(!JSON.stringify(await f.disk()).includes('private context'));
 });
 test('literal projection refuses replacement characters introduced by invalid UTF-8 input and preserves written scope',()=>{
@@ -73,6 +75,17 @@ test('subsequent task adoption does not silently move coordination ownership or 
   const w=await f.get('work',task.id,f.ordinary);assert.equal(w.owner,f.ordinary.owner_id);assert.equal(w.managed.control_generation,1);
   await assert.rejects(f.enroll(task,stranger),{code:'COORDINATION_TASK_REGISTERED'});
   const replay=await f.enroll(task,f.ordinary,op);assert.equal(replay.receipt.item_id,task.id);
+});
+test('managed source reporting loses authority when task control is adopted',async t=>{
+  const f=await managedFixture(t);await f.initialize();const task=await f.addTask();await f.enroll(task);
+  const before=await f.runtime.structuralReport(task.id,f.ordinary,f.root);
+  assert.equal(before.work_id,task.id);assert.equal(before.reports.length,1);
+  assert.equal(before.reports[0].path,'source.ts');
+  assert.match(before.reports[0].text,/OBSERVED: "export function run\(reason\?: string\)"/);
+  await f.runtime.attachTask({task_id:task.id},stranger,key());
+  await assert.rejects(f.runtime.structuralDetail(task.id,before.reports[0].report_id,'observed',0,6,f.ordinary),{code:'STRUCTURAL_SOURCE_FORBIDDEN'});
+  await assert.rejects(f.runtime.structuralReport(task.id,f.ordinary,f.root),{code:'STRUCTURAL_SOURCE_FORBIDDEN'});
+  await assert.rejects(f.runtime.structuralReport(task.id,stranger,f.root),{code:'COORDINATION_NOT_FOUND'});
 });
 test('lost observer receipt does not abandon an admitted enrollment and retry does not repeat task work',async t=>{
   const f=await managedFixture(t);await f.initialize();const task=await f.addTask();const entered=f.gate(),release=f.gate();let once=true;

@@ -18,6 +18,8 @@ import type { Assignment, AgentCatalog } from "../contracts/agents.js";
 import type { AgentRegistry } from "../agents/registry.js";
 import { TaskControls, owns, type ClientActor } from "./task-control.js";
 import type { SharedProfile, TaskObservation, SubmissionIdentity } from "../contracts/tasks.js";
+import type { NativeAnalysisHelper } from "../observation/helper.js";
+import { CapturedPairCache } from "../observation/cache.js";
 
 import type { RepositoryLease } from "./lease.js";
 import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure } from "./errors.js";
@@ -99,6 +101,12 @@ export class RepositoryRuntime {
   #shutdown: Promise<void> | undefined;
   #containment: Promise<void> | undefined;
   #coordination: CoordinationService | undefined;
+  #nativeAnalysis: NativeAnalysisHelper | undefined;
+  readonly #capturedPairs = new CapturedPairCache();
+  #captureSequence = 0;
+  // Admit before any Git inventory or source read. The helper has its own bounded
+  // queue, but waiting callers must not each retain captured source buffers.
+  #structuralReportActive = false;
   readonly #taskAssociations = new Set<string>();
   #coordinationOrdinary = 0;
   #coordinationControls = 0;
@@ -372,6 +380,112 @@ export class RepositoryRuntime {
     void operation.then(settled, settled);
     return withAbort(operation, signal);
   }
+
+  /** Owner-only initial source report. File identities come from the registered work, never a caller path. */
+  structuralReport(workId: string, actor: ClientActor, sourceView: string, signal?: AbortSignal): Promise<Readonly<{
+    schema_version: 1; work_id: string; reports: readonly Readonly<{ report_id: string; path: string; dialect: "rust" | "typescript" | "tsx"; text: string }>[];
+    limitations: readonly string[];
+  }>> {
+    this.#assertOpen();
+    if (this.#structuralReportActive) {
+      return Promise.reject(new BridgeError("STRUCTURAL_ANALYSIS_CAPACITY", "A source report is already using the bounded analysis admission"));
+    }
+    this.#structuralReportActive = true;
+    let operation: Promise<Readonly<{
+      schema_version: 1; work_id: string; reports: readonly Readonly<{ report_id: string; path: string; dialect: "rust" | "typescript" | "tsx"; text: string }>[];
+      limitations: readonly string[];
+    }>>;
+    try { operation = this.#track(async () => {
+      const ownedSignal = signal ? AbortSignal.any([signal, this.#lifetime.signal]) : this.#lifetime.signal;
+      const binding = await this.#resolve(ownedSignal);
+      await this.#ensurePrepared(undefined, false);
+      this.#assertOpen(); this.#assertAuthority();
+      const work = await this.#ownedStructuralWork(binding, actor, workId);
+      const { CoordinationRepository } = await import("../coordination/repository.js");
+      const repository = await CoordinationRepository.open(sourceView, binding.repositoryId, coordinationLimits.max_worktrees, ownedSignal);
+      const workspace = (await repository.resolveMany([work.workspace_id], ownedSignal)).get(work.workspace_id);
+      if (!workspace) throw new BridgeError("COORDINATION_WORKSPACE_UNAVAILABLE", "The registered worktree is not available for current source capture");
+      const { listDeclaredSourcePaths } = await import("../observation/source-inventory.js");
+      const inventory = await listDeclaredSourcePaths(workspace.root, work.input_oid, work.areas, 4, ownedSignal);
+      const limitations = new Set(inventory.limitations);
+      if (work.areas.length === 0) limitations.add("source_scope_not_declared");
+      const { readCommittedFile, captureWorkingFile } = await import("../observation/source.js");
+      const { compareCapturedWork } = await import("../observation/comparison.js");
+      const { NativeAnalysisHelper } = await import("../observation/helper.js");
+      this.#assertOpen(); this.#assertAuthority();
+      this.#nativeAnalysis ??= new NativeAnalysisHelper(this.#identity.mode === "installed" ? this.#identity.build_id : undefined);
+      const samples: { path: string; dialect: "rust" | "typescript" | "tsx"; text: string;
+        input: import("../observation/model.js").SourceFile; observed: import("../observation/model.js").SourceFile }[] = [];
+      for (const path of inventory.paths) {
+        const dialect = path.endsWith(".rs") ? "rust" as const : path.endsWith(".tsx") ? "tsx" as const
+          : path.endsWith(".ts") || path.endsWith(".mts") || path.endsWith(".cts") ? "typescript" as const : undefined;
+        if (!dialect) { limitations.add("declared_file_dialect_not_qualified"); continue; }
+        const max_bytes = 8 * 1024 * 1024;
+        const input = await readCommittedFile(workspace.root, work.input_oid, path, { max_bytes, signal: ownedSignal });
+        const observed = await captureWorkingFile({ root: workspace.root, workspace_id: work.workspace_id,
+          workspace_generation: Math.max(1, work.revision), capture_sequence: ++this.#captureSequence,
+          input_commit_oid: work.input_oid }, path, { max_bytes, signal: ownedSignal });
+        const compared = await compareCapturedWork({ work_id: work.id, parent_id: work.owner, dialect, input, observed }, this.#nativeAnalysis, ownedSignal);
+        samples.push({ path, dialect, text: compared.text, input, observed });
+      }
+      const currentWorkspace = await repository.inspect(workspace.root, ownedSignal);
+      if (currentWorkspace.workspace_id !== workspace.workspace_id || currentWorkspace.repository_id !== workspace.repository_id) {
+        throw new BridgeError("STRUCTURAL_SOURCE_CHANGED", "Registered workspace identity changed during report capture");
+      }
+      // Recheck current source authority after Git and helper work. A stale owner never receives a completed report.
+      const current = await this.#ownedStructuralWork(binding, actor, workId);
+      if (current.revision !== work.revision || current.workspace_id !== work.workspace_id || current.input_oid !== work.input_oid) {
+        throw new BridgeError("STRUCTURAL_SOURCE_CHANGED", "Work authority or source identity changed during report capture");
+      }
+      this.#assertOpen(); this.#assertAuthority();
+      const reports = samples.map(sample => ({ report_id: this.#capturedPairs.put({ work_id: work.id, work_revision: work.revision,
+        input: sample.input, observed: sample.observed }), path: sample.path, dialect: sample.dialect, text: sample.text }));
+      return Object.freeze({ schema_version: 1 as const, work_id: work.id, reports: Object.freeze(reports),
+        limitations: Object.freeze([...limitations].sort()) });
+    }); } catch (error) { this.#structuralReportActive = false; throw error; }
+    void operation.then(() => { this.#structuralReportActive = false; }, () => { this.#structuralReportActive = false; });
+    return withAbort(operation, signal);
+  }
+
+  /** Exact captured bytes only. No filesystem or Git re-read occurs for a working detail request. */
+  structuralDetail(workId: string, reportId: string, side: "input" | "observed", startByte: number, endByte: number,
+    actor: ClientActor, signal?: AbortSignal): Promise<Readonly<{
+      schema_version: 1; work_id: string; report_id: string; side: "input" | "observed";
+      start_byte: number; end_byte: number; content_sha256: string; text: string;
+    }>> {
+    const operation = this.#track(async () => {
+      if (!Number.isSafeInteger(startByte) || !Number.isSafeInteger(endByte) || startByte < 0 || endByte < startByte || endByte - startByte > 8192) {
+        throw new BridgeError("STRUCTURAL_RANGE_INVALID", "Detail range must be at most 8192 captured bytes");
+      }
+      const binding = await this.#resolve(this.#lifetime.signal);
+      await this.#ensurePrepared(undefined, false);
+      const work = await this.#ownedStructuralWork(binding, actor, workId);
+      const pair = this.#capturedPairs.get(reportId);
+      if (pair.work_id !== work.id || pair.work_revision !== work.revision) {
+        throw new BridgeError("STRUCTURAL_DETAIL_UNAVAILABLE", "The captured detail no longer has current work authority");
+      }
+      const file = pair[side];
+      if (file.status !== "present") throw new BridgeError("STRUCTURAL_DETAIL_UNAVAILABLE", "This source side has no captured bytes");
+      const { sourceExcerpt } = await import("../observation/source.js");
+      const text = sourceExcerpt(file, { start_byte: startByte, end_byte: endByte });
+      const current = await this.#ownedStructuralWork(binding, actor, workId);
+      if (current.revision !== pair.work_revision) throw new BridgeError("STRUCTURAL_DETAIL_UNAVAILABLE", "Work authority changed during detail retrieval");
+      this.#assertOpen(); this.#assertAuthority();
+      return Object.freeze({ schema_version: 1 as const, work_id: work.id, report_id: reportId, side,
+        start_byte: startByte, end_byte: endByte, content_sha256: file.content_sha256, text });
+    });
+    return withAbort(operation, signal);
+  }
+  async #ownedStructuralWork(binding: ResolvedBinding, actor: ClientActor, workId: string) {
+    const work = await this.#coordinationSession(binding).ownedSourceWork(actor.owner_id, workId);
+    if (work.managed) {
+      const control = await this.#store!.readControl(work.managed.task_id);
+      if (control.owner_id !== actor.owner_id || control.control_generation !== work.managed.control_generation) {
+        throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Managed source evidence requires current task ownership and control generation");
+      }
+    }
+    return work;
+  }
   #coordinationSession(binding: ResolvedBinding): CoordinationService {
     this.#assertOpen();
     if (!this.#coordination) {
@@ -608,9 +722,11 @@ export class RepositoryRuntime {
       const outcomes = await Promise.allSettled([
         ...(this.#coordinator ? [this.#coordinator.shutdown()] : []),
         ...(this.#coordination ? [this.#coordination.close()] : []),
+        ...(this.#nativeAnalysis ? [this.#nativeAnalysis.close()] : []),
         ...(this.#containment ? [this.#containment] : []),
       ]);
       await Promise.allSettled([...this.#pending]);
+      this.#capturedPairs.clear();
       try {
         if (this.#lease?.state === "held") await this.#lease.release();
         const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");

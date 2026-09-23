@@ -6,6 +6,7 @@ import { CoordinationStore } from "../store/coordination-store.js";
 import { CoordinationControl, type CoordinationActor, type RetirementReservation } from "../coordination/control.js";
 import { RepositoryCoordination, type BindingLimits, type CoordinationConnection, type ExternalWorkspaceAuthority, type ManagedWorkspaceAuthority } from "../coordination/bound-control.js";
 import { decodeLimits, parentId, type Limits } from "../contracts/coordination-control.js";
+import type { Work } from "../contracts/coordination-control.js";
 import { COORDINATION_VIEW_BYTES, coordinationRequestLane, decodeCoordinationReply, decodeCoordinationRequest,
   type CoordinationReply, type CoordinationRequest, type CoordinationSelector } from "../contracts/coordination-service.js";
 
@@ -54,6 +55,20 @@ export class CoordinationService {
   }
   get pendingCount(): number { return this.#pending.size; }
   get draining(): boolean { return this.#draining; }
+
+  /** Metadata sharing never grants source evidence; only the current work owner may request the initial report path. */
+  async ownedSourceWork(ownerId: string, workId: string): Promise<Work> {
+    if (this.#closing) throw new BridgeError("COORDINATION_SERVICE_CLOSED", "Coordination no longer accepts source reads");
+    this.#authority.assertOwned();
+    const actor = Object.freeze({ owner_id: parentId(ownerId) });
+    const opened = await this.#open();
+    const work = await opened.control.work(actor, workId);
+    if (work.owner !== actor.owner_id || work.state !== "active") {
+      throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Only the active work owner may read structural source evidence");
+    }
+    this.#authority.assertOwned();
+    return work;
+  }
 
   /** Request loss detaches the observer; the admitted operation remains owned until it settles. */
   handle(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<CoordinationReply> {

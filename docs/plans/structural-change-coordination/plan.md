@@ -4,13 +4,13 @@
 
 | Field | Value |
 |---|---|
-| Plan status | `Blocked` |
+| Plan status | `Superseded` for remaining Plan 2A work by `docs/plans/structural-coordination-completion/plan.md`; F0–F9 implementation and evidence remain historical authority |
 | Plan revision | `2A` — standalone code-only target |
-| Acceptance status | `blocked` |
-| Current phase | F9 managed-task enrollment and selected-result retirement implemented; complete-checkout TaskStore/SDK/pinned tests pass, while parser and installed acceptance remain blocked |
-| Exactly one next integration slice | **M0 — resume native parser qualification and pre-start announcement linkage, retaining installed-host and independent F9 acceptance gates** |
+| Acceptance status | `blocked` at transfer; SC01–SC17 remain unsatisfied under the completion plan |
+| Current phase | Historical F9 managed-task enrollment and selected-result retirement implementation; remaining parser and installed acceptance transferred to the completion plan |
+| Exactly one next integration slice | **none here**; R0-S1 in the completion plan owns remaining sequencing |
 | Canonical plan path | `docs/plans/structural-change-coordination/plan.md` |
-| Implementation invocation | Explicit `start`; subsequent `continue` or `verify` only in the states allowed by Planning |
+| Implementation invocation | Historical invocations ended at transfer; this Superseded path admits no further operation |
 | Examined implementation | Passeur `8ddf6d9403ed4cc3f6f26a6d70c4b0940599020d` |
 | Adopted standards | MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
 | Prepared | September 21, 2026, America/Vancouver |

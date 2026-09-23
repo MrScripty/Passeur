@@ -58,7 +58,7 @@ export function renderComparison(report: AttributedComparison, maxBytes = 65536)
     if (change.observed) append(...declaration("OBSERVED", change.observed));
     else append(`  OBSERVED: ${change.kind === "removed" ? "declaration absent in the identified complete observation" : "correspondence not established"}`);
     if (change.body_changed) append("  body_changed (body omitted)");
-    if (change.default_changed) append("  default_changed (expression values omitted)");
+    if (change.default_changed) append("  concealed_header_changed (default, attribute, or comment values omitted)");
     if (change.kind === "modified" && !change.declaration_changed) append("  declaration_unchanged");
   }
   if (c.region_changed) append("", "region_changed (source bytes or mode outside the compact projection require inspection)");

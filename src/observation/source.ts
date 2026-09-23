@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { open, realpath, readlink, type FileHandle } from "node:fs/promises";
+import { lstat, open, realpath, readlink, type FileHandle } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { BridgeError, nativeCode } from "../core/errors.js";
 import { throwIfAborted } from "../core/async.js";
 import { gitWithoutLazyFetch } from "../workspace/project.js";
@@ -10,6 +10,7 @@ import type { ByteRange, GitSource, ObjectFormat, SourceFile, SourceReference, W
 export type CaptureOptions = Readonly<{ max_bytes: number; signal?: AbortSignal }>;
 export type WorkspaceCapture = Readonly<{
   root: string; workspace_id: string; workspace_generation: number; capture_sequence: number;
+  input_commit_oid?: string;
 }>;
 // These flags are required capabilities, not best-effort fallbacks. Source reads never invoke filters or refresh the index.
 const readFlags = ["--no-optional-locks", "--literal-pathspecs", "--no-replace-objects", "-c", "core.fsmonitor=false"];
@@ -94,12 +95,46 @@ function contained(root: string, path: string): boolean {
   const suffix = relative(root, path);
   return suffix !== ".." && !suffix.startsWith("../") && !isAbsolute(suffix);
 }
-async function descriptorPath(handle: FileHandle, root: string): Promise<void> {
+async function descriptorPath(handle: FileHandle, root: string, expected?: string): Promise<void> {
   let actual: string;
   try { actual = await readlink(`/proc/self/fd/${handle.fd}`); }
   catch (cause) { throw new BridgeError("SOURCE_DESCRIPTOR_UNAVAILABLE", "The capture descriptor identity could not be established", { cause }); }
-  if (actual.endsWith(" (deleted)") || !contained(root, actual)) {
+  if (actual.endsWith(" (deleted)") || !contained(root, actual) || (expected !== undefined && actual !== expected)) {
     throw new BridgeError("SOURCE_CAPTURE_MOVED", "The opened source has moved outside its verified capture identity");
+  }
+}
+
+async function assertNoGitlink(root: string, commits: readonly string[], path: string, signal?: AbortSignal): Promise<void> {
+  const parts = path.split("/");
+  const ancestors = parts.map((_, index) => parts.slice(0, index + 1).join("/"));
+  const inspect = async (args: string[], pattern: RegExp): Promise<void> => {
+    const output = await readGit(root, args, signal);
+    for (const entry of output.split("\0")) {
+      if (!entry) continue;
+      const tab = entry.indexOf("\t");
+      const metadata = tab < 0 ? null : pattern.exec(entry.slice(0, tab));
+      const entryPath = entry.slice(tab + 1);
+      if (!metadata || !entryPath || entryPath.includes("\ufffd")) {
+        throw new BridgeError("SOURCE_TREE_INVALID", "Git repository boundary lookup was not exact");
+      }
+      if (!ancestors.includes(entryPath)) continue;
+      if (metadata[1] === "160000") {
+        throw new BridgeError("SOURCE_REPOSITORY_BOUNDARY", "Source capture cannot enter a nested Git repository");
+      }
+    }
+  };
+  for (const commit of commits) {
+    await inspect(["ls-tree", "-z", "--full-tree", commit, "--", ...ancestors], /^(\d{6}) (?:blob|tree|commit) [a-f0-9]+$/);
+  }
+  await inspect(["ls-files", "--stage", "-z", "--", ...ancestors], /^(\d{6}) [a-f0-9]+ [0-3]$/);
+}
+
+async function assertNoNestedMarker(handle: FileHandle): Promise<void> {
+  try {
+    await lstat(`/proc/self/fd/${handle.fd}/.git`);
+    throw new BridgeError("SOURCE_REPOSITORY_BOUNDARY", "Source capture cannot enter a nested Git repository");
+  } catch (error) {
+    if (nativeCode(error) !== "ENOENT") throw error;
   }
 }
 
@@ -113,19 +148,33 @@ export async function captureWorkingFile(workspace: WorkspaceCapture, path: stri
   }
   const repo = await identity(workspace.root, options.signal);
   const head_anchor = oid((await readGit(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"], options.signal)).trim(), repo.object_format);
+  const commits = [head_anchor];
+  if (workspace.input_commit_oid !== undefined) {
+    const input = oid(workspace.input_commit_oid, repo.object_format);
+    if ((await readGit(repo.root, ["cat-file", "-t", input], options.signal)).trim() !== "commit") {
+      throw new BridgeError("SOURCE_COMMIT_REQUIRED", "The input must identify a commit object");
+    }
+    if (input !== head_anchor) commits.push(input);
+  }
+  await assertNoGitlink(repo.root, commits, path, options.signal);
   const source: WorkingSource = Object.freeze({ kind: "working_capture", repository_id: repo.repository_id,
     object_format: repo.object_format, workspace_id: workspace.workspace_id, workspace_generation: workspace.workspace_generation,
     capture_id: randomUUID(), capture_sequence: workspace.capture_sequence, head_anchor, path });
   const handles: FileHandle[] = [];
+  const directories: { handle: FileHandle; expected: string; ctimeNs: bigint }[] = [];
   try {
     handles.push(await open(repo.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
-    await descriptorPath(handles[0]!, repo.root);
+    await descriptorPath(handles[0]!, repo.root, repo.root);
     const parts = path.split("/");
-    for (const part of parts.slice(0, -1)) {
+    for (let index = 0; index < parts.length - 1; index++) {
       throwIfAborted(options.signal);
       const parent = handles[handles.length - 1]!;
-      const next = await open(`/proc/self/fd/${parent.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      handles.push(next); await descriptorPath(next, repo.root);
+      const next = await open(`/proc/self/fd/${parent.fd}/${parts[index]!}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      handles.push(next);
+      const expected = resolve(repo.root, ...parts.slice(0, index + 1));
+      await descriptorPath(next, repo.root, expected);
+      await assertNoNestedMarker(next);
+      directories.push({ handle: next, expected, ctimeNs: (await next.stat({ bigint: true })).ctimeNs });
     }
     const parent = handles[handles.length - 1]!;
     let handle: FileHandle;
@@ -138,7 +187,7 @@ export async function captureWorkingFile(workspace: WorkspaceCapture, path: stri
     handles.push(handle);
     const before = await handle.stat({ bigint: true });
     if (!before.isFile()) return Object.freeze({ status: "non_source", source, entry_kind: before.isDirectory() ? "directory" : "special" });
-    await descriptorPath(handle, repo.root);
+    await descriptorPath(handle, repo.root, resolve(repo.root, path));
     if (before.size > BigInt(options.max_bytes)) throw new BridgeError("SOURCE_TOO_LARGE", "Source exceeds the admitted byte budget");
     // An extra byte detects growth beyond the budget. Identity metadata detects common concurrent-save races.
     const bytes = Buffer.alloc(Number(before.size) + 1);
@@ -150,14 +199,23 @@ export async function captureWorkingFile(workspace: WorkspaceCapture, path: stri
       offset += bytesRead;
     }
     const after = await handle.stat({ bigint: true });
-    await descriptorPath(handle, repo.root);
+    await descriptorPath(handle, repo.root, resolve(repo.root, path));
     throwIfAborted(options.signal);
+    await assertNoGitlink(repo.root, commits, path, options.signal);
     if (BigInt(offset) !== before.size || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
       throw new BridgeError("SOURCE_CHANGED_DURING_CAPTURE", "Source changed during sampling; no current text observation was published");
     }
     if ((await readGit(repo.root, ["rev-parse", "--verify", "HEAD^{commit}"], options.signal)).trim() !== head_anchor) {
       throw new BridgeError("SOURCE_HEAD_CHANGED", "Workspace HEAD changed during sampling");
     }
+    for (const directory of directories) {
+      await descriptorPath(directory.handle, repo.root, directory.expected);
+      await assertNoNestedMarker(directory.handle);
+      if ((await directory.handle.stat({ bigint: true })).ctimeNs !== directory.ctimeNs) {
+        throw new BridgeError("SOURCE_CAPTURE_MOVED", "An ancestor changed during source capture");
+      }
+    }
+    await descriptorPath(handle, repo.root, resolve(repo.root, path));
     const captured = bytes.subarray(0, offset);
     return Object.freeze({ status: "present", source, mode: (before.mode & 0o111n) ? "100755" : "100644",
       content_sha256: digest(captured), byte_length: offset, text: text(captured), consistency: "sampled_file_not_atomic" });

@@ -1,0 +1,43 @@
+# Native package intake — September 22, 2026
+
+Requirement: one official native Node Tree-sitter engine, fixed grammar/extractor identities for L01–L13, Linux x64/glibc/Node 24.12.0 compatibility, no runtime install or project-sourced executable parser. The user authorized adding pinned repository dependencies, lockfile changes and their install/build scripts. Candidate metadata below was read from exact npm package versions before any repository package mutation. npm's metadata license field is an initial signal; authoritative tarball license/notice texts and installed artifact identities still require inspection.
+
+| Candidate | Exact npm version | Metadata license | Material package relationship |
+|---|---:|---|---|
+| `tree-sitter` | 0.25.1 | MIT | official Node binding; `node-gyp-build` install |
+| `tree-sitter-rust` | 0.24.0 | MIT | peer engine `^0.22.1` |
+| `tree-sitter-typescript` | 0.23.2 | MIT | peer engine `^0.21.0`; depends on JS `^0.23.1` |
+| `tree-sitter-javascript` | 0.25.0 | MIT | peer engine `^0.25.0` |
+| `tree-sitter-python` | 0.25.0 | MIT | peer engine `^0.25.0` |
+| `tree-sitter-lua` | 2.1.3 | MIT | package points to Azganoth, not the planned grammar owner; NAN/native rebuild |
+| `tree-sitter-kotlin` | 0.3.8 | MIT | package points to fwcd fallback, not first planned owner; peer engine `^0.21.0` |
+| `tree-sitter-zig` | 0.2.0 | BSD-3-Clause | package points to GrayJack, not the planned grammar owner; NAN/native rebuild |
+| `tree-sitter-c-sharp` | 0.23.5 | MIT | peer engine `^0.25.0` |
+| `tree-sitter-c` | 0.24.1 | MIT | peer engine `^0.22.4` |
+| `tree-sitter-cpp` | 0.23.4 | MIT | peer engine `^0.21.1`; depends on C `^0.23.1` |
+| `tree-sitter-odin` | 1.3.0 | MIT | planned grammar owner; peer engine `^0.21.1` |
+| `tree-sitter-svelte` | 0.11.0 | MIT | package points to Himujjal, not the planned grammar owner; NAN/native rebuild |
+
+These are candidate versions, not an approved compatible set. Installing the latest npm packages together would knowingly violate several peer constraints and silently switch the planned Lua/Zig/Svelte source owners. The R1 decision is to inspect an isolated exact-package resolution/build/load and, for conflicting packages, select pinned upstream generated parser/scanner plus a reviewed build-time native binding as the plan permits. Do not use `--legacy-peer-deps` as a compatibility claim. Preserve registry integrity values in the generated lock and inspect actual license files before distribution.
+
+First isolated resolver probe: `npm install --package-lock-only --ignore-scripts --prefix /tmp/passeur-native-qual-r1 --cache /tmp/passeur-native-qual-cache --fetch-retries=0 --save-exact tree-sitter@0.25.1 tree-sitter-rust@0.24.0 tree-sitter-typescript@0.23.2` failed with `ERESOLVE`. npm identified Rust's `^0.22.1` peer constraint against the selected `0.25.1` engine. No repository manifest, lockfile or `node_modules` was changed. The earlier attempt before creating the isolated prefix failed `ENOENT`; it supplied no compatibility evidence.
+
+## Isolated build/load probe
+
+With a **qualification-only** `--legacy-peer-deps` install under `/tmp/passeur-native-qual-all`, the exact engine and grammar candidates below built/loaded on Node 24.12.0, Linux x64/glibc 2.39. A direct native `Parser.setLanguage` and `parse` call returned an error-free root for one small handwritten sample in each route: Rust, TypeScript, TSX, JavaScript, Python, Lua, Kotlin, Zig, C#, C, C++, Odin and Svelte. This is all-candidate build/load viability, not declaration extraction or modern syntax acceptance. Both Lua and C# package entrypoints are ESM with top-level await and require dynamic import. The temporary install added 19 packages; no repository package was changed.
+
+The grammar sources used for this probe are `tree-sitter-rust@0.24.0`, `tree-sitter-typescript@0.23.2`, `tree-sitter-javascript@0.25.0`, `tree-sitter-python@0.25.0`, `@tree-sitter-grammars/tree-sitter-lua@0.4.1`, `@tree-sitter-grammars/tree-sitter-kotlin@1.1.0`, `tree-sitter-zig` from upstream commit `6479aa13f32f701c383083d8b28360ebd682fb7d`, `tree-sitter-c-sharp@0.23.5`, `tree-sitter-c@0.24.1`, `tree-sitter-cpp@0.23.4`, `tree-sitter-odin@1.3.0`, and `@tree-sitter-grammars/tree-sitter-svelte@1.0.2`. React is the JS/JSX or TSX route; it is not another grammar package. The scoped grammar names correct the misleading unscoped candidate names in the initial npm inventory. Upstream source HEADs inspected for Lua, Kotlin, Zig and Svelte are respectively `10fe0054734eec83049514ea2e718b2a56acd0c9`, `3dea6dfa9c0129deb7c4315afbda806c85c41667`, `6479aa13f32f701c383083d8b28360ebd682fb7d`, and `ae5199db47757f785e43a14b332118a5474de1a2`.
+
+`npm ls --all --omit=dev` on that isolated install exits with `ELSPROBLEMS`, marking `tree-sitter@0.25.1` invalid because of the stale grammar peer ranges. The current runtime builder requires a clean `npm ls` closure. Therefore the isolated install cannot be copied into the repository or accepted as an installed candidate. R1 must give grammar source/build artifacts a separate declared owner and preserve complete native source and binary identity in the installed bundle, or obtain a genuinely compatible upstream package set. A forced npm graph is not an acceptable release artifact.
+
+## Selected repository resolution and remaining artifact work
+
+The repository now declares `tree-sitter@0.25.1` as a runtime dependency and all twelve grammar packages as exact build dependencies. The Zig package uses the HTTPS source archive at commit `6479aa13f32f701c383083d8b28360ebd682fb7d`; the lock records its SHA-512 archive integrity. This replaced npm's GitHub shorthand, which resolved to an SSH URL without a recorded tarball integrity. Every selected package contains an inspected MIT license text, including the exact Zig source; the initial unscoped Zig npm candidate's BSD license is not part of this selection. The existing npm lock pins the other package tarball integrities. License texts and native query/scanner/build artifacts still need to be carried into the installed bundle.
+
+An isolated package-layout probe showed that build-only grammar dependencies leave `npm ls --all --omit=dev` clean while the official engine remains in the production closure. The repository lock was then tested by copying `package.json`/`package-lock.json` into `/tmp/passeur-native-fresh` and running `npm ci --legacy-peer-deps` there: exit 0, 175 installed packages. All thirteen routes loaded via the native binding from that fresh install; `npm ls --all --omit=dev` exited 0. The explicit peer flag is necessary for fresh *build* provisioning because published grammar peer ranges lag the engine; native load evidence qualifies this machine, and no invalid grammar package is represented as a production npm dependency. The release builder still needs to copy, identify and validate the grammar artifacts outside `node_modules` before installed acceptance.
+
+After npm rewrote the lock, a comparison against `HEAD:package-lock.json` found that npm had also removed 26 unrelated, platform-optional nested Vitest/esbuild records. Those exact existing records were restored; no pre-existing package version, resolved URL or integrity was changed. The resulting lock diff adds the parser-related package records and root declarations, plus npm's non-semantic peer/dev classification updates.
+
+The restored lock was freshly installed in `/tmp/passeur-lock-aiu72I` with `npm ci --legacy-peer-deps`: exit 0, 176 packages. `npm ls --all --omit=dev` exited 0. A native parse of an empty input loaded Rust, TypeScript, TSX, JavaScript, Python, Lua, Kotlin, Zig, C#, C, C++, Odin and Svelte from that exact install. The initial offline attempt could not find the pinned Zig archive in cache; an interrupted concurrent attempt then damaged its temporary build directory and was discarded. The successful run used a new isolated directory and did not mutate repository `node_modules`. Dynamic `import()` is required for the scoped Lua package; a simple `require()` failed with `ERR_REQUIRE_ASYNC_MODULE`. These are lock/build/load checks, not source-to-output, modern-dialect or installed-artifact acceptance. The scratch install and failed temporary install were removed after evidence capture.
+
+The binding's `SyntaxNode.startIndex` is a JavaScript UTF-16 code-unit index in the probed path: after `// é😀\n`, it reported `7` while the corresponding UTF-8 byte offset is `10`. Public half-open byte ranges therefore need an independently tested conversion that retains the captured bytes. Parser positions cannot be projected directly as public coordinates.

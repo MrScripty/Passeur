@@ -1,5 +1,9 @@
 # Execution ledger
 
+## September 22, 2026 — remaining Plan 2A authority transferred
+
+The user explicitly invoked `start` for `docs/plans/structural-coordination-completion/plan.md`. At transfer the material HEAD was `2de20c756a375c726311767cd78b968c1161fdad`, the committed F9 integration baseline. This plan is Superseded only for its remaining M0–M5 planning and SC01–SC17 acceptance work. F0–F9 source, the corrected committed native-coverage fixture, reports, issue history, inherited code-only contracts, and F9's conservative selected-result protection are preserved. The completion plan's R0-S1 owns the receiving-environment gate. Plan 2B remains unchanged and unselected.
+
 ## September 21, 2026 — plan revision 2A prepared
 
 Prepared a standalone code-only design against Passeur `f9a7c5d2d314580e5f7849982cf158397f9c11de` and Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107`. The plan retains exact Git/task identity, native multilingual parsing, conservative correspondence, low-noise parent reporting, attributed notes and explicit reconciliation leadership.

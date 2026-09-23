@@ -1,0 +1,15 @@
+{
+  "input_declarations": [
+    ["struct_item", "Packet", [], "pub struct Packet<T = <default>>"],
+    ["field_declaration", "value", ["Packet"], "value: T"],
+    ["trait_item", "Read", [], "pub trait Read"],
+    ["function_signature_item", "read", ["Read"], "fn read(&self, len: usize) -> usize;"],
+    ["function_item", "transform", [], "pub fn transform(x: i32) -> i32"]
+  ],
+  "changes": [
+    ["Packet", false, false, true],
+    ["transform", false, true, false],
+    ["value", true, false, false]
+  ],
+  "incomplete_limitations": ["parse_error_or_missing_token"]
+}

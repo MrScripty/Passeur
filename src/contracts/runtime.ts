@@ -46,7 +46,8 @@ export type RuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 export const StatusRequestSchema = z.object({}).strict();
 export const PrepareRequestSchema = z.object({}).strict();
 
-export const RuntimeManifestSchema = z.object({
+const runtimeDependency = z.object({ location: z.string().min(1), name: z.string().min(1), version: z.string().min(1) }).strict();
+const RuntimeManifestV1Schema = z.object({
   schema_version: z.literal(1), state: z.enum(["candidate", "installed"]), package_name: z.string().min(1), package_version: z.string().min(1),
   build_id: z.string().regex(/^[a-f0-9]{64}$/), source_revision: z.string().regex(/^[a-f0-9]{40,64}$/),
   source_dirty: z.boolean(), lock_sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -54,7 +55,16 @@ export const RuntimeManifestSchema = z.object({
   build_node: z.string().min(1), build_typescript: z.string().min(1), build_npm: z.string().min(1),
   platform: z.string().min(1), architecture: z.string().min(1),
   cli: z.literal("dist/src/cli.js"),
-  dependencies: z.array(z.object({ location: z.string().min(1), name: z.string().min(1), version: z.string().min(1) }).strict()),
+  dependencies: z.array(runtimeDependency),
   sbom: z.literal("sbom.cdx.json"),
 }).strict();
+const parserArtifact = z.object({ location: z.string().min(1), name: z.string().min(1), version: z.string().min(1),
+  source_pin: z.string().min(1).max(4096), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const RuntimeManifestV2Schema = RuntimeManifestV1Schema.extend({
+  schema_version: z.literal(2), compiled_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  node_abi: z.string().min(1), napi: z.string().min(1), libc: z.string().min(1),
+  dependencies: z.array(runtimeDependency.extend({ sha256: z.string().regex(/^[a-f0-9]{64}$/) })),
+  parser_artifacts: z.array(parserArtifact).length(12),
+});
+export const RuntimeManifestSchema = z.union([RuntimeManifestV1Schema, RuntimeManifestV2Schema]);
 export type RuntimeManifest = z.infer<typeof RuntimeManifestSchema>;

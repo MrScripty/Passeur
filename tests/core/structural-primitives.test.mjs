@@ -236,7 +236,7 @@ test('default-only changes keep the marker but not default literals or hashes in
   assert.equal(result.changes[0].default_changed, true);
   assert.equal(result.changes[0].declaration_changed, false);
   const rendered = renderComparison(attributed(result));
-  assert.match(rendered, /default_changed/);
+  assert.match(rendered, /concealed_header_changed/);
   assert.equal(rendered.includes('token1'), false); assert.equal(rendered.includes('token2'), false);
 });
 
