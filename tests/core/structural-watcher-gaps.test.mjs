@@ -120,6 +120,7 @@ test('direct runtime observes atomic replacement, directory rename, new file and
   const { fixture, runtime, owner } = await directRuntime(t);
   await mkdir(join(fixture.root, 'src', 'old'), { recursive: true });
   await writeFile(join(fixture.root, 'src', 'old', 'item.ts'), 'export const before = 1;\n');
+  await writeFile(join(fixture.root, 'src', 'stable.ts'), 'export const stable = 1;\n');
   await git(fixture.root, ['add', 'src']);
   await git(fixture.root, ['commit', '-m', 'test: watched directory']);
   const input = (await git(fixture.root, ['rev-parse', 'HEAD'])).trim();
@@ -148,12 +149,13 @@ test('direct runtime observes atomic replacement, directory rename, new file and
   await rename(join(fixture.root, 'src', 'moved', 'new.ts'), join(fixture.root, 'src', 'moved', 'gone.ts'));
   await eventually(() => runtime.structuralCurrent(owner), current =>
     current.reports.some(report => report.path === 'src/moved/gone.ts'));
-  await unlink(join(fixture.root, 'src', 'moved', 'item.ts'));
-  await runtime.structuralRefresh(workId, owner);
+  const beforeDelete = await runtime.structuralCurrent(owner);
+  const stableBefore = beforeDelete.reports.find(report => report.path === 'src/stable.ts');
+  await unlink(join(fixture.root, 'src', 'stable.ts'));
   const deleted = await eventually(() => runtime.structuralCurrent(owner), current =>
-    current.reports.some(report => report.path === 'src/old/item.ts' && report.id !== replacementReport.id));
+    current.reports.some(report => report.path === 'src/stable.ts' && report.id !== stableBefore?.id));
   assert.match((await runtime.structuralArtifactReport(owner,
-    deleted.reports.find(report => report.path === 'src/old/item.ts').id)).text, /status: missing_during_capture/);
+    deleted.reports.find(report => report.path === 'src/stable.ts').id)).text, /status: missing_during_capture/);
 });
 
 test('a real watcher with an omitted filename or error triggers bounded reconciliation', async t => {
