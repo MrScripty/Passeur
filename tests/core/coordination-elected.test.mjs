@@ -53,11 +53,23 @@ test('elected service routes two authenticated metadata clients through the actu
   assert.equal(outcomes.filter(x=>x.status==='fulfilled').length,1);
   const disk=JSON.parse(await readFile(join(binding.storeRoot,'coordination/control.json'),'utf8'));
   assert.equal(disk.works.length,2);assert.equal(disk.cases.length,1);
+  const work=disk.works.find(w=>w.id===b.receipt.item_id);
+  const newOwner=(await operator.coordinate(request('identity'))).parent_id;
+  const recovery={kind:'adopt_work',operation_key:key(),epoch:enabled.epoch,work_id:work.id,
+    expected_owner:work.owner,expected_revision:work.revision,new_owner:newOwner,statement:'Explicit operator recovery to the known operator identity.'};
+  await assert.rejects(other.coordinate(request('recover_metadata',{recovery})),{code:'COORDINATION_RECOVERY_FORBIDDEN'});
+  const recovered=await operator.coordinate(request('recover_metadata',{recovery}));
+  assert.equal(recovered.kind,'recovery_receipt');
+  await assert.rejects(other.coordinate(command({kind:'share_work',operation_key:key(),work_id:work.id,expected_revision:work.revision+1,readers:[]})),{code:'COORDINATION_NOT_FOUND'});
+  const migrated=JSON.parse(await readFile(join(binding.storeRoot,'coordination/control.json'),'utf8'));
+  assert.equal(migrated.schema_version,2);assert.equal(migrated.recoveries.length,1);
+
   assert.equal((await operator.call('status',{})).repository.execution.profile,'not_checked');
   for(const c of peers)c.close();await Promise.all(peers.map(c=>c.connection.closed));service.child.stdin.end();
   const [code]=await withAbort(service.exit,AbortSignal.timeout(10000));assert.equal(code,0,service.stderr());
   assert.equal(await readDescriptor(binding),undefined);
   const reopened=await launch(), again=new ServiceClient(reopened.descriptor,binding,token);peers.push(again);await again.ready;
   assert.equal((await again.coordinate(request('status'))).epoch,enabled.epoch);
+  assert.deepEqual((await again.coordinate(request('recover_metadata',{recovery}))).receipt,recovered.receipt);
   assert.equal((await again.coordinate(f.registerRequest({operation_key:a.receipt.key}))).receipt.item_id,a.receipt.item_id);
 });

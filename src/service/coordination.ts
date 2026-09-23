@@ -14,6 +14,7 @@ export type CoordinationServiceBinding = Readonly<{ store_root: string; reposito
 export type CoordinationServiceAuthority = Readonly<{
   assertOwned: () => void;
   authorizeInitialization: (actor: CoordinationActor, limits: Readonly<Limits>) => Promise<void>;
+  authorizeRecovery?: (actor: CoordinationActor) => Promise<void>;
   externalWorkspaces: ExternalWorkspaceAuthority;
 }>;
 export type CoordinationServiceLimits = BindingLimits & Readonly<{ ordinary_requests: number; control_requests: number }>;
@@ -40,7 +41,8 @@ export class CoordinationService {
       throw new BridgeError("COORDINATION_SERVICE_BINDING_INVALID", "The service requires its resolved repository/store binding");
     }
     if (typeof authority.assertOwned !== "function" || typeof authority.authorizeInitialization !== "function"
-      || typeof authority.externalWorkspaces?.assertExternalRegistration !== "function") {
+      || typeof authority.externalWorkspaces?.assertExternalRegistration !== "function"
+      || authority.authorizeRecovery !== undefined && typeof authority.authorizeRecovery !== "function") {
       throw new BridgeError("COORDINATION_SERVICE_AUTHORITY_UNAVAILABLE", "Service, initialization, and resource authorities must be supplied explicitly");
     }
     for (const value of [limits.ordinary_requests, limits.control_requests]) {
@@ -126,6 +128,11 @@ export class CoordinationService {
       const opened = await this.#open(limits);
       return this.#status(opened);
     }
+    if (request.kind === "recover_metadata" || request.kind === "recovery_read") {
+      if (!this.#authority.authorizeRecovery) throw new BridgeError("COORDINATION_OPERATOR_AUTHORITY_UNAVAILABLE", "The composition owner has not supplied operator recovery authority");
+      await this.#authority.authorizeRecovery(actor);
+      this.#authority.assertOwned();
+    }
     let opened: Opened;
     try { opened = await this.#open(); }
     catch (error) {
@@ -135,6 +142,14 @@ export class CoordinationService {
       throw error;
     }
     if (request.kind === "status") return this.#status(opened);
+    if (request.kind === "recover_metadata") {
+      const receipt = await opened.control.recoverAuthorized(actor, request.recovery);
+      return { schema_version: 1, kind: "recovery_receipt", repository_id, receipt };
+    }
+    if (request.kind === "recovery_read") {
+      const value = await opened.control.inspectRecoveryAuthorized(actor, request.selector);
+      return this.#page(opened.store.epoch, actor.owner_id, request, value);
+    }
     if (request.kind === "read") {
       const value = await this.#view(opened.control, actor, request.selector);
       return this.#page(opened.store.epoch, actor.owner_id, request, value);
@@ -162,10 +177,10 @@ export class CoordinationService {
       case "receipt": return control.receipt(actor, selector.operation_key).then(value => value ?? null);
     }
   }
-  #page(epoch: string, owner: string, request: Extract<CoordinationRequest, { kind: "read" }>, value: unknown): CoordinationReply {
+  #page(epoch: string, owner: string, request: Extract<CoordinationRequest, { kind: "read" | "recovery_read" }>, value: unknown): CoordinationReply {
     const bytes = Buffer.from(JSON.stringify(value));
     if (bytes.length > COORDINATION_VIEW_BYTES) throw new BridgeError("COORDINATION_VIEW_TOO_LARGE", "The selected view exceeds its supported bound");
-    const context = canonicalHash({ schema_version: 1, repository: this.#binding.repository_id, epoch, owner, selector: request.selector });
+    const context = canonicalHash({ schema_version: 1, repository: this.#binding.repository_id, epoch, owner, selector: request.selector, ...(request.kind === "recovery_read" ? { purpose: "operator-recovery" } : {}) });
     const hash = createHash("sha256").update(context).update(bytes).digest("hex");
     if (request.expected_hash !== null && request.expected_hash !== hash) throw new BridgeError("COORDINATION_VIEW_CHANGED", "This authorized view changed; restart at offset zero");
     if (request.offset > bytes.length) throw new BridgeError("COORDINATION_RANGE_INVALID", "Read offset exceeds this view");

@@ -1,0 +1,12 @@
+Platform: Linux local container; real Git repositories/worktrees and Unix sockets in selected tests.
+Node: v22.16.0
+Git: 2.47.3
+Available TypeScript: 5.8.3
+Available Node declarations: 25.1.0
+Repository pins: TypeScript 5.9.3, Node declarations 24.7.2 (not provisioned here).
+Source root: /mnt/data/passeur-f8/Passeur checkout (path deliberately contains a space).
+Source baseline: 3f8dbfc278a806f0bae18e5bef8e30cf47737394, selected byte-verified mirror only.
+Native Node Tree-sitter and full pinned SDK/Vitest/dependency closure unavailable.
+Registry probe: DNS resolution failure; no dependency installation performed.
+Complete application/source check, elected listener and compiled CLI remain new-candidate gates.
+Available TypeScript transpilation is an evidence adapter, not a replacement production build or typecheck.

@@ -58,7 +58,13 @@ historical acknowledgment; retrieve current state before further control.
 For paged reads, concatenate only pages with the same hash and use the returned
 next_offset. Refresh from offset zero after a changed view. A metadata `ready`
 status is not parser/provider readiness. Lost MCP parent credentials do not
-authorize another session to adopt metadata cases; forced recovery is unfinished.
+authorize another session to adopt metadata cases. An operator can use
+[explicit metadata recovery](../../../docs/coordination.md#operator-metadata-recovery-f8)
+after inspecting exact ownership/epoch/revision and any external operation.
+MCP tools do not expose recovery. Recovery never grants native task control or
+proves that an external process stopped; settlement needs separately confirmed
+operator evidence. Preserve v2 metadata after the first recovery and use only a
+compatible reader/writer.
 
 New named registrations include these tools. Updating an existing registration
 uses the normal explicit registration workflow and preserves its deny/approval

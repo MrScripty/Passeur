@@ -343,7 +343,7 @@ export class RepositoryRuntime {
       // From admission onward, preparation/publication has runtime ownership.
       // A request cancellation detaches only the promise returned below.
       const binding = await this.#resolve(this.#lifetime.signal);
-      if (request.kind === "initialize" || request.kind === "command") await this.#ensurePrepared(undefined, control);
+      if (request.kind === "initialize" || request.kind === "command" || request.kind === "recover_metadata" || request.kind === "recovery_read") await this.#ensurePrepared(undefined, control);
       this.#assertOpen();
       if (this.#admissionClosed && (request.kind === "initialize" || request.kind === "command" && !control)) {
         throw new BridgeError("COORDINATION_SERVICE_DRAINING", "Coordination admission closed during preparation");
@@ -360,14 +360,8 @@ export class RepositoryRuntime {
       if (!this.#coordination) {
         this.#coordination = new CoordinationService({ store_root: binding.storeRoot, repository_id: binding.repositoryId }, {
           assertOwned: () => this.#assertAuthority(),
-          authorizeInitialization: async (principal) => {
-            const token = await operatorToken(binding);
-            const expected = token === undefined ? undefined : createHash("sha256").update(token).digest("hex");
-            if (!expected || !timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(principal.owner_id, "hex"))) {
-              throw new BridgeError("COORDINATION_INITIALIZATION_FORBIDDEN", "Initialization requires the existing operator identity; ordinary task or connection ownership does not authorize it");
-            }
-            this.#assertAuthority();
-          },
+          authorizeInitialization: principal => this.#authorizeCoordinationOperator(principal.owner_id, "initialization"),
+          authorizeRecovery: principal => this.#authorizeCoordinationOperator(principal.owner_id, "recovery"),
           externalWorkspaces: { assertExternalRegistration: async (_principal, workspace, sourceSignal) => {
             if (!this.#store) throw new BridgeError("COORDINATION_RESOURCE_UNAVAILABLE", "The runtime resource inventory is not prepared");
             await assertExternalWorkspace(workspace, this.#store,
@@ -386,6 +380,16 @@ export class RepositoryRuntime {
     };
     void operation.then(settled, settled);
     return withAbort(operation, signal);
+  }
+  async #authorizeCoordinationOperator(owner: string, purpose: "initialization" | "recovery"): Promise<void> {
+    if (!this.#binding) throw new BridgeError("COORDINATION_SERVICE_BINDING_INVALID", "Operator control needs the resolved repository binding");
+    const token = await operatorToken(this.#binding);
+    const expected = token === undefined ? undefined : createHash("sha256").update(token).digest("hex");
+    if (!expected || !timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(owner, "hex"))) {
+      throw new BridgeError(purpose === "initialization" ? "COORDINATION_INITIALIZATION_FORBIDDEN" : "COORDINATION_RECOVERY_FORBIDDEN",
+        "This operation requires the existing operator identity; task or connection ownership does not authorize it");
+    }
+    this.#assertAuthority();
   }
   async retainedTaskId(requestKey: string): Promise<string> {
     const record = await (await this.#readStore()).find({ request_key: requestKey });

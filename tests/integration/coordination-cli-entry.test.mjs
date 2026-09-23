@@ -40,3 +40,22 @@ test('actual CLI initializes and reads using one persistent operator identity th
  const one=JSON.parse((await f.run([])).stdout),two=JSON.parse((await f.run([])).stdout);assert.equal(one.parent_id,two.parent_id);assert.equal(one.repository_id,f.binding.repositoryId);
  await writeFile(f.file,JSON.stringify(request('status')));assert.equal(JSON.parse((await f.run([])).stdout).epoch,enabled.epoch);
 },30000);
+
+test('actual CLI recovers metadata through the elected runtime and keeps settlement confirmation distinct',async()=>{
+ const f=await context('CLI operator metadata recovery'), launch=await launchService(f.binding,cli);
+ const exit=once(launch.child,'exit');exit.catch(()=>{});
+ f.sessions.push({async close(){launch.released();const [code]=await withAbort(exit,AbortSignal.timeout(15000));assert.equal(code,0);assert.equal(await readDescriptor(f.binding),undefined)}});
+ await writeFile(f.file,JSON.stringify(request('initialize',{limits:f.limits})));
+ const enabled=JSON.parse((await f.run(['--yes'])).stdout);
+ await writeFile(f.file,JSON.stringify(f.registerRequest()));
+ const saved=JSON.parse((await f.run(['--yes'])).stdout);
+ await writeFile(f.file,JSON.stringify(request('recovery_read',{selector:{kind:'work',id:saved.receipt.item_id},offset:0,limit:8192,expected_hash:null})));
+ const info=JSON.parse(JSON.parse((await f.run([])).stdout).content),w=info.subject;
+ const recovery={kind:'adopt_work',operation_key:'cli-recovery',epoch:enabled.epoch,work_id:w.id,
+   expected_owner:w.owner,expected_revision:w.revision,new_owner:'b'.repeat(64),statement:'Operator selected the replacement parent.'};
+ await writeFile(f.file,JSON.stringify(request('recover_metadata',{recovery})));
+ await assert.rejects(f.run([]),e=>{assert.match(e.stderr,/MUTATION_AUTHORITY_REQUIRED/);return true});
+ await assert.rejects(f.run(['--yes','--confirm-external-settled']),e=>{assert.match(e.stderr,/ARGUMENT_INAPPLICABLE/);return true});
+ const recovered=JSON.parse((await f.run(['--yes'])).stdout);assert.equal(recovered.kind,'recovery_receipt');assert.equal(recovered.receipt.command.new_owner,'b'.repeat(64));
+ assert.deepEqual(JSON.parse((await f.run(['--yes'])).stdout),recovered);
+},30000);

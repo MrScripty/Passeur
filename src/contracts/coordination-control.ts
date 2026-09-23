@@ -1,3 +1,4 @@
+import { canonicalHash } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
 
 /** Owned internal/persisted contract. Transport authorization is a separate boundary. */
@@ -33,10 +34,38 @@ export type Receipt = {
   owner: ParentId; key: string; request_hash: string; revision: number;
   action: Command["kind"]; entity: Subject; item_id: string; outcome: "recorded";
 };
-export type ControlState = {
-  schema_version: 1; repository_id: string; epoch: string; revision: number; limits: Limits;
+type ControlData = {
+  repository_id: string; epoch: string; revision: number; limits: Limits;
   works: Work[]; cases: Case[]; notes: Note[]; receipts: Receipt[];
 };
+/** Existing state stays v1 until one authorized recovery atomically publishes v2. */
+export type ControlState = ControlData & (
+  | { schema_version: 1 }
+  | { schema_version: 2; recoveries: RecoveryReceipt[] }
+);
+export type RecoveryCommand = {
+  operation_key: string; epoch: string; expected_owner: ParentId;
+  expected_revision: number; statement: string;
+} & (
+  | { kind: "adopt_work"; work_id: string; new_owner: ParentId }
+  | { kind: "close_work"; work_id: string }
+  | { kind: "adopt_case"; case_id: string; expected_generation: number; new_owner: ParentId }
+  | { kind: "release_case"; case_id: string; expected_generation: number }
+  | { kind: "settle_case"; case_id: string; expected_generation: number }
+);
+export type RecoveryReceipt = {
+  operator: ParentId; request_hash: string; revision: number; command: RecoveryCommand;
+};
+const recoveryActions = ["adopt_work", "close_work", "adopt_case", "release_case", "settle_case"] as const;
+// A bounded operator attribution or evidence reference, not a generated explanation or process proof.
+export const RECOVERY_STATEMENT_BYTES = 256;
+export function recoveryReceipts(state: ControlState): readonly RecoveryReceipt[] {
+  return state.schema_version === 2 ? state.recoveries : [];
+}
+export function controlReceiptCount(state: ControlState): number {
+  return state.receipts.length + recoveryReceipts(state).length;
+}
+
 export type Command =
   | { kind: "register_work"; operation_key: string; workspace_id: string; input_oid: string;
       object_format: "sha1" | "sha256"; intent: string; areas: Region[]; readers: ParentId[] }
@@ -180,13 +209,17 @@ function receipt(value: unknown): Receipt {
 }
 export function decodeControl(value: unknown, expectedRepository: string): ControlState {
   const v = object(value);
-  if (typeof v.schema_version === "number" && Number.isSafeInteger(v.schema_version) && v.schema_version > 0 && v.schema_version !== CONTROL_SCHEMA) throw new BridgeError("COORDINATION_VERSION_UNSUPPORTED", "The control version has no supported reader");
-  fields(v, ["schema_version", "repository_id", "epoch", "revision", "limits", "works", "cases", "notes", "receipts"]);
-  if (v.schema_version !== CONTROL_SCHEMA) invalid("Missing or malformed control schema version");
+  if (typeof v.schema_version === "number" && Number.isSafeInteger(v.schema_version) && v.schema_version > 0 && v.schema_version !== CONTROL_SCHEMA && v.schema_version !== 2) throw new BridgeError("COORDINATION_VERSION_UNSUPPORTED", "The control version has no supported reader");
+  fields(v, ["schema_version", "repository_id", "epoch", "revision", "limits", "works", "cases", "notes", "receipts", ...(v.schema_version === 2 ? ["recoveries"] : [])]);
+  if (v.schema_version !== CONTROL_SCHEMA && v.schema_version !== 2) invalid("Missing or malformed control schema version");
   const repository_id = text(v.repository_id, 256); if (repository_id !== expectedRepository) throw new BridgeError("COORDINATION_BINDING_CONFLICT", "Control belongs to another repository");
   const limits = decodeLimits(v.limits), revision = number(v.revision);
   const works = unique(list(v.works, limits.works, work), x => x.id), cases = unique(list(v.cases, limits.cases, caseRecord), x => x.id);
   const notes = unique(list(v.notes, limits.notes, note), x => x.id), receipts = unique(list(v.receipts, limits.receipts, receipt), x => `${x.owner}:${x.key}`);
+  const recoveries = v.schema_version === 2 ? list(v.recoveries, limits.receipts, decodeRecoveryReceipt) : [];
+  if (v.schema_version === 2 && recoveries.length === 0) invalid("Recovery storage requires its first atomic recovery receipt");
+  if (receipts.length + recoveries.length > limits.receipts) invalid("Receipt capacity includes operator recovery history");
+  unique([...receipts.map(r => `${r.owner}:${r.key}`), ...recoveries.map(r => `${r.operator}:${r.command.operation_key}`)], x => x);
   unique(works.filter(x => x.state === "active"), x => x.workspace_id);
   unique(cases.filter(x => x.state === "active"), x => x.target);
   const allIds = [...works.map(x => x.id), ...cases.map(x => x.id), ...notes.map(x => x.id)]; unique(allIds, x => x);
@@ -200,13 +233,49 @@ export function decodeControl(value: unknown, expectedRepository: string): Contr
   for (const n of notes) {
     if (n.work_refs.some(id => !workMap.has(id)) || n.subject.kind === "work" && (n.work_refs.length !== 1 || n.work_refs[0] !== n.subject.id) || Buffer.byteLength(n.text) > limits.note_bytes || !(n.subject.kind === "work" ? workMap.has(n.subject.id) : caseMap.has(n.subject.id))) invalid("Note violates retention bounds or references a missing subject");
   }
-  unique(receipts, x => String(x.revision));
-  if (receipts.length !== revision) invalid("Control revision and retained receipt history disagree");
+  unique([...receipts.map(r => r.revision), ...recoveries.map(r => r.revision)], String);
+  if (receipts.length + recoveries.length !== revision) invalid("Control revision and retained receipt history disagree");
   for (const r of receipts) if (!allIds.includes(r.item_id) || r.revision > revision || !(r.entity.kind === "work" ? workMap.has(r.entity.id) : caseMap.has(r.entity.id))) invalid("Receipt references missing state or a future revision");
-  return { schema_version: CONTROL_SCHEMA, repository_id, epoch: entityId(v.epoch), revision, limits, works, cases, notes, receipts };
+  const epoch = entityId(v.epoch);
+  for (const r of recoveries) {
+    const c = r.command;
+    if (r.revision > revision || c.epoch !== epoch || c.expected_revision >= r.revision
+      || ("work_id" in c ? !workMap.has(c.work_id) : !caseMap.has(c.case_id))) invalid("Recovery references missing state or contradicts its revision/epoch");
+  }
+  const data = { repository_id, epoch, revision, limits, works, cases, notes, receipts };
+  return v.schema_version === 2 ? { schema_version: 2, ...data, recoveries } : { schema_version: 1, ...data };
 }
 export function emptyControl(repository: string, epoch: string, limits: unknown): ControlState {
   return decodeControl({ schema_version: CONTROL_SCHEMA, repository_id: repository, epoch, revision: 0, limits, works: [], cases: [], notes: [], receipts: [] }, repository);
+}
+
+/** Recovery is a separate operator contract; ordinary command decoding never accepts it. */
+export function decodeRecoveryCommand(value: unknown): RecoveryCommand {
+  const v = object(value);
+  if (typeof v.kind === "string" && !recoveryActions.some(kind => kind === v.kind)) throw new BridgeError("COORDINATION_RECOVERY_OPERATION_UNSUPPORTED", "The operator recovery action is not supported");
+  const kind = choice(v.kind, recoveryActions);
+  const common = ["kind", "operation_key", "epoch", "expected_owner", "expected_revision", "statement"];
+  const base = { operation_key: coordinationOperationKey(v.operation_key), epoch: entityId(v.epoch),
+    expected_owner: parentId(v.expected_owner), expected_revision: number(v.expected_revision, 1),
+    statement: text(v.statement, RECOVERY_STATEMENT_BYTES) };
+  if (!base.statement.trim().length) invalid("Recovery needs an operator statement or evidence reference");
+  if (kind === "adopt_work" || kind === "close_work") {
+    fields(v, [...common, "work_id", ...(kind === "adopt_work" ? ["new_owner"] : [])]);
+    const work_id = entityId(v.work_id);
+    return kind === "adopt_work" ? { ...base, kind, work_id, new_owner: parentId(v.new_owner) } : { ...base, kind, work_id };
+  }
+  fields(v, [...common, "case_id", "expected_generation", ...(kind === "adopt_case" ? ["new_owner"] : [])]);
+  const case_id = entityId(v.case_id), expected_generation = number(v.expected_generation, 1);
+  return kind === "adopt_case" ? { ...base, kind, case_id, expected_generation, new_owner: parentId(v.new_owner) }
+    : { ...base, kind, case_id, expected_generation };
+}
+export function decodeRecoveryReceipt(value: unknown): RecoveryReceipt {
+  const v = object(value); fields(v, ["operator", "request_hash", "revision", "command"]);
+  const operator = parentId(v.operator), command = decodeRecoveryCommand(v.command), request_hash = digest(v.request_hash);
+  if (request_hash !== canonicalHash({ operator, recovery: command })) invalid("Recovery receipt does not match its attributed request");
+  const revision = number(v.revision, 1);
+  if (revision <= command.expected_revision || "expected_generation" in command && revision <= command.expected_generation) invalid("Recovery acknowledgment precedes its requested state");
+  return { operator, command, request_hash, revision };
 }
 
 /** Capacity owed to explicit terminal/revocation operations, not elapsed-time reclamation. */
@@ -221,9 +290,19 @@ export function assertControlTransition(before: ControlState, next: ControlState
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   if (before.epoch !== next.epoch || before.repository_id !== next.repository_id || !same(before.limits, next.limits)
     || next.revision !== before.revision + 1) invalid("Publication contradicts the current control identity or revision");
+  const oldRecoveries = recoveryReceipts(before), newRecoveries = recoveryReceipts(next);
+  if (next.schema_version < before.schema_version || oldRecoveries.some((r, i) => !same(r, newRecoveries[i]))) invalid("Recovery history or supported storage version was rewritten");
+  const recovered = newRecoveries.length === oldRecoveries.length + 1 ? newRecoveries.at(-1) : undefined;
+  if (recovered) {
+    if (next.schema_version !== 2 || recovered.revision !== next.revision || before.receipts.length !== next.receipts.length) invalid("Recovery publication must append exactly its own receipt");
+    assertRecoveryTransition(before, next, recovered.command);
+  } else if (newRecoveries.length !== oldRecoveries.length || next.receipts.length !== before.receipts.length + 1 || next.schema_version !== before.schema_version) {
+    invalid("A control publication appends one ordinary or recovery receipt");
+  }
   if (before.receipts.some((r, i) => !same(r, next.receipts[i]))) invalid("Accepted operation receipts are immutable");
   for (const old of before.works) {
     const item = next.works.find(w => w.id === old.id); if (!item) invalid("Retained work cannot disappear during a control update");
+    if (recovered && "work_id" in recovered.command && recovered.command.work_id === old.id) continue;
     const { revision: a, state: oldState, readers: _oldReaders, ...oldIdentity } = old;
     const { revision: b, state: newState, readers: _newReaders, ...newIdentity } = item;
     if (!same(oldIdentity, newIdentity) || b < a || b > a + 1 || oldState === "closed" && newState !== "closed"
@@ -231,6 +310,7 @@ export function assertControlTransition(before: ControlState, next: ControlState
   }
   for (const old of before.cases) {
     const item = next.cases.find(c => c.id === old.id); if (!item) invalid("Retained cases cannot disappear during a control update");
+    if (recovered && "case_id" in recovered.command && recovered.command.case_id === old.id) continue;
     if (old.target !== item.target || !same(old.members, item.members) || item.revision < old.revision || item.revision > old.revision + 1
       || item.generation < old.generation || item.generation > old.generation + 1 || old.lead !== item.lead && item.generation !== old.generation + 1
       || old.state === "closed" && !same(old, item) || old.revision === item.revision && !same(old, item)) invalid("Case identity, generation or closure was rewritten");
@@ -240,6 +320,39 @@ export function assertControlTransition(before: ControlState, next: ControlState
     const { acknowledged: oldAnswers, withdrawn: oldWithdrawn, ...oldText } = old;
     const { acknowledged: answers, withdrawn, ...newText } = item;
     if (!same(oldText, newText) || oldWithdrawn && !withdrawn || oldAnswers.some((p, i) => answers[i] !== p)) invalid("Note text, context, parties or prior acknowledgment was rewritten");
+  }
+}
+
+function assertRecoveryTransition(before: ControlState, next: ControlState, command: RecoveryCommand): void {
+  const same = (a: unknown, b: unknown) => canonicalHash(a) === canonicalHash(b);
+  if (command.epoch !== before.epoch || !same(before.notes, next.notes) || !same(before.receipts, next.receipts)
+    || before.works.length !== next.works.length || before.cases.length !== next.cases.length) invalid("Recovery changed unrelated retained authority");
+  if ("work_id" in command) {
+    const work = before.works.find(w => w.id === command.work_id);
+    if (!work || work.state !== "active" || work.owner !== command.expected_owner || work.revision !== command.expected_revision) invalid("Recovery does not match the work being changed");
+    const expected = { ...work, revision: work.revision + 1 };
+    if (command.kind === "adopt_work") {
+      if (command.new_owner === work.owner) invalid("Adoption requires a different owner");
+      expected.owner = command.new_owner; expected.readers = work.readers.filter(p => p !== command.new_owner);
+    } else expected.state = "closed";
+    if (!same(before.cases, next.cases) || !same(next.works, before.works.map(w => w.id === work.id ? expected : w))) invalid("Recovery work delta differs from its explicit command");
+  } else {
+    const item = before.cases.find(c => c.id === command.case_id);
+    if (!item || item.state !== "active" || item.lead !== command.expected_owner || item.revision !== command.expected_revision || item.generation !== command.expected_generation) invalid("Recovery does not match the case being changed");
+    const expected = { ...item, revision: item.revision + 1 };
+    if (command.kind === "settle_case") {
+      if (item.external_effect !== "possible") invalid("Only a possible external effect can be operator-settled");
+      expected.external_effect = "not_started";
+    } else {
+      if (item.external_effect !== "not_started") invalid("Unsettled external effects prevent handoff or release");
+      if (command.kind === "release_case") expected.state = "closed";
+      else {
+        if (item.lead === command.new_owner) invalid("Adoption requires a different lead");
+        expected.lead = command.new_owner; expected.generation++;
+        expected.members = [...new Set([...item.members, command.new_owner])];
+      }
+    }
+    if (!same(before.works, next.works) || !same(next.cases, before.cases.map(c => c.id === item.id ? expected : c))) invalid("Recovery case delta differs from its explicit command");
   }
 }
 

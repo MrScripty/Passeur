@@ -22,7 +22,7 @@ export function decodeCoordinationToolArguments(tool: CoordinationToolName, valu
     throw new BridgeError("COORDINATION_TOOL_ARGUMENT_INVALID", "The tool envelope contains only a request data field");
   }
   const request = decodeCoordinationRequest(field.value);
-  if (request.kind === "initialize") throw new BridgeError("COORDINATION_OPERATOR_REQUIRED", "Initialize metadata explicitly with the operator CLI; a tool request cannot grant that authority");
+  if (request.kind === "initialize" || request.kind === "recover_metadata" || request.kind === "recovery_read") throw new BridgeError("COORDINATION_OPERATOR_REQUIRED", "Initialization and metadata recovery require the operator CLI; a tool request cannot grant that authority");
   const kind = request.kind === "command" ? request.command.kind : undefined;
   const allowed = tool === "passeur_coordination" ? request.kind !== "command"
     : tool === "passeur_work" ? kind === "register_external_work" || kind === "share_work" || kind === "close_work"

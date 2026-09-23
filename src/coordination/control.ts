@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalHash, Mutex } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
 import { CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
-  coordinationOperationKey, type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
+  coordinationOperationKey, controlReceiptCount, recoveryReceipts, decodeRecoveryCommand, MAX_PARTIES, type RecoveryCommand, type RecoveryReceipt, type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
 import type { CoordinationStore } from "../store/coordination-store.js";
 
 /** The caller is the authenticated service actor, never an actor field taken from a command. */
@@ -32,6 +32,9 @@ export class CoordinationControl {
     const hash = canonicalHash({ owner, command });
     return this.#ordering.run(async () => {
       const state = await this.store.snapshot();
+      if (recoveryReceipts(state).some(r => r.operator === owner && r.command.operation_key === command.operation_key)) {
+        throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already identifies operator recovery");
+      }
       const prior = state.receipts.find(r => r.owner === owner && r.key === command.operation_key);
       if (prior) {
         if (prior.request_hash !== hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already names different intent");
@@ -54,6 +57,9 @@ export class CoordinationControl {
     return this.#ordering.run(async () => {
       this.store.assertMutable();
       const current = await this.store.snapshot();
+      if (recoveryReceipts(current).some(r => r.operator === owner && r.command.operation_key === command.operation_key)) {
+        throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already identifies operator recovery");
+      }
       const prior = current.receipts.find(r => r.owner === owner && r.key === command.operation_key);
       if (prior) {
         if (prior.request_hash !== hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already names different intent");
@@ -71,6 +77,59 @@ export class CoordinationControl {
       return structuredClone(receipt);
     });
   }
+  /** Only the service's verified operator path calls this method. No process or Git effect is performed. */
+  async recoverAuthorized(actor: CoordinationActor, input: unknown): Promise<RecoveryReceipt> {
+    const operator = parentId(actor.owner_id), recovery = decodeRecoveryCommand(input);
+    if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
+    const request_hash = canonicalHash({ operator, recovery });
+    return this.#ordering.run(async () => {
+      this.store.assertMutable();
+      const current = await this.store.snapshot();
+      const prior = recoveryReceipts(current).find(r => r.operator === operator && r.command.operation_key === recovery.operation_key);
+      if (prior) {
+        if (prior.request_hash !== request_hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Recovery key already identifies different intent");
+        return structuredClone(prior);
+      }
+      if (current.receipts.some(r => r.owner === operator && r.key === recovery.operation_key)) {
+        throw new BridgeError("COORDINATION_KEY_CONFLICT", "Recovery key already identifies an ordinary operation");
+      }
+      if (recovery.epoch !== current.epoch) throw new BridgeError("COORDINATION_STALE_EPOCH", "Recovery belongs to a different initialized coordination store");
+      const next: ControlState & { schema_version: 2 } = {
+        ...structuredClone(current), schema_version: 2, recoveries: structuredClone([...recoveryReceipts(current)]),
+      };
+      applyRecovery(next, recovery);
+      next.revision++;
+      const receipt: RecoveryReceipt = { operator, request_hash, revision: next.revision, command: recovery };
+      next.recoveries.push(receipt);
+      checkCapacity(next);
+      // One atomic publication owns the version transition, metadata update and attributed acknowledgment.
+      await this.store.publish(current, next);
+      return structuredClone(receipt);
+    });
+  }
+
+  /** Administrative inspection reveals metadata only, after service-owned operator authorization. */
+  async inspectRecoveryAuthorized(actor: CoordinationActor, selector:
+    { kind: "inventory" } | { kind: "work" | "case"; id: string } | { kind: "receipt"; operation_key: string }): Promise<unknown> {
+    const operator = parentId(actor.owner_id);
+    return this.#ordering.run(async () => {
+      const state = await this.store.snapshot();
+      if (selector.kind === "receipt") {
+        const key = coordinationOperationKey(selector.operation_key);
+        return structuredClone(recoveryReceipts(state).find(r => r.operator === operator && r.command.operation_key === key) ?? null);
+      }
+      if (selector.kind === "inventory") {
+        return { epoch: state.epoch, revision: state.revision,
+          works: state.works.filter(w => w.state === "active").map(w => ({ id: w.id, owner: w.owner, revision: w.revision, workspace_id: w.workspace_id })),
+          cases: state.cases.filter(c => c.state === "active").map(c => ({ id: c.id, target: c.target, lead: c.lead, revision: c.revision, generation: c.generation, external_effect: c.external_effect })) };
+      }
+      const id = entityId(selector.id);
+      const entity = selector.kind === "work" ? state.works.find(w => w.id === id) : state.cases.find(c => c.id === id);
+      if (!entity) return unavailable();
+      return { epoch: state.epoch, revision: state.revision, subject: structuredClone(entity) };
+    });
+  }
+
   async work(actor: CoordinationActor, id: string): Promise<Work> {
     const owner = parentId(actor.owner_id), workId = entityId(id);
     return this.#ordering.run(async () => structuredClone(visibleWork(await this.store.snapshot(), owner, workId)));
@@ -229,6 +288,47 @@ function apply(state: ControlState, parent: ParentId, command: Command): { entit
     }
   }
 }
+function applyRecovery(state: ControlState, command: RecoveryCommand): void {
+  if ("work_id" in command) {
+    const work = state.works.find(w => w.id === command.work_id);
+    if (!work) return unavailable();
+    if (work.owner !== command.expected_owner || work.revision !== command.expected_revision) {
+      throw new BridgeError("COORDINATION_STALE_REVISION", "Work ownership or revision changed since operator inspection");
+    }
+    if (work.state !== "active") throw new BridgeError("COORDINATION_WORK_CLOSED", "Recovery does not reopen closed work");
+    if (command.kind === "adopt_work") {
+      if (command.new_owner === work.owner) throw new BridgeError("COORDINATION_INVALID", "Adoption requires a different parent");
+      work.owner = command.new_owner;
+      work.readers = work.readers.filter(p => p !== command.new_owner);
+    } else work.state = "closed";
+    work.revision++;
+    return;
+  }
+  const item = state.cases.find(c => c.id === command.case_id);
+  if (!item) return unavailable();
+  if (item.lead !== command.expected_owner || item.revision !== command.expected_revision) {
+    throw new BridgeError("COORDINATION_STALE_REVISION", "Case ownership or revision changed since operator inspection");
+  }
+  if (item.generation !== command.expected_generation) throw new BridgeError("COORDINATION_STALE_GENERATION", "Case generation changed since operator inspection");
+  if (item.state !== "active") throw new BridgeError("COORDINATION_CASE_CLOSED", "Recovery does not reopen a closed case");
+  if (command.kind === "settle_case") {
+    if (item.external_effect !== "possible") throw new BridgeError("COORDINATION_NO_EXTERNAL_EFFECT", "There is no reported external operation to settle");
+    item.external_effect = "not_started";
+  } else {
+    idle(item);
+    if (command.kind === "release_case") item.state = "closed";
+    else {
+      if (command.new_owner === item.lead) throw new BridgeError("COORDINATION_INVALID", "Adoption requires a different parent");
+      // A lead transfer does not grant access to other parents' selected inputs.
+      for (const input of item.inputs) visibleWork(state, command.new_owner, input.work_id);
+      const members = [...new Set([...item.members, command.new_owner])];
+      if (members.length > MAX_PARTIES) throw new BridgeError("COORDINATION_CAPACITY", "Case participant capacity is full");
+      item.members = members; item.lead = command.new_owner; item.generation++;
+    }
+  }
+  item.revision++;
+}
+
 function overlap(a: Region, b: Region): boolean {
   return a.path === b.path || a.kind === "subtree" && b.path.startsWith(`${a.path}/`) || b.kind === "subtree" && a.path.startsWith(`${b.path}/`);
 }
@@ -238,7 +338,7 @@ function checkCapacity(state: ControlState): void {
   const reserved = releaseSlotsRequired(state);
   if (Buffer.byteLength(`${JSON.stringify(state, null, 2)}\n`) + reserved * CONTROL_RELEASE_BYTES > CONTROL_MAX_BYTES
     || state.works.length > limits.works || state.cases.length > limits.cases || state.notes.length > limits.notes
-    || state.receipts.length + reserved > limits.receipts || state.notes.some(n => Buffer.byteLength(n.text) > limits.note_bytes)) {
+    || controlReceiptCount(state) + reserved > limits.receipts || state.notes.some(n => Buffer.byteLength(n.text) > limits.note_bytes)) {
     throw new BridgeError("COORDINATION_CAPACITY", "Coordination capacity is exhausted; current records and release opportunities are preserved");
   }
 }

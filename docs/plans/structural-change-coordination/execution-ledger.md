@@ -257,3 +257,51 @@ SDK tests; the frontend run included the two compiled CLI entrypoint tests.
 `git diff --check` passed. This closes the F7 SDK/CLI/pinned test availability
 gap here; native parsing, managed task linkage, installed-host behavior and
 independent objective acceptance remain open.
+
+
+## September 22, 2026 — F8 operator metadata recovery
+
+Source `3f8dbfc278a806f0bae18e5bef8e30cf47737394` was confirmed after the
+maintainer committed F7. The explicit continuation selected the bounded
+[F8 admission](reports/f8-admission.md): Blocked → Active for independent
+operator recovery, without overriding native M0. Current F7 integration evidence
+and source fixes are preserved; the mirror is selected and byte-verified, not a
+complete upstream checkout. No synthetic upstream commit was created.
+
+Implemented operator-only metadata inspection, exact ownership/epoch/revision
+recovery, case-generation updates and separate operator settlement reporting.
+The first successful recovery atomically introduces control v2 with immutable
+audit; ordinary v1 reads/writes preserve their version. Task/native authority,
+Git/source identity, notes/parties, old receipts and MCP schemas remain distinct.
+CLI checks consent before connection; runtime checks the actual operator token.
+No parser, new model call, new credential or Git/process mutation was introduced.
+
+Final selected suite from a source path containing spaces: **337/337**, including
+33 new and 304 retained tests; zero failures/skips/cancellations/todos. All
+**266** distinct recorded temporary roots were absent. The actual new helper/
+service import closure passes strict TypeScript 5.8.3 with available declarations.
+The updated elected test and compiled-CLI test could not load their real missing
+dependencies here; no assertions executed and no passing result is inferred.
+The full root CLI/runtime type graph, pinned suite, installed workflow, native
+analysis and independent acceptance remain required. Seven unchanged original
+coordinator-foundation tests and four SDK tests were not rerun locally.
+
+[F8 verification](reports/f8-verification.md) retains commands, fidelity and
+resource outcomes; issues owns dispositions and the admission owns the eight
+composition probes. F8 is source-implemented with scoped evidence; plan state
+returns to Blocked with F8-V1 as next integration gate. No SC01–SC17 objective
+claim is accepted. Both plans are included, with 2B unchanged and unselected.
+No remote commit/push, installation, account use, personal configuration edit
+or user-worktree cleanup occurred. The maintainer owns patch integration.
+
+## September 22, 2026 — F8 complete-checkout integration
+
+The supplied patch applied to the exact `3f8dbfc` affected preimages. The
+updated Passeur usage skill passed validation and its documentation link
+resolves. `npm run check` and `npm test` passed in the complete checkout: 438
+core, 40 native and 100 frontend tests. The core run included the actual
+elected-process recovery case; the frontend run included the compiled CLI
+recovery entrypoint. `git diff --check` passed. This closes F8's pinned,
+elected and compiled-CLI test availability gap here. The overall plan remains
+Blocked: installed-host behavior, native parser/structural observation,
+managed task linkage and independent objective acceptance remain open.

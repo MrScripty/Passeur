@@ -50,18 +50,21 @@ export async function readCoordinationRequestFile(path: string, signal?: AbortSi
 }
 
 /** Confirmation is selected by the operator's invocation, never by fields in the JSON request. */
-export function authorizeCoordinationCliRequest(value: unknown, confirmed: boolean): CoordinationRequest {
+export function authorizeCoordinationCliRequest(value: unknown, confirmed: boolean, externalSettled = false): CoordinationRequest {
   const request = decodeCoordinationRequest(value);
-  if ((request.kind === "command" || request.kind === "initialize") && confirmed !== true) {
+  if ((request.kind === "command" || request.kind === "initialize" || request.kind === "recover_metadata") && confirmed !== true) {
     throw new BridgeError("MUTATION_AUTHORITY_REQUIRED", "coordinate mutations require explicit operator --yes authority");
   }
+  const settlement = request.kind === "recover_metadata" && request.recovery.kind === "settle_case";
+  if (settlement && externalSettled !== true) throw new BridgeError("COORDINATION_SETTLEMENT_CONFIRMATION_REQUIRED", "An operator settlement report requires --confirm-external-settled and a concrete evidence reference");
+  if (!settlement && externalSettled) throw new BridgeError("ARGUMENT_INAPPLICABLE", "--confirm-external-settled applies only to operator case settlement");
   return request;
 }
 
 /** The CLI keeps ownership of the borrowed connection and its shutdown. Validation precedes connection effects. */
 export async function runCoordinationCli(path: string, confirmed: boolean, connect: () => Promise<CoordinationEndpoint>,
-  signal?: AbortSignal): Promise<CoordinationReply> {
-  const request = authorizeCoordinationCliRequest(await readCoordinationRequestFile(path, signal), confirmed);
+  signal?: AbortSignal, externalSettled = false): Promise<CoordinationReply> {
+  const request = authorizeCoordinationCliRequest(await readCoordinationRequestFile(path, signal), confirmed, externalSettled);
   throwIfAborted(signal);
   const frontend = await connect();
   throwIfAborted(signal);

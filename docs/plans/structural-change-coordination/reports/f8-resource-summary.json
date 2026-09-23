@@ -1,0 +1,8 @@
+{
+  "scope": "final selected F8 run only",
+  "log_entries": 277,
+  "distinct_test_roots": 266,
+  "remaining": [],
+  "disposition": "All recorded roots were removed by their owning fixtures after owned operations settled. Working source and delivery artifacts are retained separately.",
+  "raw_log_sha256": "feba46c7dafacbf3451c10434c3260378ec048582ded3df122df68304bb93461"
+}

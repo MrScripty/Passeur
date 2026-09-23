@@ -1,0 +1,4 @@
+TypeScript: Version 5.8.3
+Node declarations: 25.1.0
+Command: tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --noUncheckedIndexedAccess --exactOptionalPropertyTypes --skipLibCheck --types node src/coordination/control.ts src/contracts/coordination-service.ts src/service/coordination.ts src/cli/coordination.ts src/mcp/coordination-operations.ts
+Exit: 0

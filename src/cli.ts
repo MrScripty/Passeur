@@ -24,7 +24,7 @@ Usage: passeur <action> [options]
   migrate-profile --project PATH --yes
   service-start|service-status --project PATH
   service-stop --project PATH --operation-key KEY --yes [--cancel-tasks UUID,UUID]
-  coordinate --project PATH --request FILE [--yes]
+  coordinate --project PATH --request FILE [--yes] [--confirm-external-settled]
   submit --project PATH --assignment FILE --yes
   tasks --project PATH [--request-key KEY] [--offset N] [--limit N]
   wait --project PATH --task UUID [--after-revision N] [--wait-ms N]
@@ -59,6 +59,8 @@ pins project/profile/state paths. Close external config editors while registerin
 Exit 0 means the requested action passed; 1 means failure or blocked required
 verification; 130/143 represent interruption by SIGINT/SIGTERM. Accepted assignments survive CLI/host closure. wait timeout cancels only observation.
 attach/input/cancel are explicit operator-control actions; never use them to bypass host human approvals.
+coordinate supports operator-only recovery_read and recover_metadata requests.
+Settlement reports additionally require --confirm-external-settled; no process is stopped.
 coordinate reads one bounded JSON request. Mutations (including initialize) require --yes.
 It manages metadata only: no analysis, agent messaging or Git integration. Read replies
 are bounded pages; continue explicitly with next_offset and the same expected_hash.
@@ -76,7 +78,7 @@ function integer(value: string | undefined, flag: string): number | undefined {
   return Number(value);
 }
 const options = {
-  request: { type: "string" },
+  request: { type: "string" }, "confirm-external-settled": { type: "boolean" },
   assignment: { type: "string" }, "request-key": { type: "string" }, "operation-key": { type: "string" }, "control-generation": { type: "string" },
   "input-id": { type: "string" }, answer: { type: "string" }, "after-revision": { type: "string" }, "wait-ms": { type: "string" }, "cancel-tasks": { type: "string" },
   project: { type: "string" }, profile: { type: "string" }, "state-root": { type: "string" }, "expected-repository-id": { type: "string" },
@@ -200,7 +202,7 @@ async function main(): Promise<void> {
     serve: bindingFlags, start: bindingFlags, inspect: bindingFlags, "service-run": bindingFlags,
     "service-start": bindingFlags, "service-status": bindingFlags,
     "service-stop": [...bindingFlags, "operation-key", "cancel-tasks", "yes"],
-    coordinate: [...bindingFlags, "request", "yes"],
+    coordinate: [...bindingFlags, "request", "yes", "confirm-external-settled"],
     submit: [...bindingFlags, "assignment", "yes"], tasks: [...bindingFlags, "offset", "limit", "request-key"],
     wait: [...bindingFlags, "task", "after-revision", "wait-ms"],
     attach: [...bindingFlags, "task", "request-key", "operation-key", "yes"],
@@ -294,7 +296,7 @@ async function main(): Promise<void> {
   try {
     if (action === "coordinate") {
       const { runCoordinationCli } = await import("./cli/coordination.js");
-      print(await runCoordinationCli(required(values.request, "--request"), Boolean(values.yes), connected, stop.signal));
+      print(await runCoordinationCli(required(values.request, "--request"), Boolean(values.yes), connected, stop.signal, Boolean(values["confirm-external-settled"])));
     } else if (action === "inspect") print(await runtime.inspect());
     else if (action === "result") print(await runtime.result(required(values.task, "--task")));
     else if (action === "logs") {

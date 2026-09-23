@@ -7,11 +7,11 @@
 | Plan status | `Blocked` |
 | Plan revision | `2A` — standalone code-only target |
 | Acceptance status | `blocked` |
-| Current phase | F7 public metadata consumers pass complete-checkout SDK, CLI and pinned tests; native analysis and objective acceptance remain blocked |
-| Exactly one next integration slice | **M0-S1 — qualify native parser dependencies and language extraction before structural reporting integration** |
+| Current phase | F8 operator metadata recovery implemented; complete-checkout pinned/elected/CLI tests pass, while installed-host and native acceptance remain blocked |
+| Exactly one next integration slice | **M0 — resume native parser qualification and structural observation, retaining installed-host and independent F8 acceptance gates** |
 | Canonical plan path | `docs/plans/structural-change-coordination/plan.md` |
 | Implementation invocation | Explicit `start`; subsequent `continue` or `verify` only in the states allowed by Planning |
-| Examined implementation | Passeur `18a26fdb54434f9c516f030112ce7d4a616974f1` |
+| Examined implementation | Passeur `3f8dbfc278a806f0bae18e5bef8e30cf47737394` |
 | Adopted standards | MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107` |
 | Prepared | September 21, 2026, America/Vancouver |
 | Product and acceptance owner | Passeur maintainer |
@@ -20,14 +20,17 @@
 
 [Execution ledger](execution-ledger.md) owns dated work/evidence. [Issues](issues.md) owns findings. [Contracts and workflow](reports/contracts-and-workflow.md) refines D1–D12. [Language qualification](reports/language-qualification.md) owns the required grammar/extraction matrix. [Implementation map](reports/implementation-map.md) owns exact slice write sets. [Verification](reports/verification.md) owns scenario procedures and oracle boundaries. [Sources and routing](reports/sources-and-routing.md) records examined sources and standards. None duplicates task-lifecycle authority.
 
-The maintainer committed F6 and requested continuation. [F7 admission](reports/f7-admission.md)
-records the scoped Blocked-to-Active decision and return to Blocked after delivery.
-[F7 verification](reports/f7-verification.md) records 304 selected passing tests
-in the package mirror and the subsequent successful SDK/CLI/full-suite run in
-this checkout. Source implementation is not objective acceptance. The committed
-F6 elected/pinned evidence remains separately in the ledger and F6 report.
-Native parsing, task linkage, monitoring, retirement,
-installed-host and independent acceptance retain their required gates.
+The maintainer committed F7 and explicitly requested continuation of Plan 2A.
+[F8 admission](reports/f8-admission.md) records the bounded re-admission for
+operator recovery of already-public metadata, without waiving native M0.
+F7's successful complete-checkout SDK/CLI/pinned evidence remains in its own
+ledger/report. F8 adds no parser, model call, merge, task adoption or process
+control. Its first successful recovery intentionally upgrades only metadata
+control storage to version 2. See [the recovery contract](../../coordination.md#operator-metadata-recovery-f8)
+and [F8 verification](reports/f8-verification.md). Complete-checkout pinned,
+elected and compiled-CLI tests passed at integration; installed-host and
+independent evidence remain required.
+No complete SC01–SC17 claim is satisfied from this increment.
 
 This is a standalone implementation target. The implemented shared-service lifecycle retains its own authority and pending acceptance evidence. Before editing, inspect actual source, installed readers and durable state; choose explicit preservation, migration or rejection for any incompatible state. Plan selection grants no authority to erase records or rewrite history.
 
@@ -263,11 +266,13 @@ Move durable reporting/coordination contracts into `docs/structural-reporting.md
 | F4 metadata session | Implemented; [session evidence](reports/f4-verification.md). |
 | F5 runtime composition | Implemented; [local and maintainer integration evidence](reports/f5-verification.md). |
 | F6 authenticated transport | Implemented; [selected and committed elected/pinned evidence](reports/f6-verification.md). |
-| F7 public metadata consumers | Source implemented, selected tests passed; [remaining consumer gates](reports/f7-verification.md). |
+| F7 public metadata consumers | Implemented; [selected and maintainer complete-checkout evidence](reports/f7-verification.md). |
+| F8 operator metadata recovery | Implemented; selected and complete-checkout pinned/elected/CLI evidence, with installed-host and independent gates open; [recovery and migration gates](reports/f8-verification.md). |
 
 These increments do not satisfy the complete SC01–SC17 claims. F7 exposes only
 existing metadata operations: external work registration, attributed notes and
 cooperative target leadership. Parser-backed reports, managed task enrollment,
-announcement linkage, live monitoring and forced adoption remain unadvertised.
+announcement linkage and live monitoring remain unadvertised. Operator-only
+metadata recovery is separate from task adoption and process control.
 Plan 2B is unchanged and unselected. Dated details remain in the linked ledger
 and reports rather than competing with current authority here.

@@ -162,3 +162,30 @@ new coordinate action. Two explicit wrapper tests failed against the verified
 unchanged allowlist, then passed after adding that action. The third test
 preserves an old action and unknown-action rejection. The test receiver proves
 argv/quoting only, not the real CLI. Launcher mode remains 100755.
+
+
+## F8 current dispositions — September 22, 2026
+
+| ID | Finding / owning boundary | Disposition / evidence |
+|---|---|---|
+| I-F8-01 | Lost parent credentials can strand work/case ownership exposed by F7. | Operator-only inspection and exact revision/owner recovery; no task/process effects. Focused authenticated and cold-process evidence; elected/CLI qualification remains required. |
+| I-F8-02 | Changing owner in v1 would contradict its immutable identity/history contract. | First accepted recovery atomically introduces v2 and immutable attributed audit. Existing v1 stays unchanged on reads/failures; downgrade/rewrite rejected. |
+| I-F8-03 | A possible external operation cannot be declared stopped from disappearance or time. | Adoption/release refuse possible effects; separate `settle_case` requires CLI `--yes --confirm-external-settled` and operator statement. Receipt remains a report, not native proof. |
+| I-F8-04 | Recovery can exhaust capacity reserved for ordinary release. | Count both receipt families and reserve existing slot/byte obligations. Max-escaped closure/settlement and saturated two-step case release are tested. Adoption may require spare capacity. |
+| I-F8-05 | New optional operator reads might accidentally leak through the generic MCP read group. | All public handlers explicitly reject both recovery variants, and unchanged closed schemas omit them. Runtime independently authenticates the actual operator per request/page. |
+| I-F8-06 | Recovery source descriptors or notes could be rewritten under a broad owner-change exception. | Transition codec permits only the exact audited subject delta, preserving other data and agreement parties. Negative unrelated-write/audit-rewrite tests pass. |
+| I-F8-07 | Sparse mirror lacks native parsers, full dependency/type closure and complete elected/CLI environment. | Preserve F7 maintainer evidence; run only actual available paths and record failed import attempts separately. No substitute SDKs or accepted full-path claim. |
+
+Development fixture corrections: one case needed explicit B input sharing; a
+cancellation test must observe completion rather than request service shutdown
+before its operation starts. Two prior unsupported-version fixtures now use v3
+because v2 is intentionally supported. The committed fileURLToPath fix was
+restored byte-exactly before the retained suite; it is not part of this patch.
+No behavioral rule or prior assertion was relaxed to disguise a failure.
+
+Closed metadata keeps its existing disclosure history and explicit readers;
+recovery closure does not silently revoke sharing or retire physical resources.
+A rotated operator credential cannot retrieve an older operator's receipt
+through the own-receipt selector; retained audit is not reassigned or deleted.
+Capacity/history compaction needs a separately admitted migration. These limits
+are explicit, not automatic cleanup or speculative fallback paths.

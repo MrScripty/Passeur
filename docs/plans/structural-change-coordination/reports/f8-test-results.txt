@@ -1,0 +1,2032 @@
+TAP version 13
+# Subtest: authenticated client identity is derived from its private token and does not initialize metadata
+ok 1 - authenticated client identity is derived from its private token and does not initialize metadata
+  ---
+  duration_ms: 52.684687
+  type: 'test'
+  ...
+# Subtest: wrong service credential never reaches runtime metadata admission
+ok 2 - wrong service credential never reaches runtime metadata admission
+  ---
+  duration_ms: 29.503778
+  type: 'test'
+  ...
+# Subtest: real operator identity initializes while a separate authenticated parent is denied
+ok 3 - real operator identity initializes while a separate authenticated parent is denied
+  ---
+  duration_ms: 47.28236
+  type: 'test'
+  ...
+# Subtest: message actor or approval fields are rejected locally before any wire request
+ok 4 - message actor or approval fields are rejected locally before any wire request
+  ---
+  duration_ms: 32.213865
+  type: 'test'
+  ...
+# Subtest: different real worktrees enroll under distinct authenticated parents with explicit sharing
+ok 5 - different real worktrees enroll under distinct authenticated parents with explicit sharing
+  ---
+  duration_ms: 161.194042
+  type: 'test'
+  ...
+# Subtest: real runtime managed-resource guard rejects an authenticated external enrollment
+ok 6 - real runtime managed-resource guard rejects an authenticated external enrollment
+  ---
+  duration_ms: 90.166435
+  type: 'test'
+  ...
+# Subtest: authenticated competing target requests have only one accepted owner
+ok 7 - authenticated competing target requests have only one accepted owner
+  ---
+  duration_ms: 91.575766
+  type: 'test'
+  ...
+# Subtest: lost acknowledgment reconnects by the same token and operation key without duplicate work
+ok 8 - lost acknowledgment reconnects by the same token and operation key without duplicate work
+  ---
+  duration_ms: 145.924805
+  type: 'test'
+  ...
+# Subtest: observer cancellation after runtime admission does not cancel publication or lose correlation
+ok 9 - observer cancellation after runtime admission does not cancel publication or lose correlation
+  ---
+  duration_ms: 97.35624
+  type: 'test'
+  ...
+# Subtest: ordinary wire saturation preserves receipt capacity and keeps the connection usable
+ok 10 - ordinary wire saturation preserves receipt capacity and keeps the connection usable
+  ---
+  duration_ms: 98.609495
+  type: 'test'
+  ...
+# Subtest: wrong repository and parent replies are rejected rather than returned as trusted metadata
+ok 11 - wrong repository and parent replies are rejected rather than returned as trusted metadata
+  ---
+  duration_ms: 28.785469
+  type: 'test'
+  ...
+# Subtest: receipt content mismatch is rejected at the actual client destination boundary
+ok 12 - receipt content mismatch is rejected at the actual client destination boundary
+  ---
+  duration_ms: 71.829013
+  type: 'test'
+  ...
+# Subtest: a malformed continuation reply is rejected without poisoning later reads
+ok 13 - a malformed continuation reply is rejected without poisoning later reads
+  ---
+  duration_ms: 92.821409
+  type: 'test'
+  ...
+# Subtest: mutating a request after submission cannot change its captured source or intent
+ok 14 - mutating a request after submission cannot change its captured source or intent
+  ---
+  duration_ms: 97.081096
+  type: 'test'
+  ...
+# Subtest: already-cancelled request produces no wire effect
+ok 15 - already-cancelled request produces no wire effect
+  ---
+  duration_ms: 28.106477
+  type: 'test'
+  ...
+# Subtest: closed connection refuses new metadata promptly
+ok 16 - closed connection refuses new metadata promptly
+  ---
+  duration_ms: 29.120552
+  type: 'test'
+  ...
+# Subtest: handshake rejects foreign repository, state root, and profile without creating runtime state
+ok 17 - handshake rejects foreign repository, state root, and profile without creating runtime state
+  ---
+  duration_ms: 32.172012
+  type: 'test'
+  ...
+# Subtest: malformed or actor-bearing handshake never supplies a parent identity
+ok 18 - malformed or actor-bearing handshake never supplies a parent identity
+  ---
+  duration_ms: 25.407988
+  type: 'test'
+  ...
+# Subtest: control-lane saturation is bounded independently and leaves ordinary observation available
+ok 19 - control-lane saturation is bounded independently and leaves ordinary observation available
+  ---
+  duration_ms: 95.346867
+  type: 'test'
+  ...
+# Subtest: captured handshake binding and token are immutable across asynchronous source validation
+ok 20 - captured handshake binding and token are immutable across asynchronous source validation
+  ---
+  duration_ms: 24.785892
+  type: 'test'
+  ...
+# Subtest: repository decoder rejects raw physical identity and actor/source injection
+ok 21 - repository decoder rejects raw physical identity and actor/source injection
+  ---
+  duration_ms: 65.261143
+  type: 'test'
+  ...
+# Subtest: registration derives source identity, preserves dirty work and keeps allowed input separate from current HEAD
+ok 22 - registration derives source identity, preserves dirty work and keeps allowed input separate from current HEAD
+  ---
+  duration_ms: 159.026303
+  type: 'test'
+  ...
+# Subtest: simultaneous parents cannot register different aliases of one workspace
+ok 23 - simultaneous parents cannot register different aliases of one workspace
+  ---
+  duration_ms: 95.558891
+  type: 'test'
+  ...
+# Subtest: the resource authority can reject external enrollment before any coordination publication
+ok 24 - the resource authority can reject external enrollment before any coordination publication
+  ---
+  duration_ms: 71.779073
+  type: 'test'
+  ...
+# Subtest: a missing resource authority cannot silently grant external enrollment
+ok 25 - a missing resource authority cannot silently grant external enrollment
+  ---
+  duration_ms: 45.566855
+  type: 'test'
+  ...
+# Subtest: registration refuses unavailable or non-commit bases without publishing a work record
+ok 26 - registration refuses unavailable or non-commit bases without publishing a work record
+  ---
+  duration_ms: 84.671991
+  type: 'test'
+  ...
+# Subtest: expected areas cannot direct later source analysis into Git administrative paths
+ok 27 - expected areas cannot direct later source analysis into Git administrative paths
+  ---
+  duration_ms: 63.869975
+  type: 'test'
+  ...
+# Subtest: decoded command and actor values cannot be changed during an external authority check
+ok 28 - decoded command and actor values cannot be changed during an external authority check
+  ---
+  duration_ms: 89.034288
+  type: 'test'
+  ...
+# Subtest: independent worktrees and different admitted bases retain their own identities
+ok 29 - independent worktrees and different admitted bases retain their own identities
+  ---
+  duration_ms: 146.210129
+  type: 'test'
+  ...
+# Subtest: two parent principals coordinate exact real Git inputs without advancing any Git ref
+ok 30 - two parent principals coordinate exact real Git inputs without advancing any Git ref
+  ---
+  duration_ms: 261.187139
+  type: 'test'
+  ...
+# Subtest: invalid and symbolic targets cannot create independent leadership records
+ok 31 - invalid and symbolic targets cannot create independent leadership records
+  ---
+  duration_ms: 92.293995
+  type: 'test'
+  ...
+# Subtest: target drift refuses a new external-operation marker and preserves source/control records
+ok 32 - target drift refuses a new external-operation marker and preserves source/control records
+  ---
+  duration_ms: 213.901524
+  type: 'test'
+  ...
+# Subtest: selecting an unrelated sibling commit cannot relabel it as this workspace result
+ok 33 - selecting an unrelated sibling commit cannot relabel it as this workspace result
+  ---
+  duration_ms: 284.183169
+  type: 'test'
+  ...
+# Subtest: permission checks precede source lookup for a non-lead input-selection request
+ok 34 - permission checks precede source lookup for a non-lead input-selection request
+  ---
+  duration_ms: 193.872257
+  type: 'test'
+  ...
+# Subtest: a sharing revocation during real Git preflight is rechecked before source-dependent publication
+ok 35 - a sharing revocation during real Git preflight is rechecked before source-dependent publication
+  ---
+  duration_ms: 262.091134
+  type: 'test'
+  ...
+# Subtest: a case revision changing during real source inspection rejects the stale preparation
+ok 36 - a case revision changing during real source inspection rejects the stale preparation
+  ---
+  duration_ms: 243.965985
+  type: 'test'
+  ...
+# Subtest: source-operation saturation does not block work revocation, closure or receipt lookup
+ok 37 - source-operation saturation does not block work revocation, closure or receipt lookup
+  ---
+  duration_ms: 158.42056
+  type: 'test'
+  ...
+# Subtest: explicit source cancellation before publication does not create a partial work registration
+ok 38 - explicit source cancellation before publication does not create a partial work registration
+  ---
+  duration_ms: 80.929631
+  type: 'test'
+  ...
+# Subtest: metadata controls and retained receipts work after the bound source checkout is lost
+ok 39 - metadata controls and retained receipts work after the bound source checkout is lost
+  ---
+  duration_ms: 276.261589
+  type: 'test'
+  ...
+# Subtest: cold-process reopen recomputes the same workspace identity and preserves operation-key uniqueness
+ok 40 - cold-process reopen recomputes the same workspace identity and preserves operation-key uniqueness
+  ---
+  duration_ms: 245.74124
+  type: 'test'
+  ...
+# Subtest: a lost acceptance receipt does not replay integration intent after restart or target movement
+ok 41 - a lost acceptance receipt does not replay integration intent after restart or target movement
+  ---
+  duration_ms: 434.866566
+  type: 'test'
+  ...
+# Subtest: closing drains an accepted source operation and refuses new work without a task timer
+ok 42 - closing drains an accepted source operation and refuses new work without a task timer
+  ---
+  duration_ms: 91.150756
+  type: 'test'
+  ...
+# Subtest: source replacement during resource authorization cannot enroll the stale physical identity
+ok 43 - source replacement during resource authorization cannot enroll the stale physical identity
+  ---
+  duration_ms: 101.789409
+  type: 'test'
+  ...
+# Subtest: request file captures one UTF-8 JSON document with whitespace
+ok 44 - request file captures one UTF-8 JSON document with whitespace
+  ---
+  duration_ms: 9.506919
+  type: 'test'
+  ...
+# Subtest: request file rejects empty
+ok 45 - request file rejects empty
+  ---
+  duration_ms: 2.709035
+  type: 'test'
+  ...
+# Subtest: request file rejects invalid JSON
+ok 46 - request file rejects invalid JSON
+  ---
+  duration_ms: 2.045446
+  type: 'test'
+  ...
+# Subtest: request file rejects UTF-8
+ok 47 - request file rejects UTF-8
+  ---
+  duration_ms: 2.269574
+  type: 'test'
+  ...
+# Subtest: request file rejects BOM
+ok 48 - request file rejects BOM
+  ---
+  duration_ms: 2.34693
+  type: 'test'
+  ...
+# Subtest: request reader enforces encoded size before allocation and semantic size after JSON decoding
+ok 49 - request reader enforces encoded size before allocation and semantic size after JSON decoding
+  ---
+  duration_ms: 3.474626
+  type: 'test'
+  ...
+# Subtest: symlinks and directories are rejected without reading another file
+ok 50 - symlinks and directories are rejected without reading another file
+  ---
+  duration_ms: 5.081408
+  type: 'test'
+  ...
+# Subtest: FIFO rejection is nonblocking and preserves the object
+ok 51 - FIFO rejection is nonblocking and preserves the object
+  ---
+  duration_ms: 9.209552
+  type: 'test'
+  ...
+# Subtest: missing file has the filesystem-owned diagnostic
+ok 52 - missing file has the filesystem-owned diagnostic
+  ---
+  duration_ms: 1.786918
+  type: 'test'
+  ...
+# Subtest: commands and initialization require explicit confirmation before connect; reads do not
+ok 53 - commands and initialization require explicit confirmation before connect; reads do not
+  ---
+  duration_ms: 20.156519
+  type: 'test'
+  ...
+# Subtest: malformed or self-authorizing requests cannot cause connection even with --yes
+ok 54 - malformed or self-authorizing requests cannot cause connection even with --yes
+  ---
+  duration_ms: 4.432437
+  type: 'test'
+  ...
+# Subtest: pre-cancelled CLI request does not open or connect
+ok 55 - pre-cancelled CLI request does not open or connect
+  ---
+  duration_ms: 0.211658
+  type: 'test'
+  ...
+# Subtest: CLI request is stable if its file changes while connection is established
+ok 56 - CLI request is stable if its file changes while connection is established
+  ---
+  duration_ms: 41.730074
+  type: 'test'
+  ...
+# Subtest: operator CLI handler initializes through real authenticated runtime and does not load providers
+ok 57 - operator CLI handler initializes through real authenticated runtime and does not load providers
+  ---
+  duration_ms: 40.425637
+  type: 'test'
+  ...
+# Subtest: operator confirmation cannot give a different authenticated parent initialization authority
+ok 58 - operator confirmation cannot give a different authenticated parent initialization authority
+  ---
+  duration_ms: 32.330636
+  type: 'test'
+  ...
+# Subtest: CLI registration reuses exact receipt on retry, not another registration
+ok 59 - CLI registration reuses exact receipt on retry, not another registration
+  ---
+  duration_ms: 141.20738
+  type: 'test'
+  ...
+# Subtest: work registration retains exact input format and isolated returned values
+ok 60 - work registration retains exact input format and isolated returned values
+  ---
+  duration_ms: 24.116976
+  type: 'test'
+  ...
+# Subtest: simultaneous registration of one workspace has exactly one winner
+ok 61 - simultaneous registration of one workspace has exactly one winner
+  ---
+  duration_ms: 9.781463
+  type: 'test'
+  ...
+# Subtest: parallel independent commands preserve every admitted update
+ok 62 - parallel independent commands preserve every admitted update
+  ---
+  duration_ms: 52.746249
+  type: 'test'
+  ...
+# Subtest: lost receipt retry reuses its exact identity; changed intent conflicts
+ok 63 - lost receipt retry reuses its exact identity; changed intent conflicts
+  ---
+  duration_ms: 6.055658
+  type: 'test'
+  ...
+# Subtest: operation keys do not share results across distinct parent principals
+ok 64 - operation keys do not share results across distinct parent principals
+  ---
+  duration_ms: 8.961865
+  type: 'test'
+  ...
+# Subtest: read sharing permits attributed notes but not changing another work record
+ok 65 - read sharing permits attributed notes but not changing another work record
+  ---
+  duration_ms: 7.946598
+  type: 'test'
+  ...
+# Subtest: agreement requires separate exact-party acknowledgments; posting is not consent
+ok 66 - agreement requires separate exact-party acknowledgments; posting is not consent
+  ---
+  duration_ms: 14.492229
+  type: 'test'
+  ...
+# Subtest: withdrawal preserves text and prior acknowledgment and rejects late answers
+ok 67 - withdrawal preserves text and prior acknowledgment and rejects late answers
+  ---
+  duration_ms: 12.025719
+  type: 'test'
+  ...
+# Subtest: private and missing notes use the same disclosure-safe outcome
+ok 68 - private and missing notes use the same disclosure-safe outcome
+  ---
+  duration_ms: 9.113077
+  type: 'test'
+  ...
+# Subtest: agreement cannot name a party without current access
+ok 69 - agreement cannot name a party without current access
+  ---
+  duration_ms: 6.190461
+  type: 'test'
+  ...
+# Subtest: UTF-8 note capacity rejects a larger multibyte note before publication
+ok 70 - UTF-8 note capacity rejects a larger multibyte note before publication
+  ---
+  duration_ms: 8.551853
+  type: 'test'
+  ...
+# Subtest: stale work revision refuses mutation and preserves disk bytes
+ok 71 - stale work revision refuses mutation and preserves disk bytes
+  ---
+  duration_ms: 8.605074
+  type: 'test'
+  ...
+# Subtest: closing registration retains evidence and frees only its metadata writer slot
+ok 72 - closing registration retains evidence and frees only its metadata writer slot
+  ---
+  duration_ms: 10.485762
+  type: 'test'
+  ...
+# Subtest: overlap reports exact declared regions without prefix or privacy confusion
+ok 73 - overlap reports exact declared regions without prefix or privacy confusion
+  ---
+  duration_ms: 12.27286
+  type: 'test'
+  ...
+# Subtest: a command is captured before an asynchronous caller can mutate its inputs
+ok 74 - a command is captured before an asynchronous caller can mutate its inputs
+  ---
+  duration_ms: 5.772053
+  type: 'test'
+  ...
+# Subtest: target claim races have one owner; ordinary work still registers
+ok 75 - target claim races have one owner; ordinary work still registers
+  ---
+  duration_ms: 7.403105
+  type: 'test'
+  ...
+# Subtest: new selected commit advances the existing case, not its claim identity
+ok 76 - new selected commit advances the existing case, not its claim identity
+  ---
+  duration_ms: 18.091749
+  type: 'test'
+  ...
+# Subtest: case inputs are not disclosed to a participant without source sharing
+ok 77 - case inputs are not disclosed to a participant without source sharing
+  ---
+  duration_ms: 9.695404
+  type: 'test'
+  ...
+# Subtest: Git object format mismatch is rejected rather than silently normalized
+ok 78 - Git object format mismatch is rejected rather than silently normalized
+  ---
+  duration_ms: 14.551949
+  type: 'test'
+  ...
+# Subtest: handoff invalidates control; old receipt only acknowledges history
+ok 79 - handoff invalidates control; old receipt only acknowledges history
+  ---
+  duration_ms: 17.291399
+  type: 'test'
+  ...
+# Subtest: ABA leadership cannot revive an old generation
+ok 80 - ABA leadership cannot revive an old generation
+  ---
+  duration_ms: 19.221202
+  type: 'test'
+  ...
+# Subtest: reopening a released target increments generation without exposing the old case
+ok 81 - reopening a released target increments generation without exposing the old case
+  ---
+  duration_ms: 15.228075
+  type: 'test'
+  ...
+# Subtest: unmediated integration blocks transfer, new inputs and release until reported settlement
+ok 82 - unmediated integration blocks transfer, new inputs and release until reported settlement
+  ---
+  duration_ms: 19.67846
+  type: 'test'
+  ...
+# Subtest: revocation also protects prior case notes after an input is removed
+ok 83 - revocation also protects prior case notes after an input is removed
+  ---
+  duration_ms: 22.401891
+  type: 'test'
+  ...
+# Subtest: a lead losing source access can release without regaining source disclosure
+ok 84 - a lead losing source access can release without regaining source disclosure
+  ---
+  duration_ms: 18.784625
+  type: 'test'
+  ...
+# Subtest: capacity reserves complete revocation, withdrawal, close and release opportunities
+ok 85 - capacity reserves complete revocation, withdrawal, close and release opportunities
+  ---
+  duration_ms: 52.019375
+  type: 'test'
+  ...
+# Subtest: close drains already accepted commands and rejects new ones
+ok 86 - close drains already accepted commands and rejects new ones
+  ---
+  duration_ms: 7.921666
+  type: 'test'
+  ...
+# Subtest: note text remains attributed data and does not create a control grant
+ok 87 - note text remains attributed data and does not create a control grant
+  ---
+  duration_ms: 8.437201
+  type: 'test'
+  ...
+# Subtest: complete command decoding rejects extra authority fields, missing fields and malformed values
+ok 88 - complete command decoding rejects extra authority fields, missing fields and malformed values
+  ---
+  duration_ms: 0.514894
+  type: 'test'
+  ...
+# Subtest: corrupt cross-record identities are rejected independently of JSON parsing
+ok 89 - corrupt cross-record identities are rejected independently of JSON parsing
+  ---
+  duration_ms: 10.548757
+  type: 'test'
+  ...
+# Subtest: launcher admits coordinate and preserves positional project and literal request arguments
+ok 90 - launcher admits coordinate and preserves positional project and literal request arguments
+  ---
+  duration_ms: 36.849433
+  type: 'test'
+  ...
+# Subtest: launcher coordinate uses caller directory when no positional project is supplied
+ok 91 - launcher coordinate uses caller directory when no positional project is supplied
+  ---
+  duration_ms: 33.991428
+  type: 'test'
+  ...
+# Subtest: existing launcher commands and unsupported-command rejection are preserved
+ok 92 - existing launcher commands and unsupported-command rejection are preserved
+  ---
+  duration_ms: 34.648387
+  type: 'test'
+  ...
+# Subtest: public passeur_coordination decodes identity
+ok 93 - public passeur_coordination decodes identity
+  ---
+  duration_ms: 1.593847
+  type: 'test'
+  ...
+# Subtest: public passeur_coordination decodes status
+ok 94 - public passeur_coordination decodes status
+  ---
+  duration_ms: 0.119019
+  type: 'test'
+  ...
+# Subtest: public passeur_coordination decodes work
+ok 95 - public passeur_coordination decodes work
+  ---
+  duration_ms: 0.384689
+  type: 'test'
+  ...
+# Subtest: public passeur_coordination decodes note
+ok 96 - public passeur_coordination decodes note
+  ---
+  duration_ms: 0.236686
+  type: 'test'
+  ...
+# Subtest: public passeur_coordination decodes case
+ok 97 - public passeur_coordination decodes case
+  ---
+  duration_ms: 0.168273
+  type: 'test'
+  ...
+# Subtest: public passeur_coordination decodes overlaps
+ok 98 - public passeur_coordination decodes overlaps
+  ---
+  duration_ms: 0.162765
+  type: 'test'
+  ...
+# Subtest: public passeur_coordination decodes receipt
+ok 99 - public passeur_coordination decodes receipt
+  ---
+  duration_ms: 0.176566
+  type: 'test'
+  ...
+# Subtest: public passeur_work decodes register_external_work
+ok 100 - public passeur_work decodes register_external_work
+  ---
+  duration_ms: 0.553343
+  type: 'test'
+  ...
+# Subtest: public passeur_work decodes share_work
+ok 101 - public passeur_work decodes share_work
+  ---
+  duration_ms: 0.646833
+  type: 'test'
+  ...
+# Subtest: public passeur_work decodes close_work
+ok 102 - public passeur_work decodes close_work
+  ---
+  duration_ms: 0.349957
+  type: 'test'
+  ...
+# Subtest: public passeur_notes decodes intent
+ok 103 - public passeur_notes decodes intent
+  ---
+  duration_ms: 0.233672
+  type: 'test'
+  ...
+# Subtest: public passeur_notes decodes question
+ok 104 - public passeur_notes decodes question
+  ---
+  duration_ms: 0.158859
+  type: 'test'
+  ...
+# Subtest: public passeur_notes decodes statement
+ok 105 - public passeur_notes decodes statement
+  ---
+  duration_ms: 0.108093
+  type: 'test'
+  ...
+# Subtest: public passeur_notes decodes agreement_proposal
+ok 106 - public passeur_notes decodes agreement_proposal
+  ---
+  duration_ms: 0.26633
+  type: 'test'
+  ...
+# Subtest: public passeur_notes decodes resolution_update
+ok 107 - public passeur_notes decodes resolution_update
+  ---
+  duration_ms: 0.117266
+  type: 'test'
+  ...
+# Subtest: public passeur_notes decodes ack_note
+ok 108 - public passeur_notes decodes ack_note
+  ---
+  duration_ms: 0.092209
+  type: 'test'
+  ...
+# Subtest: public passeur_notes decodes withdraw_note
+ok 109 - public passeur_notes decodes withdraw_note
+  ---
+  duration_ms: 0.071718
+  type: 'test'
+  ...
+# Subtest: public passeur_reconciliation decodes claim_target
+ok 110 - public passeur_reconciliation decodes claim_target
+  ---
+  duration_ms: 0.163035
+  type: 'test'
+  ...
+# Subtest: public passeur_reconciliation decodes select_inputs
+ok 111 - public passeur_reconciliation decodes select_inputs
+  ---
+  duration_ms: 0.250968
+  type: 'test'
+  ...
+# Subtest: public passeur_reconciliation decodes begin_external_integration
+ok 112 - public passeur_reconciliation decodes begin_external_integration
+  ---
+  duration_ms: 0.144267
+  type: 'test'
+  ...
+# Subtest: public passeur_reconciliation decodes record_external_settlement
+ok 113 - public passeur_reconciliation decodes record_external_settlement
+  ---
+  duration_ms: 0.145569
+  type: 'test'
+  ...
+# Subtest: public passeur_reconciliation decodes release_case
+ok 114 - public passeur_reconciliation decodes release_case
+  ---
+  duration_ms: 0.097407
+  type: 'test'
+  ...
+# Subtest: public passeur_reconciliation decodes transfer_case
+ok 115 - public passeur_reconciliation decodes transfer_case
+  ---
+  duration_ms: 0.103736
+  type: 'test'
+  ...
+# Subtest: each tool rejects initialization and operations from other groups before dispatch
+ok 116 - each tool rejects initialization and operations from other groups before dispatch
+  ---
+  duration_ms: 4.071854
+  type: 'test'
+  ...
+# Subtest: tool envelope rejects hidden/accessor/symbol and identity fields without executing accessors
+ok 117 - tool envelope rejects hidden/accessor/symbol and identity fields without executing accessors
+  ---
+  duration_ms: 0.310857
+  type: 'test'
+  ...
+# Subtest: canonical decoder rejects operation actor, approval, duplicate readers and invalid agreement parties
+ok 118 - canonical decoder rejects operation actor, approval, duplicate readers and invalid agreement parties
+  ---
+  duration_ms: 0.390748
+  type: 'test'
+  ...
+# Subtest: pre-cancelled tool invocation never reaches its borrowed frontend
+ok 119 - pre-cancelled tool invocation never reaches its borrowed frontend
+  ---
+  duration_ms: 0.173061
+  type: 'test'
+  ...
+# Subtest: public handler passes one copied command to the existing authenticated endpoint
+ok 120 - public handler passes one copied command to the existing authenticated endpoint
+  ---
+  duration_ms: 178.930671
+  type: 'test'
+  ...
+# Subtest: public work reads remain private until explicit sharing and revocation is immediately enforced
+ok 121 - public work reads remain private until explicit sharing and revocation is immediately enforced
+  ---
+  duration_ms: 127.855311
+  type: 'test'
+  ...
+# Subtest: public note text stays attributed data and requires separate acknowledgment
+ok 122 - public note text stays attributed data and requires separate acknowledgment
+  ---
+  duration_ms: 129.672886
+  type: 'test'
+  ...
+# Subtest: competing public target claims preserve one lead without touching Git
+ok 123 - competing public target claims preserve one lead without touching Git
+  ---
+  duration_ms: 102.023476
+  type: 'test'
+  ...
+# Subtest: authenticated ordinary parents cannot inspect, recover, or supply their own operator authority
+ok 124 - authenticated ordinary parents cannot inspect, recover, or supply their own operator authority
+  ---
+  duration_ms: 150.916627
+  type: 'test'
+  ...
+# Subtest: operator can inspect all active metadata without changing v1 or exposing note bodies in inventory
+ok 125 - operator can inspect all active metadata without changing v1 or exposing note bodies in inventory
+  ---
+  duration_ms: 116.22352
+  type: 'test'
+  ...
+# Subtest: authenticated operator adoption preserves Git state and original parent receipt while blocking old control
+ok 126 - authenticated operator adoption preserves Git state and original parent receipt while blocking old control
+  ---
+  duration_ms: 145.057194
+  type: 'test'
+  ...
+# Subtest: lost recovery acknowledgment reconnects by the same key without a second ownership change
+ok 127 - lost recovery acknowledgment reconnects by the same key without a second ownership change
+  ---
+  duration_ms: 118.066656
+  type: 'test'
+  ...
+# Subtest: recovery read authorization is rechecked on every continuation after operator-token rotation
+ok 128 - recovery read authorization is rechecked on every continuation after operator-token rotation
+  ---
+  duration_ms: 114.77723
+  type: 'test'
+  ...
+# Subtest: changed inventory refuses mixed-version administrative pages
+ok 129 - changed inventory refuses mixed-version administrative pages
+  ---
+  duration_ms: 114.05382
+  type: 'test'
+  ...
+# Subtest: source disappearance does not prevent metadata-only recovery
+ok 130 - source disappearance does not prevent metadata-only recovery
+  ---
+  duration_ms: 112.884212
+  type: 'test'
+  ...
+# Subtest: recovery observer cancellation leaves the admitted runtime operation owned until it settles
+ok 131 - recovery observer cancellation leaves the admitted runtime operation owned until it settles
+  ---
+  duration_ms: 107.520825
+  type: 'test'
+  ...
+# Subtest: CLI rejects missing confirmation and settlement misuse before connection effects
+ok 132 - CLI rejects missing confirmation and settlement misuse before connection effects
+  ---
+  duration_ms: 32.541647
+  type: 'test'
+  ...
+# Subtest: CLI file-to-authenticated-runtime recovery uses one exact admitted request
+ok 133 - CLI file-to-authenticated-runtime recovery uses one exact admitted request
+  ---
+  duration_ms: 109.727709
+  type: 'test'
+  ...
+# Subtest: MCP groups refuse all operator-recovery requests without calling a frontend
+ok 134 - MCP groups refuse all operator-recovery requests without calling a frontend
+  ---
+  duration_ms: 0.578089
+  type: 'test'
+  ...
+# Subtest: reply decoding refuses a different operator, statement, or recovery receipt kind
+ok 135 - reply decoding refuses a different operator, statement, or recovery receipt kind
+  ---
+  duration_ms: 0.496877
+  type: 'test'
+  ...
+# Subtest: absent recovery capability is unavailable and a malformed callback cannot construct the service
+ok 136 - absent recovery capability is unavailable and a malformed callback cannot construct the service
+  ---
+  duration_ms: 0.959894
+  type: 'test'
+  ...
+# Subtest: operator inspection leaves the exact v1 record unchanged
+ok 137 - operator inspection leaves the exact v1 record unchanged
+  ---
+  duration_ms: 22.588145
+  type: 'test'
+  ...
+# Subtest: adoption atomically upgrades metadata and preserves source, statements and ordinary receipts
+ok 138 - adoption atomically upgrades metadata and preserves source, statements and ordinary receipts
+  ---
+  duration_ms: 29.566291
+  type: 'test'
+  ...
+# Subtest: recovery retry is a historical receipt, not a second transfer after another adoption
+ok 139 - recovery retry is a historical receipt, not a second transfer after another adoption
+  ---
+  duration_ms: 17.474654
+  type: 'test'
+  ...
+# Subtest: ordinary and recovery operation keys share one operator namespace
+ok 140 - ordinary and recovery operation keys share one operator namespace
+  ---
+  duration_ms: 12.346911
+  type: 'test'
+  ...
+# Subtest: stale epoch refuses recovery without migrating or editing
+ok 141 - stale epoch refuses recovery without migrating or editing
+  ---
+  duration_ms: 6.471865
+  type: 'test'
+  ...
+# Subtest: stale owner refuses recovery without migrating or editing
+ok 142 - stale owner refuses recovery without migrating or editing
+  ---
+  duration_ms: 7.352519
+  type: 'test'
+  ...
+# Subtest: stale revision refuses recovery without migrating or editing
+ok 143 - stale revision refuses recovery without migrating or editing
+  ---
+  duration_ms: 6.336601
+  type: 'test'
+  ...
+# Subtest: competing recovery requests serialize one accepted owner change
+ok 144 - competing recovery requests serialize one accepted owner change
+  ---
+  duration_ms: 7.800954
+  type: 'test'
+  ...
+# Subtest: recovery does not reopen closed work or close a case with unaccounted external effects
+ok 145 - recovery does not reopen closed work or close a case with unaccounted external effects
+  ---
+  duration_ms: 19.190055
+  type: 'test'
+  ...
+# Subtest: operator settlement remains an attributed report and requires a fresh adoption revision
+ok 146 - operator settlement remains an attributed report and requires a fresh adoption revision
+  ---
+  duration_ms: 29.263626
+  type: 'test'
+  ...
+# Subtest: new reconciliation lead receives no implicit selected-input sharing
+ok 147 - new reconciliation lead receives no implicit selected-input sharing
+  ---
+  duration_ms: 11.105905
+  type: 'test'
+  ...
+# Subtest: reserved capacity permits operator closure when there is no spare adoption slot
+ok 148 - reserved capacity permits operator closure when there is no spare adoption slot
+  ---
+  duration_ms: 6.890995
+  type: 'test'
+  ...
+# Subtest: maximum encoded recovery closure fits the reserved release byte allowance
+ok 149 - maximum encoded recovery closure fits the reserved release byte allowance
+  ---
+  duration_ms: 7.708344
+  type: 'test'
+  ...
+# Subtest: store transition rejects forged unrelated mutation and audit rewriting
+ok 150 - store transition rejects forged unrelated mutation and audit rewriting
+  ---
+  duration_ms: 8.038521
+  type: 'test'
+  ...
+# Subtest: reopening migrated state preserves receipt identity and ordinary operations
+ok 151 - reopening migrated state preserves receipt identity and ordinary operations
+  ---
+  duration_ms: 9.377344
+  type: 'test'
+  ...
+# Subtest: ordinary command decoder cannot invoke recovery, and recovery has closed bounded fields
+ok 152 - ordinary command decoder cannot invoke recovery, and recovery has closed bounded fields
+  ---
+  duration_ms: 0.492811
+  type: 'test'
+  ...
+# Subtest: pre-publication authority loss preserves v1 and a cold reopen can apply the original key
+ok 153 - pre-publication authority loss preserves v1 and a cold reopen can apply the original key
+  ---
+  duration_ms: 9.329031
+  type: 'test'
+  ...
+# Subtest: recovery receipt cannot claim a revision preceding its subject or change a persisted audit
+ok 154 - recovery receipt cannot claim a revision preceding its subject or change a persisted audit
+  ---
+  duration_ms: 7.011036
+  type: 'test'
+  ...
+# Subtest: lost operator receipt is recovered by a new process without repeating adoption
+ok 155 - lost operator receipt is recovered by a new process without repeating adoption
+  ---
+  duration_ms: 125.935222
+  type: 'test'
+  ...
+# Subtest: reserved case capacity accounts for separate operator settlement and release
+ok 156 - reserved case capacity accounts for separate operator settlement and release
+  ---
+  duration_ms: 31.799531
+  type: 'test'
+  ...
+# Subtest: sha1: root and linked workspace share repository but have independent stable identities
+ok 157 - sha1: root and linked workspace share repository but have independent stable identities
+  ---
+  duration_ms: 142.126486
+  type: 'test'
+  ...
+# Subtest: sha1: exact object validation rejects wrong types and preserves missing-object failures
+ok 158 - sha1: exact object validation rejects wrong types and preserves missing-object failures
+  ---
+  duration_ms: 76.96802
+  type: 'test'
+  ...
+# Subtest: sha256: root and linked workspace share repository but have independent stable identities
+ok 159 - sha256: root and linked workspace share repository but have independent stable identities
+  ---
+  duration_ms: 111.999431
+  type: 'test'
+  ...
+# Subtest: sha256: exact object validation rejects wrong types and preserves missing-object failures
+ok 160 - sha256: exact object validation rejects wrong types and preserves missing-object failures
+  ---
+  duration_ms: 78.057068
+  type: 'test'
+  ...
+# Subtest: symlink aliases resolve to the same physical work identity
+ok 161 - symlink aliases resolve to the same physical work identity
+  ---
+  duration_ms: 73.650599
+  type: 'test'
+  ...
+# Subtest: paths with spaces, quotes, Unicode and embedded newlines are not trimmed or shell interpreted
+ok 162 - paths with spaces, quotes, Unicode and embedded newlines are not trimmed or shell interpreted
+  ---
+  duration_ms: 73.634295
+  type: 'test'
+  ...
+# Subtest: a subdirectory cannot masquerade as a whole workspace
+ok 163 - a subdirectory cannot masquerade as a whole workspace
+  ---
+  duration_ms: 53.761864
+  type: 'test'
+  ...
+# Subtest: a separate clone with the same commits is not this repository namespace
+ok 164 - a separate clone with the same commits is not this repository namespace
+  ---
+  duration_ms: 69.416451
+  type: 'test'
+  ...
+# Subtest: detached worktrees have valid physical identities without inventing a branch
+ok 165 - detached worktrees have valid physical identities without inventing a branch
+  ---
+  duration_ms: 64.680107
+  type: 'test'
+  ...
+# Subtest: moving a workspace does not silently retarget an existing physical registration
+ok 166 - moving a workspace does not silently retarget an existing physical registration
+  ---
+  duration_ms: 99.937899
+  type: 'test'
+  ...
+# Subtest: a replaced source root does not inherit the original work identity
+ok 167 - a replaced source root does not inherit the original work identity
+  ---
+  duration_ms: 101.375991
+  type: 'test'
+  ...
+# Subtest: old unverified metadata remains unavailable as a physical-workspace capability
+ok 168 - old unverified metadata remains unavailable as a physical-workspace capability
+  ---
+  duration_ms: 53.388462
+  type: 'test'
+  ...
+# Subtest: selected commits must lie between the admitted input and the observed work head
+ok 169 - selected commits must lie between the admitted input and the observed work head
+  ---
+  duration_ms: 127.799847
+  type: 'test'
+  ...
+# Subtest: direct target lookup refuses missing refs, malformed refs, aliases and stale expected heads
+ok 170 - direct target lookup refuses missing refs, malformed refs, aliases and stale expected heads
+  ---
+  duration_ms: 91.131343
+  type: 'test'
+  ...
+# Subtest: explicit worktree inventory bounds are honored without mutating registrations
+ok 171 - explicit worktree inventory bounds are honored without mutating registrations
+  ---
+  duration_ms: 61.203116
+  type: 'test'
+  ...
+# Subtest: inspection preserves dirty work, index and refs and does not call configured fsmonitor or hooks
+ok 172 - inspection preserves dirty work, index and refs and does not call configured fsmonitor or hooks
+  ---
+  duration_ms: 89.270294
+  type: 'test'
+  ...
+# Subtest: source validation respects explicit cancellation without changing control state
+ok 173 - source validation respects explicit cancellation without changing control state
+  ---
+  duration_ms: 50.889864
+  type: 'test'
+  ...
+# Subtest: repository inspection remains available after the worktree that opened it is removed
+ok 174 - repository inspection remains available after the worktree that opened it is removed
+  ---
+  duration_ms: 95.857771
+  type: 'test'
+  ...
+# Subtest: an unrelated unborn worktree does not block inspection of established workspaces
+ok 175 - an unrelated unborn worktree does not block inspection of established workspaces
+  ---
+  duration_ms: 88.086343
+  type: 'test'
+  ...
+# Subtest: ordinary and control capacities have independent finite ceilings
+ok 176 - ordinary and control capacities have independent finite ceilings
+  ---
+  duration_ms: 1.120575
+  type: 'test'
+  ...
+# Subtest: metadata receipt and release commands select protected capacity using the canonical decoder
+ok 177 - metadata receipt and release commands select protected capacity using the canonical decoder
+  ---
+  duration_ms: 1.145783
+  type: 'test'
+  ...
+# Subtest: native control requests retain protected capacity independently of metadata requests
+ok 178 - native control requests retain protected capacity independently of metadata requests
+  ---
+  duration_ms: 0.204758
+  type: 'test'
+  ...
+# Subtest: metadata route rejects malformed requests before invoking runtime authority
+ok 179 - metadata route rejects malformed requests before invoking runtime authority
+  ---
+  duration_ms: 0.863088
+  type: 'test'
+  ...
+# Subtest: metadata route rejects destination corruption even when a runtime returns successfully
+ok 180 - metadata route rejects destination corruption even when a runtime returns successfully
+  ---
+  duration_ms: 0.435575
+  type: 'test'
+  ...
+# Subtest: empty task inventory admits an independently verified external workspace
+ok 181 - empty task inventory admits an independently verified external workspace
+  ---
+  duration_ms: 103.264097
+  type: 'test'
+  ...
+# Subtest: managed root is rejected even for completed retained work
+ok 182 - managed root is rejected even for completed retained work
+  ---
+  duration_ms: 92.738235
+  type: 'test'
+  ...
+# Subtest: unrelated external workspace remains usable beside a known managed worktree
+ok 183 - unrelated external workspace remains usable beside a known managed worktree
+  ---
+  duration_ms: 99.781213
+  type: 'test'
+  ...
+# Subtest: candidate alias resolves to the same managed physical workspace
+ok 184 - candidate alias resolves to the same managed physical workspace
+  ---
+  duration_ms: 91.334328
+  type: 'test'
+  ...
+# Subtest: recorded symlink alias cannot authorize the underlying managed directory
+ok 185 - recorded symlink alias cannot authorize the underlying managed directory
+  ---
+  duration_ms: 92.601724
+  type: 'test'
+  ...
+# Subtest: moved managed worktree is located through its retained branch
+ok 186 - moved managed worktree is located through its retained branch
+  ---
+  duration_ms: 122.637842
+  type: 'test'
+  ...
+# Subtest: changed managed branch does not erase ownership of its original root
+ok 187 - changed managed branch does not erase ownership of its original root
+  ---
+  duration_ms: 110.412374
+  type: 'test'
+  ...
+# Subtest: losing both resource anchors produces uncertainty rather than external admission
+ok 188 - losing both resource anchors produces uncertainty rather than external admission
+  ---
+  duration_ms: 105.668478
+  type: 'test'
+  ...
+# Subtest: missing or unclassified resource evidence never becomes an empty ownership claim
+ok 189 - missing or unclassified resource evidence never becomes an empty ownership claim
+  ---
+  duration_ms: 89.646819
+  type: 'test'
+  ...
+# Subtest: explicit no-workspace and retired records do not retain active ownership
+ok 190 - explicit no-workspace and retired records do not retain active ownership
+  ---
+  duration_ms: 85.391479
+  type: 'test'
+  ...
+# Subtest: cross-repository or inconsistent task/resource identity is refused
+ok 191 - cross-repository or inconsistent task/resource identity is refused
+  ---
+  duration_ms: 95.661967
+  type: 'test'
+  ...
+# Subtest: an excessive managed-record inventory is refused before per-record reads
+ok 192 - an excessive managed-record inventory is refused before per-record reads
+  ---
+  duration_ms: 77.963486
+  type: 'test'
+  ...
+# Subtest: worktree inspection applies its own bound separately from record count
+ok 193 - worktree inspection applies its own bound separately from record count
+  ---
+  duration_ms: 84.087287
+  type: 'test'
+  ...
+# Subtest: ownership loss after the inventory await prevents an empty-inventory success
+ok 194 - ownership loss after the inventory await prevents an empty-inventory success
+  ---
+  duration_ms: 76.285623
+  type: 'test'
+  ...
+# Subtest: cancelled source inspection observes cancellation instead of returning permission
+ok 195 - cancelled source inspection observes cancellation instead of returning permission
+  ---
+  duration_ms: 92.299911
+  type: 'test'
+  ...
+# Subtest: unknown resource state and incomplete creating intent require reconciliation
+ok 196 - unknown resource state and incomplete creating intent require reconciliation
+  ---
+  duration_ms: 94.297745
+  type: 'test'
+  ...
+# Subtest: reusing a former managed path cannot make the moved detached workspace externally eligible
+ok 197 - reusing a former managed path cannot make the moved detached workspace externally eligible
+  ---
+  duration_ms: 101.20854
+  type: 'test'
+  ...
+# Subtest: an independently registered nested worktree cannot borrow a managed workspace directory
+ok 198 - an independently registered nested worktree cannot borrow a managed workspace directory
+  ---
+  duration_ms: 106.026738
+  type: 'test'
+  ...
+# Subtest: a retired resource label cannot override a nonterminal task state
+ok 199 - a retired resource label cannot override a nonterminal task state
+  ---
+  duration_ms: 80.719412
+  type: 'test'
+  ...
+# Subtest: component-boundary comparison permits a similarly named sibling workspace
+ok 200 - component-boundary comparison permits a similarly named sibling workspace
+  ---
+  duration_ms: 97.766383
+  type: 'test'
+  ...
+# Subtest: a containing external root cannot enroll over a retained nested task workspace
+ok 201 - a containing external root cannot enroll over a retained nested task workspace
+  ---
+  duration_ms: 89.635673
+  type: 'test'
+  ...
+# Subtest: a no-resource disposition carrying an owned path is contradictory evidence
+ok 202 - a no-resource disposition carrying an owned path is contradictory evidence
+  ---
+  duration_ms: 79.734821
+  type: 'test'
+  ...
+# Subtest: runtime identity/status do not prepare tasks, initialize coordination, or load an execution profile
+ok 203 - runtime identity/status do not prepare tasks, initialize coordination, or load an execution profile
+  ---
+  duration_ms: 45.042078
+  type: 'test'
+  ...
+# Subtest: existing operator credential authorizes initialization without loading the execution profile
+ok 204 - existing operator credential authorizes initialization without loading the execution profile
+  ---
+  duration_ms: 41.761825
+  type: 'test'
+  ...
+# Subtest: ordinary authenticated parent cannot initialize or manufacture approval
+ok 205 - ordinary authenticated parent cannot initialize or manufacture approval
+  ---
+  duration_ms: 36.743718
+  type: 'test'
+  ...
+# Subtest: missing credential is not created by a denied initialization request
+ok 206 - missing credential is not created by a denied initialization request
+  ---
+  duration_ms: 34.406596
+  type: 'test'
+  ...
+# Subtest: malformed request and cancelled admission never acquire runtime authority
+ok 207 - malformed request and cancelled admission never acquire runtime authority
+  ---
+  duration_ms: 26.110898
+  type: 'test'
+  ...
+# Subtest: two runtime parents register distinct real worktrees without shared task control
+ok 208 - two runtime parents register distinct real worktrees without shared task control
+  ---
+  duration_ms: 143.732311
+  type: 'test'
+  ...
+# Subtest: actual runtime resource inventory denies external enrollment of a managed task worktree
+ok 209 - actual runtime resource inventory denies external enrollment of a managed task worktree
+  ---
+  duration_ms: 95.396142
+  type: 'test'
+  ...
+# Subtest: runtime continues to deny a moved managed workspace through its retained branch
+ok 210 - runtime continues to deny a moved managed workspace through its retained branch
+  ---
+  duration_ms: 99.871209
+  type: 'test'
+  ...
+# Subtest: unresolved resource evidence refuses new registration while receipt reads remain usable
+ok 211 - unresolved resource evidence refuses new registration while receipt reads remain usable
+  ---
+  duration_ms: 134.662779
+  type: 'test'
+  ...
+# Subtest: observer abort after admission retains the operation through publication and wakes settlement
+ok 212 - observer abort after admission retains the operation through publication and wakes settlement
+  ---
+  duration_ms: 113.936224
+  type: 'test'
+  ...
+# Subtest: shutdown retains its lease until an admitted resource inspection and command settle
+ok 213 - shutdown retains its lease until an admitted resource inspection and command settle
+  ---
+  duration_ms: 94.099983
+  type: 'test'
+  ...
+# Subtest: runtime drain refuses new work but permits case release and historical reads
+ok 214 - runtime drain refuses new work but permits case release and historical reads
+  ---
+  duration_ms: 93.536915
+  type: 'test'
+  ...
+# Subtest: drain racing preparation prevents a not-yet-dispatched mutation
+ok 215 - drain racing preparation prevents a not-yet-dispatched mutation
+  ---
+  duration_ms: 32.286474
+  type: 'test'
+  ...
+# Subtest: root lane capacity is bounded before preparation and receipt retrieval has separate capacity
+ok 216 - root lane capacity is bounded before preparation and receipt retrieval has separate capacity
+  ---
+  duration_ms: 177.818761
+  type: 'test'
+  ...
+# Subtest: runtime holds copied actor, command and source values while preparation is suspended
+ok 217 - runtime holds copied actor, command and source values while preparation is suspended
+  ---
+  duration_ms: 36.355513
+  type: 'test'
+  ...
+# Subtest: lease compromise refuses an in-flight coordination mutation without losing historical evidence
+ok 218 - lease compromise refuses an in-flight coordination mutation without losing historical evidence
+  ---
+  duration_ms: 100.030027
+  type: 'test'
+  ...
+# Subtest: a new runtime reopens coordination and validates the existing operator rather than resetting state
+ok 219 - a new runtime reopens coordination and validates the existing operator rather than resetting state
+  ---
+  duration_ms: 109.210426
+  type: 'test'
+  ...
+# Subtest: initialization rejects changed operator identity and preserves initialized bytes
+ok 220 - initialization rejects changed operator identity and preserves initialized bytes
+  ---
+  duration_ms: 66.493773
+  type: 'test'
+  ...
+# Subtest: initialization failure does not poison a later authorized request
+ok 221 - initialization failure does not poison a later authorized request
+  ---
+  duration_ms: 32.856621
+  type: 'test'
+  ...
+# Subtest: advisory settlement callback failure does not invalidate a durable command receipt
+ok 222 - advisory settlement callback failure does not invalidate a durable command receipt
+  ---
+  duration_ms: 125.479228
+  type: 'test'
+  ...
+# Subtest: preparation error preserves its diagnostic and leaves no coordination authority
+ok 223 - preparation error preserves its diagnostic and leaves no coordination authority
+  ---
+  duration_ms: 30.712755
+  type: 'test'
+  ...
+# Subtest: closure remains usable when the registered checkout was removed
+ok 224 - closure remains usable when the registered checkout was removed
+  ---
+  duration_ms: 118.49399
+  type: 'test'
+  ...
+# Subtest: readonly metadata access does not recreate a missing repository namespace
+ok 225 - readonly metadata access does not recreate a missing repository namespace
+  ---
+  duration_ms: 28.114678
+  type: 'test'
+  ...
+# Subtest: complete request decoding supports each implemented operation and copies nested input
+ok 226 - complete request decoding supports each implemented operation and copies nested input
+  ---
+  duration_ms: 2.306119
+  type: 'test'
+  ...
+# Subtest: request versions distinguish malformed from unsupported representations
+ok 227 - request versions distinguish malformed from unsupported representations
+  ---
+  duration_ms: 1.335579
+  type: 'test'
+  ...
+# Subtest: unknown operations and unexpected authorization fields cannot dispatch
+ok 228 - unknown operations and unexpected authorization fields cannot dispatch
+  ---
+  duration_ms: 0.283427
+  type: 'test'
+  ...
+# Subtest: nested command variants reject incomplete source and control identity
+ok 229 - nested command variants reject incomplete source and control identity
+  ---
+  duration_ms: 0.213822
+  type: 'test'
+  ...
+# Subtest: enumerable accessors, inherited fields and hidden/symbol fields are rejected without execution
+ok 230 - enumerable accessors, inherited fields and hidden/symbol fields are rejected without execution
+  ---
+  duration_ms: 0.263176
+  type: 'test'
+  ...
+# Subtest: null-prototype records and wire JSON have the same declared request meaning
+ok 231 - null-prototype records and wire JSON have the same declared request meaning
+  ---
+  duration_ms: 0.314653
+  type: 'test'
+  ...
+# Subtest: all read selectors have exact variant-specific fields
+ok 232 - all read selectors have exact variant-specific fields
+  ---
+  duration_ms: 0.475826
+  type: 'test'
+  ...
+# Subtest: continuation must identify the original view and use valid byte limits
+ok 233 - continuation must identify the original view and use valid byte limits
+  ---
+  duration_ms: 0.367783
+  type: 'test'
+  ...
+# Subtest: valid but excessive source scope does not escape the service message bound
+ok 234 - valid but excessive source scope does not escape the service message bound
+  ---
+  duration_ms: 0.803298
+  type: 'test'
+  ...
+# Subtest: release and recovery have protected capacity but routine observations do not
+ok 235 - release and recovery have protected capacity but routine observations do not
+  ---
+  duration_ms: 0.381474
+  type: 'test'
+  ...
+# Subtest: identity response cannot substitute another parent or repository
+ok 236 - identity response cannot substitute another parent or repository
+  ---
+  duration_ms: 0.596087
+  type: 'test'
+  ...
+# Subtest: initialization output must be ready with the exact requested configuration
+ok 237 - initialization output must be ready with the exact requested configuration
+  ---
+  duration_ms: 0.842337
+  type: 'test'
+  ...
+# Subtest: valid command reply proves actor, action, key, and subject correspondence
+ok 238 - valid command reply proves actor, action, key, and subject correspondence
+  ---
+  duration_ms: 1.600267
+  type: 'test'
+  ...
+# Subtest: metadata command receipt hash must acknowledge the exact accepted command content
+ok 239 - metadata command receipt hash must acknowledge the exact accepted command content
+  ---
+  duration_ms: 0.194823
+  type: 'test'
+  ...
+# Subtest: external registration reply acknowledges the derived registration action, not client-supplied workspace identity
+ok 240 - external registration reply acknowledges the derived registration action, not client-supplied workspace identity
+  ---
+  duration_ms: 0.423296
+  type: 'test'
+  ...
+# Subtest: pages preserve exact selector and continuation identity
+ok 241 - pages preserve exact selector and continuation identity
+  ---
+  duration_ms: 0.45878
+  type: 'test'
+  ...
+# Subtest: page bytes, offsets, limits and eof are independently validated
+ok 242 - page bytes, offsets, limits and eof are independently validated
+  ---
+  duration_ms: 0.568975
+  type: 'test'
+  ...
+# Subtest: reply version, extra fields and wrong kind are not accepted as successful data
+ok 243 - reply version, extra fields and wrong kind are not accepted as successful data
+  ---
+  duration_ms: 0.309796
+  type: 'test'
+  ...
+# Subtest: real framed connections share one metadata owner and retain separate parent authority
+ok 244 - real framed connections share one metadata owner and retain separate parent authority
+  ---
+  duration_ms: 197.922009
+  type: 'test'
+  ...
+# Subtest: two concurrent framed target claims create exactly one case and one leader
+ok 245 - two concurrent framed target claims create exactly one case and one leader
+  ---
+  duration_ms: 160.019168
+  type: 'test'
+  ...
+# Subtest: publication followed by a dropped framed response recovers by receipt without repeating the command
+ok 246 - publication followed by a dropped framed response recovers by receipt without repeating the command
+  ---
+  duration_ms: 178.993696
+  type: 'test'
+  ...
+# Subtest: malformed operation arguments are refused by the real receiver and leave the connection usable
+ok 247 - malformed operation arguments are refused by the real receiver and leave the connection usable
+  ---
+  duration_ms: 96.442698
+  type: 'test'
+  ...
+# Subtest: a new peer process reopens retained metadata and releases a case after the source disappears
+ok 248 - a new peer process reopens retained metadata and releases a case after the source disappears
+  ---
+  duration_ms: 235.040814
+  type: 'test'
+  ...
+# Subtest: identity and status do not initialize state or invoke source/resource authorization
+ok 249 - identity and status do not initialize state or invoke source/resource authorization
+  ---
+  duration_ms: 41.651692
+  type: 'test'
+  ...
+# Subtest: explicit initialization is authorized, durable and idempotent without resetting its epoch
+ok 250 - explicit initialization is authorized, durable and idempotent without resetting its epoch
+  ---
+  duration_ms: 41.331941
+  type: 'test'
+  ...
+# Subtest: denied initialization neither creates authority nor grants another principal permission
+ok 251 - denied initialization neither creates authority nor grants another principal permission
+  ---
+  duration_ms: 32.05766
+  type: 'test'
+  ...
+# Subtest: initialization permission callback permits reentrant read-only status without deadlock
+ok 252 - initialization permission callback permits reentrant read-only status without deadlock
+  ---
+  duration_ms: 39.029647
+  type: 'test'
+  ...
+# Subtest: parallel initializations with differing limits publish one configuration and reject the other
+ok 253 - parallel initializations with differing limits publish one configuration and reject the other
+  ---
+  duration_ms: 44.720568
+  type: 'test'
+  ...
+# Subtest: a concurrent first status lookup cannot permanently poison explicit initialization
+ok 254 - a concurrent first status lookup cannot permanently poison explicit initialization
+  ---
+  duration_ms: 30.67129
+  type: 'test'
+  ...
+# Subtest: authority lost while permission is pending prevents initialization
+ok 255 - authority lost while permission is pending prevents initialization
+  ---
+  duration_ms: 25.188217
+  type: 'test'
+  ...
+# Subtest: aborting an initialization observer does not discard the service-owned initialization
+ok 256 - aborting an initialization observer does not discard the service-owned initialization
+  ---
+  duration_ms: 28.771968
+  type: 'test'
+  ...
+# Subtest: service close waits for pending initialization and rejects new requests
+ok 257 - service close waits for pending initialization and rejects new requests
+  ---
+  duration_ms: 26.590883
+  type: 'test'
+  ...
+# Subtest: a pre-cancelled request performs no initialization or source operation
+ok 258 - a pre-cancelled request performs no initialization or source operation
+  ---
+  duration_ms: 22.423338
+  type: 'test'
+  ...
+# Subtest: mutable caller objects cannot change admitted parent, scope, or initialization limits
+ok 259 - mutable caller objects cannot change admitted parent, scope, or initialization limits
+  ---
+  duration_ms: 27.001014
+  type: 'test'
+  ...
+# Subtest: real repository commands register external work and return an attributed retained receipt
+ok 260 - real repository commands register external work and return an attributed retained receipt
+  ---
+  duration_ms: 139.059482
+  type: 'test'
+  ...
+# Subtest: SHA-256 repository identities remain exact through the service representation
+ok 261 - SHA-256 repository identities remain exact through the service representation
+  ---
+  duration_ms: 88.703796
+  type: 'test'
+  ...
+# Subtest: sharing does not confer command ownership and unauthorized reads remain indistinguishable from missing subjects
+ok 262 - sharing does not confer command ownership and unauthorized reads remain indistinguishable from missing subjects
+  ---
+  duration_ms: 98.814325
+  type: 'test'
+  ...
+# Subtest: notes retain attributed text and exact acknowledged parties through page retrieval
+ok 263 - notes retain attributed text and exact acknowledged parties through page retrieval
+  ---
+  duration_ms: 122.586258
+  type: 'test'
+  ...
+# Subtest: UTF-8 view pages reconstruct exact Unicode and preserve cursor byte positions
+ok 264 - UTF-8 view pages reconstruct exact Unicode and preserve cursor byte positions
+  ---
+  duration_ms: 120.579018
+  type: 'test'
+  ...
+# Subtest: a changed selected view refuses mixed-page continuation
+ok 265 - a changed selected view refuses mixed-page continuation
+  ---
+  duration_ms: 94.967979
+  type: 'test'
+  ...
+# Subtest: unrelated control changes do not invalidate a selected work view
+ok 266 - unrelated control changes do not invalidate a selected work view
+  ---
+  duration_ms: 100.621473
+  type: 'test'
+  ...
+# Subtest: every page rechecks sharing before exposing content or accepting a known view hash
+ok 267 - every page rechecks sharing before exposing content or accepting a known view hash
+  ---
+  duration_ms: 91.602406
+  type: 'test'
+  ...
+# Subtest: view identities cannot be reused between otherwise authorized parents
+ok 268 - view identities cannot be reused between otherwise authorized parents
+  ---
+  duration_ms: 99.269299
+  type: 'test'
+  ...
+# Subtest: invalid byte boundaries and out-of-range offsets are rejected at the page owner
+ok 269 - invalid byte boundaries and out-of-range offsets are rejected at the page owner
+  ---
+  duration_ms: 94.745685
+  type: 'test'
+  ...
+# Subtest: bounded reply pages can read a view larger than a single service message
+ok 270 - bounded reply pages can read a view larger than a single service message
+  ---
+  duration_ms: 153.800173
+  type: 'test'
+  ...
+# Subtest: invalid commands do not publish control state even when the envelope is well formed
+ok 271 - invalid commands do not publish control state even when the envelope is well formed
+  ---
+  duration_ms: 30.014887
+  type: 'test'
+  ...
+# Subtest: a failed initial source binding does not poison a later valid registration
+ok 272 - a failed initial source binding does not poison a later valid registration
+  ---
+  duration_ms: 91.43768
+  type: 'test'
+  ...
+# Subtest: an unavailable source does not prevent metadata reads, release or receipt recovery on cold reopen
+ok 273 - an unavailable source does not prevent metadata reads, release or receipt recovery on cold reopen
+  ---
+  duration_ms: 121.782473
+  type: 'test'
+  ...
+# Subtest: read-only lookup distinguishes corrupt or incomplete state from never-enabled state
+ok 274 - read-only lookup distinguishes corrupt or incomplete state from never-enabled state
+  ---
+  duration_ms: 30.740008
+  type: 'test'
+  ...
+# Subtest: an initialized directory disappearing cannot be silently recreated by this live session
+ok 275 - an initialized directory disappearing cannot be silently recreated by this live session
+  ---
+  duration_ms: 29.247043
+  type: 'test'
+  ...
+# Subtest: ordinary request saturation preserves explicit closure and receipt lookup capacity
+ok 276 - ordinary request saturation preserves explicit closure and receipt lookup capacity
+  ---
+  duration_ms: 150.901314
+  type: 'test'
+  ...
+# Subtest: drain blocks new work while preserving existing release and read operations
+ok 277 - drain blocks new work while preserving existing release and read operations
+  ---
+  duration_ms: 92.882702
+  type: 'test'
+  ...
+# Subtest: a detached command continues through publication and survives service close/reopen
+ok 278 - a detached command continues through publication and survives service close/reopen
+  ---
+  duration_ms: 88.408754
+  type: 'test'
+  ...
+# Subtest: two parents select, hand off, and settle exact inputs without changing Git refs
+ok 279 - two parents select, hand off, and settle exact inputs without changing Git refs
+  ---
+  duration_ms: 280.619262
+  type: 'test'
+  ...
+# Subtest: reopening in a fresh process reads retained command evidence without needing a checkout
+ok 280 - reopening in a fresh process reads retained command evidence without needing a checkout
+  ---
+  duration_ms: 137.990913
+  type: 'test'
+  ...
+# Subtest: read-only open never initializes absent authority
+ok 281 - read-only open never initializes absent authority
+  ---
+  duration_ms: 9.113389
+  type: 'test'
+  ...
+# Subtest: explicit initialization publishes complete state and exact matching marker
+ok 282 - explicit initialization publishes complete state and exact matching marker
+  ---
+  duration_ms: 12.318519
+  type: 'test'
+  ...
+# Subtest: different limits require migration rather than silently reinitializing
+ok 283 - different limits require migration rather than silently reinitializing
+  ---
+  duration_ms: 13.449211
+  type: 'test'
+  ...
+# Subtest: an empty existing coordination directory is incomplete, not a fresh store
+ok 284 - an empty existing coordination directory is incomplete, not a fresh store
+  ---
+  duration_ms: 3.515728
+  type: 'test'
+  ...
+# Subtest: missing control.json is preserved as incomplete state
+ok 285 - missing control.json is preserved as incomplete state
+  ---
+  duration_ms: 14.550956
+  type: 'test'
+  ...
+# Subtest: missing initialized.json is preserved as incomplete state
+ok 286 - missing initialized.json is preserved as incomplete state
+  ---
+  duration_ms: 6.34864
+  type: 'test'
+  ...
+# Subtest: corrupt, unsupported and foreign-repository states remain distinguishable and untouched
+ok 287 - corrupt, unsupported and foreign-repository states remain distinguishable and untouched
+  ---
+  duration_ms: 10.679073
+  type: 'test'
+  ...
+# Subtest: malformed cross-record state cannot be reopened or replaced by empty state
+ok 288 - malformed cross-record state cannot be reopened or replaced by empty state
+  ---
+  duration_ms: 13.081357
+  type: 'test'
+  ...
+# Subtest: symlink and hardlink records cannot redirect control reads
+ok 289 - symlink and hardlink records cannot redirect control reads
+  ---
+  duration_ms: 5.655718
+  type: 'test'
+  ...
+# Subtest: nonregular records and nonprivate paths are rejected without blocking
+ok 290 - nonregular records and nonprivate paths are rejected without blocking
+  ---
+  duration_ms: 4.259797
+  type: 'test'
+  ...
+# Subtest: replaced store directories and initialization epochs invalidate a live handle
+ok 291 - replaced store directories and initialization epochs invalidate a live handle
+  ---
+  duration_ms: 5.904371
+  type: 'test'
+  ...
+# Subtest: an authority failure before acceptance leaves the store unchanged
+ok 292 - an authority failure before acceptance leaves the store unchanged
+  ---
+  duration_ms: 3.914238
+  type: 'test'
+  ...
+# Subtest: publication failure blocks subsequent mutation until an explicit reopen
+ok 293 - publication failure blocks subsequent mutation until an explicit reopen
+  ---
+  duration_ms: 8.854059
+  type: 'test'
+  ...
+# Subtest: fresh process retry recovers a persisted receipt without duplicating a target claim
+ok 294 - fresh process retry recovers a persisted receipt without duplicating a target claim
+  ---
+  duration_ms: 98.265328
+  type: 'test'
+  ...
+# Subtest: process interruption before rename retains old state; a later attempt is explicit
+ok 295 - process interruption before rename retains old state; a later attempt is explicit
+  ---
+  duration_ms: 105.022734
+  type: 'test'
+  ...
+# Subtest: store snapshot is detached; unacknowledged in-memory edits do not mutate the file
+ok 296 - store snapshot is detached; unacknowledged in-memory edits do not mutate the file
+  ---
+  duration_ms: 5.128995
+  type: 'test'
+  ...
+# Subtest: revision-checked publication refuses a stale concurrent update
+ok 297 - revision-checked publication refuses a stale concurrent update
+  ---
+  duration_ms: 6.565456
+  type: 'test'
+  ...
+# Subtest: immutable notes and accepted receipts cannot be rewritten by a new publication
+ok 298 - immutable notes and accepted receipts cannot be rewritten by a new publication
+  ---
+  duration_ms: 19.27973
+  type: 'test'
+  ...
+# Subtest: the shared atomic writer preserves the old file until the rename boundary
+ok 299 - the shared atomic writer preserves the old file until the rename boundary
+  ---
+  duration_ms: 4.045915
+  type: 'test'
+  ...
+# Subtest: complete decoding distinguishes unsupported operation from malformed data
+ok 300 - complete decoding distinguishes unsupported operation from malformed data
+  ---
+  duration_ms: 0.385419
+  type: 'test'
+  ...
+# Subtest: byte capacity also preserves a future close receipt
+ok 301 - byte capacity also preserves a future close receipt
+  ---
+  duration_ms: 1782.831903
+  type: 'test'
+  ...
+# Subtest: a FIFO record is rejected before waiting for a writer
+ok 302 - a FIFO record is rejected before waiting for a writer
+  ---
+  duration_ms: 11.697536
+  type: 'test'
+  ...
+# Subtest: readonly operator lookup leaves an absent namespace absent
+ok 303 - readonly operator lookup leaves an absent namespace absent
+  ---
+  duration_ms: 6.456613
+  type: 'test'
+  ...
+# Subtest: readonly operator lookup does not create a credential in an existing namespace
+ok 304 - readonly operator lookup does not create a credential in an existing namespace
+  ---
+  duration_ms: 2.030664
+  type: 'test'
+  ...
+# Subtest: explicit creation persists one private credential and repeated creation preserves its value
+ok 305 - explicit creation persists one private credential and repeated creation preserves its value
+  ---
+  duration_ms: 5.464249
+  type: 'test'
+  ...
+# Subtest: invalid credential bytes are rejected without repair or replacement
+ok 306 - invalid credential bytes are rejected without repair or replacement
+  ---
+  duration_ms: 4.968583
+  type: 'test'
+  ...
+# Subtest: oversized and short credentials are rejected by their bounded size contract
+ok 307 - oversized and short credentials are rejected by their bounded size contract
+  ---
+  duration_ms: 5.565722
+  type: 'test'
+  ...
+# Subtest: a symlink credential does not inherit authority from its target bytes
+ok 308 - a symlink credential does not inherit authority from its target bytes
+  ---
+  duration_ms: 4.683565
+  type: 'test'
+  ...
+# Subtest: group-readable credentials and nonprivate namespaces are rejected
+ok 309 - group-readable credentials and nonprivate namespaces are rejected
+  ---
+  duration_ms: 6.215199
+  type: 'test'
+  ...
+# Subtest: directory aliases cannot silently redirect the operator identity
+ok 310 - directory aliases cannot silently redirect the operator identity
+  ---
+  duration_ms: 4.432427
+  type: 'test'
+  ...
+# Subtest: explicitly replaced valid credentials are observed without retaining an old cached token
+ok 311 - explicitly replaced valid credentials are observed without retaining an old cached token
+  ---
+  duration_ms: 3.698493
+  type: 'test'
+  ...
+# Subtest: exact sha1 commit bytes are independent of dirty checkout and current HEAD
+ok 312 - exact sha1 commit bytes are independent of dirty checkout and current HEAD
+  ---
+  duration_ms: 70.122237
+  type: 'test'
+  ...
+# Subtest: exact sha256 commit bytes are independent of dirty checkout and current HEAD
+ok 313 - exact sha256 commit bytes are independent of dirty checkout and current HEAD
+  ---
+  duration_ms: 61.372055
+  type: 'test'
+  ...
+# Subtest: working captures retain their own bytes and context after another edit
+ok 314 - working captures retain their own bytes and context after another edit
+  ---
+  duration_ms: 43.038378
+  type: 'test'
+  ...
+# Subtest: commit absence and missing live source have different observations
+ok 315 - commit absence and missing live source have different observations
+  ---
+  duration_ms: 64.616219
+  type: 'test'
+  ...
+# Subtest: source sampling does not follow final symlinks or intermediate directory symlinks
+ok 316 - source sampling does not follow final symlinks or intermediate directory symlinks
+  ---
+  duration_ms: 63.608929
+  type: 'test'
+  ...
+# Subtest: directories and nonblocking special-file observations expose no source bytes
+ok 317 - directories and nonblocking special-file observations expose no source bytes
+  ---
+  duration_ms: 68.169725
+  type: 'test'
+  ...
+# Subtest: invalid paths are rejected before access, while literal Git pathspec characters remain literal
+ok 318 - invalid paths are rejected before access, while literal Git pathspec characters remain literal
+  ---
+  duration_ms: 57.24034
+  type: 'test'
+  ...
+# Subtest: UTF-8 byte identity survives Git reads; invalid encodings are not lossy source observations
+ok 319 - UTF-8 byte identity survives Git reads; invalid encodings are not lossy source observations
+  ---
+  duration_ms: 79.888717
+  type: 'test'
+  ...
+# Subtest: source budgets and explicit cancellation reject without starting a usable observation
+ok 320 - source budgets and explicit cancellation reject without starting a usable observation
+  ---
+  duration_ms: 55.890128
+  type: 'test'
+  ...
+# Subtest: commit observation rejects annotated tag objects and ignores Git replacement refs
+ok 321 - commit observation rejects annotated tag objects and ignores Git replacement refs
+  ---
+  duration_ms: 67.776979
+  type: 'test'
+  ...
+# Subtest: direct blob observation invokes no configured text converter or external diff
+ok 322 - direct blob observation invokes no configured text converter or external diff
+  ---
+  duration_ms: 62.042878
+  type: 'test'
+  ...
+# Subtest: matching shows written parameter/result changes against independently identified versions
+ok 323 - matching shows written parameter/result changes against independently identified versions
+  ---
+  duration_ms: 1.151142
+  type: 'test'
+  ...
+# Subtest: body-only changes remain visible without literal body/default source
+ok 324 - body-only changes remain visible without literal body/default source
+  ---
+  duration_ms: 0.701235
+  type: 'test'
+  ...
+# Subtest: default-only changes keep the marker but not default literals or hashes in the report
+ok 325 - default-only changes keep the marker but not default literals or hashes in the report
+  ---
+  duration_ms: 0.409366
+  type: 'test'
+  ...
+# Subtest: unwritten return types stay not_declared rather than acquiring inferred annotations
+ok 326 - unwritten return types stay not_declared rather than acquiring inferred annotations
+  ---
+  duration_ms: 0.262144
+  type: 'test'
+  ...
+# Subtest: unique unchanged overloads match before a remaining changed overload
+ok 327 - unique unchanged overloads match before a remaining changed overload
+  ---
+  duration_ms: 0.443687
+  type: 'test'
+  ...
+# Subtest: duplicate signatures are ambiguous rather than paired by occurrence order
+ok 328 - duplicate signatures are ambiguous rather than paired by occurrence order
+  ---
+  duration_ms: 0.292079
+  type: 'test'
+  ...
+# Subtest: absent input supports additions while incomplete and missing observations never prove deletion
+ok 329 - absent input supports additions while incomplete and missing observations never prove deletion
+  ---
+  duration_ms: 0.533883
+  type: 'test'
+  ...
+# Subtest: an incomplete declaration header is not claimed as a confirmed header change
+ok 330 - an incomplete declaration header is not claimed as a confirmed header change
+  ---
+  duration_ms: 0.244618
+  type: 'test'
+  ...
+# Subtest: unmapped edits and executable mode changes remain visible
+ok 331 - unmapped edits and executable mode changes remain visible
+  ---
+  duration_ms: 0.261964
+  type: 'test'
+  ...
+# Subtest: different repositories, paths or extraction identities are rejected as comparison pairs
+ok 332 - different repositories, paths or extraction identities are rejected as comparison pairs
+  ---
+  duration_ms: 0.282515
+  type: 'test'
+  ...
+# Subtest: three tasks keep their own input/observed labels and report attribution rather than blame
+ok 333 - three tasks keep their own input/observed labels and report attribution rather than blame
+  ---
+  duration_ms: 0.828185
+  type: 'test'
+  ...
+# Subtest: page budgets count serialized escaping bytes and make forward progress
+ok 334 - page budgets count serialized escaping bytes and make forward progress
+  ---
+  duration_ms: 0.455575
+  type: 'test'
+  ...
+# Subtest: untrusted source labels cannot add terminal control sequences or spoof line-oriented headings
+ok 335 - untrusted source labels cannot add terminal control sequences or spoof line-oriented headings
+  ---
+  duration_ms: 0.278319
+  type: 'test'
+  ...
+# Subtest: notice materiality ignores OID/position/body-digest churn but changes for new structure or reversion
+ok 336 - notice materiality ignores OID/position/body-digest churn but changes for new structure or reversion
+  ---
+  duration_ms: 0.677759
+  type: 'test'
+  ...
+# Subtest: source operations reject a subdirectory as an ambiguous registered worktree root
+ok 337 - source operations reject a subdirectory as an ambiguous registered worktree root
+  ---
+  duration_ms: 37.389426
+  type: 'test'
+  ...
+1..337
+# tests 337
+# suites 0
+# pass 337
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 20957.931568

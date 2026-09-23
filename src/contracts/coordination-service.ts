@@ -1,7 +1,7 @@
 import { BridgeError } from "../core/errors.js";
 import { canonicalHash } from "../core/async.js";
 import { CONTROL_MAX_BYTES, coordinationOperationKey, decodeCoordinationReceipt, decodeLimits,
-  decodeRepositoryCommand, entityId, parentId, type Limits, type Receipt, type RepositoryCommand } from "./coordination-control.js";
+  decodeRepositoryCommand, decodeRecoveryCommand, decodeRecoveryReceipt, entityId, parentId, type RecoveryCommand, type RecoveryReceipt, type Limits, type Receipt, type RepositoryCommand } from "./coordination-control.js";
 
 /** Versioned metadata operation; CLI/MCP project this contract without granting additional authority. */
 export const COORDINATION_SERVICE_VERSION = 1;
@@ -11,18 +11,25 @@ export const COORDINATION_VIEW_BYTES = CONTROL_MAX_BYTES + 4096;
 export type CoordinationSelector =
   | { kind: "work" | "note" | "case" | "overlaps"; id: string }
   | { kind: "receipt"; operation_key: string };
+export type RecoverySelector =
+  | { kind: "inventory" }
+  | { kind: "work" | "case"; id: string }
+  | { kind: "receipt"; operation_key: string };
 export type CoordinationRequest =
   | { schema_version: 1; kind: "identity" }
   | { schema_version: 1; kind: "status" }
   | { schema_version: 1; kind: "initialize"; limits: Limits }
   | { schema_version: 1; kind: "command"; command: RepositoryCommand }
+  | { schema_version: 1; kind: "recover_metadata"; recovery: RecoveryCommand }
+  | { schema_version: 1; kind: "recovery_read"; selector: RecoverySelector; offset: number; limit: number; expected_hash: string | null }
   | { schema_version: 1; kind: "read"; selector: CoordinationSelector; offset: number; limit: number; expected_hash: string | null };
 export type CoordinationReply =
   | { schema_version: 1; kind: "identity"; repository_id: string; parent_id: string }
   | { schema_version: 1; kind: "status"; repository_id: string; state: "not_enabled" }
   | { schema_version: 1; kind: "status"; repository_id: string; state: "ready"; epoch: string; revision: number; limits: Limits }
   | { schema_version: 1; kind: "receipt"; repository_id: string; receipt: Receipt }
-  | { schema_version: 1; kind: "page"; repository_id: string; selector: CoordinationSelector; hash: string;
+  | { schema_version: 1; kind: "recovery_receipt"; repository_id: string; receipt: RecoveryReceipt }
+  | { schema_version: 1; kind: "page"; repository_id: string; selector: CoordinationSelector | RecoverySelector; hash: string;
       offset: number; bytes: number; next_offset: number; total_bytes: number; eof: boolean; content: string };
 
 /** Borrowed client interface. Its implementation owns authenticated transport and reply validation. */
@@ -70,6 +77,13 @@ function selector(value: unknown): CoordinationSelector {
   if (v.kind !== "work" && v.kind !== "note" && v.kind !== "case" && v.kind !== "overlaps") return invalid("Unknown read selector");
   return { kind: v.kind, id: entityId(v.id) };
 }
+function recoverySelector(value: unknown): RecoverySelector {
+  const v = object(value);
+  if (v.kind === "inventory") { fields(v, ["kind"]); return { kind: "inventory" }; }
+  const selected = selector(v);
+  if (selected.kind === "note" || selected.kind === "overlaps") return invalid("Recovery inspection exposes only work, cases and recovery receipts");
+  return selected.kind === "receipt" ? selected : { kind: selected.kind, id: selected.id };
+}
 function messageBound(value: unknown): void {
   // Only reconstructed, validated values reach serialization; raw accessors are never invoked here.
   if (Buffer.byteLength(JSON.stringify(value)) > COORDINATION_MESSAGE_BYTES) throw new BridgeError("COORDINATION_MESSAGE_TOO_LARGE", "The selected service representation exceeds its byte bound");
@@ -84,12 +98,16 @@ export function decodeCoordinationRequest(value: unknown): CoordinationRequest {
       fields(v, ["schema_version", "kind", "limits"]); result = { schema_version: 1, kind: v.kind, limits: decodeLimits(v.limits) }; break;
     case "command":
       fields(v, ["schema_version", "kind", "command"]); result = { schema_version: 1, kind: v.kind, command: decodeRepositoryCommand(v.command) }; break;
-    case "read": {
+    case "recover_metadata":
+      fields(v, ["schema_version", "kind", "recovery"]);
+      result = { schema_version: 1, kind: v.kind, recovery: decodeRecoveryCommand(v.recovery) }; break;
+    case "read": case "recovery_read": {
       fields(v, ["schema_version", "kind", "selector", "offset", "limit", "expected_hash"]);
       const offset = boundedInteger(v.offset, COORDINATION_VIEW_BYTES), expected_hash = v.expected_hash === null ? null : digest(v.expected_hash);
       if (offset > 0 && expected_hash === null) invalid("Continuation pages require the original view identity");
-      result = { schema_version: 1, kind: v.kind, selector: selector(v.selector), offset,
-        limit: boundedInteger(v.limit, COORDINATION_PAGE_BYTES, 4), expected_hash }; break;
+      const page = { schema_version: 1 as const, offset, limit: boundedInteger(v.limit, COORDINATION_PAGE_BYTES, 4), expected_hash };
+      result = v.kind === "recovery_read" ? { ...page, kind: v.kind, selector: recoverySelector(v.selector) }
+        : { ...page, kind: v.kind, selector: selector(v.selector) }; break;
     }
     default:
       if (typeof v.kind === "string") throw new BridgeError("COORDINATION_SERVICE_OPERATION_UNSUPPORTED", "The service operation has no implemented handler");
@@ -100,6 +118,7 @@ export function decodeCoordinationRequest(value: unknown): CoordinationRequest {
 
 /** Reserved capacity is for completing/releasing authority, never a bypass of command validation. */
 export function coordinationRequestLane(request: CoordinationRequest): "ordinary" | "control" {
+  if (request.kind === "recovery_read" || request.kind === "recover_metadata") return "control";
   if (request.kind === "read" && request.selector.kind === "receipt") return "control";
   if (request.kind !== "command") return "ordinary";
   const c = request.command;
@@ -131,6 +150,13 @@ export function decodeCoordinationReply(requestValue: CoordinationRequest, paren
       result = { schema_version: 1, kind: "status", repository_id, state: "ready", epoch: entityId(v.epoch),
         revision: boundedInteger(v.revision, Number.MAX_SAFE_INTEGER), limits };
     }
+  } else if (request.kind === "recover_metadata") {
+    fields(v, ["schema_version", "kind", "repository_id", "receipt"]);
+    if (v.kind !== "recovery_receipt") return invalid("Expected an operator recovery receipt");
+    const receipt = decodeRecoveryReceipt(v.receipt);
+    if (receipt.operator !== parent || receipt.request_hash !== canonicalHash({ operator: parent, recovery: request.recovery })
+      || canonicalHash(receipt.command) !== canonicalHash(request.recovery)) return invalid("Recovery receipt acknowledges a different operator or request");
+    result = { schema_version: 1, kind: "recovery_receipt", repository_id, receipt };
   } else if (request.kind === "command") {
     fields(v, ["schema_version", "kind", "repository_id", "receipt"]);
     if (v.kind !== "receipt") return invalid("Expected a command receipt");
@@ -148,7 +174,8 @@ export function decodeCoordinationReply(requestValue: CoordinationRequest, paren
   } else {
     fields(v, ["schema_version", "kind", "repository_id", "selector", "hash", "offset", "bytes", "next_offset", "total_bytes", "eof", "content"]);
     if (v.kind !== "page") return invalid("Expected a read page");
-    const subject = selector(v.selector), hash = digest(v.hash), offset = boundedInteger(v.offset, COORDINATION_VIEW_BYTES);
+    const subject = request.kind === "recovery_read" ? recoverySelector(v.selector) : selector(v.selector);
+    const hash = digest(v.hash), offset = boundedInteger(v.offset, COORDINATION_VIEW_BYTES);
     const bytes = boundedInteger(v.bytes, request.limit), next_offset = boundedInteger(v.next_offset, COORDINATION_VIEW_BYTES);
     const total_bytes = boundedInteger(v.total_bytes, COORDINATION_VIEW_BYTES);
     if (canonicalHash(subject) !== canonicalHash(request.selector) || offset !== request.offset || request.expected_hash !== null && hash !== request.expected_hash) return invalid("Read page does not match its selector or continuation");

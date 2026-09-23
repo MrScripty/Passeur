@@ -10,11 +10,12 @@ execution scheduler, schema implementation or authority store is introduced.
 
 F7 adds `coordinate --request FILE` to the CLI and four MCP metadata tools.
 They use the existing authenticated frontend, runtime and durable contracts.
-The committed F6 elected/pinned checks retain their scope. F7's selected local
-handler tests are not SDK/installed conformance; required public-consumer tests
-and complete pinned checks remain the deployment gate.
+The committed F6 and F7 elected/SDK/CLI/pinned checks retain their recorded
+scope. F8 adds the operator-only recovery contract below. Its new-candidate
+pinned/elected/compiled-CLI checks remain a deployment gate; prior passes do
+not qualify a changed candidate.
 
-Managed task linkage, forced metadata adoption, coordination-aware retirement,
+Managed task linkage, coordination-aware retirement,
 parsers and live structural reporting remain unfinished and unadvertised.
 This is a metadata capability, not the complete structural-coordination feature.
 
@@ -36,8 +37,8 @@ fsync/rename primitive; TaskStore re-exports the existing API without changing
 that primitive's behavior.
 
 The runtime now creates exactly one metadata session/control/store owner for
-its canonical binding. The elected listener still needs to route authenticated
-requests to it under the existing service election and mutation authority.
+its canonical binding. The elected listener routes authenticated requests to it
+under the existing service election and mutation authority.
 These modules neither acquire a second lease nor permit independent
 concurrent processes to mutate the control file. A read/revision check by itself
 is not cross-process fencing. Analysis and native execution remain separate.
@@ -144,7 +145,7 @@ may be in progress. While that marker is set, transfer, input replacement and
 release are refused. `record_external_settlement` is the current lead's report
 that its external operation settled; it is not native stop evidence or proof
 that Git integration succeeded. Passeur performs no Git effect here. Operator
-forced adoption and recovery after a lost lead are not implemented by these increments.
+recovery after a lost lead uses the explicit CLI-only F8 contract below.
 
 ## Persistence and recovery
 
@@ -176,7 +177,7 @@ transaction.
 ## Capacity and shutdown
 
 Limits bound retained works, cases, notes, receipts, note bytes and the total
-serialized record. The version-1 record has a 2 MiB representation bound and
+serialized record. Supported v1/v2 records share a 2 MiB representation bound and
 4096 maximum entities per configured collection. Admission reserves receipt
 slots and conservatively sized bytes for active-work closure, complete reader
 revocation, agreement withdrawal, and pending-effect settlement/case release.
@@ -474,7 +475,7 @@ cutover. Existing task tools and persisted metadata retain their meanings.
 
 Only a parent's own external workspace is enrollable here. Managed worker task
 linkage, pre-start announcement reference submission, live watches/reports and
-forced recovery are not exposed. Source-derived context does not become a
+operator recovery are not exposed by these MCP tools. Source-derived context does not become a
 semantic judgment. Reconciliation leadership does not grant task ownership or
 permission to update the target. Keep the original resource-protection contract.
 
@@ -485,3 +486,141 @@ operation handlers and authenticated client/runtime/Git/store path with explicit
 fixture listener/task/lease seams. SDK/schema/catalog and real compiled CLI tests
 use real dependencies and are supplied as separate required gates; they are not
 replaced by fixture SDK objects. See [F7 verification](plans/structural-change-coordination/reports/f7-verification.md).
+
+
+## Operator metadata recovery (F8)
+
+Recovery changes metadata authority only. It does not adopt a native task, stop
+an editor/process, prove quiescence, change a source revision or Git ref, or
+retire a workspace. The new owner receives no extra write scope, no implicit
+selected-input sharing, and no right to impersonate a note author or agreement
+party. Ordinary MCP tool groups reject both recovery request variants.
+
+### Inspect before deciding
+
+An operator using the existing private operator credential can run:
+
+```sh
+passeur coordinate --project PATH --request recovery-read.json
+```
+
+Recovery requires an already verified runtime binding or a resolvable canonical
+repository/state namespace. A removed checkout may require another linked
+worktree for attachment; this feature does not reconstruct a missing repository
+or select a replacement state root.
+
+The request below returns a bounded page of active work IDs/owners/revisions
+and active case IDs/targets/leads/revisions/generations/external-effect markers.
+It includes the initialized epoch needed to identify the exact authority store.
+It reads no source files and does not include note text in the inventory.
+
+```json
+{"schema_version":1,"kind":"recovery_read","selector":{"kind":"inventory"},"offset":0,"limit":8192,"expected_hash":null}
+```
+
+To inspect one record use `{"kind":"work","id":"ACTUAL-WORK-UUID"}` or
+`{"kind":"case","id":"ACTUAL-CASE-UUID"}` as the selector. These example ID
+labels are placeholders, not accepted UUIDs. Every request reauthorizes the
+operator. Concatenate only pages with the same returned hash and use the exact
+`next_offset`; a changed inventory or revoked operator credential refuses the
+next page. Operator inspection does not initialize a missing control store or
+migrate an existing v1 record. The ordinary CLI credential-creation rules still
+apply; no request field can grant operator authority.
+
+### Explicit actions
+
+A `recover_metadata` request contains exactly `schema_version`, `kind`, and
+`recovery`. Each recovery object has `kind`, a stable `operation_key`, the exact
+`epoch`, `expected_owner`, the subject's `expected_revision`, and an attributed
+`statement` of at most 256 UTF-8 bytes. Use a concrete operator rationale or a
+reference to retained evidence. Exact field decoding rejects unknown variants,
+extra fields, malformed identities and blank statements.
+
+| Recovery action | Additional fields and preconditions | Effect |
+|---|---|---|
+| `adopt_work` | `work_id`, `new_owner`; active work and a different owner | Changes owner, advances work revision, removes the new owner from explicit readers. Source/input/intent/areas stay unchanged. |
+| `close_work` | `work_id`; active work | Closes metadata registration and advances revision. Existing sharing and historical records remain; physical resources are untouched. |
+| `adopt_case` | `case_id`, `expected_generation`, `new_owner`; active case, no possible external effect, input access for the new owner | Changes lead, advances generation/revision, and adds the new lead to members within the existing bound. Previous membership is retained. |
+| `release_case` | `case_id`, `expected_generation`; active case with no possible external effect | Closes the logical case, without proving any Git integration or freeing a process/worktree. |
+| `settle_case` | `case_id`, `expected_generation`; a possible external effect and explicit operator confirmation | Records the operator's settlement assertion, advances revision, and clears the possible-effect marker. Leadership is unchanged. |
+
+All actions require `--yes`. Only `settle_case` additionally requires
+`--confirm-external-settled`; that flag on any other request is rejected before
+connection. The operator must first obtain actual evidence that the external
+operation is no longer in flight. Passeur records that assertion; it does not
+independently establish process termination or successful code integration.
+Time, disconnection, a missing checkout and an unresponsive parent are not
+settlement evidence. If the facts remain unknown, leave the marker in place.
+Settlement and adoption/release are separate commands: retrieve the new revision
+before the second action. A stale generation, revision or owner refuses change.
+
+For an adoption request file, use this structure with actual recorded values:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "recover_metadata",
+  "recovery": {
+    "kind": "adopt_work",
+    "operation_key": "recover-owned-work-01",
+    "epoch": "ACTUAL-EPOCH-UUID",
+    "work_id": "ACTUAL-WORK-UUID",
+    "expected_owner": "ACTUAL-64-HEX-PARENT-ID",
+    "expected_revision": 1,
+    "new_owner": "ACTUAL-64-HEX-REPLACEMENT-PARENT-ID",
+    "statement": "Operator-approved handoff; evidence reference: local recovery record."
+  }
+}
+```
+
+Do not guess parent IDs: obtain the replacement parent's identity through its
+ordinary authenticated identity operation. Recovery does not itself prove a
+new parent process is attached or live. The old owner loses control, but any
+remaining explicit read permission or case membership keeps its ordinary meaning.
+Notes, authors, named agreement parties and prior acknowledgments stay immutable.
+The operator read selector intentionally excludes arbitrary note-content reads.
+
+### Receipts, persistence and compatibility
+
+The first successful recovery atomically publishes control schema v2, the exact
+metadata delta, and an immutable recovery receipt. Read-only inspection, failed
+authorization, stale commands, capacity refusal and ordinary commands leave a
+v1 store in v1. Version-2 records retain the existing data and ordinary receipts
+and append `recoveries`; the enable marker, task records, native lifecycle and
+private framing versions are unchanged. Readers accept v1 and v2; writers retain
+v2 after migration. No background migration or second database is introduced.
+
+A recovery receipt contains the operator identity, original decoded command,
+canonical request hash and resulting global metadata revision. The versioned
+transition validator constrains changes to the exact selected subject and
+preserves all historical receipts, notes and unrelated entities. Ordinary and
+recovery operation keys share the same per-principal namespace. Reusing an
+identical key returns historical acknowledgment without repeating recovery;
+different intent under that key conflicts. An old receipt never transfers
+ownership back after a later adoption.
+
+For an uncertain response, use `recovery_read` with
+`{"kind":"receipt","operation_key":"THE-ORIGINAL-KEY"}`, or repeat the
+identical recovery. Receipt inspection returns only the current operator's own
+recovery receipts. Credential rotation does not erase old audit records or make
+them belong to the replacement credential. The service's operator check runs
+for every request/page; already admitted work remains owned until it settles.
+
+Existing reserved receipt counts and bytes include recovery history. Adoption
+needs spare capacity; closure and settlement can use the capacity reserved for
+the corresponding release obligations. Capacity exhaustion does not erase
+history or release authority by a timer. A close does not automatically revoke
+readers; separate access changes keep their established authority. A new record
+version and fixed limits require a future explicit migration for compaction or
+limit changes, not opportunistic deletion of retained receipts.
+
+Old v1-only binaries reject v2. After recovery has occurred, rolling back the
+executable cannot restore write compatibility: retain the records and use a
+reader capable of v2, or an independently qualified downgrade. Replacing
+control.json with an old backup would discard accepted authority and is not a
+recovery operation. Git effects and task execution are outside this metadata
+transaction, and no fencing of unmediated same-user programs is promised.
+
+See [F8 verification](plans/structural-change-coordination/reports/f8-verification.md)
+for actual test paths and limits. SDK/CLI/elected and pinned checks for this
+candidate must pass before deployment; previous-candidate passes do not prove it.
