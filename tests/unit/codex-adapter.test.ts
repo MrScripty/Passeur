@@ -74,8 +74,18 @@ describe.runIf(process.platform === "linux")("Codex adapter through an actual co
       expect(await readFile(join(home, "fixture-decision"), "utf8")).toBe("accept");
     }, true);
   });
-  it("persistent policy amendment is refused even when one-operation escalation is enabled", async () => {
-    await scenario("amendment", async (adapter, run) => expect(await adapter.run(run)).toMatchObject({ status: "failed", error: { code: "CODEX_APPROVAL_UNSUPPORTED" } }), true);
+  it("an offered execpolicy amendment stays optional and grants only the current command", async () => {
+    await scenario("amendment", async (adapter, run, home) => {
+      run.approve = async (request) => {
+        expect(request.choices.map((choice) => choice.scope)).toEqual(["once", "once"]);
+        return { choice_id: "accept" };
+      };
+      expect(await adapter.run(run)).toMatchObject({ status: "completed", worker_stop: "confirmed" });
+      expect(await readFile(join(home, "fixture-decision"), "utf8")).toBe("accept");
+    }, true);
+  });
+  it("network policy proposals remain unsupported", async () => {
+    await scenario("network-amendment", async (adapter, run) => expect(await adapter.run(run)).toMatchObject({ status: "failed", error: { code: "CODEX_APPROVAL_UNSUPPORTED" } }), true);
   });
   it("owner cancellation interrupts the turn and observes the actual peer close", async () => {
     await scenario("cancel", async (adapter, run, _home, controller) => {

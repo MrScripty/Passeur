@@ -46,10 +46,11 @@ lines.on('line', line => {
     case 'turn/start': {
       turnCount++; turn=`turn-${turnCount}`; writeFileSync(join(home,'fixture-turns'),String(turnCount));
       if(message.params.threadId!=='thread-fixture')throw Error('Continuation must keep the same thread');
-      if (scenario === 'approval' || scenario === 'amendment') {
+      if (scenario === 'approval' || scenario === 'amendment' || scenario === 'network-amendment') {
         send({ id: 'approval-fixture', method: 'item/commandExecution/requestApproval', params: {
           threadId: 'thread-fixture', turnId: turn, itemId: 'command-fixture', cwd: workspace, command: 'fixture-operation',
           ...(scenario === 'amendment' ? { proposedExecpolicyAmendment: ['fixture-operation'] } : {}),
+          ...(scenario === 'network-amendment' ? { proposedNetworkPolicyAmendments: [{ host: 'example.org', action: 'allow' }] } : {}),
         } });
       } else if (scenario === 'cancel') {
         item({id:'waiting-fixture',type:'agentMessage',text:'Waiting for owner cancellation'});

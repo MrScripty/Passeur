@@ -25,8 +25,10 @@ test('selected model, human approval and sandbox have independent postconditions
 test('approval rejects stale identity and persistent or broadened authority', () => {
   const params = { threadId: 't', turnId: 'u', itemId: 'i', command: 'git status', cwd: '/workspace', kind: 'command', environmentId: null };
   assert.equal(p.approval(params, 't', 'u', '/workspace', 'item/commandExecution/requestApproval').command, 'git status');
+  // A proposal is metadata; the response remains a decision on this one command.
+  assert.equal(p.approval({ ...params, proposedExecpolicyAmendment: ['git', 'status'] }, 't', 'u', '/workspace', 'item/commandExecution/requestApproval').command, 'git status');
   assert.throws(() => p.approval({ ...params, turnId: 'old' }, 't', 'u', '/workspace', 'item/commandExecution/requestApproval'), expectCode('CODEX_CORRELATION_INVALID'));
-  for (const changes of [{ proposedExecpolicyAmendment: ['git'] }, { networkApprovalContext: {} }, { grantRoot: '/' }, { cwd: '/other' }]) {
+  for (const changes of [{ proposedNetworkPolicyAmendments: [{ host: 'example.org', action: 'allow' }] }, { networkApprovalContext: {} }, { grantRoot: '/' }, { cwd: '/other' }]) {
     assert.throws(() => p.approval({ ...params, ...changes }, 't', 'u', '/workspace', 'item/commandExecution/requestApproval'), expectCode('CODEX_APPROVAL_UNSUPPORTED'));
   }
 });

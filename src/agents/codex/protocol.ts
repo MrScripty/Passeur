@@ -67,9 +67,10 @@ export function terminalTurn(value: unknown, threadId: string, turnId: string): 
 export function approval(value: unknown, threadId: string, turnId: string, workspace: string, method: string) {
   const request = correlate(value, threadId, turnId);
   const itemId = text(request.itemId, "approval.itemId", 256);
-  // Policy amendments, managed network grants and broader roots are not the one-operation approval contract.
-  if (request.proposedExecpolicyAmendment != null || request.proposedNetworkPolicyAmendments != null ||
-      request.networkApprovalContext != null || request.grantRoot != null || request.additionalPermissions != null ||
+  // An execpolicy proposal is only a hint. The adapter can answer "accept" for this command
+  // without accepting the proposal; managed network grants and broader roots remain unsupported.
+  if (request.proposedNetworkPolicyAmendments != null || request.networkApprovalContext != null ||
+      request.grantRoot != null || request.additionalPermissions != null ||
       (request.environmentId != null) || (request.kind !== undefined && request.kind !== "command")) {
     throw new BridgeError("CODEX_APPROVAL_UNSUPPORTED", "This approval would extend the admitted permission contract");
   }

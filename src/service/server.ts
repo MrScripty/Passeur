@@ -5,7 +5,7 @@ import type { RepositoryRuntime, ResolvedBinding } from "../core/repository-runt
 import type { RuntimeIdentity } from "../contracts/runtime.js";
 import type { ResultRequest } from "../contracts/types.js";
 import { DescriptorSchema, operationSchemas, responseSchemas, type Arguments, type Operation } from "../contracts/service.js";
-import { BridgeError, diagnosticInfo, nativeCode } from "../core/errors.js";
+import { BridgeError, diagnosticInfo, nativeCode, safeText, type ErrorInfo } from "../core/errors.js";
 import { atomicJson } from "../store/task-store.js";
 import { authenticateServicePeer } from "./peer-auth.js";
 import { routeCoordination } from "./coordination-route.js";
@@ -20,6 +20,8 @@ import { textChunk } from "../core/result.js";
 
 type Peer = { connection: IpcConnection; actor?: ClientActor; source?: string; authenticating: boolean; requests: Map<string, { controller: AbortController; lane: RequestLane }> };
 const errorValue = (error: unknown) => { const e = diagnosticInfo(error); return { code: e.code.slice(0, 128), message: (e.message || "Service operation failed").slice(0, 2048) }; };
+const finalizedErrorValue = (error: ErrorInfo) => ({ code: safeText(error.code, 128),
+  message: safeText(error.message || "Service operation failed", 2048) });
 /** The elected process owns the runtime. Connection actors own no worker lifetime. */
 export async function runRepositoryService(runtime: RepositoryRuntime, binding: ResolvedBinding, identity: RuntimeIdentity, bootstrapInput: NodeJS.ReadableStream = process.stdin): Promise<void> {
   const paths = await preparePaths(binding); await assertElectionGuard(paths.guard);
@@ -142,7 +144,7 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
         for (const op of a.operations) await runtime.authorizeTask(op.task_id, actor);
         const results = (await runtime.finalize(a.operations)).map((entry) => entry.receipt
           ? { task_id: entry.task_id, operation_key: entry.operation_key, state: entry.receipt.state, resource_state: entry.receipt.resource.state }
-          : { task_id: entry.task_id, operation_key: entry.operation_key, error: errorValue(entry.error) });
+          : { task_id: entry.task_id, operation_key: entry.operation_key, error: finalizedErrorValue(entry.error!) });
         return { results };
       }
       case "cleanup": { const a = args as Arguments<"cleanup">; await runtime.authorizeTask(a.task_id, actor); await runtime.cleanup(a.task_id); return { kind: "collected" }; }
