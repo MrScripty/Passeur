@@ -40,7 +40,7 @@ it.skipIf(!candidate)("refuses altered native binding bytes at publication and i
     await expect(verifyInstalledNativePackages(installed.root, "tree-sitter-rust")).rejects.toMatchObject({ code: "RUNTIME_PARSER_MISMATCH" });
     await writeFile(nativePath, original);
 
-    const grammarPath = join(installed.root, "node_modules/tree-sitter-rust/prebuilds/linux-x64/tree-sitter-rust.node");
+    const grammarPath = join(installed.root, "node_modules/tree-sitter-rust/build/Release/tree_sitter_rust_binding.node");
     const grammarOriginal = await readFile(grammarPath);
     await writeFile(grammarPath, Buffer.concat([grammarOriginal, Buffer.from([0])]));
     await expect(verifyInstalledNativePackages(installed.root, "tree-sitter-rust")).rejects.toMatchObject({ code: "RUNTIME_PARSER_MISMATCH" });
@@ -70,10 +70,17 @@ it.skipIf(!candidate)("runs every required language through the relocated instal
       hostNetns: hostNetns!, sourceSnapshotMarker: sourceMarker! });
     expect(result.candidate_build_id).toBe(selected.build_id);
     expect((result.rows as unknown[]).length).toBe(30);
+    expect((result.canonical_public as unknown[]).length).toBe(106);
+    const semantic = result.semantic_oracles as { rows: unknown[]; variants: unknown[] };
+    expect(semantic.rows.length).toBe(13);
+    expect(semantic.variants.length).toBe(21);
     expect(result.stdio_mcp_report).toBe("observed");
     expect(result.stdio_mcp_detail).toBe("observed");
     expect(result.guarded_build_tool_attempts).toBe(0);
     expect(result.network_namespace_enforced).toBe(true);
+    expect(result.host_pid_root_hidden).toBe(true);
+    expect(result.forbidden_executables_hidden).toBe(true);
+    expect((result.absolute_executable_attempts as unknown[]).length).toBe(11);
     expect(result.source_snapshot_hidden).toBe(true);
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 1_200_000);
