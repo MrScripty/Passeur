@@ -63,7 +63,7 @@ it.skipIf(!candidate)("reports installed native readiness, build mismatch, and a
       expect(damaged.grammars.every(row => row.failure?.code === "RUNTIME_PARSER_MISMATCH")).toBe(true);
     } finally { await writeFile(binding, bindingBytes); }
 
-    const grammar = join(installed.root, "node_modules/tree-sitter-rust/prebuilds/linux-x64/tree-sitter-rust.node");
+    const grammar = join(installed.root, "node_modules/tree-sitter-rust/build/Release/tree_sitter_rust_binding.node");
     const grammarBytes = await readFile(grammar);
     try {
       await writeFile(grammar, Buffer.concat([grammarBytes, Buffer.from([0])]));
