@@ -20,7 +20,7 @@ For a new finding record its invariant, affected authority/consumer population, 
 
 ## Current implementation blockers
 
-**SS-I-PINS — Required pinned application evidence remains incomplete.** Owner: integration lead/maintainer. The already provisioned dependency tree produced a clean candidate, validated installed artifact and real disposable IPC/service probes; no package installation or network-backed pinned checkout was performed. The broad Vitest worker remains unresolved, and active native/provider/host qualification is still blocked. Trigger: package/network-capable checkout and a completed M4-S1 run against the committed candidate.
+**SS-I-PINS — Required pinned application evidence remains incomplete.** Owner: integration lead/maintainer. The already provisioned dependency tree produced a clean candidate, validated installed artifact and real disposable IPC/service probes; no package installation or network-backed pinned checkout was performed. The clean candidate's complete `npm test` now passes (build, core 640/640, native 192/192, Vitest 146 passed with 6 skips), while pinned dependency and active native/provider/host qualification remain blocked. Trigger: package/network-capable checkout and a completed M4-S1 run against the committed candidate.
 
 **SS-I-MUSE — Native input/settlement qualification incomplete.** Owner: Muse adapter. SDK main source exposes host exit/connection/fold observations, but exact pinned1.3.0 declarations and runtime were unavailable. Explicit post-turn questions are implemented; native in-turn user-input variants are not comprehensively mapped. Qualify actual protocol and implement/limit that native surface before SS-05/SS-06 can pass. No live user-input/descendant guarantee is made.
 
