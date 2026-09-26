@@ -3,12 +3,13 @@ import { isAbsolute } from "node:path";
 import { canonicalHash, throwIfAborted, withAbort } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
 import { CoordinationStore } from "../store/coordination-store.js";
-import { CoordinationControl, type CoordinationActor, type RetirementReservation } from "../coordination/control.js";
+import { CoordinationControl, type CoordinationActor, type RetirementReservation, type WorkerPeerActor } from "../coordination/control.js";
 import { RepositoryCoordination, type BindingLimits, type CoordinationConnection, type ExternalWorkspaceAuthority, type ManagedWorkspaceAuthority } from "../coordination/bound-control.js";
 import { decodeLimits, decodeAnnouncementInput, decodeSubmissionPreflightInput, decodeSubmissionBindInput,
   internalCoordinationOperationKey, publicCoordinationOperationKey, parentId, type Limits, type Receipt,
   type AnnouncementRecord, type SubmissionBinding, type Region } from "../contracts/coordination-control.js";
 import type { Work } from "../contracts/coordination-control.js";
+import type { PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 import { COORDINATION_VIEW_BYTES, coordinationRequestLane, decodeCoordinationReply, decodeCoordinationRequest,
   type CoordinationReply, type CoordinationRequest, type CoordinationSelector } from "../contracts/coordination-service.js";
 
@@ -108,6 +109,15 @@ export class CoordinationService {
   }
   submissionBindingByRequestKey(connection: CoordinationConnection, requestKey: string, signal?: AbortSignal): Promise<SubmissionBinding | undefined> {
     return this.#submission(connection, "control", false, signal, (control, actor) => control.submissionBindingByRequestKey(actor, requestKey));
+  }
+  /** Internal task-bound worker path; public parent coordination never supplies worker identity. */
+  workerPeerOperation(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown, signal?: AbortSignal): Promise<PeerWorkerOperationResult> {
+    return this.#submission(connection, "ordinary", false, signal, (control, authenticated) => {
+      if (actor.owner_id !== authenticated.owner_id || actor.source_view !== connection.source_view) {
+        throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker operation identity differs from its authenticated coordination connection");
+      }
+      return control.workerPeerOperation(actor, raw, signal);
+    });
   }
   #matchSourceView(authenticatedSourceView: string, submittedSourceView: string): void {
     if (submittedSourceView !== authenticatedSourceView) throw new BridgeError("COORDINATION_SOURCE_VIEW_CONFLICT", "Submission source view differs from the authenticated connection");

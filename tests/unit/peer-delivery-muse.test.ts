@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MuseSdkAdapter, type ClientStarter } from "../../src/muse/adapter.js";
-import type { WorkerInput, WorkerEvent } from "../../src/agents/types.js";
+import type { WorkerInput, WorkerEvent, WorkerPeerOperationRequest } from "../../src/agents/types.js";
 import type { PeerDeliveryEnvelope } from "../../src/contracts/peer-delivery.js";
 import { parseWorkerMessage } from "../../src/agents/report.js";
 import type { MuseOptions } from "../../src/muse/config.js";
@@ -65,6 +65,32 @@ describe("Muse peer delivery at settled turns", () => {
     expect(prompts[1]).toContain("Finish each turn with PASSEUR_MESSAGE");
     expect(prompts[1]).not.toContain(envelope.recipient_workspace);
     expect(Buffer.byteLength(prompts[1]!)).toBeLessThan(20_480);
+  });
+
+  it("executes a task-scoped worker operation only after the native turn settles and continues the same session", async () => {
+    const events: WorkerEvent[] = [], prompts: string[] = [], operations: string[] = [];
+    let sends = 0;
+    const operation: WorkerPeerOperationRequest = { schema_version: 1, operation_key: "inspect-1", case_id: envelope.case_id, kind: "inspect" };
+    const result = { schema_version: 1 as const, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
+      control_generation: envelope.recipient_control_generation, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
+      case_id: envelope.case_id, operation_key: operation.operation_key, kind: "current" as const, operation: "inspect" as const,
+      case_revision: 1, case_generation: 1, evidence_id: "e".repeat(64), evidence_revision: 1, proposal_note_id: null, proposal: null };
+    const native = session(async ({ input }) => {
+      prompts.push(input[0]!.text); sends++;
+      const text = sends === 1 ? `PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: "peer_operation", operation })}` : final();
+      return turn(text);
+    });
+    const adapter = new MuseSdkAdapter(options, () => ({ ready: Promise.resolve({ startSession: async () => native, close: async () => {} } as never), close: async () => {} }));
+    const peer = { next: async () => undefined, delivered: async () => {}, observed: async () => {},
+      operation: async (request: WorkerPeerOperationRequest) => {
+        expect(request.kind).toBe("inspect");
+        operations.push(request.kind);
+        expect(events.at(-1)).toMatchObject({ kind: "turn_settled", terminal: "completed" });
+        return result;
+      } };
+    const outcome = await run(adapter, peer, async event => { events.push(event); });
+    expect(outcome).toMatchObject({ status: "completed", worker_stop: "confirmed" });
+    expect(operations).toEqual(["inspect"]); expect(sends).toBe(2); expect(prompts[1]).toContain("Peer operation result");
   });
 
   it("rebinds a callback input created before the native peer turn is returned", async () => {

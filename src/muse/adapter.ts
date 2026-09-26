@@ -5,7 +5,7 @@ import { setTimeout as observeAgain } from "node:timers/promises";
 import { BridgeError, errorInfo, safeText } from "../core/errors.js";
 import { settlesWithin, throwIfAborted, withAbort } from "../core/async.js";
 import { parseWorkerMessage, finalReport } from "../agents/report.js";
-import { workerMessageInstructions } from "../agents/report-format.js";
+import { workerMessageInstructions, peerOperationResultPrompt } from "../agents/report-format.js";
 import type { WorkerAdapter, WorkerRun } from "../agents/types.js";
 import type { PeerDeliveryEnvelope } from "../contracts/peer-delivery.js";
 import type { MuseOptions } from "./config.js";
@@ -131,6 +131,8 @@ export class MuseSdkAdapter implements WorkerAdapter {
       const outstanding = new Map<string, string>();
       let uncertainNoted = false;
       let peerTurn: PeerDeliveryEnvelope | undefined;
+      let peerOperations = 0;
+      let pendingPeerAwait: { case_id: string; operation_key: string } | undefined;
       let peerEvidenceUnknown = false;
       const observeItems = async (): Promise<boolean> => {
         if (!fold.current) {
@@ -261,6 +263,20 @@ export class MuseSdkAdapter implements WorkerAdapter {
           }
           await wait(input.peer!.observed(deliveredPeer.idempotency_key, turnId, sessionId!));
         }
+        if (message.kind === "peer_operation") {
+          if (!input.peer?.operation) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "This task has no authorized peer operation port");
+          if (pendingPeerAwait && (message.operation.kind !== "await_change" ||
+              message.operation.case_id !== pendingPeerAwait.case_id || message.operation.operation_key !== pendingPeerAwait.operation_key)) {
+            throw new BridgeError("PEER_OPERATION_PENDING", "A pending peer await requires its exact retained continuation key");
+          }
+          if (++peerOperations > 64) throw new BridgeError("PEER_OPERATION_CAPACITY", "Peer operation turn limit exceeded");
+          const operationResult = await wait(input.peer.operation(message.operation));
+          prompt = peerOperationResultPrompt(input.task_id, message.operation, operationResult);
+          pendingPeerAwait = operationResult.kind === "pending"
+            ? { case_id: message.operation.case_id, operation_key: message.operation.operation_key } : undefined;
+          continue;
+        }
+        if (pendingPeerAwait && message.kind === "final") throw new BridgeError("PEER_OPERATION_PENDING", "Pending peer change cannot be reported as completed work");
         if (message.kind === "input_required") {
           prompt = await wait(input.input(message.question, false, undefined, undefined, signal));
           await emit(turnSettledEvent(turnId, "completed"));

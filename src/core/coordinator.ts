@@ -8,7 +8,8 @@ import { TaskControls, initialControl, owns, type ClientActor } from "./task-con
 import { InputBroker } from "./input-broker.js";
 import type { AgentRegistry, SelectedAgent } from "../agents/registry.js";
 import type { WorkerEvent } from "../agents/types.js";
-import type { WorkerPeerPort } from "../agents/types.js";
+import type { WorkerPeerOperationRequest, WorkerPeerPort } from "../agents/types.js";
+import type { PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 import { immutablePeerEnvelope, parsePeerDeliverySource, PeerDeliveryNativeSessionIdSchema, MAX_PEER_DELIVERIES, type PeerDeliveryEnvelope, type PeerDeliverySource, type PeerDeliveryRecord } from "../contracts/peer-delivery.js";
 import { BridgeError, errorInfo } from "./errors.js";
 import { Mutex, canonicalHash } from "./async.js";
@@ -99,6 +100,8 @@ export class Coordinator {
   onCoordinatedWorkspacePrepared?: (record: CoordinatedDurableRequest, workspace: Workspace) => Promise<void>;
   /** Coordination owner must recheck exact grants and case/source versions; absence keeps the port unavailable. */
   onAuthorizePeerDelivery?: (envelope: PeerDeliveryEnvelope) => Promise<"current" | "stale" | "revoked">;
+  /** The runtime supplies task-bound identity; adapters may submit only decoded operation intent. */
+  onWorkerPeerOperation?: (taskId: string, request: WorkerPeerOperationRequest, signal: AbortSignal) => Promise<PeerWorkerOperationResult>;
   constructor(readonly project: string, readonly projectId: string, readonly policy: LifecyclePolicy,
     readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority: () => void = () => {}, controls?: TaskControls) {
     this.policy = structuredClone(policy); Object.freeze(this.policy.implementation); Object.freeze(this.policy);
@@ -234,6 +237,13 @@ export class Coordinator {
       },
       delivered: (key: string, nativeTurnId: string, nativeSessionId: string) => this.#acceptPeerReceipt(id, key, nativeTurnId, nativeSessionId, "delivered"),
       observed: (key: string, nativeTurnId: string, nativeSessionId: string) => this.#acceptPeerReceipt(id, key, nativeTurnId, nativeSessionId, "observed"),
+      operation: async (request: WorkerPeerOperationRequest) => {
+        const handler = this.onWorkerPeerOperation;
+        if (!handler) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "The task has no authenticated worker operation boundary");
+        const entry = this.#entries.get(id);
+        if (!entry) throw new BridgeError("PEER_OPERATION_STALE", "The task no longer owns a live worker operation boundary");
+        return handler(id, request, entry.controller.signal);
+      },
     });
   }
   async #acceptPeerReceipt(id: string, key: string, nativeTurnId: string, nativeSessionId: string, target: "delivered" | "observed"): Promise<void> {

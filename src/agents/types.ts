@@ -2,11 +2,21 @@ import type { LifecyclePolicy } from "../contracts/tasks.js";
 import type { Check, ExecutionStatus, WorkerStop } from "../contracts/types.js";
 import type { Assignment, SafeConfiguration } from "../contracts/agents.js";
 import type { PeerDeliveryEnvelope } from "../contracts/peer-delivery.js";
+import type { PeerWorkerOperationResult } from "../contracts/peer-operations.js";
+import type { PeerResolutionProposal } from "../coordination/peer-resolution.js";
+/** The coordinator supplies task, run, control generation, workspace and source identity. */
+export type WorkerPeerOperationRequest = Readonly<{ schema_version: 1; operation_key: string; case_id: string }> & (
+  | Readonly<{ kind: "inspect" }>
+  | Readonly<{ kind: "propose" | "counter_propose"; proposal: PeerResolutionProposal }>
+  | Readonly<{ kind: "acknowledge" | "withdraw"; note_id: string }>
+  | Readonly<{ kind: "await_change"; after_case_revision: number; after_case_generation: number }>
+);
 /** Adapter calls these only between settled native turns; no model-owned route or native turn is created here. */
 export type WorkerPeerPort = Readonly<{
   next: () => Promise<PeerDeliveryEnvelope | undefined>;
   delivered: (idempotencyKey: string, nativeTurnId: string, nativeSessionId: string) => Promise<void>;
   observed: (idempotencyKey: string, nativeTurnId: string, nativeSessionId: string) => Promise<void>;
+  operation?: (request: WorkerPeerOperationRequest) => Promise<PeerWorkerOperationResult>;
 }>;
 export type ApprovalRequest = {
   id: string; tool: string; raw_args: string; subject: Record<string, unknown>;

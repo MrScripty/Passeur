@@ -153,6 +153,33 @@ while it is being validated. Application remains lead-authorized and requires
 a current, fully acknowledged exact proposal; these metadata records do not
 perform or prove a Git effect.
 
+### Task-authenticated worker peer operations
+
+The worker operation boundary is internal to the task-owned Coordinator path. A
+worker may address only an already selected active case and only after the
+runtime has rechecked its managed task, run, control generation, physical
+workspace, submission source view, and current report grants for every selected
+work. The operation request carries no trusted owner or task identity; the
+runtime supplies that identity before `CoordinationControl` decodes the
+request. The bounded operations are `inspect`, `propose`, `counter_propose`,
+`acknowledge`, `withdraw`, and event-backed `await_change`.
+
+Worker mutation keys are scoped to the authenticated task and native run. The
+existing coordination receipt is retained and exact retries return its saved
+receipt; a changed request under the same key conflicts. Awaiting a case change
+uses bounded in-memory waiters awakened by the existing store publication; it
+has no polling, deadline, second scheduler, or parent relay. Cancellation,
+authority loss, close, case invalidation, or source-grant revocation rejects
+the wait, and no uncertain native inference is replayed.
+
+The public parent coordination contract has no worker-operation variant. A
+parent read or command cannot supply a worker principal or turn a parent
+acknowledgment into worker consent. Application and verification operations are
+explicitly unsupported at this boundary; worker observation, proposal,
+acknowledgment, application, and functional verification remain separate
+records. Muse and Codex request operations only after a settled native turn and
+continue the same session or thread with the bounded result as untrusted data.
+
 ## Reconciliation leadership
 
 At most one case is active for a full target ref within this repository store.

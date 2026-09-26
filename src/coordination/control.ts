@@ -8,17 +8,28 @@ import { announcements, submissionBindings, submissionEvents, decodeAnnouncement
   type AnnouncementRecord, type SubmissionBinding, type SubmissionEvent, type SubmissionPreflightInput } from "../contracts/coordination-control.js";
 import type { CoordinationStore } from "../store/coordination-store.js";
 import { decodePeerResolutionText, type PeerResolutionRecord, type PeerResolutionSource, type PeerResolutionProposal, type PeerResolutionApplication, type PeerResolutionVerification } from "./peer-resolution.js";
+import { encodePeerResolutionRecord } from "./peer-resolution.js";
+import { decodePeerWorkerOperation, type PeerWorkerOperation, type PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 
 /** The caller is the authenticated service actor, never an actor field taken from a command. */
 export type CoordinationActor = Readonly<{ owner_id: string }>;
+/** Supplied by a task-bound coordinator, never reconstructed from worker input. */
+export type WorkerPeerActor = CoordinationActor & Readonly<{
+  task_id: string; run_id: string; control_generation: number; workspace_id: string; source_view: string; case_id: string;
+}>;
 export type SourceVersions = ReadonlyArray<Readonly<{ task_id: string; version: number }>>;
 export type RetirementReservation = Readonly<{ release(): Promise<void> }>;
+const WORKER_PEER_KEY_PREFIX = "worker-peer-v1:";
+const MAX_PEER_WAITERS = 128;
+type PeerWaiter = { fingerprint: string; actor: WorkerPeerActor; operation: Extract<PeerWorkerOperation, { kind: "await_change" }>;
+  resolve(value: PeerWorkerOperationResult): void; reject(reason: unknown): void; cleanup(): void };
 /** Owns metadata transitions and their ordering against Passeur-owned retirement, not Git effects. */
 export class CoordinationControl {
   readonly #ordering = new Mutex();
   #closing = false;
   readonly #resourceVersions = new Map<string, number>();
   readonly #retirements = new Map<string, Promise<void>>();
+  readonly #peerWaiters = new Set<PeerWaiter>();
   constructor(private readonly store: CoordinationStore) {}
 
   get repositoryId(): string { return this.store.repositoryId; }
@@ -42,7 +53,7 @@ export class CoordinationControl {
         payload_digest: input.payload_digest, source_view: input.source_view, assignment_hash: input.assignment_hash,
         areas: input.areas, readers: input.readers };
       next.announcements.push(item); appendSubmissionEvent(next, "announce", owner, input.operation_key, input.id, hash);
-      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+      checkCapacity(next); await this.#publish(current, next); return structuredClone(item);
     });
   }
 
@@ -71,7 +82,7 @@ export class CoordinationControl {
       if (item.state !== "unresolved") throw new BridgeError("COORDINATION_ANNOUNCEMENT_HELD", "Only an unresolved announcement may be withdrawn");
       item.state = "withdrawn"; item.revision++;
       appendSubmissionEvent(next, "withdraw", owner, input.operation_key, item.id, hash);
-      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+      checkCapacity(next); await this.#publish(current, next); return structuredClone(item);
     });
   }
 
@@ -123,7 +134,7 @@ export class CoordinationControl {
       next.bindings.push(item);
       if (announcement) { announcement.state = "bound"; announcement.task_id = input.task_id; announcement.revision++; }
       appendSubmissionEvent(next, "bind", owner, input.operation_key, item.task_id, hash);
-      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+      checkCapacity(next); await this.#publish(current, next); return structuredClone(item);
     });
   }
 
@@ -153,7 +164,7 @@ export class CoordinationControl {
       if (item.state !== "settled") throw new BridgeError("COORDINATION_BINDING_SETTLED", "Only a settled binding may receive terminal evidence");
       item.state = "terminal"; item.terminal = input.terminal;
       appendSubmissionEvent(next, "terminal", owner, input.operation_key, item.task_id, hash);
-      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+      checkCapacity(next); await this.#publish(current, next); return structuredClone(item);
     });
   }
   async #disposeSubmission(actor: CoordinationActor, raw: unknown, kind: "settle" | "release"): Promise<SubmissionBinding> {
@@ -183,7 +194,7 @@ export class CoordinationControl {
         else { announcement.state = "unresolved"; delete announcement.task_id; }
       }
       appendSubmissionEvent(next, kind, owner, input.operation_key, item.task_id, hash);
-      checkCapacity(next); await this.store.publish(current, next); return structuredClone(item);
+      checkCapacity(next); await this.#publish(current, next); return structuredClone(item);
     });
   }
 
@@ -248,8 +259,13 @@ export class CoordinationControl {
     const owner = parentId(actor.owner_id), command = decodeCommand(input);
     const versions = sourceVersions ? sourceVersions.map(v => ({ ...v })) : [];
     if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
+    if (command.operation_key.startsWith(WORKER_PEER_KEY_PREFIX)) throw new BridgeError("COORDINATION_FORBIDDEN", "Worker peer operation keys are reserved");
+    return this.#ordering.run(() => this.#executeCommand(owner, command, versions));
+  }
+
+  /** The caller holds #ordering; workers enter here only after task and case admission. */
+  async #executeCommand(owner: ParentId, command: Command, versions: SourceVersions): Promise<Receipt> {
     const hash = canonicalHash({ owner, command });
-    return this.#ordering.run(async () => {
       this.store.assertMutable();
       const current = await this.store.snapshot();
       if (recoveryReceipts(current).some(r => r.operator === owner && r.command.operation_key === command.operation_key)) {
@@ -305,14 +321,90 @@ export class CoordinationControl {
         action: command.kind, entity: result.entity, item_id: result.item_id, outcome: "recorded" };
       next.receipts.push(receipt);
       checkCapacity(next);
-      await this.store.publish(current, next);
+      await this.#publish(current, next);
       return structuredClone(receipt);
+  }
+
+  /** Task identity is supplied by the coordinator; worker text only requests a bounded operation. */
+  async workerPeerOperation(actor: WorkerPeerActor, raw: unknown, signal?: AbortSignal): Promise<PeerWorkerOperationResult> {
+    const operation = decodePeerWorkerOperation(raw);
+    const owner = parentId(actor.owner_id);
+    for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
+      if (actor[field] !== operation[field]) throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker operation identity differs from authenticated task authority");
+    }
+    if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
+    if (signal?.aborted) throw signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Peer wait was cancelled");
+    const result = await this.#ordering.run(async (): Promise<{ value?: PeerWorkerOperationResult; wait?: Promise<PeerWorkerOperationResult> }> => {
+      if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
+      const state = await this.store.snapshot();
+      const item = workerPeerCase(state, owner, actor);
+      if (operation.kind === "inspect") return { value: workerPeerCurrent(state, item, operation) };
+      if (operation.kind === "await_change") {
+        if (item.revision !== operation.after_case_revision || item.generation !== operation.after_case_generation) {
+          return { value: workerPeerCurrent(state, item, operation) };
+        }
+        if (this.#peerWaiters.size >= MAX_PEER_WAITERS) throw new BridgeError("PEER_OPERATION_CAPACITY", "Too many retained peer change waits");
+        if (signal?.aborted) throw signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Peer wait was cancelled");
+        let resolve!: (value: PeerWorkerOperationResult) => void;
+        let reject!: (reason: unknown) => void;
+        const wait = new Promise<PeerWorkerOperationResult>((yes, no) => { resolve = yes; reject = no; });
+        wait.catch(() => undefined);
+        const abort = () => { this.#peerWaiters.delete(waiter); waiter.cleanup(); reject(signal?.reason ?? new BridgeError("REQUEST_CANCELLED", "Peer wait was cancelled")); };
+        const waiter: PeerWaiter = { fingerprint: workerPeerFingerprint(state, item), actor, operation,
+          resolve, reject, cleanup: () => signal?.removeEventListener("abort", abort) };
+        this.#peerWaiters.add(waiter);
+        signal?.addEventListener("abort", abort, { once: true });
+        return { wait };
+      }
+      this.store.assertMutable();
+      const key = workerPeerKey(operation);
+      let command: Command;
+      if (operation.kind === "propose" || operation.kind === "counter_propose") {
+        command = { kind: "post_note", operation_key: key, subject: { kind: "case", id: item.id },
+          note_kind: "agreement_proposal", text: encodePeerResolutionRecord(operation.proposal), parties: [...item.members] };
+      } else if ("note_id" in operation) {
+        const noteId = operation.note_id;
+        const note = state.notes.find(candidate => candidate.id === noteId);
+        const proposal = note && retainedPeerRecord(note.text);
+        const recorded = state.receipts.some(receipt => receipt.owner === owner && receipt.key === key);
+        if (!note || note.subject.kind !== "case" || note.subject.id !== item.id || note.kind !== "agreement_proposal"
+          || proposal?.kind !== "peer_resolution_proposal" || !recorded && !peerRecordCurrent(state, note, proposal)) {
+          throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker note is not a current proposal in this case");
+        }
+        if (operation.kind === "withdraw" && !recorded && !state.receipts.some(receipt => receipt.owner === owner
+          && receipt.key.startsWith(workerPeerTaskPrefix(actor)) && receipt.action === "post_note" && receipt.item_id === note.id)) {
+          throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Only the proposing task may withdraw its proposal");
+        }
+        command = { kind: operation.kind === "acknowledge" ? "ack_note" : "withdraw_note", operation_key: key, note_id: noteId };
+      } else {
+        throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "Unsupported worker peer mutation");
+      }
+      const receipt = await this.#executeCommand(owner, command, []);
+      return { value: { schema_version: operation.schema_version, task_id: operation.task_id, run_id: operation.run_id,
+        control_generation: operation.control_generation, workspace_id: operation.workspace_id, source_view: operation.source_view,
+        case_id: operation.case_id, operation_key: operation.operation_key, kind: "receipt", operation: operation.kind,
+        receipt_revision: receipt.revision, note_id: receipt.item_id } };
     });
+    return result.value ?? result.wait!;
+  }
+
+  async #publish(current: ControlState, next: ControlState): Promise<void> {
+    await this.store.publish(current, next);
+    for (const waiter of this.#peerWaiters) {
+      try {
+        const item = workerPeerCase(next, parentId(waiter.actor.owner_id), waiter.actor);
+        if (workerPeerFingerprint(next, item) === waiter.fingerprint) continue;
+        this.#peerWaiters.delete(waiter); waiter.cleanup(); waiter.resolve(workerPeerCurrent(next, item, waiter.operation));
+      } catch (error) {
+        this.#peerWaiters.delete(waiter); waiter.cleanup(); waiter.reject(error);
+      }
+    }
   }
   /** Only the service's verified operator path calls this method. No process or Git effect is performed. */
   async recoverAuthorized(actor: CoordinationActor, input: unknown): Promise<RecoveryReceipt> {
     const operator = parentId(actor.owner_id), recovery = decodeRecoveryCommand(input);
     if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
+    if (recovery.operation_key.startsWith(WORKER_PEER_KEY_PREFIX)) throw new BridgeError("COORDINATION_FORBIDDEN", "Worker peer operation keys are reserved");
     const request_hash = canonicalHash({ operator, recovery });
     return this.#ordering.run(async () => {
       this.store.assertMutable();
@@ -339,7 +431,7 @@ export class CoordinationControl {
       next.recoveries.push(receipt);
       checkCapacity(next);
       // One atomic publication owns the version transition, metadata update and attributed acknowledgment.
-      await this.store.publish(current, next);
+      await this.#publish(current, next);
       return structuredClone(receipt);
     });
   }
@@ -449,9 +541,51 @@ export class CoordinationControl {
 
   async close(): Promise<void> {
     this.#closing = true;
+    for (const waiter of this.#peerWaiters) {
+      this.#peerWaiters.delete(waiter); waiter.cleanup(); waiter.reject(new BridgeError("COORDINATION_CLOSED", "Coordination closed during peer wait"));
+    }
     await Promise.all([...this.#retirements.values()]);
     await this.#ordering.run(() => this.store.close());
   }
+}
+function workerPeerTaskPrefix(actor: WorkerPeerActor): string {
+  return `${WORKER_PEER_KEY_PREFIX}${actor.task_id}:${actor.run_id}:`;
+}
+function workerPeerKey(operation: PeerWorkerOperation): string {
+  return `${WORKER_PEER_KEY_PREFIX}${operation.task_id}:${operation.run_id}:${canonicalHash(operation.operation_key)}`;
+}
+function workerPeerCase(state: ControlState, owner: ParentId, actor: WorkerPeerActor): Case {
+  const item = state.cases.find(candidate => candidate.id === actor.case_id);
+  if (!item || !item.members.includes(owner)) return unavailable();
+  if (item.state !== "active") throw new BridgeError("COORDINATION_CASE_CLOSED", "Worker peer case has closed");
+  const work = state.works.find(candidate => candidate.managed?.task_id === actor.task_id
+    && candidate.owner === owner && candidate.workspace_id === actor.workspace_id
+    && candidate.managed.control_generation === actor.control_generation);
+  if (!work || work.state !== "active" || !item.inputs.some(input => input.work_id === work.id) || !canReadCase(state, owner, item)) {
+    throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Task is not a current managed participant in this selected case");
+  }
+  const binding = submissionBindings(state).find(candidate => candidate.task_id === actor.task_id && candidate.owner === owner);
+  if (!binding || binding.source_view !== actor.source_view || binding.state !== "bound" && binding.state !== "settled") {
+    throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Task source view or submission authority is no longer current");
+  }
+  return item;
+}
+function workerPeerFingerprint(state: ControlState, item: Case): string {
+  return canonicalHash({ case: item, notes: state.notes.filter(note => note.subject.kind === "case" && note.subject.id === item.id),
+    works: item.inputs.map(input => state.works.find(work => work.id === input.work_id)),
+    bindings: submissionBindings(state).filter(binding => item.inputs.some(input => input.work_id === binding.task_id)) });
+}
+function workerPeerCurrent(state: ControlState, item: Case,
+  operation: Extract<PeerWorkerOperation, { kind: "inspect" | "await_change" }>): PeerWorkerOperationResult {
+  const selected = peerProposalNotes(state, item).filter(candidate => peerRecordCurrent(state, candidate.note, candidate.proposal)).at(-1);
+  const evidence_id = selected?.proposal.evidence_id ?? canonicalHash({ case_id: item.id, revision: item.revision,
+    generation: item.generation, target_oid: item.target_oid, inputs: item.inputs });
+  return { schema_version: operation.schema_version, task_id: operation.task_id, run_id: operation.run_id,
+    control_generation: operation.control_generation, workspace_id: operation.workspace_id, source_view: operation.source_view,
+    case_id: operation.case_id, operation_key: operation.operation_key, kind: "current", operation: operation.kind,
+    case_revision: item.revision, case_generation: item.generation, evidence_id,
+    evidence_revision: selected?.proposal.evidence_revision ?? item.revision,
+    proposal_note_id: selected?.note.id ?? null, proposal: selected?.proposal ?? null };
 }
 function submissionState(current: ControlState): Extract<ControlState, { schema_version: 4 | 5 | 6 }> {
   return current.schema_version === 4 || current.schema_version === 5 || current.schema_version === 6 ? structuredClone(current) : {
@@ -460,6 +594,7 @@ function submissionState(current: ControlState): Extract<ControlState, { schema_
   };
 }
 function sameSubmissionKey(state: ControlState, owner: ParentId, key: string, hash: string): SubmissionEvent | undefined {
+  if (key.startsWith(WORKER_PEER_KEY_PREFIX)) throw new BridgeError("COORDINATION_FORBIDDEN", "Worker peer operation keys are reserved");
   if (state.receipts.some(r => r.owner === owner && r.key === key)
     || recoveryReceipts(state).some(r => r.operator === owner && r.command.operation_key === key)) {
     throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key names another retained metadata action");

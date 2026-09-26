@@ -14,7 +14,7 @@ import type { DelegateRequest, DelegateResult, FinalizeOperation, ResultRequest,
 import type { RuntimeBinding, RuntimeIdentity, RuntimeStatus } from "../contracts/runtime.js";
 import type { TaskStore } from "../store/task-store.js";
 import type { Coordinator } from "./coordinator.js";
-import type { AdapterDefinition } from "../agents/types.js";
+import type { AdapterDefinition, WorkerPeerOperationRequest } from "../agents/types.js";
 import type { Assignment, AgentCatalog } from "../contracts/agents.js";
 import type { AgentRegistry } from "../agents/registry.js";
 import { TaskControls, owns, type ClientActor } from "./task-control.js";
@@ -31,6 +31,7 @@ import { CorrespondenceIndex, type CorrespondencePair, type CorrespondenceUpdate
 import type { AttributedComparison, SourceFile } from "../observation/model.js";
 import type { ObservationGeneration, ObservationPull } from "../contracts/observation.js";
 import { peerDeliveryContentDigest, type PeerDeliveryEnvelope, type PeerDeliverySource } from "../contracts/peer-delivery.js";
+import { decodePeerWorkerOperation, type PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 
 import type { RepositoryLease } from "./lease.js";
 import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure } from "./errors.js";
@@ -918,6 +919,53 @@ export class RepositoryRuntime {
       if (selected.has(pair.current_work_id) && selected.has(pair.other_work_id)) await this.#queuePeerOverlap(pair);
     }
   }
+  async #workerPeerOperation(taskId: string, request: WorkerPeerOperationRequest, signal: AbortSignal): Promise<PeerWorkerOperationResult> {
+    signal.throwIfAborted(); this.#assertAuthority();
+    const store = this.#store, binding = this.#binding;
+    if (!store || !binding) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker operation authority is not prepared");
+    const admission = await store.durableRequest(taskId), state = await store.readControl(taskId), resource = await store.readResource(taskId);
+    if (admission.schema_version !== 5 || state.owner_id !== admission.initial_owner || state.cancel || state.phase !== "active" ||
+        state.native.state !== "observed_live" || state.native.coverage !== "turn_scoped" || state.native.obligations.length ||
+        state.inputs.some(input => input.state === "pending" || input.state === "answer_intent" || input.state === "delivery_unknown")) {
+      throw new BridgeError("PEER_OPERATION_STALE", "Worker operations require the current active task and a settled native turn");
+    }
+    if (!resource || resource.state !== "pending" || !resource.worktree_path) {
+      throw new BridgeError("PEER_OPERATION_STALE", "Worker operation workspace authority is no longer current");
+    }
+    const managed = await managedTaskSource(store, binding.repositoryId, taskId);
+    if (managed.root !== resource.worktree_path) throw new BridgeError("PEER_OPERATION_STALE", "The task workspace changed during worker authentication");
+    const { CoordinationRepository } = await import("../coordination/repository.js");
+    const repository = await CoordinationRepository.open(binding.project, binding.repositoryId, coordinationLimits.max_worktrees, signal);
+    const workspace = await repository.inspect(managed.root, signal);
+    const metadata = await this.#coordinationSession(binding).observationStore(), snapshot = await metadata.snapshot();
+    const work = snapshot.works.find(candidate => candidate.managed?.task_id === taskId && candidate.owner === state.owner_id);
+    if (!work || work.state !== "active" || work.managed?.control_generation !== state.control_generation ||
+        work.workspace_id !== workspace.workspace_id || workspace.root !== managed.root || workspace.repository_id !== binding.repositoryId) {
+      throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker task is not bound to its current managed coordination work");
+    }
+    const peerCase = snapshot.cases.find(candidate => candidate.id === request.case_id && candidate.state === "active");
+    if (!peerCase || !peerCase.inputs.some(input => input.work_id === work.id)) {
+      throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker operation does not target its selected active case");
+    }
+    // Metadata membership is not source authority. Recheck the current report grant for every
+    // selected work before exposing or recording a worker operation, including exact retries.
+    for (const input of peerCase.inputs) await this.#currentSourceWork(state.owner_id, input.work_id, "report");
+    const actor = { owner_id: state.owner_id, task_id: taskId, run_id: state.native.run_id,
+      control_generation: state.control_generation, workspace_id: work.workspace_id, source_view: admission.source_view, case_id: request.case_id };
+    const operation = decodePeerWorkerOperation({ ...request, task_id: actor.task_id, run_id: actor.run_id,
+      control_generation: actor.control_generation, workspace_id: actor.workspace_id, source_view: actor.source_view, case_id: actor.case_id });
+    const started = await store.appendEvent(taskId, { kind: "worker_peer_operation_started", operation: operation.kind,
+      operation_key: operation.operation_key, case_id: operation.case_id, run_id: operation.run_id,
+      control_generation: operation.control_generation });
+    if (!started) throw new BridgeError("PEER_OPERATION_EVIDENCE_UNAVAILABLE", "Task operation evidence capacity is exhausted; no worker operation was started");
+    const result = await this.#coordinationSession(binding).workerPeerOperation(
+      { owner_id: state.owner_id, source_view: admission.source_view }, actor, operation, signal);
+    const retained = await store.appendEvent(taskId, { kind: "worker_peer_operation", operation: operation.kind,
+      operation_key: operation.operation_key, case_id: operation.case_id, run_id: operation.run_id,
+      control_generation: operation.control_generation, outcome: result.kind, result_digest: canonicalHash(result) });
+    if (!retained) throw new BridgeError("PEER_OPERATION_EVIDENCE_UNAVAILABLE", "Task operation receipt evidence could not be retained");
+    return result;
+  }
   async #execution(): Promise<Coordinator> {
     this.#assertOpen();
     if (this.#coordinator) return this.#coordinator;
@@ -940,6 +988,7 @@ export class RepositoryRuntime {
         this.#assertOpen(); this.#assertAuthority();
         this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority(), this.#controls);
         this.#coordinator.onAuthorizePeerDelivery = envelope => this.#authorizePeerDelivery(envelope);
+        this.#coordinator.onWorkerPeerOperation = (taskId, request, signal) => this.#workerPeerOperation(taskId, request, signal);
         this.#coordinator.onSettled = () => this.onSettled?.();
         this.#coordinator.onTaskSettled = taskId => this.#scheduleTerminalBinding(taskId);
         this.#coordinator.onCoordinatedWorkspacePrepared = async (record, workspace) => {
