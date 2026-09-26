@@ -1,0 +1,88 @@
+{
+  "id": "L06",
+  "functional": [
+    {
+      "id": "normal",
+      "argv": ["1200", "2", "500"],
+      "input": {
+        "unit_cents": 1200,
+        "quantity": 2,
+        "discount_bps": 500
+      },
+      "stdout": "subtotal_cents=2400 discount_cents=120 total_cents=2280\n"
+    },
+    {
+      "id": "zero",
+      "argv": ["0", "1", "10000"],
+      "input": {
+        "unit_cents": 0,
+        "quantity": 1,
+        "discount_bps": 10000
+      },
+      "stdout": "subtotal_cents=0 discount_cents=0 total_cents=0\n"
+    },
+    {
+      "id": "invalid",
+      "argv": ["1200", "0", "500"],
+      "input": {
+        "unit_cents": 1200,
+        "quantity": 0,
+        "discount_bps": 500
+      },
+      "stdout": "",
+      "stderr": "invalid order: quantity must be 1..100\n",
+      "exit_code": 2
+    }
+  ],
+  "fixture_overlap": {
+    "path": "tests/fixture-apps/kotlin/Quote.kt",
+    "dialect": "kotlin",
+    "subject": "calculateQuote",
+    "extraction_expectation": {"minimum_declarations": ["calculateQuote", "Quote"], "permitted_limitations": ["unmapped_local_syntax"]},
+    "permitted_comparison_limitations": ["comparison_coverage_incomplete", "unmapped_local_syntax"],
+    "alias_expectations": {
+      "quote.kts": {"minimum_declarations": ["scriptQuote"], "permitted_limitations": ["unmapped_local_syntax", "unmapped_top_level_syntax"]}
+    },
+    "anchor": "val discount = subtotal * discountBps / 10_000L",
+    "left": "val discount = subtotal * discountBps / 9_000L",
+    "right": "val discount = subtotal * discountBps / 8_000L"
+  },
+  "syntax": [
+    {
+      "id": "same_symbol_body",
+      "dialect": "kotlin",
+      "path": "Quote.kt",
+      "source": "fun quote(cents: Long): Long { return cents }\n",
+      "left": "fun quote(cents: Long): Long { return cents + 100 }\n",
+      "right": "fun quote(cents: Long): Long { return cents + 200 }\n",
+      "expected": {
+        "declaration": "quote",
+        "range_text": "fun quote(cents: Long): Long { return cents }",
+        "signature_contains": "quote",
+        "left_changes": [
+          {
+            "name": "quote",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "right_changes": [
+          {
+            "name": "quote",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "overlap": {
+          "subject": "quote",
+          "reason": "body_changed",
+          "observations": 2
+        }
+      }
+    }
+  ]
+}

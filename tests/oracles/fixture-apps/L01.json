@@ -1,0 +1,85 @@
+{
+  "id": "L01",
+  "functional": [
+    {
+      "id": "normal",
+      "argv": ["1250", "3", "1000"],
+      "input": {
+        "unit_cents": 1250,
+        "quantity": 3,
+        "discount_bps": 1000
+      },
+      "stdout": "subtotal_cents=3750\ndiscount_cents=375\ntotal_cents=3375\n"
+    },
+    {
+      "id": "zero",
+      "argv": ["1250", "0", "1000"],
+      "input": {
+        "unit_cents": 1250,
+        "quantity": 0,
+        "discount_bps": 1000
+      },
+      "stdout": "subtotal_cents=0\ndiscount_cents=0\ntotal_cents=0\n"
+    },
+    {
+      "id": "invalid",
+      "argv": ["1250", "-1", "1000"],
+      "input": {
+        "unit_cents": 1250,
+        "quantity": -1,
+        "discount_bps": 1000
+      },
+      "stdout": "",
+      "stderr": "error: expected unsigned decimal integer\n",
+      "exit_code": 2
+    }
+  ],
+  "fixture_overlap": {
+    "path": "tests/fixture-apps/rust/src/lib.rs",
+    "dialect": "rust",
+    "subject": "calculate_quote",
+    "extraction_expectation": {"minimum_declarations": ["calculate_quote", "format_quote"], "permitted_limitations": ["nested_declaration_coverage_unavailable", "unmapped_member_syntax", "unmapped_top_level_syntax"]},
+    "permitted_comparison_limitations": ["comparison_coverage_incomplete", "nested_declaration_coverage_unavailable", "unmapped_member_syntax", "unmapped_top_level_syntax"],
+    "anchor": "checked_sub(discount_cents)",
+    "left": "checked_sub(discount_cents / 2)",
+    "right": "checked_sub(discount_cents / 3)"
+  },
+  "syntax": [
+    {
+      "id": "same_symbol_body",
+      "dialect": "rust",
+      "path": "quote.rs",
+      "source": "pub fn quote(cents: i64) -> i64 { cents }\n",
+      "left": "pub fn quote(cents: i64) -> i64 { cents + 100 }\n",
+      "right": "pub fn quote(cents: i64) -> i64 { cents + 200 }\n",
+      "expected": {
+        "declaration": "quote",
+        "range_text": "pub fn quote(cents: i64) -> i64 { cents }",
+        "signature_contains": "quote",
+        "left_changes": [
+          {
+            "name": "quote",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "right_changes": [
+          {
+            "name": "quote",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "overlap": {
+          "subject": "quote",
+          "reason": "body_changed",
+          "observations": 2
+        }
+      }
+    }
+  ]
+}

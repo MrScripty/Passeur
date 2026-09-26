@@ -1,0 +1,19 @@
+{
+  "name": "passeur-fixture-svelte5-quote",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "render": "node scripts/render.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "dev": "vite --host 127.0.0.1 --port 4174"
+  },
+  "dependencies": {
+    "svelte": "5.19.8"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "5.0.3",
+    "typescript": "5.9.3",
+    "vite": "6.2.6"
+  }
+}

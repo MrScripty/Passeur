@@ -1,0 +1,86 @@
+{
+  "id": "L13",
+  "functional": [
+    {
+      "id": "normal",
+      "argv": ["2", "true"],
+      "input": {
+        "quantity": "2",
+        "include_delivery": true
+      },
+      "stdout": "normal: jsx=$30.00 tsx=$30.00\n"
+    },
+    {
+      "id": "zero",
+      "argv": ["0", "false"],
+      "input": {
+        "quantity": "0",
+        "include_delivery": false
+      },
+      "stdout": "zero: jsx=$0.00 tsx=$0.00\n"
+    },
+    {
+      "id": "invalid",
+      "argv": ["21", "false"],
+      "input": {
+        "quantity": "21",
+        "include_delivery": false
+      },
+      "stdout": "invalid: jsx=Quantity must be between 0 and 20. tsx=Quantity must be between 0 and 20.\n"
+    }
+  ],
+  "fixture_overlap": {
+    "path": "tests/fixture-apps/react/src/quote.js",
+    "dialect": "javascript",
+    "subject": "quoteOrder",
+    "extraction_expectation": {"minimum_declarations": ["quoteOrder", "formatCents"], "permitted_limitations": ["unmapped_binding_syntax"]},
+    "permitted_comparison_limitations": ["comparison_coverage_incomplete", "unmapped_binding_syntax"],
+    "alias_expectations": {
+      "src/LineItem.js": {"minimum_declarations": ["LineItem"], "permitted_limitations": []},
+      "src/QuoteForm.jsx": {"minimum_declarations": ["QuoteForm"], "permitted_limitations": ["nested_declaration_coverage_unavailable", "unmapped_binding_syntax"]},
+      "src/QuoteForm.tsx": {"minimum_declarations": ["QuoteForm"], "permitted_limitations": ["nested_declaration_coverage_unavailable"]}
+    },
+    "anchor": "export function quoteOrder(rawQuantity, includeDelivery) {",
+    "left": "export function quoteOrder(rawQuantity, includeDelivery = false) {",
+    "right": "export function quoteOrder(rawQuantity, includeDelivery = true) {",
+    "expected_reason": "default_changed"
+  },
+  "syntax": [
+    {
+      "id": "same_symbol_body",
+      "dialect": "tsx",
+      "path": "Quote.tsx",
+      "source": "export function Quote({cents}: {cents: number}) { return <output>{cents}</output>; }\n",
+      "left": "export function Quote({cents}: {cents: number}) { return <output>{cents + 100}</output>; }\n",
+      "right": "export function Quote({cents}: {cents: number}) { return <output>{cents + 200}</output>; }\n",
+      "expected": {
+        "declaration": "Quote",
+        "range_text": "export function Quote({cents}: {cents: number}) { return <output>{cents}</output>; }",
+        "signature_contains": "Quote",
+        "left_changes": [
+          {
+            "name": "Quote",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "right_changes": [
+          {
+            "name": "Quote",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "overlap": {
+          "subject": "Quote",
+          "reason": "body_changed",
+          "observations": 2
+        }
+      }
+    }
+  ]
+}

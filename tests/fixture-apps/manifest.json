@@ -1,0 +1,279 @@
+{
+  "schema_version": 1,
+  "rows": [
+    {
+      "id": "L01",
+      "root": "rust",
+      "toolchain": "rustc/cargo 1.92.0",
+      "entrypoint": "src/main.rs",
+      "sources": [
+        {"path":"Cargo.lock","sha256":"eea0384159c86d8bf05e70b9aac131a7dcad1cf1067b8d80ada4f1570d926b84"},
+        {"path":"Cargo.toml","sha256":"0135c0d99faa3265f6f75a87ce4c1fa8519acfaa6197c1db3127bb6e98f3c446"},
+        {"path":"README.md","sha256":"90f3b3e569d26134eeb2c90b34222a20c32fe4e83b0758e90306a389228ce317"},
+        {"path":"src/lib.rs","sha256":"468eb7531ff41890724d62d669d183ba125c81cc4b80533b8f168009b0e72679"},
+        {"path":"src/main.rs","sha256":"5cb1e585c46a467dab1a6d28ad99cf59d7bd3bfa73df90f4e3b14b46cf09ea0c"},
+        {"path":"tests/cli.rs","sha256":"54b9bf19db7487385b58d7d320a273d83d9f4c88d812ce4e0aa0cd4eb47ece85"}
+      ],
+      "build":{"argv":["cargo","test","--offline","--quiet","--manifest-path","Cargo.toml","--target-dir",".build"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["1250","3","1000"],"argv":["cargo","run","--offline","--quiet","--manifest-path","Cargo.toml","--target-dir",".build","--","1250","3","1000"]},
+        {"case_id":"zero","input_argv":["1250","0","1000"],"argv":["cargo","run","--offline","--quiet","--manifest-path","Cargo.toml","--target-dir",".build","--","1250","0","1000"]},
+        {"case_id":"invalid","input_argv":["1250","-1","1000"],"argv":["cargo","run","--offline","--quiet","--manifest-path","Cargo.toml","--target-dir",".build","--","1250","-1","1000"]}
+      ]
+    },
+    {
+      "id": "L02",
+      "root": "typescript",
+      "toolchain": "TypeScript 5.9.3; Node.js 24.12.0",
+      "entrypoint": "src/main.ts",
+      "sources": [
+        {"path":"package.json","sha256":"a37957fc91e568cee074e48fa75ec0f136a4ecef46d7ccfac377b6b2d6f667a2"},
+        {"path":"README.md","sha256":"9e6af5d913d121a2ca62adcb343695b689e589a9e986463e3828210cf1d6e29f"},
+        {"path":"src/format.cts","sha256":"859837f2fac15320ed42f3aea57a8e1da713ce0d6454aa33b0b14c05d9728dce"},
+        {"path":"src/main.ts","sha256":"6f37a19247fcc5623c99da887d58f17d1abf68d7a0845bb4bcee558408eb6c7c"},
+        {"path":"src/node-shim.d.ts","sha256":"21c0c06cdb612d0464a37319db412f5d8881d1709e7f487bf5d84330a4969ee3"},
+        {"path":"src/node-shim/assert-strict.d.ts","sha256":"dcc942c767403d1b0c9aabd1179ecdd2157bbefc17da3cb9ebbf3c70976e90c8"},
+        {"path":"src/node-shim/child-process.d.ts","sha256":"ba30eff8624011065a9b4560a8514e100518ba37e86d26700ec67d2b2c4982e6"},
+        {"path":"src/node-shim/process.d.ts","sha256":"5451e55e798c173d437c6ff24fc0b9efcd6492a82b9cdc9762ae98e08ae93fbe"},
+        {"path":"src/node-shim/test.d.ts","sha256":"d6af831ee50af2ff5ee679f96ae0b7900233f9d5e8324c150f5eab291efcf0da"},
+        {"path":"src/node-shim/url.d.ts","sha256":"f617c70ff593ee21c144f35870f57a89d68fbc248acec9deb60ee875fbcf950c"},
+        {"path":"src/quote.mts","sha256":"159d14230d25a0619f938d031e4146ae1cf8db55c735950cc5d9c1b588b26333"},
+        {"path":"test/cli.test.mts","sha256":"18f1da24edc811ade01832342fc61bcb73f88916117bce239f9874c0a07eb64d"},
+        {"path":"tsconfig.json","sha256":"6d151e72e5b5489173340c5c1174b37628c480d9a3e7d676c9ca64d2c1ce402e"}
+      ],
+      "build":{"argv":["tsc","-p","tsconfig.json","--outDir",".build"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["1250","3","1000"],"argv":["node",".build/src/main.js","1250","3","1000"]},
+        {"case_id":"zero","input_argv":["1250","0","1000"],"argv":["node",".build/src/main.js","1250","0","1000"]},
+        {"case_id":"invalid","input_argv":["1250","-1","1000"],"argv":["node",".build/src/main.js","1250","-1","1000"]}
+      ]
+    },
+    {
+      "id": "L03",
+      "root": "javascript",
+      "toolchain": "Node.js 24.12.0",
+      "entrypoint": "src/main.js",
+      "sources": [
+        {"path":"package.json","sha256":"f6e2b196c8ca38e66f0260d7ed89ed0715922ad55c779d3bee5743b29af6f238"},
+        {"path":"README.md","sha256":"3c0ac8a6f330a1e60e9a60d72d135437de5d8d5d2a68d6ba803e77f205f80977"},
+        {"path":"src/format.cjs","sha256":"c3c0baee04aef29a8c01b584c12917c0b1101bad105b781e853c89eba086138a"},
+        {"path":"src/main.js","sha256":"5be3e1b7e22687ca95565528c850e406c72b5d3d4ae19dfefbbb59be12d08765"},
+        {"path":"src/quote.mjs","sha256":"a73bf7d40dbbd67b7e63d8bcc63c92c47fd7f9856a96e1bb0419ff288bea3957"},
+        {"path":"test/cli.test.mjs","sha256":"4a32928956cfcd493a3bebbe5174b9be3d35deb7228c66dddebbccd550844177"}
+      ],
+      "build":{"argv":["node","--check","src/main.js"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["1250","3","1000"],"argv":["node","src/main.js","1250","3","1000"]},
+        {"case_id":"zero","input_argv":["1250","0","1000"],"argv":["node","src/main.js","1250","0","1000"]},
+        {"case_id":"invalid","input_argv":["1250","-1","1000"],"argv":["node","src/main.js","1250","-1","1000"]}
+      ]
+    },
+    {
+      "id": "L04",
+      "root": "python",
+      "toolchain": "Python 3.12.3",
+      "entrypoint": "main.py",
+      "sources": [
+        {"path":"display.py","sha256":"2b711d1b9ddba334f3aeeb754bdc79718dc333d7ff69f79ded3b6e1a782ee2d2"},
+        {"path":"main.py","sha256":"4691d8f711f958168e0069176b351d27b2b9d3483f29a9db371b4d2ccc611ca7"},
+        {"path":"quote.py","sha256":"56191c8031466a224eea7732a49d178aa0af44f84c9ef14a6f7e63e3d3051c66"},
+        {"path":"quote.pyi","sha256":"4d1c2559410b9a874a98cb1085b73e7e31393c97335fef260c14eabe4af88d76"},
+        {"path":"README.md","sha256":"de3a2a850cba9f620ec48be0fc9da55ef2682399b3cb98940b2e1415cb072433"},
+        {"path":"test_quote.py","sha256":"956e9d707dc4ed5366028d51513263f6283e267b1f70936396b633f8901a5cb9"}
+      ],
+      "build":{"argv":["python3","-m","py_compile","main.py","quote.py","display.py"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["1250","3","1000"],"argv":["python3","main.py","1250","3","1000"]},
+        {"case_id":"zero","input_argv":["1250","0","1000"],"argv":["python3","main.py","1250","0","1000"]},
+        {"case_id":"invalid","input_argv":["1250","-1","1000"],"argv":["python3","main.py","1250","-1","1000"]}
+      ]
+    },
+    {
+      "id": "L05",
+      "root": "lua",
+      "toolchain": "Lua 5.4 (required; unavailable locally)",
+      "entrypoint": "main.lua",
+      "sources": [
+        {"path":"main.lua","sha256":"09ab243eb738d92fe8d30938f4f503c1982e24edeab589f05b7178f705c850a4"},
+        {"path":"quote.lua","sha256":"9b7f02f851c683eafd443d415241186e04c9134216b10cdf710d5d6b2cb1f781"},
+        {"path":"README.md","sha256":"92917dd2735e8a4991cf837e8945fb0df42df0ab1d208f7e6e060eac2b0dece9"},
+        {"path":"test.lua","sha256":"311df7fb0f170022d773287a103f655070ffacd3509f8046ef85fe348b86743c"}
+      ],
+      "build":{"argv":["lua","test.lua"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["1200","2","500"],"argv":["lua","main.lua","1200","2","500"]},
+        {"case_id":"zero","input_argv":["0","1","10000"],"argv":["lua","main.lua","0","1","10000"]},
+        {"case_id":"invalid","input_argv":["1200","0","500"],"argv":["lua","main.lua","1200","0","500"]}
+      ]
+    },
+    {
+      "id": "L06",
+      "root": "kotlin",
+      "toolchain": "Kotlin/JVM compiler 2.2.x and JDK 17 (Kotlin unavailable locally)",
+      "entrypoint": "Main.kt",
+      "sources": [
+        {"path":"Main.kt","sha256":"482c364f8d05aa46aa7702cde5d104b23be10164b75caf131feb55eedb1127c9"},
+        {"path":"Quote.kt","sha256":"42775314e2ed5d5feb2a403f9af15c96c8855452bc495d5cea6eed0e49c3a979"},
+        {"path":"quote.kts","sha256":"29b4fc9cecd7652c0fc4dc99040efe480223bfaef2d11abfc51b1f22f5059b5d"},
+        {"path":"QuoteTest.kt","sha256":"e19e242a511247728f7bfe3d0a9b4fb400f6926a050898093b459d7171b75fdc"},
+        {"path":"README.md","sha256":"b0fb64a15307981f56f8113d6c2a4004dd1bd4e86efa1bf0a2949501c7076aba"}
+      ],
+      "build":{"argv":["kotlinc","Quote.kt","Main.kt","-include-runtime","-d","quote.jar"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["1200","2","500"],"argv":["java","-jar","quote.jar","1200","2","500"]},
+        {"case_id":"zero","input_argv":["0","1","10000"],"argv":["java","-jar","quote.jar","0","1","10000"]},
+        {"case_id":"invalid","input_argv":["1200","0","500"],"argv":["java","-jar","quote.jar","1200","0","500"]}
+      ]
+    },
+    {
+      "id": "L07",
+      "root": "zig",
+      "toolchain": "Zig 0.13 (required; unavailable locally)",
+      "entrypoint": "main.zig",
+      "sources": [
+        {"path":"main.zig","sha256":"42edfcadf59298daebe192480506435db8c1fd9fb6a2a20ff369f9f3cf800b78"},
+        {"path":"quote.zig","sha256":"467f4198f993bee65f2d3b05417f9ffb2001b3c7e0e506c1fd359f63d7bb3d1a"},
+        {"path":"README.md","sha256":"9dd436eaddf51f35df529f60fc1eec8d3b098aaaa54cbfa3717de01f478ac94b"}
+      ],
+      "build":{"argv":["zig","test","quote.zig"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["1200","2","500"],"argv":["zig","run","main.zig","--","1200","2","500"]},
+        {"case_id":"zero","input_argv":["0","1","10000"],"argv":["zig","run","main.zig","--","0","1","10000"]},
+        {"case_id":"invalid","input_argv":["1200","0","500"],"argv":["zig","run","main.zig","--","1200","0","500"]}
+      ]
+    },
+    {
+      "id": "L08",
+      "root": "csharp",
+      "toolchain": ".NET SDK 10.0.111",
+      "entrypoint": "Program.cs",
+      "sources": [
+        {"path":"NuGet.Config","sha256":"5256a7e3e07d2c5c94f7a1e6c45f39aab011c659c5e2d53e452dea525ce04575"},
+        {"path":"Program.cs","sha256":"0138428ab9bf430b37d2c05d79af7b6fd9f349a012474cd7a2c3f26f74706107"},
+        {"path":"Quote.cs","sha256":"1e5a5efb686a826ed58d0321867eec2ba9e22c769e7e6974479b1dc7c1968969"},
+        {"path":"QuoteCalculator.cs","sha256":"a4ed60f7120743111a38ce5d03bbaf235f78cfc3e502de38ee6910a95c9d8b73"},
+        {"path":"QuoteFixture.csproj","sha256":"cbda77be076f6ff67d1a510c950892ab127591d8dec1e78eb4f9a23d48b41661"},
+        {"path":"README.md","sha256":"54833c294bd3e7e2a36ff0caed101fb6868d6579191fae9562dc8c9323b0ce31"},
+        {"path":"test.sh","sha256":"5915969440e010d48b57da7d316c7d666e993f56a9a2aa12f1acce56108eb990"}
+      ],
+      "build":{"argv":["dotnet","build","QuoteFixture.csproj","--configuration","Release","--output",".build","--property:BaseIntermediateOutputPath=.obj/","--property:MSBuildProjectExtensionsPath=.obj/","--verbosity","quiet"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["2","1250","1000"],"argv":["dotnet",".build/QuoteFixture.dll","2","1250","1000"]},
+        {"case_id":"zero","input_argv":["0","1250","1000"],"argv":["dotnet",".build/QuoteFixture.dll","0","1250","1000"]},
+        {"case_id":"invalid","input_argv":["-1","1250","1000"],"argv":["dotnet",".build/QuoteFixture.dll","-1","1250","1000"]}
+      ]
+    },
+    {
+      "id": "L09",
+      "root": "c",
+      "toolchain": "GCC 13.3.0 (C11)",
+      "entrypoint": "main.c",
+      "sources": [
+        {"path":"main.c","sha256":"453976184d71ca9863a6ee9fba9b2b3d192a98d5b6f14da5fa551eb8369b2067"},
+        {"path":"quote.c","sha256":"4ad4571985d1ecd2111d211299182861ec2fb7afaf818b709980b33cea8ca506"},
+        {"path":"quote.h","sha256":"2165f1f534eb8644ed89debfc09b3390cbd39c42d6a968b298330f0f729734e1"},
+        {"path":"README.md","sha256":"f95cc7f16523aeb44daff38e52e82d0d42ba3a68f8d8878eb137b50647c5e92e"},
+        {"path":"test.sh","sha256":"b757fed52bc2692c61912c53acd38c99572b88a2e8c671377bf5bdf017a178af"}
+      ],
+      "build":{"argv":["gcc","-std=c11","-Wall","-Wextra","-Werror","-pedantic","main.c","quote.c","-o","quote-c"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["2","1250","1000"],"argv":["./quote-c","2","1250","1000"]},
+        {"case_id":"zero","input_argv":["0","1250","1000"],"argv":["./quote-c","0","1250","1000"]},
+        {"case_id":"invalid","input_argv":["-1","1250","1000"],"argv":["./quote-c","-1","1250","1000"]}
+      ]
+    },
+    {
+      "id": "L10",
+      "root": "cpp",
+      "toolchain": "G++ 13.3.0 (C++17)",
+      "entrypoint": "main.cc",
+      "sources": [
+        {"path":"format.cxx","sha256":"ef408d311dda22484afe21727c6499be4f07fc7bf97cce2681d1644504815092"},
+        {"path":"format.hh","sha256":"674f4755d3e89028e237959d50d03e3dda9a82db0e159866614cc86e5001baf0"},
+        {"path":"limits.hxx","sha256":"93139c16473c4a3ac6c0016faa63ca14bca3e03bb4d908f4187644b1ef1eed62"},
+        {"path":"main.cc","sha256":"bdc554de55aa9b3869a2cf116da534dbf47cd68ff6f6df3140b9b348afa714a1"},
+        {"path":"pricing.h","sha256":"f2418243ac990e90f75364158bc9325d7ea577428fa57f51fc0e2f7ebd35ed9d"},
+        {"path":"quote.cpp","sha256":"1ea00c34e74610e95549e495c63dd434283c8048e136b610110a1cd426923c55"},
+        {"path":"quote.hpp","sha256":"1dd59583350f1337c091503f15b91445d6b7049a2dec4d3fadb919ce2257e4b0"},
+        {"path":"README.md","sha256":"27416b6fcadf14d5bde2f48c3e4109292f1e83fc40e7a9622e0c16eec4e2b5fa"},
+        {"path":"test.sh","sha256":"0a8eb4224d2fb2143bfd96c0c4f3b8337f778787cbca29ca3a0a2457bb6f0554"}
+      ],
+      "build":{"argv":["g++","-std=c++17","-Wall","-Wextra","-Werror","-pedantic","main.cc","quote.cpp","format.cxx","-o","quote-cpp"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["2","1250","1000"],"argv":["./quote-cpp","2","1250","1000"]},
+        {"case_id":"zero","input_argv":["0","1250","1000"],"argv":["./quote-cpp","0","1250","1000"]},
+        {"case_id":"invalid","input_argv":["-1","1250","1000"],"argv":["./quote-cpp","-1","1250","1000"]}
+      ]
+    },
+    {
+      "id": "L11",
+      "root": "odin",
+      "toolchain": "Odin dev-2026-09 (required; unavailable locally)",
+      "entrypoint": "main.odin",
+      "sources": [
+        {"path":"main.odin","sha256":"ca0f7d86471b1800135b50f83ae9f41d35402877745d2b65c45df0d28a30a621"},
+        {"path":"quote.odin","sha256":"c97ac05e023fe3fc581bfc8a2bceab8abb19e0e1d1bc7bb4e37c8f2a18d2951c"},
+        {"path":"README.md","sha256":"fe79b0ed59b7781092e56e2f7ef2eb4d6a0bdc74646db6d26e2992b40eddd0c0"}
+      ],
+      "build":{"argv":["odin","build",".","-out:quote-odin"]},
+      "runs":[
+        {"case_id":"normal","input_argv":["1200","2","500"],"argv":["odin","run",".","--","1200","2","500"]},
+        {"case_id":"zero","input_argv":["0","1","10000"],"argv":["odin","run",".","--","0","1","10000"]},
+        {"case_id":"invalid","input_argv":["1200","0","500"],"argv":["odin","run",".","--","1200","0","500"]}
+      ]
+    },
+    {
+      "id": "L12",
+      "root": "svelte5",
+      "toolchain": "Node.js 24.12.0; Svelte 5.19.8; Vite 6.2.6; @sveltejs/vite-plugin-svelte 5.0.3 (packages unavailable locally)",
+      "entrypoint": "src/App.svelte; scripts/render.mjs",
+      "sources": [
+        {"path":"index.html","sha256":"ee1eb2dc05a4ba81121ad42bc497c5f7d1aab7c45ec0c472d2e3f3a171de490a"},
+        {"path":"package.json","sha256":"4a50f9d48977495b1e97f495ded4a4bb0076cfe6ac18c57c16316d7c53e5d760"},
+        {"path":"README.md","sha256":"3b4e35bd51b49a1776a6c92734a3b8ba36af3581a020245f58577e179a6658bd"},
+        {"path":"scripts/build.mjs","sha256":"f5fcdee678773cd79010ca5d8ea49dc5876163cb867b4cc1e794b1cb27d5478b"},
+        {"path":"scripts/render.mjs","sha256":"8081edb8743eac623c1ce7627af94f28f6e36c69294ea7982df002a9d8446546"},
+        {"path":"src/App.svelte","sha256":"ba6beacd45449501ccf59c1dd60cb17021f108ee4bcfc87ca8459611f4353b02"},
+        {"path":"src/delivery.svelte.js","sha256":"740556dd46d9491267af4d60451b5363228f3cf3f2d4a9583f05a57a6e092645"},
+        {"path":"src/main.js","sha256":"2ce7cc89153c305daa85a251a8ca2cde24eb0b47c6987f54c55bc1f6fb832cc7"},
+        {"path":"src/quote.svelte.ts","sha256":"340873ea5becc60898fc8e9354f9a24dfd6093216f497e2c35430c454155dfdf"},
+        {"path":"tests/quote.test.mjs","sha256":"e95680bbff25a8b70fd35a778b94f16d77a9f10a97204ef45c7b4a26136ef980"},
+        {"path":"vite.config.js","sha256":"e6468309a4a363be284a5e4612f836af41e0bd698c52b172eaf0a72a5e524771"}
+      ],
+      "build":{"argv":["node","scripts/build.mjs"],"blocked_exit_code":127},
+      "runs":[
+        {"case_id":"normal","input_argv":["2","true"],"argv":["node","scripts/render.mjs","2","true"]},
+        {"case_id":"zero","input_argv":["0","false"],"argv":["node","scripts/render.mjs","0","false"]},
+        {"case_id":"invalid","input_argv":["21","false"],"argv":["node","scripts/render.mjs","21","false"]}
+      ]
+    },
+    {
+      "id": "L13",
+      "root": "react",
+      "toolchain": "Node.js 24.12.0; React/react-dom 19.0.0; esbuild 0.25.12 (packages unavailable locally)",
+      "entrypoint": "src/main-jsx.jsx; src/main-tsx.tsx; scripts/render.mjs",
+      "sources": [
+        {"path":"jsx.html","sha256":"78b7a3cbbedc60e2cd0d9f0a55b5179dd038983305496c28f12d85e26048bc6d"},
+        {"path":"package.json","sha256":"bb30a627b2d9408ec7bdf84ccfc3e87d463bc080ce00b0ee10d366246e7db57e"},
+        {"path":"README.md","sha256":"32ba8a6ee85c00f999a0f1dfbfbdb93b78454e9cfa15db81b118c2292d5268fa"},
+        {"path":"scripts/build.mjs","sha256":"5a370d49f2656371293562276c85c256ea90c7c060c31da5c46603e826589e10"},
+        {"path":"scripts/render.mjs","sha256":"855d6295b876afc993f5ac69ed1c0fd24f842324d842bf08079dc9fd1d2fdc9c"},
+        {"path":"src/LineItem.js","sha256":"1b0a8c7af700bbdfc3c65f888690d5b85bc9a65bc9b5488fbfcd1832743dcd45"},
+        {"path":"src/main-jsx.jsx","sha256":"0ebaf7d82780638ed76426c1c8d1454048007b3659ee42c9a0774202a5f78531"},
+        {"path":"src/main-tsx.tsx","sha256":"7642e1c2069a8c9a59695be88567f9bb683b51bc03da28be04e2a36062da1d5f"},
+        {"path":"src/quote.js","sha256":"feaf72fe7b8f1a83cb1eb30fa2c49221e6927001b242f957b216fff6b82c3648"},
+        {"path":"src/QuoteForm.jsx","sha256":"cf1b1e214f2d61eb85f7db53fd053d9b80dd06d5b63d421d322a1d4ca317e819"},
+        {"path":"src/QuoteForm.tsx","sha256":"46d94a11e453d7941aa2ff554615c8970638bdb9d93902627084ae14db5fc8ae"},
+        {"path":"tests/quote.test.mjs","sha256":"627e5354eff20ff87e98d86531fa04b654a8cf78e5fb8b8a9aa7d197bf004952"},
+        {"path":"tsconfig.json","sha256":"76bc5c9df45198946efb2ada26457b45d9ce6fadb79a96fb6b1498629a5c8b4c"},
+        {"path":"tsx.html","sha256":"d2473571d8704be0affa6c3431f1778774e9249b4c3ed2fe58bdc4f0afc355c0"}
+      ],
+      "build":{"argv":["node","scripts/build.mjs"],"blocked_exit_code":127},
+      "runs":[
+        {"case_id":"normal","input_argv":["2","true"],"argv":["node","scripts/render.mjs","2","true"]},
+        {"case_id":"zero","input_argv":["0","false"],"argv":["node","scripts/render.mjs","0","false"]},
+        {"case_id":"invalid","input_argv":["21","false"],"argv":["node","scripts/render.mjs","21","false"]}
+      ]
+    }
+  ]
+}

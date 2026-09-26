@@ -1,0 +1,88 @@
+{
+  "id": "L10",
+  "functional": [
+    {
+      "id": "normal",
+      "argv": ["2", "1250", "1000"],
+      "input": {
+        "quantity": 2,
+        "unit_cents": 1250,
+        "discount_bps": 1000
+      },
+      "stdout": "subtotal_cents=2500 discount_cents=250 total_cents=2250\n"
+    },
+    {
+      "id": "zero",
+      "argv": ["0", "1250", "1000"],
+      "input": {
+        "quantity": 0,
+        "unit_cents": 1250,
+        "discount_bps": 1000
+      },
+      "stdout": "subtotal_cents=0 discount_cents=0 total_cents=0\n"
+    },
+    {
+      "id": "invalid",
+      "argv": ["-1", "1250", "1000"],
+      "input": {
+        "quantity": -1,
+        "unit_cents": 1250,
+        "discount_bps": 1000
+      },
+      "stdout": "",
+      "stderr": "error: invalid quote input\n",
+      "exit_code": 2
+    }
+  ],
+  "fixture_overlap": {
+    "path": "tests/fixture-apps/cpp/quote.cpp",
+    "dialect": "cpp",
+    "subject": "discount_cents",
+    "extraction_expectation": {"minimum_declarations": ["discount_cents", "calculate_quote"], "permitted_limitations": []},
+    "permitted_comparison_limitations": [],
+    "alias_expectations": {
+      "pricing.h": {"minimum_declarations": ["discount_cents"], "permitted_limitations": ["preprocessor_alternatives_unresolved"]}
+    },
+    "anchor": "return subtotal_cents * discount_bps / max_discount_bps;",
+    "left": "return subtotal_cents * discount_bps / (max_discount_bps - 1000);",
+    "right": "return subtotal_cents * discount_bps / (max_discount_bps - 2000);"
+  },
+  "syntax": [
+    {
+      "id": "same_symbol_body",
+      "dialect": "cpp",
+      "path": "quote.cpp",
+      "source": "long quote(long cents) { return cents; }\n",
+      "left": "long quote(long cents) { return cents + 100; }\n",
+      "right": "long quote(long cents) { return cents + 200; }\n",
+      "expected": {
+        "declaration": "quote",
+        "range_text": "long quote(long cents) { return cents; }",
+        "signature_contains": "quote",
+        "left_changes": [
+          {
+            "name": "quote",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "right_changes": [
+          {
+            "name": "quote",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "overlap": {
+          "subject": "quote",
+          "reason": "body_changed",
+          "observations": 2
+        }
+      }
+    }
+  ]
+}

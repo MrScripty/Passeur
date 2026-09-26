@@ -1,0 +1,85 @@
+{
+  "id": "L08",
+  "functional": [
+    {
+      "id": "normal",
+      "argv": ["2", "1250", "1000"],
+      "input": {
+        "quantity": 2,
+        "unit_cents": 1250,
+        "discount_bps": 1000
+      },
+      "stdout": "subtotal_cents=2500 discount_cents=250 total_cents=2250\n"
+    },
+    {
+      "id": "zero",
+      "argv": ["0", "1250", "1000"],
+      "input": {
+        "quantity": 0,
+        "unit_cents": 1250,
+        "discount_bps": 1000
+      },
+      "stdout": "subtotal_cents=0 discount_cents=0 total_cents=0\n"
+    },
+    {
+      "id": "invalid",
+      "argv": ["-1", "1250", "1000"],
+      "input": {
+        "quantity": -1,
+        "unit_cents": 1250,
+        "discount_bps": 1000
+      },
+      "stdout": "",
+      "stderr": "error: invalid quote input\n",
+      "exit_code": 2
+    }
+  ],
+  "fixture_overlap": {
+    "path": "tests/fixture-apps/csharp/QuoteCalculator.cs",
+    "dialect": "csharp",
+    "subject": "TryCalculate",
+    "extraction_expectation": {"minimum_declarations": ["TryCalculate", "QuoteCalculator"], "permitted_limitations": ["unmapped_local_syntax"]},
+    "permitted_comparison_limitations": ["comparison_coverage_incomplete", "direct_body_coverage_unavailable", "unmapped_local_syntax"],
+    "anchor": "long discountCents = subtotalCents * discountBps / 10000;",
+    "left": "long discountCents = subtotalCents * discountBps / 9000;",
+    "right": "long discountCents = subtotalCents * discountBps / 8000;"
+  },
+  "syntax": [
+    {
+      "id": "same_symbol_body",
+      "dialect": "csharp",
+      "path": "Quote.cs",
+      "source": "public class Quote { public static long Total(long cents) { return cents; } }\n",
+      "left": "public class Quote { public static long Total(long cents) { return cents + 100; } }\n",
+      "right": "public class Quote { public static long Total(long cents) { return cents + 200; } }\n",
+      "expected": {
+        "declaration": "Total",
+        "range_text": "public static long Total(long cents) { return cents; }",
+        "signature_contains": "Total",
+        "left_changes": [
+          {
+            "name": "Total",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "right_changes": [
+          {
+            "name": "Total",
+            "kind": "modified",
+            "body_changed": true,
+            "default_changed": false,
+            "declaration_changed": false
+          }
+        ],
+        "overlap": {
+          "subject": "Total",
+          "reason": "body_changed",
+          "observations": 2
+        }
+      }
+    }
+  ]
+}
