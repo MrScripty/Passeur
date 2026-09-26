@@ -1,5 +1,17 @@
 # Execution ledger
 
+## September 25, 2026 — M4-S1 installed and real-process continuation
+
+Operation: `verify`. Candidate: clean detached worktree at `22cde5e`, installed build `7be9f78ad72de63fa9214175eca3747acefa1d5cbcd6fc60920485a62109cf08`, Node `v24.12.0`, Linux/glibc disposable paths only. No personal registration, profile, state root or user repository was changed.
+
+Built the candidate with `npm run build:runtime` from already provisioned dependencies; the builder performed no package installation. Installed it into `/tmp/passeur-installed-22cde5e/<build_id>` after manifest, dependency-closure, compiled-byte and native parser inventory validation. The real `scripts/probe-service.ts` then started two installed front ends against one disposable Git fixture and state root: both reported `mode: installed`, the same build and service generation, `clients: 2`, and held coordination authority; after one client closed, the remaining client stayed connected. A second fresh installed pair started a new service generation against the same state after the first probe exited.
+
+A separate disposable installed probe killed the elected service PID `873847` with `SIGKILL`, closed the old client, and attached a fresh installed client to the same state namespace. The replacement reported a different service generation, the same installed build, `mode: installed`, and coordination authority `held`. This proves the service-death/lease-recovery path for an empty prepared repository namespace; it does not prove recovery of active native work.
+
+Targeted installed integration files passed **6/6**: `installed-runtime.test.ts`, `mcp-startup.test.ts`, and `registration-probe.test.ts`. Targeted real-process, parallel-client and durable-recovery integration files passed **16/16**: `mcp-startup.test.ts`, `parallel-mcp.test.ts`, `coordination-process-crash.test.ts`, `coordination-linkage-crash.test.ts`, and `recovery.test.ts`. The earlier full source/native suites remain recorded as 640/640 core and 192/192 native.
+
+Limits: the probes use preparation and status only (`inference: not_run`, `actual_codex_attachment: not_run`); no live Codex/Muse account, host elicitation, provider input, native descendant, accepted task, Git delivery, or active-work service crash was exercised. The broad Vitest runner still has a silent open-worker issue and is not claimed green. After confirming no probe service remained, the disposable worktree, candidate, installation, fixture, profile and state paths were removed. Preserve the plan's blocked status until the required provider, fresh-session skill and host evidence is obtained.
+
 ## September 25, 2026 — M4-S1 source verification and recovery repair
 
 Operation: `verify`. Candidate base: `b31c4fd` plus the bounded working-tree overlay. Plan status remains `Verifying`; acceptance remains `blocked`; the next slice remains M4-S1 because installed-runtime, pinned-dependency and host/native qualification are still open.

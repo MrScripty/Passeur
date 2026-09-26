@@ -22,6 +22,14 @@ CLI/profile migration, named registration/catalog probes, installed artifact ent
 
 ## Executed evidence
 
+### September 25, 2026 continuation
+
+The clean committed candidate `22cde5e` was built from a detached disposable worktree using the already provisioned dependency tree; no package installation was performed. Runtime candidate construction and installation produced build identity `7be9f78ad72de63fa9214175eca3747acefa1d5cbcd6fc60920485a62109cf08` and validated its compiled bytes, dependency closure and native parser inventory.
+
+The installed `scripts/probe-service.ts` passed with two real stdio clients sharing one service generation and one repository authority. A subsequent fresh pair started another generation after the first probe exited. A disposable service-death probe killed the elected service and attached a fresh installed client to the same state root; the replacement acquired a new generation with the same installed build and held coordination authority. These probes used preparation/status only and launched no inference.
+
+The targeted installed integration set passed 6/6. The targeted parallel/client/crash/recovery integration set passed 16/16. The full source/native command had already passed 640/640 core and 192/192 native tests. A broad Vitest run remains incomplete because its final worker stayed open without output and was interrupted; no overall `npm test` success is claimed.
+
 | Check | Observed result | Boundary actually proved |
 | --- | --- | --- |
 | Selected coordinator, registry and runtime-owner Node suites | **42 passed** | Production orchestration/control code with explicitly substituted profile/lease/store/native boundaries; selected real disposable Git effects |
@@ -48,7 +56,7 @@ Full TypeScript compilation was attempted with available Node declarations and f
 
 ## Added or updated but not executed here
 
-Dependency-backed real-store/profile migration and reopening tests; full v4 record/control producer-consumer checks; actual two-front-end/one-service MCP startup tests; full installed-artifact and registration probes; Muse facade and Codex adapter lifecycle/continuation fixtures under Vitest; skill structure tests through the repository runner; complete repository core/Git suites requiring Zod.
+Dependency-backed real-store/profile migration and reopening tests; full v4 record/control producer-consumer checks; Muse facade and Codex adapter lifecycle/continuation fixtures under Vitest; skill structure tests through the repository runner; complete repository core/Git suites requiring Zod; installed model-callable host and provider workflows.
 
 `tests/integration/durable-store.test.ts` includes persisted admission/control, immutable history, interrupted answer intent and malformed control rejection. `tests/integration/mcp-startup.test.ts` exercises actual built front-end processes, same repository/worktree election, another repository and repaired startup. `scripts/probe-service.ts` performs an explicitly authorized installed two-client, preparation-only probe. These are runnable intended evidence paths after complete dependencies/build are present, not completed evidence in this report.
 
@@ -57,7 +65,7 @@ Dependency-backed real-store/profile migration and reopening tests; full v4 reco
 1. Run the complete pinned checkout gates (`npm ci`, `npm run check`, `npm test`, runtime build) and resolve every failure before installation. Do not take the partial successes above as a release gate. The complete original checkout/lockfile remains authoritative.
 2. Qualify Muse SDK1.3.0/CLI against the added host-exit/connection/fold observations. Official main-branch SDK source and generated documentation were inspected, but the exact pinned package could not be installed. Completed-turn explicit questions are implemented; native in-turn Muse user-input variants are not comprehensively mapped or claimed qualified. Establish their exact supported API and implement/limit that capability explicitly before accepting SS-05/SS-06. SDK-internal request/approval timers and descendant handling need real evidence too.
 3. Qualify actual Codex app-server version, native request-user-input/permission/withdrawal behavior, human elicitation with request association, host Stop semantics, multi-turn same-session continuation, dedicated auth/recursion isolation, and descendant stop. No account use or live inference occurred.
-4. Qualify two real installed Codex sessions and source-independent installed dependency closure. The helper tests do not prove installed model-callable tools, service election under every target filesystem, or all-client-loss behavior with native runtimes.
+4. The installed dependency closure and two-client shared-service preparation path now have disposable evidence. Still qualify two real installed Codex sessions and source-independent installed model-callable behavior; the current probe does not prove host tools, service election on every target filesystem, all-client-loss behavior with native runtimes, or active-task recovery.
 5. Obtain fresh-session use of the revised adapter skill and independent external review at the completed candidate boundary. Neither was performed by the authoring session. No plan claim is marked Accepted from self-review.
 
 ## Source authority and design review

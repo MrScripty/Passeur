@@ -321,7 +321,7 @@ Every milestone begins `Planned`. Each is a coherent integration unit, not a fix
 
 ### M0 / M0-S1 — Admission and bounded evidence
 
-**Current lifecycle:** `Implemented` — source candidate only; no objective acceptance. Native/pinned gates remain blocked as mapped in the evidence report.
+**Current lifecycle:** `Implemented` — the clean candidate and disposable installed two-client/service probes are recorded; no objective acceptance. Native/pinned provider gates remain blocked as mapped in the evidence report.
 
 **Goal:** make this design implementable against actual native, deployment and consumer facts.
 
@@ -385,7 +385,7 @@ Implement profile/store/tool version handling, new CLI controls/help, exact buil
 
 ### M4 / M4-S1 — Objective acceptance and external review
 
-**Current lifecycle:** `Verifying` — source candidate only; no objective acceptance. Native/pinned gates remain blocked as mapped in the evidence report.
+**Current lifecycle:** `Verifying` — source and disposable installed service evidence are recorded; no objective acceptance. Native/pinned provider and host gates remain blocked as mapped in the evidence report.
 
 **Goal:** prove the actual multi-session, long-horizon workflow and close mandatory findings.
 
@@ -399,7 +399,7 @@ Use independent external review once the completed verification unit/candidate i
 
 ## Source candidate verification index
 
-The implementation source, tests and documentation are present; [actual evidence](reports/implementation-evidence.md) and [admission/write-set reconciliation](reports/admission.md) identify what ran. M0–M3 source state does not mean their real gates passed. Muse native in-turn input coverage and exact pinned SDK observations remain an explicit SS-05/06 qualification blocker and may require an owning adapter revision before acceptance. Full pinned checks, actual service/store/host paths, fresh skill use and external review were not available here.
+The implementation source, tests and documentation are present; [actual evidence](reports/implementation-evidence.md) and [admission/write-set reconciliation](reports/admission.md) identify what ran. M0–M3 source state does not mean their real gates passed. Disposable installed service, two-client and service-death evidence now covers the preparation/shared-authority boundary. Muse native in-turn input coverage, exact pinned SDK observations, active native-work recovery, fresh skill use and external host review remain qualification blockers and may require an owning adapter revision before acceptance.
 
 ## 11. Objective acceptance claims
 
