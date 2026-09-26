@@ -103,5 +103,6 @@ otherwise valid declaration is adjacent to unrelated parse damage
 
 ## Commit
 
-Pending the feature-only commit; concurrent lifecycle changes and preserved
-untracked artifacts must remain unstaged.
+Feature-only commit: `f91af87` (`feat(structural): add compact source
+inspection views`). Concurrent lifecycle changes and preserved untracked
+artifacts remain outside the commit.
