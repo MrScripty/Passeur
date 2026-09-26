@@ -22,13 +22,17 @@ CLI/profile migration, named registration/catalog probes, installed artifact ent
 
 ## Executed evidence
 
+### Current candidate addendum — September 25, 2026
+
+The continuation records below are historical candidate reports and retain their original scopes. The later execution ledger records the clean candidate's complete `npm test` result and the final isolated lifecycle candidate's **647/647** core, **192/192** native, **14/14** lease-recovery and **11/11** focused IPC results. No installed acceptance claim is made for combined `cae3722`; the remaining pinned, host/provider, active-work and fresh-session gates stay blocked.
+
 ### September 25, 2026 continuation
 
 The clean committed candidate `22cde5e` was built from a detached disposable worktree using the already provisioned dependency tree; no package installation was performed. Runtime candidate construction and installation produced build identity `7be9f78ad72de63fa9214175eca3747acefa1d5cbcd6fc60920485a62109cf08` and validated its compiled bytes, dependency closure and native parser inventory.
 
 The installed `scripts/probe-service.ts` passed with two real stdio clients sharing one service generation and one repository authority. A subsequent fresh pair started another generation after the first probe exited. A disposable service-death probe killed the elected service and attached a fresh installed client to the same state root; the replacement acquired a new generation with the same installed build and held coordination authority. These probes used preparation/status only and launched no inference.
 
-The targeted installed integration set passed 6/6. The targeted parallel/client/crash/recovery integration set passed 16/16. The full source/native command had already passed 640/640 core and 192/192 native tests. A broad Vitest run remains incomplete because its final worker stayed open without output and was interrupted; no overall `npm test` success is claimed.
+At the time of this historical continuation, the targeted installed integration set passed 6/6 and the targeted parallel/client/crash/recovery integration set passed 16/16. The source/native command passed 640/640 core and 192/192 native tests; its broad Vitest run remained incomplete because its final worker stayed open without output. The later clean-candidate complete `npm test` result is recorded in the execution ledger.
 
 | Check | Observed result | Boundary actually proved |
 | --- | --- | --- |

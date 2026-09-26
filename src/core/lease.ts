@@ -189,7 +189,9 @@ const lines = readline.createInterface({ input: process.stdin });
 })().catch(() => { process.exitCode = 72; });
 `;
 
-async function reclaimDeadOwner(lockPath: string, ownerPath: string, exitBeforeMutation = false): Promise<boolean> {
+async function reclaimDeadOwner(lockPath: string, ownerPath: string, signal?: AbortSignal,
+  exitBeforeMutation = false): Promise<boolean> {
+  signal?.throwIfAborted();
   // Keep the guard inode permanently: unlinking it would let waiters lock an
   // old inode while a later reclaimer locks a new one at the same pathname.
   const guard = `${lockPath}.reclaim.guard`;
@@ -221,20 +223,41 @@ async function reclaimDeadOwner(lockPath: string, ownerPath: string, exitBeforeM
     if (!ready) rejectReady(new Error(`Repository reclaim helper exited before acquiring the guard: ${JSON.stringify({ code, signal, output, stderr })}`));
     resolve(code);
   }));
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    if (!signal) return;
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  let commandSent = false;
   try {
-    await prepared;
-    const instance = await validateDeadOwner(lockPath, ownerPath);
+    await Promise.race([prepared, aborted]);
+    const instance = await Promise.race([validateDeadOwner(lockPath, ownerPath), aborted]);
+    signal?.throwIfAborted();
     if (exitBeforeMutation) child.stdin.end();
-    else child.stdin.end(JSON.stringify(instance ?? "abort") + "\n");
-    const code = await finished;
+    else {
+      // Sending the generation command is the point of no return. A later
+      // abort must wait for its outcome instead of interrupting the helper.
+      commandSent = true;
+      child.stdin.end(JSON.stringify(instance ?? "abort") + "\n");
+    }
+    if (commandSent && onAbort) signal?.removeEventListener("abort", onAbort);
+    const code = await (commandSent ? finished : Promise.race([finished, aborted]));
+    if (!commandSent) signal?.throwIfAborted();
     if (spawnError || code !== 0) throw inUse(lockPath, spawnError ?? new Error(stderr || `Helper exited ${code}`));
     if (output === "ready\nreclaimed\n" && instance) return true;
     if (output === "ready\nmissing\n" && !instance) return false;
     throw inUse(lockPath, new Error(`Repository reclaim helper returned an invalid result: ${JSON.stringify(output)}`));
   } catch (error) {
-    child.stdin.end();
-    await finished;
+    if (!commandSent) {
+      child.kill();
+      await finished;
+      signal?.throwIfAborted();
+    }
     throw inUse(lockPath, stderr ? new Error(stderr, { cause: error }) : error);
+  } finally {
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -332,7 +355,7 @@ export async function acquireRepositoryLease(path: string, options: {
       try { await acquireProduction(); }
       catch (error) {
         if (nativeCode(error) !== "ELOCKED") throw error;
-        if (!await reclaimDeadOwner(lockPath, ownerPath, options.faults?.reclaimExitBeforeMutation)) throw inUse(path, error);
+        if (!await reclaimDeadOwner(lockPath, ownerPath, options.signal, options.faults?.reclaimExitBeforeMutation)) throw inUse(path, error);
         await acquireProduction();
       }
     }
@@ -341,9 +364,11 @@ export async function acquireRepositoryLease(path: string, options: {
       try { await releaseLock(); }
       catch (cleanup) {
         compromised(asError(cleanup));
+        options.signal?.throwIfAborted();
         throw filesystemFailure(cleanup, "lease.publication_cleanup", path);
       }
     }
+    options.signal?.throwIfAborted();
     if (nativeCode(error) === "ELOCKED") throw inUse(path, error);
     if (nativeCode(error) === "ERR_MODULE_NOT_FOUND" || nativeCode(error) === "MODULE_NOT_FOUND") {
       throw new BridgeError("LEASE_DEPENDENCY_UNAVAILABLE", "The installed locking dependency could not be loaded", { cause: error, stage: "lease.load" });

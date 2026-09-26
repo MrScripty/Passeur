@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, unlink, utimes, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { spawn } from 'node:child_process';
 import { acquireRepositoryLease } from '../../.passeur-core/src/core/lease.js';
 import { processIdentity } from '../../.passeur-core/src/service/process.js';
 
@@ -113,6 +114,44 @@ test('reclaim helper exit after validation leaves stale atomic and legacy locks 
     const lease = await acquireRepositoryLease(path, { onCompromised: noop });
     await lease.release();
   }
+});
+
+test('aborting behind a held recovery guard promptly preserves the stale lock', async t => {
+  const path = await fixture(t);
+  const dead = { ...await processIdentity(), pid: 2_000_000_000 };
+  await retainedAtomicLock(path, dead);
+  const before = await stat(`${path}.lock`, { bigint: true });
+  const guard = `${path}.lock.reclaim.guard`;
+  await writeFile(guard, '', { mode: 0o600 });
+  const holder = spawn('flock', ['--exclusive', '--no-fork', guard, process.execPath,
+    '-e', "process.stdout.write('ready\\n'); process.stdin.resume()"], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const closed = new Promise(resolve => holder.once('close', resolve));
+  try {
+    const ready = new Promise((resolve, reject) => {
+      holder.once('error', reject);
+      holder.stdout.once('data', chunk => resolve(String(chunk)));
+      holder.once('close', () => reject(new Error('guard holder exited before readiness')));
+    });
+    assert.equal(await Promise.race([ready, delay(3000).then(() => { throw new Error('guard holder did not start'); })]), 'ready\n');
+
+    const controller = new AbortController();
+    const reason = new Error('preparation cancelled');
+    const attempt = acquireRepositoryLease(path, { signal: controller.signal, onCompromised: noop });
+    await delay(100);
+    const started = Date.now();
+    controller.abort(reason);
+    await assert.rejects(Promise.race([
+      attempt,
+      delay(1500).then(() => { throw new Error('reclaim did not cancel promptly'); }),
+    ]), error => error === reason);
+    assert.ok(Date.now() - started < 1500);
+    assert.equal((await stat(`${path}.lock`, { bigint: true })).ino, before.ino);
+  } finally {
+    holder.kill();
+    await closed;
+  }
+  const lease = await acquireRepositoryLease(path, { onCompromised: noop });
+  await lease.release();
 });
 
 test('concurrent reclaimers leave the winning atomic and legacy leases held', async t => {

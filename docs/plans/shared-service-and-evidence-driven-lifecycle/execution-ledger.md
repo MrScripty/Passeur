@@ -1,5 +1,9 @@
 # Execution ledger
 
+## September 25, 2026 — M4-S1 cancellable stale recovery
+
+Operation: `verify`. The lease-only follow-up passed focused recovery **14/14** and full TypeScript typecheck. A held recovery guard now cancels promptly before mutation, preserves the stale lock, and lets preparation/shutdown observe the caller's abort reason. The prior final candidate's core/native/focused IPC results remain recorded above; this follow-up changed only lease cancellation and its regression coverage.
+
 ## September 25, 2026 — M4-S1 final lifecycle candidate acceptance
 
 Operation: `verify`. Candidate: isolated `f2cd090` lifecycle worktree plus the final bounded lease/client repair; the shared checkout's concurrent structural/reporting changes were excluded.
