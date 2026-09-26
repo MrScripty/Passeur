@@ -1,12 +1,12 @@
 import { BridgeError } from "../core/errors.js";
-import type { AttributedComparison, Declaration, SourceReference } from "./model.js";
+import type { AttributedComparison, Declaration, Extraction, SourceReference } from "./model.js";
 
 /** Encoding preserves syntax but makes terminal controls and source-supplied line breaks inert. */
 export function quoteStructuralText(text: string): string {
   return JSON.stringify(text).replace(/[\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g,
     character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
-function endpoint(label: "INPUT" | "OBSERVED", ref: SourceReference): string[] {
+function endpoint(label: "INPUT" | "OBSERVED" | "SOURCE", ref: SourceReference): string[] {
   const source = ref.source;
   const lines = [`${label} — ${source.kind === "commit" ? `commit ${source.commit_oid}` : `capture ${source.capture_id}`}`,
     `  repository: ${quoteStructuralText(source.repository_id)} (${source.object_format})`,
@@ -19,6 +19,41 @@ function endpoint(label: "INPUT" | "OBSERVED", ref: SourceReference): string[] {
   if (ref.mode) lines.push(`  mode: ${quoteStructuralText(ref.mode)}`);
   if (ref.entry_kind) lines.push(`  entry: ${ref.entry_kind}`);
   return lines;
+}
+/** A single capture has no correspondence or change claim; every extracted declaration is shown. */
+export function renderInspection(extraction: Extraction, maxBytes = 65536): string {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 128 || maxBytes > 65536) {
+    throw new BridgeError("STRUCTURAL_PAGE_INVALID", "Invalid structural report byte budget");
+  }
+  const lines: string[] = [];
+  let bytes = 0;
+  const append = (...items: string[]) => {
+    for (const item of items) {
+      bytes += Buffer.byteLength(item, "utf8") + (lines.length ? 1 : 0);
+      if (bytes > maxBytes) throw new BridgeError("STRUCTURAL_ENTRY_TOO_LARGE", "The complete inspection exceeds this byte budget; narrow the selected source");
+      lines.push(item);
+    }
+  };
+  append("INSPECTION — one captured source; no comparison or change attribution.",
+    ...endpoint("SOURCE", extraction.source),
+    `Dialect: ${quoteStructuralText(extraction.dialect)}`,
+    `Parser: ${quoteStructuralText(extraction.parser_identity)} / Extractor: ${quoteStructuralText(extraction.extractor_identity)}`,
+    `Coverage: ${extraction.coverage}`);
+  for (const value of extraction.declarations) {
+    append("", `Declaration: ${quoteStructuralText(value.name ?? "<anonymous>")}`,
+      `  kind: ${quoteStructuralText(value.kind)}`,
+      `  enclosing scope: ${value.enclosing.length ? value.enclosing.map(quoteStructuralText).join(" :: ") : "<top level>"}`,
+      `  source bytes (UTF-8): ${value.range.start_byte}..${value.range.end_byte}`,
+      `  masked signature: ${quoteStructuralText(value.signature)}`,
+      `  parameters: ${value.parameters.length ? value.parameters.map(quoteStructuralText).join(", ") : "<none>"}`,
+      `  written result: ${value.result.state === "declared" ? quoteStructuralText(value.result.syntax) : value.result.state}`,
+      "  body: omitted", "  defaults/initializers: omitted");
+    if (!value.header_complete) append("  declaration extraction incomplete");
+  }
+  if (!extraction.declarations.length) append("", "No declarations represented by this extraction.");
+  for (const limitation of extraction.limitations) append(`Limitation: ${quoteStructuralText(limitation)}`);
+  append("Behavior and compatibility: not assessed.");
+  return lines.join("\n");
 }
 function declaration(label: "INPUT" | "OBSERVED", value: Declaration): string[] {
   const lines = [`  ${label}: ${quoteStructuralText(value.signature)}`,

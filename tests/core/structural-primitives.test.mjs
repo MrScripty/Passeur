@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto';
 import { git } from '../../.passeur-core/src/workspace/project.js';
 import { readCommittedFile, captureWorkingFile, sourceReference, sourceExcerpt, validateSourcePath } from '../../.passeur-core/src/observation/source.js';
 import { compareExtractions } from '../../.passeur-core/src/observation/match.js';
-import { renderComparison, renderReportPage } from '../../.passeur-core/src/observation/report.js';
+import { renderComparison, renderInspection, renderReportPage } from '../../.passeur-core/src/observation/report.js';
+import { inspectCapturedSource } from '../../.passeur-core/src/observation/comparison.js';
 import { noticeMateriality } from '../../.passeur-core/src/coordination/notices.js';
 
 const run = promisify(execFile);
@@ -202,6 +203,91 @@ function observed(declarations = [declaration()], options = {}) {
   return { ...e, source: { ...e.source, content_sha256: sha('observed'), source: { ...e.source.source, commit_oid: 'c'.repeat(40) } } };
 }
 const attributed = comparison => ({ work_id: 'task-A', parent_id: 'parent-A', attribution: 'observed_in_work_authorship_not_established', comparison });
+
+test('single-state inspection shows unchanged declarations and preserves their captured identity', () => {
+  const d = declaration({ name: '名', enclosing: ['Outer', 'Inner'], range: { start_byte: 3, end_byte: 68 },
+    signature: '名(id: string = <default>): void', parameters: ['id: string = <default>'] });
+  const e = extraction([d]);
+  const text = renderInspection(e);
+  assert.match(text, /^INSPECTION — one captured source; no comparison or change attribution\./);
+  assert.match(text, /SOURCE — commit a{40}/);
+  assert.match(text, /repository: "test-repo" \(sha1\)/);
+  assert.match(text, /path: "src\/provider.ts"/);
+  assert.match(text, /Declaration: "名"/);
+  assert.match(text, /kind: "method"/);
+  assert.match(text, /enclosing scope: "Outer" :: "Inner"/);
+  assert.match(text, /source bytes \(UTF-8\): 3\.\.68/);
+  assert.match(text, /masked signature: "名\(id: string = <default>\): void"/);
+  assert.match(text, /parameters: "id: string = <default>"/);
+  assert.match(text, /written result: "void"/);
+  assert.match(text, /body: omitted/);
+  assert.match(text, /defaults\/initializers: omitted/);
+  assert.equal(text.includes('INPUT:'), false);
+  assert.equal(text.includes('modified:'), false);
+});
+
+test('inspection conceals body and default evidence while showing written result states', () => {
+  const bodySecret = 'private body literal'; const defaultSecret = 'private default literal';
+  const e = extraction([
+    declaration({ key: 'a', name: 'first', signature: 'first(x = <default>)', parameters: ['x = <default>'],
+      result: { state: 'not_declared' }, body_digest: sha(bodySecret), default_digests: [sha(defaultSecret)] }),
+    declaration({ key: 'b', name: 'second', result: { state: 'unavailable' }, range: { start_byte: 51, end_byte: 90 } })
+  ]);
+  const text = renderInspection(e);
+  assert.match(text, /written result: not_declared/);
+  assert.match(text, /written result: unavailable/);
+  for (const secret of [bodySecret, defaultSecret, sha(bodySecret), sha(defaultSecret)]) assert.equal(text.includes(secret), false);
+});
+
+test('inspection retains incomplete and ambiguous limits without asserting correspondence', () => {
+  const e = extraction([declaration({ header_complete: false, name: 'cancel\nFAKE: ok\u001b[2J' })],
+    { coverage: 'incomplete', limitations: ['declaration_correspondence_ambiguous', 'parse\nERROR\u202e'] });
+  e.source.source.path = 'src\nOBSERVED fake\u001b[2J.ts';
+  const text = renderInspection(e);
+  assert.match(text, /Coverage: incomplete/);
+  assert.match(text, /declaration extraction incomplete/);
+  assert.match(text, /Limitation: "declaration_correspondence_ambiguous"/);
+  assert.equal(text.includes('\nFAKE: ok'), false);
+  assert.equal(text.includes('\nOBSERVED fake'), false);
+  assert.equal(text.includes('\u001b'), false);
+  assert.equal(text.includes('\u202e'), false);
+  assert.match(text, /no comparison or change attribution/);
+});
+
+test('inspection enforces actual UTF-8 byte bounds', () => {
+  const e = extraction([declaration({ name: '名'.repeat(30) })]);
+  const text = renderInspection(e);
+  const bytes = Buffer.byteLength(text, 'utf8');
+  assert.ok(bytes > text.length);
+  assert.equal(Buffer.byteLength(renderInspection(e, bytes), 'utf8'), bytes);
+  assert.throws(() => renderInspection(e, bytes - 1), { code: 'STRUCTURAL_ENTRY_TOO_LARGE' });
+  assert.throws(() => renderInspection(e, 127), { code: 'STRUCTURAL_PAGE_INVALID' });
+});
+
+test('captured-source composition uses helper only for present bytes and keeps absence semantics', async () => {
+  const e = extraction();
+  const calls = [];
+  const helper = { extract: async (file, dialect) => { calls.push([file, dialect]); return e; } };
+  const present = { status: 'present', source: e.source.source, text: 'fixture', byte_length: 7,
+    content_sha256: sha('fixture'), mode: '100644', consistency: 'immutable_git_blob' };
+  const inspected = await inspectCapturedSource(present, 'typescript', helper);
+  assert.equal(inspected.extraction, e);
+  assert.match(inspected.text, /Declaration: "cancel"/);
+  assert.deepEqual(calls, [[present, 'typescript']]);
+  const absent = await inspectCapturedSource({ status: 'absent_in_commit', source: e.source.source }, 'typescript', helper);
+  assert.match(absent.text, /status: absent_in_commit/);
+  assert.match(absent.text, /Coverage: complete/);
+  assert.match(absent.text, /No declarations represented/);
+  assert.equal(calls.length, 1);
+  const missingSource = { kind: 'working_capture', repository_id: 'test-repo', object_format: 'sha1',
+    workspace_id: 'w', workspace_generation: 2, capture_id: 'capture-2', capture_sequence: 3,
+    head_anchor: 'a'.repeat(40), path: 'src/provider.ts' };
+  const missing = await inspectCapturedSource({ status: 'missing_during_capture', source: missingSource }, 'typescript', helper);
+  assert.match(missing.text, /SOURCE — capture capture-2/);
+  assert.match(missing.text, /Coverage: unavailable/);
+  assert.match(missing.text, /Limitation: "source_not_present"/);
+  assert.equal(calls.length, 1);
+});
 
 test('matching shows written parameter/result changes against independently identified versions', () => {
   const a = extraction(); const b = observed([declaration({ signature: 'cancel(id: RequestId): CancelReceipt', parameters: ['id: RequestId'], result: { state: 'declared', syntax: 'CancelReceipt' } })]);

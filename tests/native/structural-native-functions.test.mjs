@@ -53,10 +53,223 @@ test('real TSX grammar keeps JSX in a body digest without presenting it as a sig
   assert.ok(!result.declarations[0].signature.includes('section'));
 });
 
-test('still-unmapped top-level syntax remains an explicit incomplete extraction', async () => {
-  const result = await extractNativeFunctions(captured('const x = 1;\n'), 'typescript');
+test('real TypeScript lexical declarations retain written types, scope and UTF-8 ranges', async () => {
+  const source = '// é😀\nexport const café: string = "secret-one";\nlet count = 2;\nvar flag: boolean;\n';
+  const result = await extractNativeFunctions(captured(source), 'typescript');
+  assert.equal(result.coverage, 'complete');
+  assert.deepEqual(result.declarations.map(d => [d.kind, d.name, d.enclosing, d.signature, d.result]), [
+    ['variable_declarator', 'café', [], 'export const café: string = <default>;', { state: 'declared', syntax: ': string' }],
+    ['variable_declarator', 'count', [], 'let count = <default>;', { state: 'not_declared' }],
+    ['variable_declarator', 'flag', [], 'var flag: boolean;', { state: 'declared', syntax: ': boolean' }],
+  ]);
+  const start = Buffer.byteLength('// é😀\n');
+  assert.deepEqual(result.declarations[0].range, { start_byte: start,
+    end_byte: start + Buffer.byteLength('export const café: string = "secret-one";') });
+  assert.ok(!JSON.stringify(result.declarations).includes('secret-one'));
+});
+
+test('multiple declarators and destructuring mask initializer and binding defaults separately', async () => {
+  const source = 'const first = privateOne, {x, y: renamed = privateTwo}: Shape = privateThree;\n' +
+    'let [left, right = privateFour]: Pair = privateFive;\n';
+  const result = await extractNativeFunctions(captured(source), 'typescript');
+  assert.equal(result.coverage, 'complete');
+  assert.deepEqual(result.declarations.map(d => [d.name, d.signature, d.result]), [
+    ['first', 'const first = <default>', { state: 'not_declared' }],
+    ['{x, y: renamed = <default>}', 'const {x, y: renamed = <default>}: Shape = <default>',
+      { state: 'declared', syntax: ': Shape' }],
+    ['[left, right = <default>]', 'let [left, right = <default>]: Pair = <default>;',
+      { state: 'declared', syntax: ': Pair' }],
+  ]);
+  assert.deepEqual(result.declarations.map(d => d.default_digests.length), [1, 2, 2]);
+  assert.ok(!/private(One|Two|Three|Four|Five)/.test(JSON.stringify(result.declarations)));
+  assert.ok(result.declarations[0].range.end_byte <= result.declarations[1].range.start_byte);
+});
+
+test('initializer-only edits differ from written edits, additions, removals and unchanged variables', async () => {
+  const before = 'const changed: number = 1;\nlet stable = 7;\nvar removed = 3;\n';
+  const after = 'const changed: number = 2;\nlet stable = 7;\nvar added = 4;\n';
+  const input = await extractNativeFunctions(captured(before), 'typescript');
+  const observed = await extractNativeFunctions(captured(after, 'example.ts', 2), 'typescript');
+  assert.equal(input.coverage, 'complete');
+  assert.equal(observed.coverage, 'complete');
+  assert.deepEqual(compareExtractions(input, observed).changes.map(c => [
+    c.observed?.name ?? c.input?.name, c.kind, c.declaration_changed, c.default_changed,
+  ]), [
+    ['added', 'added', true, false], ['changed', 'modified', false, true], ['removed', 'removed', true, false],
+  ]);
+  const written = await extractNativeFunctions(captured('const changed: string = 1;\nlet stable = 7;\nvar removed = 3;\n',
+    'example.ts', 3), 'typescript');
+  assert.deepEqual(compareExtractions(input, written).changes.map(c => [c.observed?.name, c.declaration_changed,
+    c.default_changed]), [['changed', true, false]]);
+});
+
+test('TSX lexical JSX initializers stay concealed and function-valued bindings retain their path', async () => {
+  const source = 'export const title: string = "privateTitle", view = <div secret="privateJSX" />;\n' +
+    'export const render = (x: number): number => x + 1;\n';
+  const result = await extractNativeFunctions(captured(source, 'Panel.tsx'), 'tsx');
+  assert.equal(result.coverage, 'complete');
+  assert.deepEqual(result.declarations.map(d => [d.kind, d.name, d.signature]), [
+    ['variable_declarator', 'title', 'export const title: string = <default>'],
+    ['variable_declarator', 'view', 'export const view = <default>'],
+    ['arrow_function', 'render', 'export const render = (x: number): number =>'],
+  ]);
+  assert.ok(!/privateTitle|privateJSX/.test(JSON.stringify(result.declarations)));
+});
+
+test('nested binding defaults and declaration comments remain concealed', async () => {
+  const source = 'const {a: {b = innerSecret} = outerSecret} = sourceSecret;\n' +
+    'const /* commentSecret */ value = initializerSecret;\n';
+  const result = await extractNativeFunctions(captured(source), 'typescript');
+  assert.equal(result.coverage, 'complete');
+  assert.deepEqual(result.declarations.map(d => [d.name, d.signature]), [
+    ['{a: {b = <default>} = <default>}', 'const {a: {b = <default>} = <default>} = <default>;'],
+    ['value', 'const <comment> value = <default>;'],
+  ]);
+  for (const secret of ['innerSecret', 'outerSecret', 'sourceSecret', 'commentSecret', 'initializerSecret'])
+    assert.equal(JSON.stringify(result.declarations).includes(secret), false);
+});
+
+test('export-prefix comments remain concealed for every lexical declarator', async () => {
+  const result = await extractNativeFunctions(captured('export /* commentSecret */ const first = 1, second = 2;\n'), 'typescript');
+  assert.equal(result.coverage, 'complete');
+  assert.equal(result.declarations.length, 2);
+  assert.ok(result.declarations.every(d => d.signature.includes('<comment>')));
+  assert.equal(JSON.stringify(result.declarations).includes('commentSecret'), false);
+});
+
+test('every lexical declarator retains mutability in direct comparison', async () => {
+  const input = await extractNativeFunctions(captured('const first = 1, second = 2;\n'), 'typescript');
+  const observed = await extractNativeFunctions(captured('let first = 1, second = 2;\n', 'example.ts', 2), 'typescript');
+  assert.deepEqual(compareExtractions(input, observed).changes.map(change => change.observed?.name), ['first', 'second']);
+});
+
+test('multiple function-valued declarators retain mutability in direct comparison', async () => {
+  const input = await extractNativeFunctions(captured('const first = () => 1, second = () => 2;\n'), 'typescript');
+  const observed = await extractNativeFunctions(captured('let first = () => 1, second = () => 2;\n', 'example.ts', 2), 'typescript');
+  assert.deepEqual(compareExtractions(input, observed).changes.map(change => change.observed?.name), ['first', 'second']);
+});
+
+test('declaration-like constructs inside concealed initializers remain an explicit limit', async () => {
+  const source = 'const Holder = class Hidden { value: string; get(): number { return 1; } };\n' +
+    'const wrapped = ((x: number): number => x);\n';
+  const result = await extractNativeFunctions(captured(source), 'typescript');
   assert.equal(result.coverage, 'incomplete');
-  assert.deepEqual(result.limitations, ['unmapped_top_level_syntax']);
+  assert.ok(result.limitations.includes('nested_declaration_coverage_unavailable'));
+  assert.equal(JSON.stringify(result.declarations).includes('Hidden'), false);
+  assert.equal(JSON.stringify(result.declarations).includes('number'), false);
+});
+
+test('parenthesized and destructuring-default declarations retain an explicit limit', async () => {
+  const source = 'const Holder = (class Hidden { value: string; });\n' +
+    'const {factory = (() => hiddenSecret)} = source;\n';
+  const result = await extractNativeFunctions(captured(source), 'typescript');
+  assert.equal(result.coverage, 'incomplete');
+  assert.ok(result.limitations.includes('nested_declaration_coverage_unavailable'));
+  assert.equal(JSON.stringify(result.declarations).includes('Hidden'), false);
+  assert.equal(JSON.stringify(result.declarations).includes('hiddenSecret'), false);
+});
+
+test('declaration-like class expressions returned from functions retain an explicit limit', async () => {
+  for (const dialect of ['typescript', 'tsx']) {
+    const result = await extractNativeFunctions(captured(
+      'function outer() { return class Hidden { value: number; }; }\n', `${dialect}.source`), dialect);
+    assert.equal(result.coverage, 'incomplete', dialect);
+    assert.deepEqual(result.declarations.map(declaration => declaration.name), ['outer'], dialect);
+    assert.ok(result.limitations.includes('nested_declaration_coverage_unavailable'), dialect);
+  }
+});
+
+test('generator bindings retain written parameters and results', async () => {
+  const result = await extractNativeFunctions(captured('const make = function* (x: number): Generator<number> { yield x; };\n'), 'typescript');
+  assert.equal(result.coverage, 'complete');
+  assert.deepEqual(result.declarations.map(d => [d.kind, d.name, d.signature, d.parameters, d.result]), [
+    ['generator_function', 'make', 'const make = function* (x: number): Generator<number>',
+      ['x: number'], { state: 'declared', syntax: ': Generator<number>' }],
+  ]);
+});
+
+test('TypeScript namespaces retain their scope and nested declarations', async () => {
+  const result = await extractNativeFunctions(captured('namespace Space { export const x: number = 1; }\n'), 'typescript');
+  assert.equal(result.coverage, 'complete');
+  assert.deepEqual(result.declarations.map(d => [d.kind, d.name, d.enclosing, d.signature]), [
+    ['internal_module', 'Space', [], 'namespace Space'],
+    ['variable_declarator', 'x', ['Space'], 'export const x: number = <default>;'],
+  ]);
+});
+
+test('namespace member edits do not duplicate as parent body changes', async () => {
+  const input = await extractNativeFunctions(captured('namespace Space { export const x: number = 1; }\n', 'space.ts'), 'typescript');
+  const observed = await extractNativeFunctions(captured('namespace Space { export const x: number = 2; }\n', 'space.ts', 2), 'typescript');
+  assert.deepEqual(compareExtractions(input, observed).changes.map(change => [
+    change.observed?.name ?? change.input?.name, change.default_changed, change.body_changed,
+  ]), [['x', true, false]]);
+});
+
+test('malformed and unsupported lexical bindings remain explicit limitations', async () => {
+  const malformed = await extractNativeFunctions(captured('const broken = ;\n'), 'typescript');
+  assert.equal(malformed.coverage, 'incomplete');
+  assert.ok(malformed.limitations.includes('parse_error_or_missing_token'));
+  assert.ok(malformed.declarations.every(d => !d.header_complete));
+  const unsupported = await extractNativeFunctions(captured('const {[secretKey]: value} = source;\n'), 'typescript');
+  assert.equal(unsupported.coverage, 'incomplete');
+  assert.ok(unsupported.limitations.includes('unmapped_binding_syntax'));
+  assert.ok(!JSON.stringify(unsupported.declarations).includes('secretKey'));
+});
+
+test('local ordinary variables remain outside the admitted inventory with explicit incomplete coverage', async () => {
+  const result = await extractNativeFunctions(captured('function outer() { const local: string = "hidden"; }\n'), 'typescript');
+  assert.equal(result.coverage, 'incomplete');
+  assert.deepEqual(result.declarations.map(d => d.name), ['outer']);
+  assert.ok(result.limitations.includes('nested_declaration_coverage_unavailable'));
+  assert.ok(!JSON.stringify(result.declarations).includes('hidden'));
+});
+
+test('qualified multilingual limits do not masquerade as complete declarations', async () => {
+  const rust = await extractNativeFunctions(captured('const LIMIT: usize = 3;\n', 'limits.rs'), 'rust');
+  assert.equal(rust.coverage, 'incomplete');
+  assert.deepEqual(rust.declarations, []);
+  assert.ok(rust.limitations.includes('unmapped_top_level_syntax'));
+  const javascript = await extractNativeFunctions(captured('const ordinary = 3;\n', 'ordinary.mjs'), 'javascript');
+  assert.equal(javascript.coverage, 'incomplete');
+  assert.deepEqual(javascript.declarations, []);
+  assert.ok(javascript.limitations.includes('unmapped_binding_syntax'));
+  const rustLocal = await extractNativeFunctions(captured(
+    'fn run(value: Option<i32>) { const LOCAL: i32 = 1; match value { Some(captured) => captured, _ => 0 }; let closure = |arg: i32| arg; }\n',
+    'local.rs'), 'rust');
+  assert.equal(rustLocal.coverage, 'incomplete');
+  assert.ok(rustLocal.limitations.includes('nested_declaration_coverage_unavailable'));
+  for (const [dialect, path, source] of [
+    ['c', 'local.c', 'int run(void) { int local = 1; return local; }\n'],
+    ['zig', 'local.zig', 'fn run() void { const local: i32 = 1; }\n'],
+    ['zig', 'loop.zig', 'fn run(items: []i32) void { for (items) |item| { _ = item; } }\n'],
+    ['odin', 'local.odin', 'run :: proc() { LOCAL :: 1; }\n'],
+    ['kotlin', 'local.kt', 'fun run(value: Any?) { try { } catch (error: Exception) { println(error) } }\n'],
+    ['csharp', 'local.cs', 'class C { void run(object value) { if (value is int local) { System.Console.WriteLine(local); } } }\n'],
+    ['csharp', 'global.cs', 'class C {}\nint top = 1;\n'],
+  ]) {
+    const result = await extractNativeFunctions(captured(source, path), dialect);
+    assert.equal(result.coverage, 'incomplete', dialect);
+    assert.ok(result.limitations.includes(dialect === 'csharp' && path === 'global.cs' ?
+      'unmapped_top_level_syntax' : 'unmapped_local_syntax'), dialect);
+  }
+  for (const [dialect, source] of [
+    ['typescript', 'function outer() { try {} catch (local) {} }\n'],
+    ['tsx', 'function outer() { try {} catch (local) {} }\n'],
+  ]) {
+    const result = await extractNativeFunctions(captured(source, `${dialect}.source`), dialect);
+    assert.equal(result.coverage, 'incomplete', dialect);
+    assert.ok(result.limitations.includes('nested_declaration_coverage_unavailable'), dialect);
+  }
+  const cppCatch = await extractNativeFunctions(captured('int run() { try {} catch (int local) { return local; } return 0; }\n', 'catch.cpp'), 'cpp');
+  assert.equal(cppCatch.coverage, 'incomplete');
+  assert.ok(cppCatch.limitations.includes('unmapped_local_syntax'));
+});
+
+test('loop-local TypeScript bindings remain outside the admitted inventory explicitly', async () => {
+  const result = await extractNativeFunctions(captured('function outer(items: string[]) { for (const local of items) { console.log(local); } }\n'), 'typescript');
+  assert.equal(result.coverage, 'incomplete');
+  assert.deepEqual(result.declarations.map(d => d.name), ['outer']);
+  assert.ok(result.limitations.includes('nested_declaration_coverage_unavailable'));
 });
 
 test('real Rust type and direct field/method declarations retain their own scopes', async () => {
@@ -190,7 +403,8 @@ test('real Rust nested functions charge edits to the inner declaration only', as
   const after = 'fn outer() { let x = 1; fn inner(x: i32) -> i32 { x + 2 } }\n';
   const input = await extractNativeFunctions(captured(before, 'nested.rs'), 'rust');
   const observed = await extractNativeFunctions(captured(after, 'nested.rs', 2), 'rust');
-  assert.equal(input.coverage, 'complete');
+  assert.equal(input.coverage, 'incomplete');
+  assert.ok(input.limitations.includes('nested_declaration_coverage_unavailable'));
   assert.deepEqual(input.declarations.map(d => [d.name, d.enclosing]), [['outer', []], ['inner', ['outer']]]);
   assert.deepEqual(compareExtractions(input, observed).changes.map(c => [c.observed?.name, c.body_changed]), [['inner', true]]);
 });
@@ -373,8 +587,10 @@ test('L01 Rust population fixture covers written scopes, modifiers, types, defau
   const after = await readFile(new URL(cases.population_changed, base), 'utf8');
   const input = await extractNativeFunctions(captured(before, cases.population), 'rust');
   const observed = await extractNativeFunctions(captured(after, cases.population, 2), 'rust');
-  assert.equal(input.coverage, 'complete');
-  assert.equal(observed.coverage, 'complete');
+  assert.equal(input.coverage, 'incomplete');
+  assert.equal(observed.coverage, 'incomplete');
+  assert.ok(input.limitations.includes('nested_declaration_coverage_unavailable'));
+  assert.ok(observed.limitations.includes('nested_declaration_coverage_unavailable'));
   assert.deepEqual(input.declarations.map(d => [d.kind, d.name, d.enclosing, d.signature]), expected.population_declarations);
   assert.deepEqual(input.declarations.find(d => d.name === 'fetch').parameters, ['mut source: T']);
   assert.deepEqual(input.declarations.find(d => d.name === 'fetch').result, { state: 'declared', syntax: 'usize' });
@@ -544,7 +760,8 @@ test('nested multiline TypeScript defaults and declaration-like comments stay co
   const after = before.replace('},\\\" é😀', '},\\\" changed');
   const input = await extractNativeFunctions(captured(before), 'typescript');
   const observed = await extractNativeFunctions(captured(after, 'example.ts', 2), 'typescript');
-  assert.equal(input.coverage, 'complete');
+  assert.equal(input.coverage, 'incomplete');
+  assert.ok(input.limitations.includes('nested_declaration_coverage_unavailable'));
   assert.equal(input.declarations[0].header_complete, true);
   assert.equal(input.declarations[0].parameters.length, 1);
   assert.ok(input.declarations[0].signature.includes('<default>'));

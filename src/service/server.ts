@@ -125,7 +125,7 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
       }
       case "structural_report": {
         const a = args as Arguments<"structural_report">;
-        return runtime.structuralReport(a.work_id, actor, peer.source!, signal, a.paths);
+        return runtime.structuralReport(a.work_id, actor, peer.source!, signal, a.paths, a.view);
       }
       case "structural_detail": {
         const a = args as Arguments<"structural_detail">;

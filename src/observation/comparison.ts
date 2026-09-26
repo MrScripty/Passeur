@@ -1,6 +1,6 @@
 import type { AttributedComparison, Extraction, SourceFile } from "./model.js";
 import { compareExtractions } from "./match.js";
-import { renderComparison } from "./report.js";
+import { renderComparison, renderInspection } from "./report.js";
 import { emptyNativeExtraction } from "./native-extraction.js";
 import type { NativeDialect } from "./native-parser.js";
 import type { NativeAnalysisHelper } from "./helper.js";
@@ -9,6 +9,15 @@ export type CapturedWorkPair = Readonly<{
   work_id: string; parent_id: string; dialect: NativeDialect;
   input: SourceFile; observed: SourceFile;
 }>;
+
+/** Inspect one already-captured source without assigning comparison or work attribution. */
+export async function inspectCapturedSource(file: SourceFile, dialect: NativeDialect, helper: NativeAnalysisHelper,
+  signal?: AbortSignal): Promise<Readonly<{ extraction: Extraction; text: string }>> {
+  const extraction = file.status === "present"
+    ? await helper.extract(file, dialect, signal)
+    : emptyNativeExtraction(file, dialect);
+  return Object.freeze({ extraction, text: renderInspection(extraction) });
+}
 
 /** Compose already-authorized, immutable capture identities into a bounded syntax-only report. */
 export async function compareCapturedWork(pair: CapturedWorkPair, helper: NativeAnalysisHelper, signal?: AbortSignal): Promise<Readonly<{

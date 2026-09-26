@@ -23,7 +23,7 @@ export function createMcpServer(frontend: PasseurFrontend) {
   const lifecycle = new AbortController(), presentations = new ApprovalQueue();
   const signalFor = (signal: AbortSignal) => AbortSignal.any([signal, lifecycle.signal]);
   registerCoordinationTools(mcp, frontend, lifecycle.signal);
-  mcp.registerTool("passeur_structural_report", { description: "Read a bounded syntax report from declared source areas of owned work. Optionally select one to four exact paths inside those areas, including files beyond the default inventory page. Captures establish neither authorship nor compatibility.",
+  mcp.registerTool("passeur_structural_report", { description: "Read a bounded syntax report from declared source areas of owned work. The default comparison view reports differences between identified input and observed states; view=input or view=observed inspects one state and includes unchanged declarations. Optionally select one to four exact paths inside those areas. Captures establish neither authorship nor compatibility.",
     inputSchema: operationSchemas.structural_report, annotations: { readOnlyHint: true } }, async (request, extra) => {
     try { return toolPayload(await frontend.call("structural_report", request, signalFor(extra.signal))); } catch (error) { return failure(error); }
   });

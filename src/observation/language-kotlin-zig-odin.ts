@@ -78,6 +78,11 @@ function headerComments(node: Node, end: number): Span[] {
 function containsNested(node: Node, types: ReadonlySet<string>): boolean {
   return node.namedChildren.some(child => types.has(child.type) || containsNested(child, types));
 }
+function containsZigLocalDeclaration(node: Node): boolean {
+  return node.namedChildren.some(child =>
+    (child.type === "variable_declaration" && /^(?:pub\s+)?(?:const|var)\b/.test(child.text.trim())) ||
+    containsZigLocalDeclaration(child));
+}
 function bodyDigest(source: string, body: Node | undefined, excluded: readonly Node[]): string | undefined {
   if (!body || damage(body, body.startIndex, body.endIndex)) return undefined;
   const start = odinContainers.has(body.type) ? body.children.find(child => child.type === "{")?.startIndex ?? body.startIndex
@@ -100,6 +105,10 @@ export function extractKotlinZigOdin(context: NativeFamilyContext): NativeFamily
   const declarations: Declaration[] = [];
   const limitations = new Set<string>();
   const source = file.text;
+  const localBindingTypes = dialect === "kotlin"
+    ? new Set(["property_declaration", "variable_declaration", "for_statement", "when_expression", "lambda_literal", "catch_block"])
+    : dialect === "zig" ? new Set(["for_statement", "if_statement", "while_statement", "switch_expression", "payload"])
+      : new Set(["variable_declaration", "short_variable_declaration", "const_declaration", "assignment_statement", "for_statement", "range_statement"]);
   const push = (node: Node, name: string | null, enclosing: readonly string[], headerEnd: number,
     parameters: Node | undefined, result: Node | undefined, body: Node | undefined,
     defaultSpans: readonly Span[] = [], attributeSpans: readonly Span[] = [], nested: readonly Node[] = []): void => {
@@ -108,6 +117,14 @@ export function extractKotlinZigOdin(context: NativeFamilyContext): NativeFamily
     const headerComplete = !!name && !!headerEnd && !damage(node, node.startIndex, headerEnd);
     if (!headerComplete) limitations.add("declaration_header_incomplete");
     if (body && damage(body, body.startIndex, body.endIndex)) limitations.add("declaration_body_incomplete");
+    const hasLocalBinding = dialect === "zig"
+      ? containsZigLocalDeclaration(body ?? node) || containsNested(body ?? node, localBindingTypes)
+      : containsNested(body ?? node, localBindingTypes);
+    if (body && (dialect === "kotlin" && node.type === "function_declaration" ||
+      dialect === "zig" && node.type === "function_declaration" ||
+      dialect === "odin" && node.type === "procedure_declaration") && hasLocalBinding) {
+      limitations.add("unmapped_local_syntax");
+    }
     const range = ranges.byteRange(node.startIndex, node.endIndex);
     const digest = bodyDigest(source, body, nested);
     declarations.push(Object.freeze({

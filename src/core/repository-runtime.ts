@@ -1146,7 +1146,7 @@ export class RepositoryRuntime {
     });
   }
   structuralReport(workId: string, actor: ClientActor, sourceView: string, signal?: AbortSignal,
-    selectedPaths?: readonly string[]): Promise<Readonly<{
+    selectedPaths?: readonly string[], view: "comparison" | "input" | "observed" = "comparison"): Promise<Readonly<{
     schema_version: 1; work_id: string; reports: readonly Readonly<{ report_id: string; path: string; dialect: NativeDialect; text: string }>[];
     limitations: readonly string[];
   }>> {
@@ -1157,6 +1157,9 @@ export class RepositoryRuntime {
     }
     // Canonical decoding also gives this invocation its own bounded array.
     const requestedPaths = selection.data;
+    if (view !== "comparison" && view !== "input" && view !== "observed") {
+      return Promise.reject(new BridgeError("STRUCTURAL_REPORT_VIEW_INVALID", "Structural report view must be comparison, input, or observed"));
+    }
     if (this.#structuralReportActive) {
       return Promise.reject(new BridgeError("STRUCTURAL_ANALYSIS_CAPACITY", "A source report is already using the bounded analysis admission"));
     }
@@ -1190,7 +1193,7 @@ export class RepositoryRuntime {
       const limitations = new Set(inventory.limitations);
       if (work.areas.length === 0) limitations.add("source_scope_not_declared");
       const { readCommittedFile, captureWorkingFile } = await import("../observation/source.js");
-      const { compareCapturedWork } = await import("../observation/comparison.js");
+      const { compareCapturedWork, inspectCapturedSource } = await import("../observation/comparison.js");
       const { NativeAnalysisHelper } = await import("../observation/helper.js");
       this.#assertOpen(); this.#assertAuthority();
       this.#nativeAnalysis ??= new NativeAnalysisHelper(this.#identity.mode === "installed" ? this.#identity.build_id : undefined);
@@ -1205,8 +1208,10 @@ export class RepositoryRuntime {
         const observed = await captureWorkingFile({ root: workspace.root, workspace_id: work.workspace_id,
           workspace_generation: work.source_control_generation ?? Math.max(1, work.revision), capture_sequence: ++this.#captureSequence,
           input_commit_oid: work.input_oid }, path, { max_bytes, signal: ownedSignal });
-        const compared = await compareCapturedWork({ work_id: work.id, parent_id: work.owner, dialect, input, observed }, this.#nativeAnalysis, ownedSignal);
-        samples.push({ path, dialect, text: compared.text, input, observed });
+        const rendered = view === "comparison"
+          ? await compareCapturedWork({ work_id: work.id, parent_id: work.owner, dialect, input, observed }, this.#nativeAnalysis, ownedSignal)
+          : await inspectCapturedSource(view === "input" ? input : observed, dialect, this.#nativeAnalysis, ownedSignal);
+        samples.push({ path, dialect, text: rendered.text, input, observed });
       }
       const currentWorkspace = await repository.inspect(workspace.root, ownedSignal);
       if (currentWorkspace.workspace_id !== workspace.workspace_id || currentWorkspace.repository_id !== workspace.repository_id) {

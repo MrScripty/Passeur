@@ -40,8 +40,11 @@ test('production authenticated service exposes an owner report while metadata re
   const reader = new ServiceClient(descriptor, { ...binding, project: otherRoot }, otherToken); clients.push(reader); await reader.ready;
   await owner.coordinate(request('initialize', { limits: f.limits }));
   const readerId = createHash('sha256').update(otherToken).digest('hex');
-  const registered = await owner.coordinate(f.registerRequest({ readers: [readerId] }));
-  await writeFile(join(f.root, 'source.ts'), 'export function run(x: number): number { return x; }\n');
+  const sourceInput = 'export function run(x: number): number { return x; }\nconst stable: string = "private";\n';
+  const observedSource = 'export function run(x: number): number { return x + 1; }\nconst stable: string = "private-observed";\n';
+  const sourceInputOid = await f.commit(f.root, 'source.ts', sourceInput);
+  await writeFile(join(f.root, 'source.ts'), observedSource);
+  const registered = await owner.coordinate(f.registerRequest({ input_oid: sourceInputOid, readers: [readerId] }));
   const pendingReport = owner.call('structural_report', { work_id: registered.receipt.item_id });
   const pendingRead = owner.coordinate(readRequest({ kind: 'work', id: registered.receipt.item_id }));
   const pendingTasks = owner.call('tasks', { schema_version: 1 });
@@ -55,11 +58,17 @@ test('production authenticated service exposes an owner report while metadata re
   assert.equal(response.reports.length, 1);
   assert.equal(response.reports[0].path, 'source.ts');
   assert.match(response.reports[0].text, /OBSERVED: "export function run\(x: number\): number"/);
+  const inputInspection = await owner.call('structural_report', { work_id: registered.receipt.item_id, view: 'input' });
+  assert.match(inputInspection.reports[0].text, /INSPECTION — one captured source/);
+  assert.match(inputInspection.reports[0].text, /Declaration: "run"/);
+  assert.match(inputInspection.reports[0].text, /Declaration: "stable"/);
+  assert.equal(inputInspection.reports[0].text.includes('private'), false);
+  assert.equal(inputInspection.reports[0].text.includes('declaration_unchanged'), false);
   const reportId = response.reports[0].report_id;
   await writeFile(join(f.root, 'source.ts'), 'export function replaced() {}\n');
   const detail = await owner.call('structural_detail', { work_id: registered.receipt.item_id, report_id: reportId,
-    side: 'observed', start_byte: 0, end_byte: Buffer.byteLength('export function run(x: number): number { return x; }\n') });
-  assert.equal(detail.text, 'export function run(x: number): number { return x; }\n');
+    side: 'observed', start_byte: 0, end_byte: Buffer.byteLength(observedSource) });
+  assert.equal(detail.text, observedSource);
   await assert.rejects(reader.call('structural_detail', { work_id: registered.receipt.item_id, report_id: reportId,
     side: 'observed', start_byte: 0, end_byte: 6 }), { code: 'STRUCTURAL_SOURCE_FORBIDDEN' });
   await assert.rejects(reader.call('structural_report', { work_id: registered.receipt.item_id }), { code: 'STRUCTURAL_SOURCE_FORBIDDEN' });

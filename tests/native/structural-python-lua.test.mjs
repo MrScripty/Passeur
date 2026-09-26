@@ -114,6 +114,26 @@ test('Python body changes are direct and a malformed body leaves a valid header 
   assert.ok(malformed.limitations.includes('declaration_body_incomplete'));
 });
 
+test('Python local bindings are outside the inventory with explicit incomplete coverage', async () => {
+  const result = await extractNativeFunctions(captured(
+    'def outer(items: list[int]) -> int:\n    total = 0\n    for item in items:\n        total += item\n    return total\n', 'locals.py'), 'python');
+  assert.equal(result.coverage, 'incomplete');
+  assert.deepEqual(result.declarations.map(declaration => declaration.name), ['outer']);
+  assert.ok(result.limitations.includes('unmapped_local_syntax'));
+});
+
+test('Python nested bindings, imports and comprehension captures remain explicit', async () => {
+  const result = await extractNativeFunctions(captured(
+    'def outer(items):\n    import hidden_module\n    if items:\n        def conditional():\n            return 1\n    return [item for item in items]\n', 'nested-locals.py'), 'python');
+  assert.equal(result.coverage, 'incomplete');
+  assert.ok(result.limitations.includes('unmapped_local_syntax'));
+  assert.ok(result.limitations.includes('nested_declaration_coverage_unavailable'));
+  const matched = await extractNativeFunctions(captured(
+    'def matched(value):\n    match value:\n        case {"name": name}:\n            return name\n    return None\n', 'match.py'), 'python');
+  assert.equal(matched.coverage, 'incomplete');
+  assert.ok(matched.limitations.includes('unmapped_local_syntax'));
+});
+
 test('defaulted Python type parameters are parsed, masked and independently tracked', async () => {
   const before = 'class Box[T = secret_one]:\n    pass\ntype Alias[T = secret_one] = list[T]\n';
   const after = before.replaceAll('secret_one', 'secret_two');

@@ -25,7 +25,7 @@ Usage: passeur <action> [options]
   service-start|service-status --project PATH
   service-stop --project PATH --operation-key KEY --yes [--cancel-tasks UUID,UUID]
   coordinate --project PATH --request FILE [--yes] [--confirm-external-settled]
-  structural-report --project PATH --work UUID
+  structural-report --project PATH --work UUID [--view comparison|input|observed]
   structural-detail --project PATH --work UUID --report UUID --side input|observed --start-byte N --end-byte N
   structural-refresh --project PATH --work UUID
   structural-observation-status --project PATH --work UUID
@@ -94,7 +94,7 @@ function integer(value: string | undefined, flag: string): number | undefined {
 const options = {
   request: { type: "string" }, "confirm-external-settled": { type: "boolean" }, work: { type: "string" }, report: { type: "string" },
   id: { type: "string" }, "expected-revision": { type: "string" },
-  side: { type: "string" }, "start-byte": { type: "string" }, "end-byte": { type: "string" },
+  side: { type: "string" }, view: { type: "string" }, "start-byte": { type: "string" }, "end-byte": { type: "string" },
   assignment: { type: "string" }, "request-key": { type: "string" }, "operation-key": { type: "string" }, "control-generation": { type: "string" },
   "input-id": { type: "string" }, answer: { type: "string" }, "after-revision": { type: "string" }, "wait-ms": { type: "string" }, "cancel-tasks": { type: "string" },
   project: { type: "string" }, profile: { type: "string" }, "state-root": { type: "string" }, "expected-repository-id": { type: "string" },
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     "service-start": bindingFlags, "service-status": bindingFlags,
     "service-stop": [...bindingFlags, "operation-key", "cancel-tasks", "yes"],
     coordinate: [...bindingFlags, "request", "yes", "confirm-external-settled"],
-    "structural-report": [...bindingFlags, "work"],
+    "structural-report": [...bindingFlags, "work", "view"],
     "structural-detail": [...bindingFlags, "work", "report", "side", "start-byte", "end-byte"],
     "structural-refresh": [...bindingFlags, "work"],
     "structural-observation-status": [...bindingFlags, "work"],
@@ -326,7 +326,9 @@ async function main(): Promise<void> {
     if (action === "coordinate") {
       const { runCoordinationCli } = await import("./cli/coordination.js");
       print(await runCoordinationCli(required(values.request, "--request"), Boolean(values.yes), connected, stop.signal, Boolean(values["confirm-external-settled"])));
-    } else if (action === "structural-report") print(await (await connected()).call("structural_report", { work_id: required(values.work, "--work") }, stop.signal));
+    } else if (action === "structural-report") print(await (await connected()).call("structural_report", {
+      work_id: required(values.work, "--work"), view: values.view ?? "comparison",
+    }, stop.signal));
     else if (action === "structural-detail") print(await (await connected()).call("structural_detail", {
       work_id: required(values.work, "--work"), report_id: required(values.report, "--report"),
       side: required(values.side, "--side"), start_byte: integer(required(values["start-byte"], "--start-byte"), "--start-byte")!,

@@ -92,6 +92,9 @@ test("compiled CLI returns a native report and retained exact detail for its reg
   const row = report.reports[0]; assert.ok(row);
   assert.equal(row.path, "source.ts");
   assert.match(row.text, /OBSERVED: "export function changed\(value: number\): number"/);
+  const inputReport = responseSchemas.structural_report.parse(await f.run("structural-report", ["--work", work, "--view", "input"]));
+  assert.match(inputReport.reports[0]!.text, /INSPECTION — one captured source/);
+  assert.match(inputReport.reports[0]!.text, /Declaration: "run"/);
   const id = row.report_id;
   await writeFile(join(f.root, "source.ts"), "export function later() {}\n");
   const detail = responseSchemas.structural_detail.parse(await f.run("structural-detail", ["--work", work, "--report", id,
@@ -125,6 +128,12 @@ test("stdio MCP owner receives native report and detail while another authentica
   assert.equal(report.reports.length, 1);
   const row = report.reports[0]; assert.ok(row);
   assert.match(row.text, /OBSERVED: "export function changed\(value: number\): number"/);
+  const observedInspectionResult = await owner.callTool({ name: "passeur_structural_report",
+    arguments: { work_id: work, view: "observed" } }, undefined, { timeout: 20000 });
+  assert.notEqual(observedInspectionResult.isError, true);
+  const observedInspection = responseSchemas.structural_report.parse(body(observedInspectionResult));
+  assert.match(observedInspection.reports[0]!.text, /INSPECTION — one captured source/);
+  assert.match(observedInspection.reports[0]!.text, /Declaration: "changed"/);
   const deniedReport = await reader.callTool({ name: "passeur_structural_report", arguments: { work_id: work } });
   assert.equal(deniedReport.isError, true);
   assert.equal(failureSchema.parse(body(deniedReport)).error.code, "STRUCTURAL_SOURCE_FORBIDDEN");

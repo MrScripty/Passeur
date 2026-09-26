@@ -6,7 +6,23 @@ import type { NativeFamilyContext, NativeFamilyExtractor, NativeFamilyResult } f
 
 const digest = (text: string): string => createHash("sha256").update(text).digest("hex");
 const LIMIT = 4096;
+const localBindingTypes = new Set(["assignment", "annotated_assignment", "augmented_assignment",
+  "for_statement", "named_expression", "with_statement", "except_clause", "import_statement",
+  "import_from_statement", "match_statement", "list_comprehension", "set_comprehension",
+  "dictionary_comprehension", "generator_expression", "for_in_clause", "type_alias_statement"]);
 type Span = Readonly<{ start: number; end: number; marker: string; digest: string }>;
+
+function markUnmappedFunctionBody(node: Parser.SyntaxNode, direct: readonly Parser.SyntaxNode[], limitations: Set<string>): void {
+  for (const child of node.namedChildren) {
+    const definition = child.type === "decorated_definition" ? child.childForFieldName("definition") : child;
+    if (definition?.type === "function_definition" || definition?.type === "class_definition") {
+      if (!direct.includes(child)) limitations.add("nested_declaration_coverage_unavailable");
+      continue;
+    }
+    if (localBindingTypes.has(child.type)) limitations.add("unmapped_local_syntax");
+    else markUnmappedFunctionBody(child, direct, limitations);
+  }
+}
 
 function mask(text: string, start: number, spans: readonly Span[]): string {
   let cursor = 0, result = "";
@@ -151,6 +167,7 @@ export const extractPythonFamily: NativeFamilyExtractor = (context): NativeFamil
           child.namedChildren[0]?.type === "assignment") direct.push(child);
         else if (!isFunction && child.type !== "comment" && child.type !== "pass_statement") limitations.add("unmapped_member_syntax");
       }
+      if (isFunction && body) markUnmappedFunctionBody(body, direct, limitations);
       const bodyDigest = bodyMarker(context, body, direct, limitations);
       addDeclaration(output, outer, context, enclosing, nameNode?.text ?? null, header, parameters,
         isFunction && node.childForFieldName("return_type") ?

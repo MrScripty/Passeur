@@ -10,6 +10,10 @@ test('source report selector is bounded and rejects duplicate paths', () => {
   assert.equal(operationSchemas.structural_report.safeParse({work_id:id,paths:[]}).success,false);
   assert.equal(operationSchemas.structural_report.safeParse({work_id:id,paths:['x.ts','x.ts']}).success,false);
   assert.equal(operationSchemas.structural_report.safeParse({work_id:id,paths:['a','b','c','d','e']}).success,false);
+  assert.equal(operationSchemas.structural_report.parse({work_id:id}).view,'comparison');
+  for (const view of ['comparison','input','observed'])
+    assert.equal(operationSchemas.structural_report.safeParse({work_id:id,view}).success,true);
+  assert.equal(operationSchemas.structural_report.safeParse({work_id:id,view:'unknown'}).success,false);
 });
 
 test('an exact selected file bypasses the default four-file prefix without granting out-of-scope reads', async t => {

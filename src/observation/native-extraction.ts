@@ -15,17 +15,23 @@ import { nativeExtractorIdentity } from "./extractor-identity.js";
 
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 const functionTypes = new Set(["function_item", "function_signature_item", "function_declaration", "function_signature",
-  "method_definition", "method_signature", "arrow_function", "function_expression"]);
+  "method_definition", "method_signature", "arrow_function", "function_expression", "generator_function",
+  "generator_function_declaration"]);
 const typeTypes = new Set(["struct_item", "trait_item", "impl_item", "foreign_mod_item", "type_item", "enum_item",
-  "mod_item", "class_declaration", "interface_declaration", "type_alias_declaration", "enum_declaration"]);
+  "mod_item", "class_declaration", "interface_declaration", "type_alias_declaration", "enum_declaration",
+  "internal_module", "module"]);
 const memberTypes = new Set([...functionTypes, "field_declaration", "public_field_definition", "property_signature",
   "enum_variant", "enum_assignment", "property_identifier"]);
+const rustLocalBindingTypes = new Set(["let_declaration", "const_item", "static_item", "for_expression",
+  "let_condition", "while_let_expression", "match_expression", "match_arm", "closure_expression", "closure_parameters"]);
 const commentTypes = new Set(["comment", "line_comment", "block_comment"]);
 const opaqueRegionTypes = new Set(["use_declaration", "import_statement", "export_statement", "export_clause",
   "macro_definition", "macro_invocation"]);
 
 function unwrapped(node: Parser.SyntaxNode): Parser.SyntaxNode {
   if (node.type === "export_statement") return node.childForFieldName("declaration") ?? node.childForFieldName("value") ?? node;
+  if (node.type === "expression_statement" && node.namedChildren.length === 1 &&
+      node.namedChildren[0]!.type === "internal_module") return node.namedChildren[0]!;
   return node;
 }
 function recoveredTopLevelFunction(node: Parser.SyntaxNode, dialect: NativeDialect): Parser.SyntaxNode | null {
@@ -61,12 +67,34 @@ function syntaxDamage(node: Parser.SyntaxNode, start: number, end: number): bool
     (child.isMissing ? child.startIndex <= end : child.startIndex < end) && child.endIndex >= start).length > 0;
 }
 
+function bindingDefaultValues(binding: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  const values: Parser.SyntaxNode[] = [], pending = [binding];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.type === "assignment_pattern" || node.type === "object_assignment_pattern") {
+      const value = node.childForFieldName("right");
+      if (value) values.push(value);
+      const left = node.childForFieldName("left");
+      if (left) pending.push(left);
+      continue;
+    }
+    if (node.type === "pair_pattern") {
+      const value = node.childForFieldName("value");
+      if (value) pending.push(value);
+    } else if (node.type === "object_pattern" || node.type === "array_pattern" || node.type === "rest_pattern") {
+      for (let index = node.namedChildren.length - 1; index >= 0; index--) pending.push(node.namedChildren[index]!);
+    }
+  }
+  return values;
+}
+
 function maskHeader(header: string, headerStart: number, headerEnd: number, outer: Parser.SyntaxNode,
   parameters: Parser.SyntaxNode | null, ownValue: Parser.SyntaxNode | null,
-  typeDefaults: readonly (Parser.SyntaxNode | null)[], prefix: readonly Parser.SyntaxNode[] = []):
+  typeDefaults: readonly (Parser.SyntaxNode | null)[], prefix: readonly Parser.SyntaxNode[] = [],
+  bindingDefaults: readonly Parser.SyntaxNode[] = []):
   { signature: string; parameters: string[]; digests: string[] } {
   const parameterNodes = parameters?.namedChildren.filter(parameter => !commentTypes.has(parameter.type)) ?? [];
-  const values = [...parameterDefaultValues(parameterNodes), ownValue, ...typeDefaults]
+  const values = [...parameterDefaultValues(parameterNodes), ownValue, ...typeDefaults, ...bindingDefaults]
     .filter((value): value is Parser.SyntaxNode => value !== null && value.startIndex >= headerStart && value.endIndex <= headerEnd);
   const spans: MaskSpan[] = values.map(value => ({ start: value.startIndex, end: value.endIndex, text: value.text,
     marker: "<default>", change: true }));
@@ -126,8 +154,11 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
   const limitations = new Set<string>();
   if (tree.rootNode.hasError) limitations.add("parse_error_or_missing_token");
   const declarations: Declaration[] = [];
+  const containsDeclarationLike = (node: Parser.SyntaxNode): boolean => node.type === "class" ||
+    functionTypes.has(node.type) || typeTypes.has(node.type) || descendants(node,
+      child => child.type === "class" || functionTypes.has(child.type) || typeTypes.has(child.type)).length > 0;
   const add = (outer: Parser.SyntaxNode, node: Parser.SyntaxNode, enclosing: string[], bindingName?: Parser.SyntaxNode,
-    prefix: readonly Parser.SyntaxNode[] = []): void => {
+    prefix: readonly Parser.SyntaxNode[] = [], declarationPrefix = ""): void => {
     const isFunction = functionTypes.has(node.type), isType = typeTypes.has(node.type);
     if (declarations.length >= 4096) throw new BridgeError("STRUCTURAL_ANALYSIS_CAPACITY", "Native declaration inventory exceeds its bound");
     const nameNode = bindingName ?? node.childForFieldName("name") ?? (node.type === "impl_item" ? node.childForFieldName("type") : null)
@@ -136,6 +167,12 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
     const foreignAbi = node.type === "foreign_mod_item" ? node.namedChildren.find(child => child.type === "extern_modifier") : null;
     const name = foreignAbi?.text ?? (nameNode ? implTrait ? `${implTrait.text} for ${nameNode.text}` : nameNode.text : null);
     const parameters = node.childForFieldName("parameters"), body = node.childForFieldName("body");
+    const ownValue = node.childForFieldName("value");
+    if (!isFunction && !isType && ownValue && containsDeclarationLike(ownValue)) limitations.add("nested_declaration_coverage_unavailable");
+    if (isFunction && parameters && descendants(parameters,
+      child => child.type === "class" || functionTypes.has(child.type) || typeTypes.has(child.type)).length) {
+      limitations.add("nested_declaration_coverage_unavailable");
+    }
     const start = prefix[0]?.startIndex ?? outer.startIndex;
     const headerEnd = body && node.type !== "enum_variant" ? body.startIndex : outer.endIndex;
     const header = file.text.slice(start, headerEnd);
@@ -155,7 +192,7 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
     const range = ranges.byteRange(start, outer.endIndex);
     let bodyDigest = digest("");
     const bodyMembers: { node: Parser.SyntaxNode; prefix: Parser.SyntaxNode[]; start: number }[] = [];
-    if (body && isType) {
+    if (body && isType && node.type !== "internal_module" && node.type !== "module") {
       let pending: Parser.SyntaxNode[] = [];
       for (const member of body.namedChildren) {
         if (member.type === "decorator" || member.type === "attribute_item" || (pending.length && commentTypes.has(member.type))) {
@@ -172,8 +209,15 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
       limitations.add("declaration_body_incomplete");
       bodyDigest = "";
     } else if (body && isType) {
+      const represented = (node.type === "internal_module" || node.type === "module")
+        ? body.namedChildren.filter(member => {
+          const child = unwrapped(member);
+          return functionTypes.has(child.type) || typeTypes.has(child.type) ||
+            child.type === "lexical_declaration" || child.type === "variable_declaration";
+        }).map(member => ({ node: member, start: member.startIndex }))
+        : bodyMembers;
       let cursor = body.startIndex, remaining = "";
-      for (const member of bodyMembers) {
+      for (const member of represented) {
         remaining += file.text.slice(cursor, member.start);
         cursor = member.node.endIndex;
       }
@@ -189,19 +233,38 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
     }
     if (body && isFunction) {
       const direct = new Set(body.namedChildren.filter(child => functionTypes.has(child.type) || typeTypes.has(child.type)));
-      const deep = descendants(body, child => child !== body && (functionTypes.has(child.type) ||
+      const deep = descendants(body, child => child !== body && (child.type === "class" || functionTypes.has(child.type) ||
         typeTypes.has(child.type) || (child.type === "variable_declarator" &&
           ["arrow_function", "function_expression"].includes(child.childForFieldName("value")?.type ?? ""))));
       if (deep.some(child => !direct.has(child))) limitations.add("nested_declaration_coverage_unavailable");
+      if ((dialect === "typescript" || dialect === "tsx") && descendants(body,
+        child => child.type === "lexical_declaration" || child.type === "variable_declaration" || child.type === "variable_declarator" ||
+          child.type === "for_in_statement" || child.type === "for_statement" || child.type === "for_of_statement" ||
+          child.type === "catch_clause" || child.type === "catch_parameter").length) {
+        limitations.add("nested_declaration_coverage_unavailable");
+      }
+      if (dialect === "rust" && descendants(body, child => rustLocalBindingTypes.has(child.type)).length) {
+        limitations.add("nested_declaration_coverage_unavailable");
+      }
     }
     const declaration: Declaration = { key: `${node.type}:${name ?? "<anonymous>"}:${range.start_byte}`,
       kind: node.type, name, enclosing, range,
-      signature: validHeader ? defaults.signature : "<header extraction incomplete>",
+      signature: validHeader ? `${declarationPrefix}${defaults.signature}` : "<header extraction incomplete>",
       parameters: validHeader ? defaults.parameters : [],
       result: validHeader ? result ? { state: "declared", syntax: maskHeader(result.text, result.startIndex,
         result.endIndex, result, null, null, []).signature } : { state: "not_declared" } : { state: "unavailable" },
       header_complete: validHeader, ...(bodyDigest ? { body_digest: bodyDigest } : {}), default_digests: defaults.digests };
     declarations.push(Object.freeze(declaration));
+    if (body && (node.type === "internal_module" || node.type === "module")) {
+      for (const member of body.namedChildren) {
+        const child = unwrapped(member);
+        if (functionTypes.has(child.type) || typeTypes.has(child.type)) add(member, child,
+          [...enclosing, name ?? "<anonymous>"]);
+        else if (child.type === "lexical_declaration" || child.type === "variable_declaration") addLexical(member, child,
+          [...enclosing, name ?? "<anonymous>"]);
+        else if (!commentTypes.has(child.type)) limitations.add("unmapped_member_syntax");
+      }
+    }
     if (body && isType) for (const member of bodyMembers) add(member.node, member.node,
       [...enclosing, name ?? "<anonymous>"], undefined, member.prefix);
     if (body && isFunction) for (const child of body.namedChildren) {
@@ -210,11 +273,45 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
   };
   const addLexical = (outer: Parser.SyntaxNode, lexical: Parser.SyntaxNode, enclosing: string[]): void => {
     const items = lexical.namedChildren.filter(child => child.type === "variable_declarator");
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
       const value = item.childForFieldName("value"), binding = item.childForFieldName("name");
-      if (value && (value.type === "arrow_function" || value.type === "function_expression") && binding?.type === "identifier") {
-        add(items.length === 1 ? outer : item, value, enclosing, binding);
-      } else limitations.add("unmapped_top_level_syntax");
+      const declarationPrefix = items.length === 1 ? "" : `${maskHeader(file.text.slice(outer.startIndex, items[0]!.startIndex),
+        outer.startIndex, items[0]!.startIndex, outer, null, null, []).signature} `;
+      if (value && functionTypes.has(value.type) && binding?.type === "identifier") {
+        add(items.length === 1 ? outer : item, value, enclosing, binding, [], declarationPrefix);
+        continue;
+      }
+      if (!binding || !["identifier", "object_pattern", "array_pattern"].includes(binding.type)) {
+        limitations.add("unmapped_binding_syntax");
+        continue;
+      }
+      const unsupported = descendants(binding, child => child.type === "computed_property_name" || child.type === "ERROR");
+      if (unsupported.length) {
+        limitations.add("unmapped_binding_syntax");
+        continue;
+      }
+      if (declarations.length >= 4096) throw new BridgeError("STRUCTURAL_ANALYSIS_CAPACITY", "Native declaration inventory exceeds its bound");
+      const bindingDefaults = bindingDefaultValues(binding);
+      if (value && containsDeclarationLike(value) || bindingDefaults.some(containsDeclarationLike)) {
+        limitations.add("nested_declaration_coverage_unavailable");
+      }
+      const start = items.length === 1 || index === 0 ? outer.startIndex : item.startIndex;
+      const end = items.length === 1 ? outer.endIndex : item.endIndex;
+      const masked = maskHeader(file.text.slice(start, end), start, end, outer, null, value, [], [], bindingDefaults);
+      const name = maskHeader(binding.text, binding.startIndex, binding.endIndex, binding, null, null, [], [], bindingDefaults).signature;
+      const validHeader = !syntaxDamage(item, item.startIndex, item.endIndex) &&
+        !syntaxDamage(lexical, start, end) && !syntaxDamage(outer, start, end);
+      if (!validHeader) limitations.add("declaration_header_incomplete");
+      const range = ranges.byteRange(start, end);
+      const type = item.childForFieldName("type");
+      const declaration: Declaration = { key: `variable_declarator:${name}:${range.start_byte}`,
+        kind: "variable_declarator", name, enclosing, range,
+        signature: validHeader ? `${index === 0 ? "" : declarationPrefix}${masked.signature}` : "<header extraction incomplete>", parameters: [],
+        result: validHeader ? type ? { state: "declared", syntax: maskHeader(type.text, type.startIndex,
+          type.endIndex, type, null, null, []).signature } : { state: "not_declared" }
+          : { state: "unavailable" },
+        header_complete: validHeader, body_digest: digest(""), default_digests: masked.digests };
+      declarations.push(Object.freeze(declaration));
     }
     if (items.length === 0) limitations.add("unmapped_top_level_syntax");
   };

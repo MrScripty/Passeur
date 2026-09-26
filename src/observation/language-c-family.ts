@@ -50,6 +50,9 @@ function callable(node: Parser.SyntaxNode | null): Parser.SyntaxNode | null {
 function parameterNodes(node: Parser.SyntaxNode | null): Parser.SyntaxNode[] {
   return node?.namedChildren.filter(child => !comments.has(child.type)) ?? [];
 }
+function containsAny(node: Parser.SyntaxNode, types: ReadonlySet<string>): boolean {
+  return node.namedChildren.some(child => types.has(child.type) || containsAny(child, types));
+}
 function defaultValue(parameter: Parser.SyntaxNode): Parser.SyntaxNode | null {
   const explicit = field(parameter, "default_value") ?? field(parameter, "value");
   if (explicit) return explicit;
@@ -90,6 +93,11 @@ export function extractCFamily(context: NativeFamilyContext): NativeFamilyResult
   if (dialect !== "c" && dialect !== "cpp" && dialect !== "csharp") throw new Error("C-family extractor received another dialect");
   const declarations: Declaration[] = [], limitations = new Set<string>();
   const csharp = dialect === "csharp";
+    const localBindingTypes = csharp
+      ? new Set(["local_declaration_statement", "local_function_statement", "for_statement", "foreach_statement",
+      "using_statement", "fixed_statement", "lambda_expression", "declaration_pattern", "var_pattern",
+      "declaration_expression", "catch_clause"])
+    : new Set(["declaration", "for_statement", "for_range_loop", "range_based_for_statement", "lambda_expression", "catch_clause"]);
   const add = (node: Parser.SyntaxNode, enclosing: readonly string[], prefix?: Parser.SyntaxNode,
     declaredName?: Parser.SyntaxNode, outer: Parser.SyntaxNode = node, fieldInitializer?: Parser.SyntaxNode | null): void => {
     if (declarations.length >= 4096) { limitations.add("declaration_inventory_limit"); return; }
@@ -138,6 +146,7 @@ export function extractCFamily(context: NativeFamilyContext): NativeFamilyResult
     const children = body && isContainer ? body.namedChildren.filter(child =>
       (csharp ? csContainers.has(child.type) || csMembers.has(child.type) : cContainers.has(child.type) ||
         ["declaration", "field_declaration", "function_definition", "template_declaration", "type_definition", "alias_declaration"].includes(child.type))) : [];
+    if (body && !isContainer && containsAny(body, localBindingTypes)) limitations.add("unmapped_local_syntax");
     let bodyDigest: string | undefined;
     if (body) {
       if (damaged(body, body.startIndex, body.endIndex)) limitations.add("declaration_body_incomplete");
@@ -180,7 +189,8 @@ export function extractCFamily(context: NativeFamilyContext): NativeFamilyResult
           add(node, currentScope, pending);
           if (node.type === "file_scoped_namespace_declaration") currentScope = [...currentScope, field(node, "name")?.text ?? "<anonymous>"];
         }
-        else if (!cOpaque.has(node.type) && node.type !== "global_statement" && node.type !== "using_directive" &&
+        else if (node.type === "global_statement") limitations.add("unmapped_top_level_syntax");
+        else if (!cOpaque.has(node.type) && node.type !== "using_directive" &&
           node.type !== "extern_alias_directive") limitations.add("unmapped_member_syntax");
       } else if (node.type === "template_declaration") {
         const wrapped = node.namedChildren.find(child => child.type !== "template_parameter_list" && child.type !== "requires_clause");
