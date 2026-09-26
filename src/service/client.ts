@@ -43,7 +43,9 @@ export class ServiceClient {
       if (frame.kind === "failure") { request.reject(new BridgeError(frame.error.code, frame.error.message)); return; }
       request.accept(frame.result);
     }, () => {
-      const failure = new BridgeError("SERVICE_DISCONNECTED", "Service observation was lost; recover accepted operations by their original keys");
+      const failure = this.connection.error instanceof BridgeError && !this.#clientId
+        ? this.connection.error
+        : new BridgeError("SERVICE_DISCONNECTED", "Service observation was lost; recover accepted operations by their original keys");
       this.#rejectReady(failure);
       for (const request of this.#pending.values()) request.reject(failure);
       this.#pending.clear();
@@ -120,12 +122,13 @@ export class PasseurFrontend {
     return { schema_version: 2, frontend: this.identity, binding: { project_input: this.intent.project,
       ...(this.intent.profilePath ? { profile_path: this.intent.profilePath } : {}), ...(this.intent.stateRoot ? { state_root: this.intent.stateRoot } : {}),
       ...(this.intent.expectedRepositoryId ? { expected_repository_id: this.intent.expectedRepositoryId } : {}) },
-      service: this.#client?.connection.isClosed ? { state: "unavailable", code: "SERVICE_DISCONNECTED", message: "The previous service observation is stale" }
-        : this.#lastStatus ? { state: "connected", status: this.#lastStatus } : this.#failure ? { state: "unavailable", ...this.#failure } : { state: "not_checked" } };
+      service: this.#failure ? { state: "unavailable", ...this.#failure }
+        : this.#client?.connection.isClosed ? { state: "unavailable", code: "SERVICE_DISCONNECTED", message: "The previous service observation is stale" }
+        : this.#lastStatus ? { state: "connected", status: this.#lastStatus } : { state: "not_checked" } };
   }
   async observeStatus(signal?: AbortSignal): Promise<FrontendStatus> {
     if (this.#client && !this.#client.connection.isClosed) {
-      try { this.#lastStatus = await this.#client.call("status", {}, signal); }
+      try { this.#lastStatus = await this.#client.call("status", {}, signal); this.#failure = undefined; }
       catch (error) { const info = diagnosticInfo(error); this.#failure = { code: info.code, message: info.message }; this.#lastStatus = undefined; }
     }
     return this.status();
@@ -135,34 +138,50 @@ export class PasseurFrontend {
     if (this.#client && !this.#client.connection.isClosed) return this.#client;
     if (this.#connecting) return this.#connecting;
     const attempt = (async () => {
-      const binding = await this.#resolve();
-      const { readDescriptor, existingOwner, launchService } = await import("./bootstrap.js");
-      let descriptor = await readDescriptor(binding), reservation: LaunchReservation | undefined;
-      if (descriptor && await existingOwner(descriptor) && descriptor.profile_path !== binding.profilePath) throw new BridgeError("SERVICE_PROFILE_CONFLICT", "Use the same approved profile path for clients of this repository service");
-      const live = descriptor ? await existingOwner(descriptor) : false;
-      if (!live) reservation = await launchService(binding, this.exactCli);
+      let reservation: LaunchReservation | undefined;
       const budget = AbortSignal.timeout(10_000), signal = AbortSignal.any([budget, this.#lifetime.signal]);
-      let candidate: ServiceClient | undefined;
       try {
+        const binding = await this.#resolve();
+        const { readDescriptor, existingOwner, launchService } = await import("./bootstrap.js");
+        let descriptor: ServiceDescriptor | undefined;
         while (true) {
           signal.throwIfAborted();
-          descriptor = await readDescriptor(binding);
-          if (descriptor && await existingOwner(descriptor)) {
-            if (descriptor.profile_path !== binding.profilePath) throw new BridgeError("SERVICE_PROFILE_CONFLICT", "The elected service has a different approved profile");
-            if (descriptor.runtime.build_id !== this.identity.build_id) throw new BridgeError("SERVICE_BUILD_CONFLICT", "The running service uses another build; drain it explicitly before a controlled upgrade");
-            candidate = new ServiceClient(descriptor, binding, this.#ownerToken);
-            await withAbort(candidate.ready, signal);
-            const status = await candidate.call("status", {}, signal);
-            this.#lastStatus = status; this.#failure = undefined; this.#client = candidate;
-            return candidate;
+          try { descriptor = await readDescriptor(binding); break; }
+          catch (error) {
+            if (!(error instanceof BridgeError) || error.code !== "SERVICE_DESCRIPTOR_CHANGED") throw error;
+            await delay(25, undefined, { signal });
+          }
+        }
+        const live = descriptor ? await existingOwner(descriptor) : false;
+        if (live && descriptor?.profile_path !== binding.profilePath) throw new BridgeError("SERVICE_PROFILE_CONFLICT", "Use the same approved profile path for clients of this repository service");
+        if (!live) reservation = await launchService(binding, this.exactCli);
+        while (true) {
+          signal.throwIfAborted();
+          let candidate: ServiceClient | undefined;
+          let dispatched = false;
+          try {
+            descriptor = await readDescriptor(binding);
+            if (descriptor && await existingOwner(descriptor)) {
+              if (descriptor.profile_path !== binding.profilePath) throw new BridgeError("SERVICE_PROFILE_CONFLICT", "The elected service has a different approved profile");
+              if (descriptor.runtime.build_id !== this.identity.build_id) throw new BridgeError("SERVICE_BUILD_CONFLICT", "The running service uses another build; drain it explicitly before a controlled upgrade");
+              candidate = new ServiceClient(descriptor, binding, this.#ownerToken);
+              await withAbort(candidate.ready, signal);
+              // The first request starts dispatch. Failures from this point cannot replay a mutation.
+              dispatched = true;
+              const status = await candidate.call("status", {}, signal);
+              this.#lastStatus = status; this.#failure = undefined; this.#client = candidate;
+              return candidate;
+            }
+          } catch (error) {
+            candidate?.close();
+            if (dispatched || !(error instanceof BridgeError && (error.code === "SERVICE_DESCRIPTOR_CHANGED" || error.code === "SERVICE_DISCONNECTED"))) throw error;
           }
           if (reservation) await Promise.race([delay(25, undefined, { signal }), reservation.failure]);
-          else throw new BridgeError("SERVICE_UNAVAILABLE", "The previously observed service is unavailable; retry attachment without deleting its lock or endpoint");
+          else await delay(25, undefined, { signal });
         }
       } catch (error) {
-        candidate?.close();
         const info = budget.aborted && !this.#lifetime.signal.aborted ? { code: "SERVICE_ATTACH_UNAVAILABLE", message: "Service attachment exceeded its observation budget; no running task was cancelled" } : diagnosticInfo(error);
-        this.#failure = { code: info.code, message: info.message }; throw new BridgeError(info.code, info.message);
+        this.#lastStatus = undefined; this.#failure = { code: info.code, message: info.message }; throw new BridgeError(info.code, info.message);
       } finally { reservation?.released(); }
     })();
     this.#connecting = attempt;
@@ -172,7 +191,10 @@ export class PasseurFrontend {
   async call<K extends Operation>(operation: K, args: unknown, signal?: AbortSignal): Promise<Response<K>> {
     const client = await withAbort(this.#connect(), signal);
     const result = await client.call(operation, args, signal);
-    if (operation === "status" || operation === "prepare") this.#lastStatus = result as Response<"status">;
+    if (operation === "status" || operation === "prepare") {
+      this.#lastStatus = result as Response<"status">;
+      this.#failure = undefined;
+    }
     return result;
   }
   async coordinate(raw: unknown, signal?: AbortSignal): Promise<CoordinationReply> {

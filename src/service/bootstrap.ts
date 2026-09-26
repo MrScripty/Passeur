@@ -57,13 +57,23 @@ export async function launchService(binding: ResolvedBinding, exactCli: string):
   const paths = await preparePaths(binding);
   let reject!: (error: unknown) => void;
   const failure = new Promise<never>((_yes, no) => { reject = no; }); failure.catch(() => undefined);
-  const args = ["--nonblock", "--no-fork", paths.guard, process.execPath, resolve(exactCli), "service-run", "--project", binding.project,
+  // Reserve 75 for flock contention so an elected service exiting with code 1
+  // remains distinguishable from a loser.
+  const args = ["--nonblock", "--no-fork", "--conflict-exit-code", "75", paths.guard, process.execPath, resolve(exactCli), "service-run", "--project", binding.project,
     "--state-root", binding.stateRoot, "--expected-repository-id", binding.repositoryId,
     ...(binding.profilePath ? ["--profile", binding.profilePath] : [])];
   const child = spawn("flock", args, { stdio: ["pipe", "ignore", "ignore"], detached: true, shell: false,
     env: Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR", "PASSEUR_OBSERVATION_MONITOR"].flatMap((k) => process.env[k] === undefined ? [] : [[k, process.env[k]]])) });
-  child.on("error", () => reject(new BridgeError("SERVICE_START_FAILED", "The guarded service executable could not be launched")));
-  child.on("exit", (code) => { if (code !== 0 && code !== 1) reject(new BridgeError("SERVICE_START_FAILED", "Guarded service startup exited; inspect the exact installed runtime and dependencies")); });
+  child.on("error", (error) => {
+    const code = nativeCode(error);
+    reject(new BridgeError(code === "ENOENT" ? "SERVICE_PLATFORM_UNSUPPORTED" : "SERVICE_START_FAILED",
+      "The qualified flock launcher could not be started", { cause: error, ...(code ? { native_code: code } : {}) }));
+  });
+  child.on("exit", (code, signal) => {
+    if (code !== 75) reject(new BridgeError("SERVICE_START_FAILED", signal
+      ? `Guarded service startup ended by signal ${signal}`
+      : `Guarded service startup exited with code ${code}; inspect the exact installed runtime and dependencies`));
+  });
   child.stdin!.on("error", () => undefined);
   child.unref();
   return { child, failure, released: () => { child.stdin?.end(); } };

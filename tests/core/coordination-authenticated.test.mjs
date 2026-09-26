@@ -128,6 +128,7 @@ test('handshake rejects foreign repository, state root, and profile without crea
   for(const change of [{repository_id:'0'.repeat(24)},{state_root:join(f.temp,'wrong')},{profile_path:join(f.temp,'wrong.json')}]) {
     await assert.rejects(authenticateServicePeer({...hello,...change},f.binding,f.descriptor.token),{code:'SERVICE_BINDING_CONFLICT'});
   }
+  await assert.rejects(authenticateServicePeer({...hello,token:'0'.repeat(64)},f.binding,f.descriptor.token),{code:'SERVICE_BINDING_CONFLICT'});
   const foreign=join(f.temp,'foreign');await mkdir(foreign);await git(foreign,['init','-b','main']);
   await assert.rejects(authenticateServicePeer({...hello,source_view:foreign},f.binding,f.descriptor.token),{code:'SOURCE_VIEW_CONFLICT'});
   assert.equal(f.counts.acquire,0);

@@ -269,7 +269,7 @@ Known terminal result: reopen immutable evidence. Known never-started accepted w
 
 Persist `boot identity + process start identity + PID` or the qualified platform equivalent for observations; never signal a reused PID based on a stale integer. The service generation correlates messages, not permission to kill a process. Discovery metadata cannot substitute for store recovery or native proof.
 
-The service may freeze new repository mutations when worker stop or terminal publication is uncertain; healthy known siblings can finish saving their evidence. Preserve separate outcomes for permission failure, unavailable dependencies, unsupported versions, invalid state, and genuinely interrupted publication. No automatic deletion/rebuild of authority, lock-directory removal, or inference replay is a recovery strategy.
+The service may freeze new repository mutations when worker stop or terminal publication is uncertain; healthy known siblings can finish saving their evidence. Preserve separate outcomes for permission failure, unavailable dependencies, unsupported versions, invalid state, and genuinely interrupted publication. Clock-only deletion/rebuild of authority, lock-directory removal, or inference replay is not a recovery strategy. A replacement may reconcile one exact compatibility lease only when a protected versioned owner record matches that lock instance and a qualified process-birth observation proves the recorded owner exited; missing, malformed, mismatched, legacy, or still-live evidence requires explicit reconciliation and blocks new mutation.
 
 ### D15. Shutdown decisions
 

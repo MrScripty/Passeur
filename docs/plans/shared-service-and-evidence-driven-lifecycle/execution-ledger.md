@@ -1,5 +1,17 @@
 # Execution ledger
 
+## September 25, 2026 — M4-S1 source verification and recovery repair
+
+Operation: `verify`. Candidate base: `b31c4fd` plus the bounded working-tree overlay. Plan status remains `Verifying`; acceptance remains `blocked`; the next slice remains M4-S1 because installed-runtime, pinned-dependency and host/native qualification are still open.
+
+The source candidate repaired repository-service recovery for sequential and simultaneous compatible front ends. The repository lease now publishes protected owner evidence beside the lock directory so proper-lockfile heartbeats retain their invariant; reclaim requires a strict versioned record, matching lock device/inode and a process-birth observation proving the owner exited. Unknown, malformed, mismatched, legacy or live evidence still returns `PROJECT_IN_USE`. The service launcher reserves flock exit code 75 for election contention, so an elected child exit is reported as startup failure. Attachment retries descriptor/connection/handshake observation failures only before dispatch, and successful status observations clear stale frontend failure state. D14 was amended to record the evidence-qualified compatibility-lease exception.
+
+Material write set: `docs/plans/shared-service-and-evidence-driven-lifecycle/plan.md`, this ledger, `issues.md`, `reports/admission.md`, `src/core/lease.ts`, new `src/core/process-identity.ts`, `src/service/bootstrap.ts`, `src/service/client.ts`, `src/service/process.ts`, `tests/core/coordination-authenticated.test.mjs`, new `tests/core/lease-recovery.test.mjs`, new `tests/core/service-attachment.test.mjs`, new `tests/core/service-bootstrap.test.mjs`, and `tests/native/shared-service.test.mjs`. The unrelated untracked `Passeur_Structural_Review_Fixes.zip` and `docs/plans/Passeur_Concurrent_Change_Coordination_Plan.md` remained outside the write set.
+
+Evidence: `npm run check` passed; the focused TypeScript core/native compiles passed; the combined sequential suite passed **88/88** with `node --test --test-concurrency=1` across lease recovery, bootstrap, attachment, runtime-owner, coordination recovery/election/IPC and native shared-service cases. The suite includes a real 10.5-second production heartbeat, dead-owner recovery, strict malformed evidence cases, competing launchers, elected exit code 1, transient attachment replacement, post-dispatch no-replay and status-failure recovery. The repository `npm test` command also completed its build, full core suite (**640/640**) and full native suite (**192/192**); its final Vitest runner remained silent with an open worker and was interrupted after inspection, so the overall command is not claimed green. Astra high and Sol xhigh read-only reviews found no remaining blockers after repair; neither reviewer edited or committed.
+
+Limits: these are source and local Linux process/IPC checks. They do not establish pinned installed artifacts, a fresh host session, actual Codex/Muse native input/settlement behavior, or transparent failover of uncertain native work. Automatic recovery is limited to the exact evidence-qualified compatibility lease; legacy lock records still require explicit reconciliation. No acceptance claim is promoted from this entry alone.
+
 ## September 20, 2026 — Plan prepared
 
 Operation: planning only. Plan state: `Planned`; next integration slice: M0-S1.

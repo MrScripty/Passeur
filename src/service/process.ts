@@ -1,27 +1,7 @@
 import { readFile, stat, lstat, realpath, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { BridgeError, nativeCode } from "../core/errors.js";
-
-export type ProcessIdentity = { pid: number; boot_id: string; started: string };
-/** Linux process birth identity is evidence, not permission to signal an arbitrary PID. */
-export async function processIdentity(pid = process.pid): Promise<ProcessIdentity> {
-  if (process.platform !== "linux" || !Number.isSafeInteger(pid) || pid < 1) throw new BridgeError("SERVICE_PLATFORM_UNSUPPORTED", "Linux process identity is required");
-  const [boot, value] = await Promise.all([readFile("/proc/sys/kernel/random/boot_id", "utf8"), readFile(`/proc/${pid}/stat`, "utf8")]);
-  const fields = value.slice(value.lastIndexOf(")") + 2).trim().split(/\s+/);
-  const started = fields[19];
-  if (!started || !/^\d+$/.test(started) || !/^[a-f0-9-]{36}$/.test(boot.trim())) throw new BridgeError("PROCESS_IDENTITY_UNAVAILABLE", "The process birth identity could not be decoded");
-  return { pid, boot_id: boot.trim(), started };
-}
-export async function sameProcess(expected: ProcessIdentity): Promise<boolean> {
-  try {
-    const actual = await processIdentity(expected.pid);
-    if (actual.boot_id !== expected.boot_id || actual.started !== expected.started) return false;
-    const value = await readFile(`/proc/${expected.pid}/stat`, "utf8");
-    const state = value.slice(value.lastIndexOf(")") + 2).split(/\s+/)[0];
-    // A zombie has exited and released descriptors; its unreaped PID is not a live service.
-    return state !== "Z" && state !== "X";
-  } catch (error) { if (nativeCode(error) === "ENOENT") return false; throw error; }
-}
+import { BridgeError } from "../core/errors.js";
+export { processIdentity, sameProcess, type ProcessIdentity } from "../core/process-identity.js";
 /** Reject symlinked, foreign-owned or accessible-to-others control directories. */
 export async function privateDirectory(path: string, create = false): Promise<string> {
   if (process.getuid === undefined) throw new BridgeError("SERVICE_PLATFORM_UNSUPPORTED", "Unix ownership is required");

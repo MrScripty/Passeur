@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { IpcConnection, decodeFrame } from '../../.passeur-native/src/service/transport.js';
@@ -50,6 +52,23 @@ test('private control directory rejects permissive modes and symlink aliases',as
 test('Linux process birth evidence rejects changed start identity and lockless entry',async t=>{
  const identity=await processIdentity();assert.equal(await sameProcess(identity),true);assert.equal(await sameProcess({...identity,started:String(BigInt(identity.started)+1n)}),false);
  const root=await directory(t),lock=join(root,'guard');await writeFile(lock,'',{mode:0o600});await assert.rejects(assertElectionGuard(lock),{code:'SERVICE_ELECTION_REQUIRED'});
+});
+test('sameProcess uses one proc stat for both birth and state', async()=>{
+ const moduleUrl=pathToFileURL(join(process.cwd(),'.passeur-native/src/service/process.js')).href;
+ const script=`import { mock } from 'node:test';
+import * as fs from 'node:fs/promises';
+const boot='00000000-0000-0000-0000-000000000001';
+let reads=0;
+const stat=state=>'42 (worker) '+[state,...Array(18).fill('0'),'77'].join(' ');
+mock.module('node:fs/promises',{namedExports:{...fs,readFile:async path=>{
+ if(path==='/proc/sys/kernel/random/boot_id')return boot;
+ if(path==='/proc/42/stat')return stat(++reads===1?'S':'Z');
+ throw Error('unexpected read: '+path);
+}}});
+const {sameProcess}=await import(process.argv[1]);
+if(await sameProcess({pid:42,boot_id:boot,started:'77'})!==true||reads!==1)process.exitCode=1;`;
+ const { stdout }=await promisify(execFile)(process.execPath,['--experimental-test-module-mocks','--input-type=module','-e',script,moduleUrl]);
+ assert.equal(stdout,'');
 });
 test('a paused elected process keeps the same guard; owner exit permits a new owner', {timeout:10000},async t=>{
  const root=await directory(t),lock=join(root,'guard');await writeFile(lock,'',{mode:0o600});
