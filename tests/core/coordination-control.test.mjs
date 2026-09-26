@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fixture, A, B, C, key, register, claim, caseOp, post } from '../fixtures/structural/coordination-fixture.mjs';
 import { decodeCommand, decodeControl } from '../../.passeur-core/src/contracts/coordination-control.js';
+import { encodePeerResolutionRecord, PEER_RESOLUTION_ACTIONS } from '../../.passeur-core/src/coordination/peer-resolution.js';
 
 async function selected(t, options = {}) {
   const f = await fixture(t, options);
@@ -65,6 +66,70 @@ test('agreement requires separate exact-party acknowledgments; posting is not co
   await assert.rejects(f.control.execute(C, { kind: 'ack_note', operation_key: key(), note_id: n.item_id }), { code: 'COORDINATION_FORBIDDEN' });
   await f.control.execute(B, { kind: 'ack_note', operation_key: key(), note_id: n.item_id });
   assert.equal((await f.control.note(B, n.item_id)).agreement, 'acknowledged');
+});
+test('structured peer proposal is source-versioned, exposed to ordinary consumers, and stale acknowledgments are rejected', async t => {
+  const f = await fixture(t);
+  const wa = await f.control.execute(A, register({ readers: [B.owner_id], input_oid: '1'.repeat(40) }));
+  const wb = await f.control.execute(B, register({ readers: [A.owner_id], input_oid: '2'.repeat(40) }));
+  const claimed = await f.control.execute(A, claim({ members: [B.owner_id] }));
+  const claimedCase = await f.control.reconciliation(A, claimed.item_id);
+  await f.control.execute(A, caseOp('select_inputs', claimedCase, { target_oid: '5'.repeat(40), inputs: [
+    { work_id: wa.item_id, commit_oid: '3'.repeat(40) }, { work_id: wb.item_id, commit_oid: '4'.repeat(40) },
+  ] }));
+  const item = await f.control.reconciliation(A, claimed.item_id);
+  const record = { schema_version: 1, kind: 'peer_resolution_proposal', case_id: item.id, case_revision: item.revision, case_generation: item.generation,
+    proposal_revision: 1, evidence_id: 'a'.repeat(64), evidence_revision: 1, participants: [A.owner_id, B.owner_id],
+    sources: [{ work_id: wa.item_id, work_revision: 1, input_oid: '1'.repeat(40), selected_commit_oid: '3'.repeat(40) },
+      { work_id: wb.item_id, work_revision: 1, input_oid: '2'.repeat(40), selected_commit_oid: '4'.repeat(40) }],
+    scope: [{ kind: 'file', path: 'src/quote.ts' }], action: 'propose', resolution_digest: 'b'.repeat(64), predecessor_digest: null,
+    permitted_actions: [...PEER_RESOLUTION_ACTIONS] };
+  const proposal = encodePeerResolutionRecord(record);
+  const subject = { kind: 'case', id: item.id };
+  const note = await f.control.execute(A, post(subject, { note_kind: 'agreement_proposal', text: proposal, parties: [A.owner_id, B.owner_id] }));
+  const disclosed = await f.control.note(B, note.item_id);
+  assert.equal(disclosed.peer_resolution.kind, 'peer_resolution_proposal');
+  await f.control.execute(A, { kind: 'ack_note', operation_key: key(), note_id: note.item_id });
+  const changed = await f.control.reconciliation(A, item.id);
+  await f.control.execute(A, caseOp('select_inputs', changed, { target_oid: '6'.repeat(40), inputs: [{ work_id: wa.item_id, commit_oid: '7'.repeat(40) }, { work_id: wb.item_id, commit_oid: '8'.repeat(40) }] }));
+  const stale = await f.control.note(A, note.item_id);
+  assert.equal(stale.peer_resolution_state, 'stale');
+  assert.equal(stale.agreement, 'pending');
+  await assert.rejects(f.control.execute(B, { kind: 'ack_note', operation_key: key(), note_id: note.item_id }), { code: 'COORDINATION_STALE_REVISION' });
+});
+test('structured application and verification records are separate and lead-authorized', async t => {
+  const f = await selected(t);
+  const subject = { kind: 'case', id: f.item.id };
+  const proposalRecord = { schema_version: 1, kind: 'peer_resolution_proposal', case_id: f.item.id, case_revision: f.item.revision,
+    case_generation: f.item.generation, proposal_revision: 1, evidence_id: 'a'.repeat(64), evidence_revision: 2, participants: [A.owner_id, B.owner_id],
+    sources: [{ work_id: f.work, work_revision: 1, input_oid: '1'.repeat(40), selected_commit_oid: '3'.repeat(40) }], scope: [], action: 'propose',
+    resolution_digest: 'b'.repeat(64), predecessor_digest: null, permitted_actions: [...PEER_RESOLUTION_ACTIONS] };
+  const proposal = await f.control.execute(A, post(subject, { note_kind: 'agreement_proposal', text: encodePeerResolutionRecord(proposalRecord), parties: [A.owner_id, B.owner_id] }));
+  await f.control.execute(A, { kind: 'ack_note', operation_key: key(), note_id: proposal.item_id });
+  await f.control.execute(B, { kind: 'ack_note', operation_key: key(), note_id: proposal.item_id });
+  const record = { schema_version: 1, kind: 'peer_resolution_application', case_id: f.item.id, case_revision: f.item.revision,
+    case_generation: f.item.generation, evidence_id: 'a'.repeat(64), evidence_revision: 2,
+    sources: [{ work_id: f.work, work_revision: 1, input_oid: '1'.repeat(40), selected_commit_oid: '3'.repeat(40) }], scope: [], proposal_digest: 'b'.repeat(64),
+    application_digest: 'c'.repeat(64), status: 'applied' };
+  const application = await f.control.execute(A, post(subject, { note_kind: 'resolution_update', text: encodePeerResolutionRecord(record) }));
+  assert.equal((await f.control.note(A, application.item_id)).peer_resolution.status, 'applied');
+  const verification = { schema_version: 1, kind: 'peer_resolution_verification', case_id: f.item.id, case_revision: f.item.revision,
+    case_generation: f.item.generation, evidence_id: 'a'.repeat(64), evidence_revision: 2,
+    sources: [{ work_id: f.work, work_revision: 1, input_oid: '1'.repeat(40), selected_commit_oid: '3'.repeat(40) }], scope: [], application_digest: 'c'.repeat(64), status: 'passed' };
+  const verificationNote = await f.control.execute(A, post(subject, { note_kind: 'resolution_update', text: encodePeerResolutionRecord(verification) }));
+  assert.equal((await f.control.note(A, verificationNote.item_id)).peer_resolution.status, 'passed');
+  const counterRecord = { ...proposalRecord, proposal_revision: 2, action: 'counter_propose', resolution_digest: 'd'.repeat(64), predecessor_digest: proposalRecord.resolution_digest };
+  const counterProposal = await f.control.execute(A, post(subject, { note_kind: 'agreement_proposal', text: encodePeerResolutionRecord(counterRecord), parties: [A.owner_id, B.owner_id] }));
+  await f.control.execute(A, { kind: 'ack_note', operation_key: key(), note_id: counterProposal.item_id });
+  await f.control.execute(B, { kind: 'ack_note', operation_key: key(), note_id: counterProposal.item_id });
+  assert.equal((await f.control.note(A, application.item_id)).peer_resolution_state, 'stale');
+  assert.equal((await f.control.note(A, verificationNote.item_id)).peer_resolution_state, 'stale');
+  await f.control.execute(A, { kind: 'withdraw_note', operation_key: key(), note_id: proposal.item_id });
+  assert.equal((await f.control.note(A, application.item_id)).peer_resolution_state, 'stale');
+  assert.equal((await f.control.note(A, verificationNote.item_id)).peer_resolution_state, 'stale');
+  await f.control.execute(A, { kind: 'withdraw_note', operation_key: key(), note_id: application.item_id });
+  assert.equal((await f.control.note(A, verificationNote.item_id)).peer_resolution_state, 'stale');
+  await assert.rejects(f.control.execute(A, post(subject, { note_kind: 'resolution_update', text: encodePeerResolutionRecord(verification) })), { code: 'COORDINATION_NOT_ACKNOWLEDGED' });
+  await assert.rejects(f.control.execute(B, post(subject, { note_kind: 'resolution_update', text: encodePeerResolutionRecord(record) })), { code: 'COORDINATION_FORBIDDEN' });
 });
 test('withdrawal preserves text and prior acknowledgment and rejects late answers', async t => {
   const f = await fixture(t), r = await f.control.execute(A, register({ readers: [B.owner_id] }));

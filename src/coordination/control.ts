@@ -7,6 +7,7 @@ import { announcements, submissionBindings, submissionEvents, decodeAnnouncement
   decodeSubmissionPreflightInput, decodeSubmissionBindInput, decodeSubmissionDispositionInput, decodeSubmissionTerminalInput,
   type AnnouncementRecord, type SubmissionBinding, type SubmissionEvent, type SubmissionPreflightInput } from "../contracts/coordination-control.js";
 import type { CoordinationStore } from "../store/coordination-store.js";
+import { decodePeerResolutionText, type PeerResolutionRecord, type PeerResolutionSource, type PeerResolutionProposal, type PeerResolutionApplication, type PeerResolutionVerification } from "./peer-resolution.js";
 
 /** The caller is the authenticated service actor, never an actor field taken from a command. */
 export type CoordinationActor = Readonly<{ owner_id: string }>;
@@ -276,6 +277,10 @@ export class CoordinationControl {
         }
       }
       if (command.kind === "register_task_work" && this.#retirements.has(command.managed.task_id)) throw new BridgeError("COORDINATION_RETIREMENT_ACTIVE", "The task is being retired");
+      if (command.kind === "post_note") {
+        const peerRecord = decodePeerResolutionText(command.text);
+        if (peerRecord) assertPeerResolutionPost(current, owner, command.subject, command.note_kind, command.parties, peerRecord);
+      }
       const next: ControlState = command.kind === "watch_source"
         ? current.schema_version === SOURCE_WATCH_CONTROL_SCHEMA ? structuredClone(current)
           : { ...structuredClone(current), schema_version: SOURCE_WATCH_CONTROL_SCHEMA,
@@ -377,15 +382,17 @@ export class CoordinationControl {
       return structuredClone(work);
     });
   }
-  async note(actor: CoordinationActor, id: string): Promise<Note & { agreement: "not_applicable" | "pending" | "acknowledged" | "withdrawn" }> {
+  async note(actor: CoordinationActor, id: string): Promise<Note & { agreement: "not_applicable" | "pending" | "acknowledged" | "withdrawn"; peer_resolution?: PeerResolutionRecord; peer_resolution_state?: "current" | "stale" }> {
     const owner = parentId(actor.owner_id), noteId = entityId(id);
     return this.#ordering.run(async () => {
       const state = await this.store.snapshot(), note = state.notes.find(n => n.id === noteId);
       if (!note) return unavailable();
       requireNoteAccess(state, owner, note);
+      const peer_resolution = retainedPeerRecord(note.text);
+      const peer_resolution_state = peer_resolution ? peerRecordCurrent(state, note, peer_resolution) ? "current" : "stale" : undefined;
       const agreement = note.kind !== "agreement_proposal" ? "not_applicable" : note.withdrawn ? "withdrawn"
-        : note.parties.every(p => note.acknowledged.includes(p)) ? "acknowledged" : "pending";
-      return { ...structuredClone(note), agreement };
+        : note.parties.every(p => note.acknowledged.includes(p)) && peer_resolution_state !== "stale" ? "acknowledged" : "pending";
+      return { ...structuredClone(note), agreement, ...(peer_resolution ? { peer_resolution } : {}), ...(peer_resolution_state ? { peer_resolution_state } : {}) };
     });
   }
   async reconciliation(actor: CoordinationActor, id: string): Promise<Case> {
@@ -494,6 +501,14 @@ function submissionDecision(state: ControlState, owner: ParentId, input: Submiss
   return { decision_identity, overlaps: overlaps.map(({ kind, id, areas }) => ({ kind, id, areas })) };
 }
 function unavailable(): never { throw new BridgeError("COORDINATION_NOT_FOUND", "The subject is unavailable under current sharing authority"); }
+function retainedPeerRecord(text: string): PeerResolutionRecord | null {
+  try { return decodePeerResolutionText(text); }
+  catch (error) {
+    // A pre-schema note that happens to use the reserved prefix remains ordinary retained data on read.
+    if (text.startsWith("passeur-peer-resolution-v1:") && error instanceof BridgeError && error.code === "PEER_RESOLUTION_INVALID") return null;
+    throw error;
+  }
+}
 function canReadWork(parent: ParentId, work: Work): boolean { return work.owner === parent || work.readers.includes(parent); }
 function visibleWork(state: ControlState, parent: ParentId, id: string): Work {
   const work = state.works.find(w => w.id === id); if (!work || !canReadWork(parent, work)) return unavailable(); return work;
@@ -510,6 +525,120 @@ function requireSubject(state: ControlState, parent: ParentId, subject: Subject)
 function requireNoteAccess(state: ControlState, parent: ParentId, note: Note): void {
   requireSubject(state, parent, note.subject);
   for (const id of note.work_refs) visibleWork(state, parent, id);
+}
+function sameSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every(item => right.includes(item));
+}
+function assertPeerResolutionSources(state: ControlState, parent: ParentId, item: Case, sources: readonly PeerResolutionSource[]): void {
+  if (!Array.isArray(sources) || sources.length !== item.inputs.length) throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution record must version every selected source");
+  for (const source of sources) {
+    const selected = item.inputs.find(input => input.work_id === source.work_id);
+    if (!selected) throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution record names an unselected work");
+    const work = visibleWork(state, parent, source.work_id);
+    if (source.work_revision !== work.revision || source.input_oid !== work.input_oid || source.selected_commit_oid !== selected.commit_oid) {
+      throw new BridgeError("COORDINATION_STALE_REVISION", "Peer-resolution source versions are stale");
+    }
+  }
+}
+function peerProposalNotes(state: ControlState, item: Case): Array<{ note: Note; proposal: PeerResolutionProposal }> {
+  return state.notes.flatMap(note => {
+    if (note.subject.kind !== "case" || note.subject.id !== item.id || note.kind !== "agreement_proposal" || note.withdrawn) return [];
+    const proposal = retainedPeerRecord(note.text);
+    return proposal?.kind === "peer_resolution_proposal" ? [{ note, proposal }] : [];
+  });
+}
+function acknowledged(note: Note): boolean { return note.parties.every(party => note.acknowledged.includes(party)); }
+function peerProposalSuperseded(state: ControlState, item: Case, proposal: PeerResolutionProposal): boolean {
+  return peerProposalNotes(state, item).some(candidate => candidate.proposal.predecessor_digest === proposal.resolution_digest && acknowledged(candidate.note));
+}
+function matchingProposal(state: ControlState, item: Case, digest: string): { note: Note; proposal: PeerResolutionProposal } | undefined {
+  return peerProposalNotes(state, item).find(candidate => candidate.proposal.resolution_digest === digest && acknowledged(candidate.note) && !peerProposalSuperseded(state, item, candidate.proposal));
+}
+function samePeerEvidence(left: PeerResolutionRecord, right: PeerResolutionRecord): boolean {
+  return left.case_id === right.case_id && left.case_revision === right.case_revision && left.case_generation === right.case_generation
+    && left.evidence_id === right.evidence_id && left.evidence_revision === right.evidence_revision
+    && canonicalHash(left.sources) === canonicalHash(right.sources) && canonicalHash(left.scope) === canonicalHash(right.scope);
+}
+function matchingAppliedApplication(state: ControlState, item: Case, record: PeerResolutionVerification): { note: Note; application: PeerResolutionApplication } | undefined {
+  return state.notes.flatMap(note => {
+    if (note.subject.kind !== "case" || note.subject.id !== item.id || note.kind !== "resolution_update" || note.withdrawn) return [];
+    const decoded = retainedPeerRecord(note.text);
+    return decoded?.kind === "peer_resolution_application" ? [{ note, application: decoded }] : [];
+  }).find(candidate => candidate.application.application_digest === record.application_digest && candidate.application.status === "applied"
+    && samePeerEvidence(candidate.application, record) && peerRecordCurrent(state, candidate.note, candidate.application));
+}
+function peerRecordCurrent(state: ControlState, note: Note, record: PeerResolutionRecord): boolean {
+  if (note.withdrawn || note.subject.kind !== "case" || note.subject.id !== record.case_id
+    || note.kind !== (record.kind === "peer_resolution_proposal" ? "agreement_proposal" : "resolution_update")) return false;
+  const item = state.cases.find(candidate => candidate.id === record.case_id);
+  if (!item || item.state !== "active" || item.revision !== record.case_revision || item.generation !== record.case_generation) return false;
+  if (record.kind === "peer_resolution_proposal" && peerProposalSuperseded(state, item, record)) return false;
+  if (!record.sources.every(source => {
+    const work = state.works.find(candidate => candidate.id === source.work_id);
+    const selected = item.inputs.find(input => input.work_id === source.work_id);
+    return work !== undefined && selected !== undefined && work.revision === source.work_revision && work.input_oid === source.input_oid && selected.commit_oid === source.selected_commit_oid;
+  }) || record.sources.length !== item.inputs.length) return false;
+  if (record.kind === "peer_resolution_application") {
+    const proposal = matchingProposal(state, item, record.proposal_digest);
+    return proposal !== undefined && samePeerEvidence(proposal.proposal, record)
+      && peerRecordCurrent(state, proposal.note, proposal.proposal);
+  }
+  if (record.kind === "peer_resolution_verification") return matchingAppliedApplication(state, item, record) !== undefined;
+  return true;
+}
+function assertPeerResolutionPost(state: ControlState, parent: ParentId, subject: Subject, noteKind: Note["kind"], parties: readonly ParentId[], record: PeerResolutionRecord): void {
+  if (record.kind === "peer_resolution_proposal" && noteKind !== "agreement_proposal" || record.kind !== "peer_resolution_proposal" && noteKind !== "resolution_update") {
+    throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution record kind must match its coordination note kind");
+  }
+  if (subject.kind !== "case" || record.case_id !== subject.id) {
+    throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution records must name their containing case exactly");
+  }
+  const item = visibleCase(state, parent, subject.id);
+  if (item.state !== "active") throw new BridgeError("COORDINATION_CASE_CLOSED", "Peer-resolution records require an active case");
+  if (record.case_revision !== item.revision || record.case_generation !== item.generation) {
+    throw new BridgeError("COORDINATION_STALE_REVISION", "Peer-resolution record names a stale case version");
+  }
+  if (record.kind === "peer_resolution_proposal") {
+    const expectedParticipants = item.members;
+    if (!sameSet(record.participants, expectedParticipants) || !sameSet(parties, expectedParticipants) || !record.participants.includes(parent)) {
+      throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution proposal participants must equal the authenticated case parties");
+    }
+    assertPeerResolutionSources(state, parent, item, record.sources);
+    if (record.action === "counter_propose" && !peerProposalNotes(state, item).some(candidate =>
+      candidate.proposal.resolution_digest === record.predecessor_digest && acknowledged(candidate.note))) {
+      throw new BridgeError("PEER_RESOLUTION_INVALID", "Counter-proposals must name an acknowledged predecessor proposal");
+    }
+  } else if (parent !== item.lead) {
+    throw new BridgeError("COORDINATION_FORBIDDEN", "Only the current case lead may record application or verification state");
+  } else {
+    assertPeerResolutionSources(state, parent, item, record.sources);
+    if (record.kind === "peer_resolution_application") {
+      const proposal = matchingProposal(state, item, record.proposal_digest);
+      if (!proposal || !samePeerEvidence(proposal.proposal, record) || !peerRecordCurrent(state, proposal.note, proposal.proposal)) {
+        throw new BridgeError("COORDINATION_NOT_ACKNOWLEDGED", "Application must reference an acknowledged exact proposal");
+      }
+    } else {
+      if (!matchingAppliedApplication(state, item, record)) {
+        throw new BridgeError("COORDINATION_NOT_ACKNOWLEDGED", "Verification must reference a current applied exact application record");
+      }
+    }
+  }
+}
+function assertPeerResolutionAcknowledgment(state: ControlState, note: Note, record: PeerResolutionRecord): void {
+  if (record.kind !== "peer_resolution_proposal") return;
+  const item = state.cases.find(candidate => candidate.id === record.case_id);
+  if (!item || item.state !== "active" || item.revision !== record.case_revision || item.generation !== record.case_generation) {
+    throw new BridgeError("COORDINATION_STALE_REVISION", "Peer-resolution acknowledgment names a stale or closed case version");
+  }
+  if (peerProposalSuperseded(state, item, record)) throw new BridgeError("COORDINATION_STALE_REVISION", "Peer-resolution acknowledgment names a superseded proposal");
+  for (const source of record.sources) {
+    const work = state.works.find(candidate => candidate.id === source.work_id);
+    const selected = item.inputs.find(input => input.work_id === source.work_id);
+    if (!work || !selected || work.revision !== source.work_revision || work.input_oid !== source.input_oid || selected.commit_oid !== source.selected_commit_oid) {
+      throw new BridgeError("COORDINATION_STALE_REVISION", "Peer-resolution acknowledgment names stale source evidence");
+    }
+  }
+  if (!note.parties.every(party => record.participants.includes(party))) throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution acknowledgment parties are not in the proposal");
 }
 function ownWork(state: ControlState, parent: ParentId, id: string, revision: number): Work {
   const work = visibleWork(state, parent, id);
@@ -599,6 +728,8 @@ function apply(state: ControlState, parent: ParentId, command: Command): { entit
         if (command.kind === "withdraw_note") throw new BridgeError("COORDINATION_FORBIDDEN", "Only the author may withdraw a note");
         if (note.withdrawn) throw new BridgeError("COORDINATION_NOTE_WITHDRAWN", "Withdrawn agreements cannot receive new acknowledgment");
         if (note.kind !== "agreement_proposal" || !note.parties.includes(parent)) throw new BridgeError("COORDINATION_FORBIDDEN", "Only the exact named parties can acknowledge this agreement");
+        const peerRecord = retainedPeerRecord(note.text);
+        if (peerRecord) assertPeerResolutionAcknowledgment(state, note, peerRecord);
         if (note.acknowledged.includes(parent)) throw new BridgeError("COORDINATION_ALREADY_ACKNOWLEDGED", "Use the original operation key to retrieve an acknowledgment");
         note.acknowledged.push(parent);
       }
