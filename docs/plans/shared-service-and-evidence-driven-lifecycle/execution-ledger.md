@@ -1,5 +1,25 @@
 # Execution ledger
 
+## September 25, 2026 — M4-S1 final lifecycle candidate acceptance
+
+Operation: `verify`. Candidate: isolated `f2cd090` lifecycle worktree plus the final bounded lease/client repair; the shared checkout's concurrent structural/reporting changes were excluded.
+
+The final candidate passed full core **647/647**, full native **192/192**, build and full typecheck, focused lease recovery **13/13**, and the focused IPC set **11/11** (startup, attachment re-election, and seven crash frontiers). The IPC run exercises the TypeScript source path and the inline `flock` recovery worker. Sol xhigh's independent read-only review approved the final lease repair with no remaining high or medium scoped findings. This evidence does not close the plan's pinned dependency, live Codex/Muse host, native input/settlement, accepted active-work recovery, fresh-session skill, or external acceptance gates.
+
+## September 25, 2026 — M4-S1 concurrent stale-reclaimer repair
+
+Operation: `verify`. Candidate: the bounded lifecycle repair overlay in the shared checkout; the concurrent structural/reporting changes remained outside this write set.
+
+The independent lifecycle review found that pathname rechecks alone allowed two stale reclaimers to race with a successor generation. The repair keeps a permanent private recovery-guard inode and serializes stale recovery with kernel `flock`; both atomic-file and legacy-directory recovery recheck their exact generation under that guard. The final repair also retains the candidate hard link through post-link observation and runs validation plus removal inside the flock worker. The focused lease recovery suite passed **13/13**, including post-link failure, successor preservation, helper exit, and 16 concurrent contenders for each lock format. No files from the concurrent structural change set were staged or committed.
+
+## September 25, 2026 — M4-S1 atomic lease and owner-death repair
+
+Operation: `verify`. Candidate: clean detached worktree at `f2cd090` plus the bounded lifecycle repair overlay, Node `v24.12.0`, Linux/local disposable paths only. The shared checkout's concurrent structural/reporting changes were not included, staged or committed by this run.
+
+The repository lease now uses an atomic regular-file lock for new owners: the complete process-birth record is written and hard-linked before `.lock` is visible, heartbeat refresh checks the exact device/inode, and release removes only the active lock. Stale reclaimers serialize through a permanent guard inode held by kernel `flock`, then recheck the generation before removal. Legacy proper-lockfile directory locks remain recoverable only from a strict matching sidecar record. Process identity treats `ENOENT` and `ESRCH` as exited observations. Front-end attachment tracks actual status dispatch and re-elects through flock when a discovered owner dies before attachment.
+
+Evidence passed: focused lease/runtime-owner tests **30/30**, attachment/startup/owner-death reconnect tests **4/4**, crash-frontier continuation **7/7**, and the complete core suite **643/643**. No package installation or live account/provider action was performed. The revised candidate still requires the native/host/pinned/fresh-session gates recorded below; this repair does not promote plan acceptance.
+
 ## September 25, 2026 — M4-S1 clean-candidate full acceptance run
 
 Operation: `verify`. Candidate: clean detached worktree at `c80fc68`, Node `v24.12.0`, Linux/local disposable paths only. The shared checkout's concurrent structural/reporting changes were not included, staged or committed by this run.

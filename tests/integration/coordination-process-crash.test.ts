@@ -151,9 +151,8 @@ test.each<Frontier>(["payload", "announcement", "binding", "admission", "settlem
     if (frontier === "announcement") assert.equal((await store.readAnnouncement(checkpoint.announcement_id!))?.control.state, "unresolved");
     const startsBefore = await readFile(startLog, "utf8").catch(() => "");
     assert.equal(startsBefore.trim().split("\n").filter(Boolean).length, 0);
-    // The killed process cannot release its proper-lockfile lease. Let the production stale
-    // interval elapse; deleting the lock would bypass the actual restart contract.
-    await new Promise(resolve => setTimeout(resolve, 31_000));
+    // The atomic lease record is recoverable as soon as the owner process is
+    // gone; deleting the lock would bypass the actual restart contract.
     const reopened = new RepositoryRuntime(intent, identity(), { profile: async () => policy(join(fixture.temp, "worktrees")),
       definitions: { fixture: { configure: () => ({ modes: ["implement"], contract: "controlled-turn/1", configuration: {},
         worker: { run: async input => { const { appendFile } = await import("node:fs/promises");

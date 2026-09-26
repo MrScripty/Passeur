@@ -31,7 +31,7 @@ export async function sameProcess(expected: ProcessIdentity): Promise<boolean> {
     // A zombie has exited and released descriptors; its unreaped PID is not a live service.
     return state !== "Z" && state !== "X";
   } catch (error) {
-    if (nativeCode(error) === "ENOENT") return false;
+    if (nativeCode(error) === "ENOENT" || nativeCode(error) === "ESRCH") return false;
     throw error;
   }
 }

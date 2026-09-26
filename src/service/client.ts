@@ -54,7 +54,7 @@ export class ServiceClient {
       void this.connection.send(hello).catch((error) => this.connection.close(error));
     });
   }
-  async call<K extends Operation>(operation: K, args: unknown, signal?: AbortSignal): Promise<Response<K>> {
+  async call<K extends Operation>(operation: K, args: unknown, signal?: AbortSignal, onDispatch?: () => void): Promise<Response<K>> {
     signal?.throwIfAborted();
     const { operationSchemas, responseSchemas } = await import("../contracts/service.js");
     const parsed = operationSchemas[operation].safeParse(args);
@@ -63,7 +63,7 @@ export class ServiceClient {
       const result = responseSchemas[operation].safeParse(value);
       if (!result.success) throw new BridgeError("SERVICE_RESULT_INVALID", "The service response violates the requested operation contract");
       return result.data as Response<K>;
-    }, serviceRequestLane(operation, parsed.data), signal);
+    }, serviceRequestLane(operation, parsed.data), signal, onDispatch);
   }
   coordinate(raw: unknown, signal?: AbortSignal): Promise<CoordinationReply> {
     try {
@@ -75,7 +75,7 @@ export class ServiceClient {
     } catch (error) { return Promise.reject(error); }
   }
   async #request<T>(operation: string, args: unknown, decode: (value: unknown) => T,
-    lane: RequestLane, signal?: AbortSignal): Promise<T> {
+    lane: RequestLane, signal?: AbortSignal, onDispatch?: () => void): Promise<T> {
     signal?.throwIfAborted(); await withAbort(this.ready, signal); signal?.throwIfAborted();
     if (this.connection.isClosed) throw new BridgeError("SERVICE_DISCONNECTED", "The service connection is closed");
     assertRequestCapacity(this.#pending.values(), lane);
@@ -91,6 +91,7 @@ export class ServiceClient {
     signal?.addEventListener("abort", abort, { once: true });
     try {
       const writing = this.connection.send({ kind: "request", id, generation: this.descriptor.generation, operation, arguments: args });
+      if (!this.connection.isClosed) onDispatch?.();
       void writing.catch((error) => { this.#pending.delete(id); reject(error); this.connection.close(error); });
       await withAbort(writing, signal);
       if (signal?.aborted) abort();
@@ -166,15 +167,24 @@ export class PasseurFrontend {
               if (descriptor.runtime.build_id !== this.identity.build_id) throw new BridgeError("SERVICE_BUILD_CONFLICT", "The running service uses another build; drain it explicitly before a controlled upgrade");
               candidate = new ServiceClient(descriptor, binding, this.#ownerToken);
               await withAbort(candidate.ready, signal);
-              // The first request starts dispatch. Failures from this point cannot replay a mutation.
-              dispatched = true;
-              const status = await candidate.call("status", {}, signal);
+              // This read-only probe may be retried if the service dies before
+              // the frontend has attached. Mutating requests begin only after
+              // this method returns a connected client.
+              const status = await candidate.call("status", {}, signal, () => { dispatched = true; });
               this.#lastStatus = status; this.#failure = undefined; this.#client = candidate;
               return candidate;
             }
           } catch (error) {
             candidate?.close();
-            if (dispatched || !(error instanceof BridgeError && (error.code === "SERVICE_DESCRIPTOR_CHANGED" || error.code === "SERVICE_DISCONNECTED"))) throw error;
+            if (!(error instanceof BridgeError && (error.code === "SERVICE_DESCRIPTOR_CHANGED" || error.code === "SERVICE_DISCONNECTED"))) throw error;
+            if (dispatched && descriptor && await existingOwner(descriptor)) throw error;
+          }
+          // Discovery may have observed a live process that exits before the
+          // handshake or status probe. Re-elect through the guarded launcher;
+          // the flock reservation prevents competing frontends from creating
+          // another service generation.
+          if (!reservation && (!descriptor || !(await existingOwner(descriptor)))) {
+            reservation = await launchService(binding, this.exactCli);
           }
           if (reservation) await Promise.race([delay(25, undefined, { signal }), reservation.failure]);
           else await delay(25, undefined, { signal });

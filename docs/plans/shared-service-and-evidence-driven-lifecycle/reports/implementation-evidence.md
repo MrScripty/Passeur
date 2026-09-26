@@ -10,7 +10,7 @@ The preparation environment could read repository content through the connected 
 
 ## Implemented scope
 
-One Linux repository service owns RepositoryRuntime, its legacy lease, registry, queue, store and Git administration. Stdio front ends attach using a private versioned Unix-socket protocol. Front-end EOF or wait cancellation does not forward task cancellation or service shutdown. Exact build/binding/generation mismatch is explicit. A process-lifetime flock guard prevents a paused living new service from being replaced solely on a heartbeat threshold; the old lease is retained for legacy coordination compatibility.
+One Linux repository service owns RepositoryRuntime, its atomic repository lease, registry, queue, store and Git administration. Stdio front ends attach using a private versioned Unix-socket protocol. Front-end EOF or wait cancellation does not forward task cancellation or service shutdown. Exact build/binding/generation mismatch is explicit. A process-lifetime flock guard prevents a paused living new service from being replaced solely on a heartbeat threshold; legacy proper-lockfile directory leases remain readable through exact sidecar evidence.
 
 New submit/wait/tasks/input/cancel/attach controls use durable admission and control state. Request4, control2, snapshot2, result4, profile3 and frontend status2 have independently scoped contracts. Lost acknowledgment retries retain identity and source view. Owner and control-generation checks prevent accidental cross-session control. Input intent precedes native callback release; stale/dismissed prompts do not consent. Native failure does not leave an unobserved input waiter. Unacknowledged answer delivery remains unknown, even after process stop.
 
