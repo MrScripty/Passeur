@@ -1,5 +1,13 @@
 # Execution ledger
 
+## September 25, 2026 — M4-S1 clean-candidate full acceptance run
+
+Operation: `verify`. Candidate: clean detached worktree at `c80fc68`, Node `v24.12.0`, Linux/local disposable paths only. The shared checkout's concurrent structural/reporting changes were not included, staged or committed by this run.
+
+The complete `npm test` command passed with exit code 0: build succeeded, the full core suite passed **640/640**, the full native suite passed **192/192**, and Vitest passed **146 tests in 40 files** with **6 documented skips**. The run used the already provisioned dependency tree and did not install packages or access a live account. Real-process acceptance evidence also includes the previously recorded installed/parallel/recovery probes plus the escalated local IPC runs: structural capacity/startup **6/6**, coordination submission **1/1**, and crash-frontier continuation **7/7**.
+
+This closes the previously unresolved broad Vitest result for this clean candidate. It does not close the plan's pinned dependency, live Codex/Muse host, native input/settlement, accepted active-work recovery, fresh-session skill, or independent external-review gates. The plan remains `Verifying` with acceptance `blocked` and next slice `M4-S1`.
+
 ## September 25, 2026 — M4-S1 installed and real-process continuation
 
 Operation: `verify`. Candidate: clean detached worktree at `22cde5e`, installed build `7be9f78ad72de63fa9214175eca3747acefa1d5cbcd6fc60920485a62109cf08`, Node `v24.12.0`, Linux/glibc disposable paths only. No personal registration, profile, state root or user repository was changed.
