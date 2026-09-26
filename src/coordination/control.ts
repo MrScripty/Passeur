@@ -540,19 +540,43 @@ function assertPeerResolutionSources(state: ControlState, parent: ParentId, item
     }
   }
 }
-function peerProposalNotes(state: ControlState, item: Case): Array<{ note: Note; proposal: PeerResolutionProposal }> {
+function peerProposalNotes(state: ControlState, item: Case, includeWithdrawn = false): Array<{ note: Note; proposal: PeerResolutionProposal }> {
   return state.notes.flatMap(note => {
-    if (note.subject.kind !== "case" || note.subject.id !== item.id || note.kind !== "agreement_proposal" || note.withdrawn) return [];
+    if (note.subject.kind !== "case" || note.subject.id !== item.id || note.kind !== "agreement_proposal" || note.withdrawn && !includeWithdrawn) return [];
     const proposal = retainedPeerRecord(note.text);
     return proposal?.kind === "peer_resolution_proposal" ? [{ note, proposal }] : [];
   });
 }
 function acknowledged(note: Note): boolean { return note.parties.every(party => note.acknowledged.includes(party)); }
-function peerProposalSuperseded(state: ControlState, item: Case, proposal: PeerResolutionProposal): boolean {
-  return peerProposalNotes(state, item).some(candidate => candidate.proposal.predecessor_digest === proposal.resolution_digest && acknowledged(candidate.note));
+function peerProposalSuperseded(state: ControlState, item: Case, proposal: PeerResolutionProposal, ignoredSuccessorNoteId?: string): boolean {
+  const successors = peerProposalNotes(state, item).filter(candidate => candidate.note.id !== ignoredSuccessorNoteId
+    && samePeerEvidence(candidate.proposal, proposal));
+  const seen = new Set<string>(), pending = [proposal.resolution_digest];
+  while (pending.length) {
+    const digest = pending.pop();
+    for (const candidate of successors) {
+      if (candidate.proposal.predecessor_digest !== digest || candidate.proposal.resolution_digest === digest
+        || seen.has(candidate.note.id)) continue;
+      seen.add(candidate.note.id);
+      if (acknowledged(candidate.note)) return true;
+      pending.push(candidate.proposal.resolution_digest);
+    }
+  }
+  return false;
 }
-function matchingProposal(state: ControlState, item: Case, digest: string): { note: Note; proposal: PeerResolutionProposal } | undefined {
-  return peerProposalNotes(state, item).find(candidate => candidate.proposal.resolution_digest === digest && acknowledged(candidate.note) && !peerProposalSuperseded(state, item, candidate.proposal));
+function matchingPredecessor(state: ControlState, item: Case, proposal: PeerResolutionProposal): { note: Note; proposal: PeerResolutionProposal } | undefined {
+  if (proposal.action !== "counter_propose" || proposal.predecessor_digest === proposal.resolution_digest) return undefined;
+  const matches = peerProposalNotes(state, item, true).filter(candidate => candidate.proposal.resolution_digest === proposal.predecessor_digest
+    && samePeerEvidence(candidate.proposal, proposal));
+  const match = matches.length === 1 ? matches[0] : undefined;
+  return match && !match.note.withdrawn && proposal.proposal_revision === match.proposal.proposal_revision + 1 ? match : undefined;
+}
+function matchingProposal(state: ControlState, item: Case, record: PeerResolutionApplication): { note: Note; proposal: PeerResolutionProposal } | undefined {
+  const matches = peerProposalNotes(state, item, true).filter(candidate => candidate.proposal.resolution_digest === record.proposal_digest
+    && samePeerEvidence(candidate.proposal, record));
+  const match = matches.length === 1 ? matches[0] : undefined;
+  return match && !match.note.withdrawn && acknowledged(match.note)
+    && !peerProposalSuperseded(state, item, match.proposal) ? match : undefined;
 }
 function samePeerEvidence(left: PeerResolutionRecord, right: PeerResolutionRecord): boolean {
   return left.case_id === right.case_id && left.case_revision === right.case_revision && left.case_generation === right.case_generation
@@ -567,19 +591,24 @@ function matchingAppliedApplication(state: ControlState, item: Case, record: Pee
   }).find(candidate => candidate.application.application_digest === record.application_digest && candidate.application.status === "applied"
     && samePeerEvidence(candidate.application, record) && peerRecordCurrent(state, candidate.note, candidate.application));
 }
-function peerRecordCurrent(state: ControlState, note: Note, record: PeerResolutionRecord): boolean {
+function peerRecordCurrent(state: ControlState, note: Note, record: PeerResolutionRecord, ignoredSuccessorNoteId?: string): boolean {
   if (note.withdrawn || note.subject.kind !== "case" || note.subject.id !== record.case_id
     || note.kind !== (record.kind === "peer_resolution_proposal" ? "agreement_proposal" : "resolution_update")) return false;
   const item = state.cases.find(candidate => candidate.id === record.case_id);
   if (!item || item.state !== "active" || item.revision !== record.case_revision || item.generation !== record.case_generation) return false;
-  if (record.kind === "peer_resolution_proposal" && peerProposalSuperseded(state, item, record)) return false;
+  if (record.kind === "peer_resolution_proposal" && peerProposalSuperseded(state, item, record, ignoredSuccessorNoteId)) return false;
   if (!record.sources.every(source => {
     const work = state.works.find(candidate => candidate.id === source.work_id);
     const selected = item.inputs.find(input => input.work_id === source.work_id);
     return work !== undefined && selected !== undefined && work.revision === source.work_revision && work.input_oid === source.input_oid && selected.commit_oid === source.selected_commit_oid;
   }) || record.sources.length !== item.inputs.length) return false;
+  if (record.kind === "peer_resolution_proposal" && record.action === "counter_propose") {
+    const predecessor = matchingPredecessor(state, item, record);
+    // Ignore this counter's edge while checking its ancestor; other acknowledged branches still invalidate it.
+    if (!predecessor || !peerRecordCurrent(state, predecessor.note, predecessor.proposal, note.id)) return false;
+  }
   if (record.kind === "peer_resolution_application") {
-    const proposal = matchingProposal(state, item, record.proposal_digest);
+    const proposal = matchingProposal(state, item, record);
     return proposal !== undefined && samePeerEvidence(proposal.proposal, record)
       && peerRecordCurrent(state, proposal.note, proposal.proposal);
   }
@@ -604,16 +633,26 @@ function assertPeerResolutionPost(state: ControlState, parent: ParentId, subject
       throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution proposal participants must equal the authenticated case parties");
     }
     assertPeerResolutionSources(state, parent, item, record.sources);
-    if (record.action === "counter_propose" && !peerProposalNotes(state, item).some(candidate =>
-      candidate.proposal.resolution_digest === record.predecessor_digest && acknowledged(candidate.note))) {
-      throw new BridgeError("PEER_RESOLUTION_INVALID", "Counter-proposals must name an acknowledged predecessor proposal");
+    if (peerProposalNotes(state, item, true).some(candidate => candidate.proposal.resolution_digest === record.resolution_digest
+      && samePeerEvidence(candidate.proposal, record))) {
+      throw new BridgeError("PEER_RESOLUTION_INVALID", "A peer-resolution proposal already retains this digest in the same context");
+    }
+    if (record.action === "counter_propose") {
+      const predecessor = matchingPredecessor(state, item, record);
+      if (!predecessor || !peerRecordCurrent(state, predecessor.note, predecessor.proposal)) {
+        throw new BridgeError("PEER_RESOLUTION_INVALID", "Counter-proposals require one current, unwithdrawn predecessor in the same context and next revision");
+      }
+      if (peerProposalNotes(state, item).some(candidate => candidate.proposal.predecessor_digest === record.predecessor_digest
+        && samePeerEvidence(candidate.proposal, record))) {
+        throw new BridgeError("PEER_RESOLUTION_INVALID", "An active counter-proposal already names this predecessor in the same context");
+      }
     }
   } else if (parent !== item.lead) {
     throw new BridgeError("COORDINATION_FORBIDDEN", "Only the current case lead may record application or verification state");
   } else {
     assertPeerResolutionSources(state, parent, item, record.sources);
     if (record.kind === "peer_resolution_application") {
-      const proposal = matchingProposal(state, item, record.proposal_digest);
+      const proposal = matchingProposal(state, item, record);
       if (!proposal || !samePeerEvidence(proposal.proposal, record) || !peerRecordCurrent(state, proposal.note, proposal.proposal)) {
         throw new BridgeError("COORDINATION_NOT_ACKNOWLEDGED", "Application must reference an acknowledged exact proposal");
       }
@@ -637,6 +676,9 @@ function assertPeerResolutionAcknowledgment(state: ControlState, note: Note, rec
     if (!work || !selected || work.revision !== source.work_revision || work.input_oid !== source.input_oid || selected.commit_oid !== source.selected_commit_oid) {
       throw new BridgeError("COORDINATION_STALE_REVISION", "Peer-resolution acknowledgment names stale source evidence");
     }
+  }
+  if (record.action === "counter_propose" && !peerRecordCurrent(state, note, record)) {
+    throw new BridgeError("COORDINATION_STALE_REVISION", "Peer-resolution acknowledgment names a stale counter lineage");
   }
   if (!note.parties.every(party => record.participants.includes(party))) throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution acknowledgment parties are not in the proposal");
 }

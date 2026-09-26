@@ -132,6 +132,27 @@ acknowledgment checks both the current subject and those original work records.
 Removing an input from a case cannot bypass sharing revoked on its older notes.
 Notes are source-provided information, not executable instructions.
 
+### Peer-resolution lineage
+
+A structured peer-resolution counter-proposal may be posted against one current
+proposal before that predecessor is acknowledged; posting it carries no
+consent. The counter must identify exactly one active predecessor in the same
+case, generation, evidence, source, and scope context, and must advance its
+proposal revision. A second active successor for that predecessor is rejected;
+an author may withdraw a pending successor before proposing another.
+
+Only a non-withdrawn successor acknowledged by every named party supersedes its
+predecessor. Supersession is transitive through the exact proposal lineage, so
+late acknowledgment or application cannot revive an obsolete ancestor. A
+pending or withdrawn successor does not stale a fully acknowledged proposal or
+its recorded application. If a predecessor is independently withdrawn or
+becomes stale for another reason after a counter was posted, that counter
+becomes stale and cannot be acknowledged or used for application; the
+counter's own acknowledged supersession edge does not invalidate the counter
+while it is being validated. Application remains lead-authorized and requires
+a current, fully acknowledged exact proposal; these metadata records do not
+perform or prove a Git effect.
+
 ## Reconciliation leadership
 
 At most one case is active for a full target ref within this repository store.
