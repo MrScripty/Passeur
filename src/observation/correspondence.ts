@@ -66,7 +66,9 @@ function candidate(report: AttributedComparison, change: DeclarationChange, sour
     declaration_changed: change.declaration_changed, body_changed: change.body_changed,
     default_changed: change.default_changed,
     evidence_id: digest([change.kind, change.declaration_changed, change.body_changed, change.default_changed,
-      change.observed?.kind, change.observed?.name, change.observed?.enclosing, change.observed?.signature]) });
+      declaration.signature, declaration.body_digest, declaration.default_digests,
+      change.observed?.kind, change.observed?.name, change.observed?.enclosing,
+      change.observed?.signature, change.observed?.body_digest, change.observed?.default_digests]) });
   return Object.freeze({ work_id: report.work_id, subject_id, input: source,
     input_range: Object.freeze({ ...declaration.range }), change: projected });
 }

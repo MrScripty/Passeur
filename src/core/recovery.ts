@@ -13,6 +13,14 @@ export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
     if ("schema_version" in record && (record.schema_version === 4 || record.schema_version === 5)) {
       const control = await store.readControl(record.task_id);
       const resource = await store.readResource(record.task_id);
+      let peerChanged = false;
+      for (const delivery of control.peer_deliveries ?? []) {
+        if (delivery.state === "queued") { delivery.state = control.cancel ? "cancelled" : "stale"; delivery.disposition_at = now(); peerChanged = true; }
+        else if (delivery.state === "dispatch_intent" || delivery.state === "delivered") {
+          delivery.state = "unknown"; delivery.disposition_at = now(); peerChanged = true;
+        }
+      }
+      if (peerChanged) { control.revision++; control.updated_at = now(); await store.writeControl(record.task_id, control); }
       if (record.schema_version === 5 && !await store.readCoordinatedLink(record.task_id)) {
         if (saved || control.native.state !== "not_started") {
           await store.freeze(`Task ${record.task_id} has native or result evidence before coordinated linkage settled`);

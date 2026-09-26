@@ -1,6 +1,13 @@
 import type { LifecyclePolicy } from "../contracts/tasks.js";
 import type { Check, ExecutionStatus, WorkerStop } from "../contracts/types.js";
 import type { Assignment, SafeConfiguration } from "../contracts/agents.js";
+import type { PeerDeliveryEnvelope } from "../contracts/peer-delivery.js";
+/** Adapter calls these only between settled native turns; no model-owned route or native turn is created here. */
+export type WorkerPeerPort = Readonly<{
+  next: () => Promise<PeerDeliveryEnvelope | undefined>;
+  delivered: (idempotencyKey: string, nativeTurnId: string, nativeSessionId: string) => Promise<void>;
+  observed: (idempotencyKey: string, nativeTurnId: string, nativeSessionId: string) => Promise<void>;
+}>;
 export type ApprovalRequest = {
   id: string; tool: string; raw_args: string; subject: Record<string, unknown>;
   task_id?: string; workspace?: string;
@@ -9,8 +16,9 @@ export type ApprovalRequest = {
 export type ApprovalDecision = { choice_id: string };
 export type ApprovalHandler = (request: ApprovalRequest, signal: AbortSignal) => Promise<ApprovalDecision>;
 export type WorkerEvent =
-  | { kind: "turn_started"; turn_id: string }
-  | { kind: "turn_settled"; turn_id: string; terminal: "completed" | "failed" | "cancelled" }
+  | { kind: "turn_started"; turn_id: string; native_session_id?: string }
+  | { kind: "turn_correlated"; provisional_turn_id: string; turn_id: string; native_session_id: string }
+  | { kind: "turn_settled"; turn_id: string; native_session_id?: string; terminal: "completed" | "failed" | "cancelled" }
   | { kind: "operation_started"; id: string; operation: string }
   | { kind: "operation_finished"; id: string }
   | { kind: "input_withdrawn"; native_id: string }
@@ -30,6 +38,7 @@ export type WorkerInput = {
   request: Assignment; prompt: string; workspace: string; policy: LifecyclePolicy; signal: AbortSignal;
   task_id: string; approve: ApprovalHandler; onEvent: (event: WorkerEvent) => Promise<void>;
   input: (question: string, attention?: boolean, native_id?: string, choices?: readonly string[], signal?: AbortSignal) => Promise<string>;
+  peer?: WorkerPeerPort;
 };
 /** run owns startup, child work, callbacks and bounded shutdown through terminal observation. */
 export interface WorkerAdapter { run(input: WorkerInput): Promise<WorkerRun>; }

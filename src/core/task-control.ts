@@ -41,10 +41,10 @@ export class TaskControls {
     try { return await this.#locks.run(id, mutation); }
     finally { for (const waiter of this.#waiters.get(id) ?? []) waiter.resolve(); }
   }
-  async change<T>(id: string, change: (draft: TaskControl) => T): Promise<T> {
+  async change<T>(id: string, change: (draft: TaskControl) => T | Promise<T>): Promise<T> {
     const result = await this.#locks.run(id, async () => {
       const old = await this.store.readControl(id), draft = structuredClone(old);
-      const value = change(draft);
+      const value = await change(draft);
       if (canonicalHash(old) !== canonicalHash(draft)) {
         draft.revision = old.revision + 1; draft.updated_at = now();
         await this.store.writeControl(id, draft);
@@ -87,6 +87,10 @@ export class TaskControls {
       if (!terminal && !state.cancel) {
         state.cancel = { operation_key, reason, at: receipt.at }; state.phase = "stopping";
         for (const input of state.inputs) { delete input.claim; if (input.state === "pending") input.state = "withdrawn"; }
+        for (const delivery of state.peer_deliveries ?? []) {
+          if (delivery.state === "queued") { delivery.state = "cancelled"; delivery.disposition_at = now(); }
+          else if (delivery.state === "dispatch_intent" || delivery.state === "delivered") { delivery.state = "unknown"; delivery.disposition_at = now(); }
+        }
       }
       return receipt;
     });

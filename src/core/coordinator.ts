@@ -3,11 +3,13 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { Assignment } from "../contracts/agents.js";
 import { CoordinatedSubmissionIdentitySchema, CoordinatedLinkSchema, coordinatedMaterialIdentity, TaskIdSchema } from "../contracts/tasks.js";
-import type { LifecyclePolicy, LifecycleResult, SubmissionIdentity, CoordinatedSubmissionIdentity, CurrentDurableRequest, CoordinatedDurableRequest, CoordinatedLink, TaskObservation } from "../contracts/tasks.js";
+import type { LifecyclePolicy, LifecycleResult, SubmissionIdentity, CoordinatedSubmissionIdentity, CurrentDurableRequest, CoordinatedDurableRequest, CoordinatedLink, TaskObservation, TaskControl } from "../contracts/tasks.js";
 import { TaskControls, initialControl, owns, type ClientActor } from "./task-control.js";
 import { InputBroker } from "./input-broker.js";
 import type { AgentRegistry, SelectedAgent } from "../agents/registry.js";
 import type { WorkerEvent } from "../agents/types.js";
+import type { WorkerPeerPort } from "../agents/types.js";
+import { immutablePeerEnvelope, parsePeerDeliverySource, PeerDeliveryNativeSessionIdSchema, MAX_PEER_DELIVERIES, type PeerDeliveryEnvelope, type PeerDeliverySource, type PeerDeliveryRecord } from "../contracts/peer-delivery.js";
 import { BridgeError, errorInfo } from "./errors.js";
 import { Mutex, canonicalHash } from "./async.js";
 import { baseResult } from "./result.js";
@@ -17,7 +19,7 @@ import { collectChanges, createDiff, createManifest, observeDelivery, prepareWor
 import { currentRevision, digestFiles, sourceStatus } from "../workspace/project.js";
 
 type Entry = { selected: SelectedAgent; record: CurrentDurableRequest; controller: AbortController;
-  stage: "queued" | "running" | "settling"; done: Promise<void>; resolve: () => void };
+  stage: "queued" | "running" | "settling"; done: Promise<void>; resolve: () => void; workspace?: string };
 export type CoordinatedReservation = Readonly<{ task_id: string; request_key: string; owner_id: string;
   intent_hash: string; payload_digest: string; source_view: string; announcement?: { id: string; revision: number };
   status: "reserved" | "admitted" }>;
@@ -58,6 +60,22 @@ async function settleNeverStartedCoordinatedCancellation(store: TaskStore, recor
   return true;
 }
 const now = () => new Date().toISOString();
+/** Replace one provisional Muse observation and its live inputs in a single durable control change. */
+export function correlateNativeTurn(state: TaskControl, event: Extract<WorkerEvent, { kind: "turn_correlated" }>): void {
+  const valid = (value: string) => value.length > 0 && Buffer.byteLength(value, "utf8") <= 256 && !value.includes("\0");
+  if (!valid(event.provisional_turn_id) || !valid(event.turn_id) || !valid(event.native_session_id) ||
+    state.native.turn_id !== event.provisional_turn_id || state.native.native_session_id !== event.native_session_id ||
+    state.native.coverage !== "unknown" || state.native.state !== "observed_live" || state.cancel || state.settled_outcome ||
+    state.native.obligations.length || state.inputs.some((input) =>
+      (input.state === "pending" || input.state === "answer_intent" || input.state === "delivery_unknown") &&
+      input.turn_id !== event.provisional_turn_id) ||
+    state.inputs.some((input) => input.turn_id === event.provisional_turn_id && input.state === "delivery_unknown")) {
+    throw new BridgeError("NATIVE_CORRELATION_INVALID", "Native turn cannot safely replace the provisional observation");
+  }
+  for (const input of state.inputs) if (input.turn_id === event.provisional_turn_id &&
+    (input.state === "pending" || input.state === "answer_intent")) input.turn_id = event.turn_id;
+  state.native.turn_id = event.turn_id;
+}
 export function assignmentPrompt(request: Assignment, id: string, workspace: Workspace): string {
   return `Complete one independent Passeur assignment.\nTask: ${id}\nMode: ${request.mode}\nWorkspace: ${workspace.path}\nObjective: ${request.objective}\nContext:\n${request.context}\nAcceptance criteria:\n${request.acceptance_criteria.join("\n")}\nContext files:\n${request.context_files?.join("\n") ?? "none"}\nAllowed paths:\n${request.allowed_paths?.join("\n") ?? "follow assignment scope"}\nRead applicable repository instructions. Perform the scoped checks those instructions require. Preserve hooks, signing, shared configuration and other workers. ${request.mode === "implement" ? "Stage only intended changes and create ordinary commits on this task branch. Do not modify target refs, integrate other work, bypass hooks or manufacture empty commits." : "Inspect only; do not write or run shell commands."}\n${workerMessageInstructions} Passeur observes Git; the caller owns broader acceptance and integration.`;
 }
@@ -79,6 +97,8 @@ export class Coordinator {
   /** Signals the exact terminal task; the subscriber owns metadata retries and asynchronous failure. */
   onTaskSettled?: (taskId: string) => void;
   onCoordinatedWorkspacePrepared?: (record: CoordinatedDurableRequest, workspace: Workspace) => Promise<void>;
+  /** Coordination owner must recheck exact grants and case/source versions; absence keeps the port unavailable. */
+  onAuthorizePeerDelivery?: (envelope: PeerDeliveryEnvelope) => Promise<"current" | "stale" | "revoked">;
   constructor(readonly project: string, readonly projectId: string, readonly policy: LifecyclePolicy,
     readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority: () => void = () => {}, controls?: TaskControls) {
     this.policy = structuredClone(policy); Object.freeze(this.policy.implementation); Object.freeze(this.policy);
@@ -95,6 +115,166 @@ export class Coordinator {
     const reason = this.#frozen ?? await this.store.frozenReason();
     if (reason) throw new BridgeError("PROJECT_NEEDS_RECONCILIATION", reason);
     if (this.#closing) throw new BridgeError("BRIDGE_CLOSING", "Service admission is closed");
+  }
+  async #peerEvent(id: string, record: PeerDeliveryRecord): Promise<void> {
+    if (!await this.store.appendEvent(id, { kind: "peer_delivery", delivery_id: record.envelope.delivery_id,
+      idempotency_key: record.envelope.idempotency_key, state: record.state,
+      ...(record.native_turn_id ? { native_turn_id: record.native_turn_id } : {}),
+      ...(record.native_session_id ? { native_session_id: record.native_session_id } : {}) })) {
+      await this.controls.change(id, (state) => { state.telemetry_omitted = true; });
+    }
+  }
+  async #peerValidity(id: string, state: import("../contracts/tasks.js").TaskControl, envelope: PeerDeliveryEnvelope): Promise<"current" | "stale" | "revoked" | "cancelled" | "replaced"> {
+    if (state.cancel || state.phase === "stopping") return "cancelled";
+    if (state.phase === "terminal" || state.phase === "finalizing" || state.settled_outcome) return "stale";
+    if (state.phase === "needs_attention" || state.native.state !== "observed_live") return "stale";
+    const entry = this.#entries.get(id), resource = await this.store.readResource(id);
+    if (!entry || entry.record.schema_version !== 5 || !entry.workspace || resource?.state !== "pending" || resource.worktree_path !== entry.workspace ||
+      envelope.recipient_task_id !== id || envelope.recipient_run_id !== state.native.run_id ||
+      envelope.recipient_workspace !== entry.workspace || envelope.recipient_workspace_fingerprint !== canonicalHash({
+        task_id: id, source_view: entry.record.source_view, workspace: entry.workspace,
+        base_commit: resource.base_commit, branch_ref: resource.branch_ref, target_ref: resource.target_ref,
+      })) return "replaced";
+    if (envelope.recipient_control_generation !== state.control_generation) return "stale";
+    if (!this.onAuthorizePeerDelivery) return "revoked";
+    const decision = await this.onAuthorizePeerDelivery(envelope);
+    if (decision !== "current" && decision !== "stale" && decision !== "revoked") {
+      throw new BridgeError("PEER_DELIVERY_AUTHORITY_INVALID", "Coordination returned an invalid peer grant decision");
+    }
+    return decision;
+  }
+  /** Trusted coordination producer only. The supplied source confers no authority without the current grant hook. */
+  async queuePeerDelivery(recipientTaskId: string, candidate: unknown): Promise<PeerDeliveryEnvelope> {
+    const source = parsePeerDeliverySource(candidate);
+    await this.assertMutationAllowed();
+    for (let attempt = 0; attempt < 128; attempt++) {
+      const captured = await this.store.readControl(recipientTaskId);
+      const entry = this.#entries.get(recipientTaskId), resource = await this.store.readResource(recipientTaskId);
+      const value = entry?.record.schema_version === 5 && entry.workspace && resource?.state === "pending" &&
+        resource.worktree_path === entry.workspace && captured.native.state === "observed_live"
+        ? immutablePeerEnvelope({ schema_version: 1, delivery_id: randomUUID(), ...source,
+          recipient_task_id: recipientTaskId, recipient_run_id: captured.native.run_id,
+          recipient_control_generation: captured.control_generation, recipient_workspace: entry.workspace,
+          recipient_workspace_fingerprint: canonicalHash({ task_id: recipientTaskId, source_view: entry.record.source_view,
+            workspace: entry.workspace, base_commit: resource.base_commit, branch_ref: resource.branch_ref, target_ref: resource.target_ref }) })
+        : undefined;
+      const validity = value ? await this.#peerValidity(recipientTaskId, captured, value) : "replaced";
+      let changed: PeerDeliveryRecord | undefined;
+      const outcome = await this.controls.change(recipientTaskId, (state) => {
+        if (state.revision !== captured.revision) return { kind: "retry" as const };
+      if (state.cancel) throw new BridgeError("PEER_DELIVERY_CANCELLED", "Recipient task was cancelled");
+      if (state.phase === "terminal" || state.phase === "finalizing" || state.settled_outcome) {
+        throw new BridgeError("PEER_DELIVERY_STALE", "Recipient task is no longer accepting peer evidence");
+      }
+      if (!value) throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Recipient has no current coordinated native workspace");
+      if (validity !== "current") throw new BridgeError(`PEER_DELIVERY_${validity.toUpperCase()}`, `Peer delivery ${validity} before queueing`);
+      const prior = state.peer_deliveries?.find((record) => record.envelope.idempotency_key === source.idempotency_key);
+      if (prior) {
+        const previous: PeerDeliverySource = { source_work_id: prior.envelope.source_work_id,
+          source_work_revision: prior.envelope.source_work_revision, case_id: prior.envelope.case_id,
+          case_revision: prior.envelope.case_revision, case_generation: prior.envelope.case_generation,
+          evidence_id: prior.envelope.evidence_id, evidence_revision: prior.envelope.evidence_revision,
+          evidence_digest: prior.envelope.evidence_digest, content: prior.envelope.content,
+          idempotency_key: prior.envelope.idempotency_key };
+        if (canonicalHash(previous) !== canonicalHash(source)) throw new BridgeError("PEER_DELIVERY_KEY_CONFLICT", "Peer delivery key names different evidence");
+        return { kind: "value" as const, envelope: immutablePeerEnvelope(prior.envelope) };
+      }
+      if ((state.peer_deliveries?.length ?? 0) >= MAX_PEER_DELIVERIES) throw new BridgeError("PEER_DELIVERY_CAPACITY", "Retained peer delivery capacity is exhausted");
+      changed = { envelope: value, state: "queued", queued_at: now() };
+      (state.peer_deliveries ??= []).push(changed);
+      return { kind: "value" as const, envelope: value };
+      });
+      if (outcome.kind === "retry") continue;
+      if (changed) await this.#peerEvent(recipientTaskId, changed);
+      return outcome.envelope;
+    }
+    throw new BridgeError("PEER_DELIVERY_STALE", "Recipient control changed during peer admission");
+  }
+  #peerPort(id: string): WorkerPeerPort {
+    return Object.freeze({
+      next: async () => {
+        for (let attempt = 0; attempt < MAX_PEER_DELIVERIES * 2; attempt++) {
+          const captured = await this.store.readControl(id);
+          const head = captured.peer_deliveries?.find((record) => record.state === "queued");
+          if (!head) return undefined;
+          const validity = await this.#peerValidity(id, captured, head.envelope);
+          let changed: PeerDeliveryRecord | undefined;
+          const outcome = await this.controls.change(id, (state) => {
+            if (state.revision !== captured.revision) return { kind: "retry" as const };
+            const delivery = state.peer_deliveries?.find((record) => record.state === "queued");
+            if (!delivery || delivery.envelope.delivery_id !== head.envelope.delivery_id) return { kind: "retry" as const };
+            if (validity !== "current") {
+              delivery.state = validity; delivery.disposition_at = now(); changed = structuredClone(delivery);
+              return { kind: "drain" as const };
+            }
+          if (state.native.coverage !== "turn_scoped" || state.native.obligations.length ||
+            state.inputs.some((input) => input.state === "pending" || input.state === "answer_intent" || input.state === "delivery_unknown")) {
+            throw new BridgeError("PEER_DELIVERY_TURN_PENDING", "Peer delivery requires a settled native turn without pending obligations");
+          }
+          delivery.state = "dispatch_intent"; delivery.dispatch_intent_at = now(); changed = structuredClone(delivery);
+            return { kind: "value" as const, envelope: immutablePeerEnvelope(delivery.envelope) };
+          });
+          if (changed) await this.#peerEvent(id, changed);
+          if (outcome.kind === "retry" || outcome.kind === "drain") continue;
+          const current = await this.#peerValidity(id, await this.store.readControl(id), outcome.envelope);
+          if (current !== "current") {
+            let revoked: PeerDeliveryRecord | undefined;
+            await this.controls.change(id, state => {
+              const delivery = state.peer_deliveries?.find(record => record.envelope.delivery_id === outcome.envelope.delivery_id);
+              if (delivery?.state === "dispatch_intent") {
+                delivery.state = "unknown"; delivery.disposition_at = now(); revoked = structuredClone(delivery);
+              }
+            });
+            if (revoked) await this.#peerEvent(id, revoked);
+            continue;
+          }
+          return outcome.envelope;
+        }
+        throw new BridgeError("PEER_DELIVERY_STALE", "Peer queue changed during dispatch");
+      },
+      delivered: (key: string, nativeTurnId: string, nativeSessionId: string) => this.#acceptPeerReceipt(id, key, nativeTurnId, nativeSessionId, "delivered"),
+      observed: (key: string, nativeTurnId: string, nativeSessionId: string) => this.#acceptPeerReceipt(id, key, nativeTurnId, nativeSessionId, "observed"),
+    });
+  }
+  async #acceptPeerReceipt(id: string, key: string, nativeTurnId: string, nativeSessionId: string, target: "delivered" | "observed"): Promise<void> {
+    if (!PeerDeliveryNativeSessionIdSchema.safeParse(nativeSessionId).success) {
+      throw new BridgeError("PEER_DELIVERY_STALE", "Peer receipt lacks a bounded native session identity");
+    }
+    for (let attempt = 0; attempt < 128; attempt++) {
+      const captured = await this.store.readControl(id);
+      const selected = captured.peer_deliveries?.find((record) => record.envelope.idempotency_key === key);
+      if (!selected) throw new BridgeError("PEER_DELIVERY_UNKNOWN", "Peer delivery receipt unknown");
+      const validity = await this.#peerValidity(id, captured, selected.envelope);
+      let changed: PeerDeliveryRecord | undefined;
+      const outcome = await this.controls.change(id, (state) => {
+      if (state.revision !== captured.revision) return "retry";
+      const delivery = state.peer_deliveries?.find((record) => record.envelope.idempotency_key === key);
+      if (!delivery) return "unknown";
+      if (validity !== "current") {
+        if (delivery.state === "dispatch_intent" || delivery.state === "delivered") {
+          delivery.state = "unknown"; delivery.disposition_at = now(); changed = structuredClone(delivery);
+        }
+        return validity;
+      }
+      if (delivery.state === target && delivery.native_turn_id === nativeTurnId && delivery.native_session_id === nativeSessionId &&
+        state.native.turn_id === nativeTurnId && state.native.native_session_id === nativeSessionId) return "accepted";
+      if (delivery.state !== (target === "delivered" ? "dispatch_intent" : "delivered")) return "stale";
+      if (!nativeTurnId || Buffer.byteLength(nativeTurnId, "utf8") > 256 || nativeTurnId.includes("\0") ||
+        state.native.turn_id !== nativeTurnId || state.native.native_session_id !== nativeSessionId ||
+        target === "delivered" && state.native.coverage === "turn_scoped" ||
+        target === "observed" && (state.native.coverage !== "turn_scoped" || delivery.native_turn_id !== nativeTurnId ||
+          delivery.native_session_id !== nativeSessionId || state.native.obligations.length)) return "stale";
+      delivery.state = target; delivery.native_turn_id = nativeTurnId;
+      delivery.native_session_id = nativeSessionId;
+      if (target === "delivered") delivery.delivered_at = now(); else delivery.observed_at = now();
+      changed = structuredClone(delivery); return "accepted";
+    });
+    if (changed) await this.#peerEvent(id, changed);
+    if (outcome === "retry") continue;
+    if (outcome !== "accepted") throw new BridgeError(`PEER_DELIVERY_${outcome.toUpperCase()}`, `Peer delivery receipt ${outcome}`);
+    return;
+    }
+    throw new BridgeError("PEER_DELIVERY_STALE", "Recipient control changed during peer receipt");
   }
   async #freeze(reason: string): Promise<void> {
     this.#frozen ??= reason;
@@ -342,17 +522,24 @@ export class Coordinator {
   }
   async #event(id: string, event: WorkerEvent): Promise<void> {
     if (event.kind === "input_withdrawn") { await this.inputs.withdraw(id, event.native_id); return; }
-    if (event.kind === "turn_settled") await this.inputs.settleTurn(id, event.turn_id);
-    if (["turn_started", "turn_settled", "operation_started", "operation_finished", "process_observed", "runtime_unknown"].includes(event.kind)) {
+    if (["turn_started", "turn_correlated", "turn_settled", "operation_started", "operation_finished", "process_observed", "runtime_unknown"].includes(event.kind)) {
       await this.controls.change(id, (state) => {
         if (state.phase === "terminal") throw new BridgeError("STALE_NATIVE_EVENT", "Native event arrived after terminal publication");
         state.native.last_observed_at = now();
         if (event.kind === "turn_started") {
+          if (!event.turn_id || Buffer.byteLength(event.turn_id, "utf8") > 256 || event.turn_id.includes("\0") ||
+            event.native_session_id !== undefined && (!event.native_session_id || Buffer.byteLength(event.native_session_id, "utf8") > 256 || event.native_session_id.includes("\0")) ||
+            state.native.native_session_id !== undefined && state.native.native_session_id !== event.native_session_id) {
+            throw new BridgeError("NATIVE_CORRELATION_INVALID", "Native turn or session identity is invalid");
+          }
           if (state.native.obligations.length || state.inputs.some((i) => i.state === "pending")) throw new BridgeError("NATIVE_OBLIGATIONS_PENDING", "Prior native work has not settled");
           state.native.turn_id = event.turn_id; state.native.state = "observed_live"; state.native.coverage = "unknown";
+          if (event.native_session_id !== undefined) state.native.native_session_id = event.native_session_id;
           if (!state.cancel) state.phase = "active";
+        } else if (event.kind === "turn_correlated") {
+          correlateNativeTurn(state, event);
         } else if (event.kind === "turn_settled") {
-          if (state.native.turn_id !== event.turn_id) throw new BridgeError("NATIVE_CORRELATION_INVALID", "Terminal event belongs to another turn");
+          if (state.native.turn_id !== event.turn_id || state.native.native_session_id !== event.native_session_id) throw new BridgeError("NATIVE_CORRELATION_INVALID", "Terminal event belongs to another native session or turn");
           state.native.coverage = "turn_scoped";
         } else if (event.kind === "operation_started") {
           if (state.native.obligations.some((o) => o.id === event.id) || state.native.obligations.length >= 256) throw new BridgeError("NATIVE_OBLIGATION_INVALID", "Duplicate or excessive native obligations");
@@ -369,6 +556,7 @@ export class Coordinator {
         }
       });
     }
+    if (event.kind === "turn_settled") await this.inputs.settleTurn(id, event.turn_id);
     if (await this.store.appendEvent(id, event) === false) await this.controls.change(id, (s) => { s.telemetry_omitted = true; });
   }
   async #execute(entry: Entry): Promise<void> {
@@ -392,6 +580,7 @@ export class Coordinator {
       const resource = await this.store.readResource(id);
       await this.store.writeResource(id, resource ? { ...resource, state: "pending", updated_at: now() }
         : { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
+      entry.workspace = workspace.path;
       if (record.schema_version === 5 && workspace.kind === "task_worktree") {
         if (!this.onCoordinatedWorkspacePrepared) throw new BridgeError("COORDINATION_ATTACHMENT_UNAVAILABLE", "Coordinated task has no prepared-workspace attachment owner");
         await this.onCoordinatedWorkspacePrepared(record, workspace);
@@ -412,6 +601,7 @@ export class Coordinator {
         onEvent: (event) => this.#event(id, event),
         approve: async (approval, signal) => ({ choice_id: await this.inputs.request(id, { kind: "permission", approval: { ...approval, task_id: id, workspace: workspace!.path } }, approval.id, signal) }),
         input: (question, attention = false, nativeId, choices, inputSignal) => this.inputs.request(id, { kind: "clarification", question, attention, ...(choices ? { choices: [...choices] } : {}) }, nativeId ?? `clarification:${randomUUID()}`, inputSignal ? AbortSignal.any([controller.signal, inputSignal]) : controller.signal),
+        peer: this.#peerPort(id),
       });
       workerSettled = true;
       result = { ...result, execution_status: run.status, worker_stop: run.worker_stop, worker_assessment: run.worker_assessment,
@@ -452,7 +642,20 @@ export class Coordinator {
     if (!await this.store.readResource(id)) await this.store.writeResource(id, { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
     if (result.worker_stop === "unconfirmed" && result.execution_status === "completed") result.execution_status = "interrupted";
     // Serialize cancellation versus successful settlement at the same state owner. No provider callback runs here.
-    await this.controls.change(id, (s) => { if (s.cancel) result.execution_status = "cancelled"; s.phase = "finalizing"; s.settled_outcome = result.execution_status; });
+    await this.controls.change(id, (s) => {
+      if (s.cancel) result.execution_status = "cancelled";
+      for (const delivery of s.peer_deliveries ?? []) {
+        if (delivery.state === "queued") { delivery.state = s.cancel ? "cancelled" : "stale"; delivery.disposition_at = now(); }
+        else if (delivery.state === "dispatch_intent" || delivery.state === "delivered") {
+          delivery.state = "unknown"; delivery.disposition_at = now();
+          if (result.execution_status === "completed") {
+            result.execution_status = "interrupted";
+            result.error = { code: "PEER_DELIVERY_UNKNOWN", message: "Peer dispatch or worker observation lacks a settled receipt" };
+          }
+        }
+      }
+      s.phase = "finalizing"; s.settled_outcome = result.execution_status;
+    });
     let state = await this.store.readControl(id);
     result.native_evidence = structuredClone(state.native);
     result.native_evidence.state = result.worker_stop === "confirmed" ? "stopped" : result.worker_stop === "not_started" ? "not_started" : "unknown";

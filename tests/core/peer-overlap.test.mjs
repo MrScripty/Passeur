@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { selectPeerOverlapEvidence } from '../../.passeur-core/src/observation/overlap.js';
+import { CorrespondenceIndex } from '../../.passeur-core/src/observation/correspondence.js';
 
 const sourceIdentity = (capture_id) => ({ kind: 'working_capture', repository_id: 'repo', object_format: 'sha1',
   workspace_id: `${capture_id}-workspace`, workspace_generation: 1, capture_id, capture_sequence: 1,
@@ -11,6 +12,52 @@ const file = (capture_id, text) => ({ status: 'present', source: sourceIdentity(
 const declaration = (body_digest, range, signature = 'function total()') => ({ key: 'total', kind: 'function', name: 'total',
   enclosing: [], range, signature, parameters: [], result: { state: 'declared', syntax: 'number' }, header_complete: true,
   body_digest, default_digests: [] });
+
+test('body-only revisions emit fresh correspondence evidence with unchanged flags', () => {
+  const index = new CorrespondenceIndex();
+  const input = declaration('input-body', { start_byte: 0, end_byte: 32 });
+  const source = { kind: 'commit', repository_id: 'repo', object_format: 'sha1',
+    commit_oid: 'a'.repeat(40), tree_oid: 'b'.repeat(40), path: 'src/quote.ts' };
+  const report = (workId, bodyDigest, evidence = {}) => ({ work_id: workId, parent_id: `owner-${workId}`,
+    attribution: 'observed_in_work_authorship_not_established',
+    comparison: { input: { status: 'present', source }, observed: { status: 'present', source: sourceIdentity(workId) },
+      dialect: 'typescript', parser_identity: 'tree-sitter-typescript@1', extractor_identity: 'native-declarations@1',
+      coverage: 'complete', region_changed: false, limitations: [],
+      changes: [{ kind: 'modified', correspondence: 'unique_syntax_correspondence',
+        declaration_changed: false, body_changed: true, default_changed: false,
+        input: { ...input, body_digest: evidence.inputBodyDigest ?? input.body_digest,
+          default_digests: evidence.inputDefaults ?? input.default_digests,
+          signature: evidence.inputSignature ?? input.signature },
+        observed: { ...input, body_digest: bodyDigest,
+          default_digests: evidence.observedDefaults ?? input.default_digests,
+          signature: evidence.observedSignature ?? input.signature } }] } });
+  assert.equal(index.upsert(report('a', 'first')).pairs.length, 0);
+  const first = index.upsert(report('b', 'second')).pairs[0];
+  assert.ok(first);
+  assert.equal(index.upsert(report('b', 'second')).pairs.length, 0);
+  const revised = index.upsert(report('b', 'third')).pairs[0];
+  assert.ok(revised);
+  assert.equal(revised.pair_id, first.pair_id);
+  assert.notEqual(revised.current_change.evidence_id, first.current_change.evidence_id);
+  assert.deepEqual([revised.current_change.body_changed, revised.current_change.default_changed],
+    [first.current_change.body_changed, first.current_change.default_changed]);
+  let previous = revised;
+  for (const evidence of [
+    { inputBodyDigest: 'revised-input' },
+    { inputBodyDigest: 'revised-input', inputDefaults: ['input-default'] },
+    { inputBodyDigest: 'revised-input', inputDefaults: ['input-default'], inputSignature: 'function total(value = 1)' },
+    { inputBodyDigest: 'revised-input', inputDefaults: ['input-default'], inputSignature: 'function total(value = 1)',
+      observedDefaults: ['observed-default'] },
+    { inputBodyDigest: 'revised-input', inputDefaults: ['input-default'], inputSignature: 'function total(value = 1)',
+      observedDefaults: ['observed-default'], observedSignature: 'function total(value = 2)' },
+  ]) {
+    const next = index.upsert(report('b', 'third', evidence)).pairs[0];
+    assert.ok(next);
+    assert.notEqual(next.current_change.evidence_id, previous.current_change.evidence_id);
+    assert.match(next.current_change.evidence_id, /^[0-9a-f]{64}$/);
+    previous = next;
+  }
+});
 
 function inputFor(text) {
   const subjectEnd = text.indexOf("}\n") + 1;

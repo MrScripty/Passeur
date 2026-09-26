@@ -215,11 +215,16 @@ test("two common-base worktrees notify corresponding edits and resolve a reverte
   const nextBody = "export function run() { return 4; }\nexport function other() { return 1; }\n";
   await writeFile(join(otherRoot, "source.ts"), nextBody);
   await refresh(right, rightWork);
-  assert.deepEqual((await pull(left)).notices, [], "a body revision must not repeat the compact overlap for the peer");
-  assert.deepEqual((await pull(right)).notices, [], "a body revision must not repeat the compact overlap for its owner");
+  const bodyLeft = (await pull(left)).notices, bodyRight = (await pull(right)).notices;
+  const bodyNotices = [...bodyLeft, ...bodyRight];
+  assert.ok(bodyNotices.length > 0,
+    "a work owner should receive fresh evidence when concealed body content changes");
+  assert.ok(bodyNotices.every(notice => notice.subject_id === pairSubject && notice.correspondence_state === "overlap"));
+  for (const notice of bodyLeft) await call(left, "structural_notice_ack", { notice_id: notice.id });
+  for (const notice of bodyRight) await call(right, "structural_notice_ack", { notice_id: notice.id });
   const afterBodyEdit = await currentRight();
   assert.ok(afterBodyEdit && afterBodyEdit !== beforeBodyEdit,
-    "the latest exact capture must advance while the correspondence notice remains quiet");
+    "the latest exact capture must advance with the fresh correspondence notice");
   const bodyDetail = responseSchemas.structural_artifact_detail.parse(await call(right, "structural_artifact_detail", {
     artifact_id: afterBodyEdit, side: "observed", start_byte: 0, end_byte: Buffer.byteLength(nextBody),
   }));

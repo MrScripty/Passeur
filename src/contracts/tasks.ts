@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isAbsolute } from "node:path";
 import { AssignmentSchema, AgentRegistrationSchema, SafeConfigurationSchema, AgentIdSchema } from "./agents.js";
 import type { DelegateResult } from "./types.js";
+import { MAX_PEER_DELIVERIES, PeerDeliveryRecordSchema } from "./peer-delivery.js";
 
 const key = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -111,6 +112,7 @@ export type PendingInput = z.output<typeof PendingInputSchema>;
 export const NativeEvidenceSchema = z.object({
   run_id: TaskIdSchema, state: z.enum(["not_started", "observed_live", "stopped", "unknown"]),
   turn_id: z.string().min(1).max(256).optional(),
+  native_session_id: z.string().min(1).max(256).refine((value) => Buffer.byteLength(value, "utf8") <= 256 && !value.includes("\0")).optional(),
   process: z.object({ pid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), boot_id: z.string().min(1).max(128), started: z.string().min(1).max(128) }).strict().optional(),
   obligations: z.array(z.object({ id: z.string().min(1).max(256), kind: z.string().min(1).max(128) }).strict()).max(256),
   coverage: z.enum(["unknown", "turn_scoped"]),
@@ -130,6 +132,7 @@ export const TaskControlSchema = z.object({
   outcome: z.enum(["completed", "blocked", "failed", "cancelled", "interrupted"]).optional(),
   updated_at: instant, native: NativeEvidenceSchema,
   inputs: z.array(PendingInputSchema).max(4096), receipts: z.array(ControlReceiptSchema).max(4096),
+  peer_deliveries: z.array(PeerDeliveryRecordSchema).max(MAX_PEER_DELIVERIES).optional(),
   cancel: z.object({ reason: z.string().min(1).max(2048), at: instant, operation_key: key }).strict().optional(),
   settled_outcome: z.enum(["completed", "blocked", "failed", "cancelled", "interrupted"]).optional(),
   attention: z.string().max(2048).optional(), telemetry_omitted: z.boolean().default(false),
@@ -138,6 +141,8 @@ export const TaskControlSchema = z.object({
   if (v.outcome === "completed" && v.cancel) c.addIssue({ code: "custom", message: "cancelled task cannot complete" });
   if (new Set(v.inputs.map((i) => i.input_id)).size !== v.inputs.length || new Set(v.receipts.map((r) => r.operation_key)).size !== v.receipts.length) c.addIssue({ code: "custom", message: "duplicate control identities" });
   if (v.inputs.some((i) => i.run_id !== v.native.run_id || i.revision > v.revision || i.claim && i.claim.control_generation !== v.control_generation)) c.addIssue({ code: "custom", message: "stale native or control generation" });
+  if (v.peer_deliveries && (new Set(v.peer_deliveries.map((delivery) => delivery.envelope.idempotency_key)).size !== v.peer_deliveries.length ||
+    v.peer_deliveries.some((delivery) => delivery.envelope.recipient_task_id !== v.task_id))) c.addIssue({ code: "custom", message: "duplicate or foreign peer delivery" });
   if (v.phase === "terminal" && v.inputs.some((i) => i.state === "pending" || i.state === "answer_intent" || i.state === "delivery_unknown")) c.addIssue({ code: "custom", message: "terminal input obligation unresolved" });
 });
 export type TaskControl = z.output<typeof TaskControlSchema>;

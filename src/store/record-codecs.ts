@@ -2,6 +2,7 @@ import { DurableRequestSchema, CoordinatedDurableRequestSchema, CoordinatedSubmi
 import { AssignmentSchema, ExecutionSnapshotSchema, ExecutionIdentitySchema } from "../contracts/agents.js";
 import { canonicalHash, stableHash } from "../core/async.js";
 import { z } from "zod";
+import { immutablePeerEnvelope } from "../contracts/peer-delivery.js";
 import { DelegateRequestSchema, FinalizeOperationSchema } from "../contracts/index.js";
 import type { FinalizeReceipt, ResourceRecord, StoredResult } from "../contracts/types.js";
 import type { TaskState } from "../core/state.js";
@@ -156,7 +157,13 @@ export function decodeRequest(value: unknown, id: string): StoredRequest {
 }
 export function decodeState(value: unknown): TaskState {
   if (recordObject(value) && value.schema_version !== undefined) {
-    version(value, [2], "store.state"); return parse(TaskControlSchema, value, "store.state");
+    version(value, [2], "store.state");
+    const control = parse(TaskControlSchema, value, "store.state");
+    for (const delivery of control.peer_deliveries ?? []) {
+      try { immutablePeerEnvelope(delivery.envelope); }
+      catch { throw new BridgeError("STORE_CORRUPT", "Persisted peer envelope digest is invalid", { stage: "store.state.peer_deliveries" }); }
+    }
+    return control;
   }
   version(value, [], "store.state");
   return parse(taskState, value, "store.state") as TaskState;

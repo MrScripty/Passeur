@@ -6,7 +6,7 @@ import { decodeCoordinationRequest, coordinationRequestLane, type CoordinationRe
 import type { CoordinationActor } from "../coordination/control.js";
 import type { ManagedEnrollment } from "../coordination/bound-control.js";
 import { managedTaskSource, managedWorkProjection } from "./managed-coordination.js";
-import { parentId, type Region, type Work } from "../contracts/coordination-control.js";
+import { parentId, type Case, type Region, type Work } from "../contracts/coordination-control.js";
 import { operatorToken } from "../service/operator-token.js";
 import { privateDirectory } from "../service/process.js";
 import { assertExternalWorkspace } from "./coordination-resources.js";
@@ -27,9 +27,10 @@ import type { NativeDialect } from "../observation/native-parser.js";
 import { CapturedPairCache } from "../observation/cache.js";
 import { ObservationMonitor, type ObservationJob, type ObservationWorkspace } from "../observation/monitor.js";
 import { ObservationStore } from "../store/observation-store.js";
-import { CorrespondenceIndex } from "../observation/correspondence.js";
+import { CorrespondenceIndex, type CorrespondencePair, type CorrespondenceUpdate } from "../observation/correspondence.js";
 import type { AttributedComparison, SourceFile } from "../observation/model.js";
 import type { ObservationGeneration, ObservationPull } from "../contracts/observation.js";
+import { peerDeliveryContentDigest, type PeerDeliveryEnvelope, type PeerDeliverySource } from "../contracts/peer-delivery.js";
 
 import type { RepositoryLease } from "./lease.js";
 import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure } from "./errors.js";
@@ -54,6 +55,33 @@ function changedStructuralEvidence(report: AttributedComparison): boolean {
   const comparison = report.comparison;
   return comparison.region_changed || comparison.changes.some(change => change.kind !== "unobserved" &&
     (change.declaration_changed || change.body_changed || change.default_changed || change.kind === "added" || change.kind === "removed"));
+}
+/** Compact correspondence is evidence of overlap, not changed source detail or authorship. */
+export function peerDeliveryCandidate(pair: CorrespondencePair, peerCase: Case, source: Work,
+  target: Work, recipientTaskId: string, artifactId: string): PeerDeliverySource | undefined {
+  if (peerCase.state !== "active" || source.id === target.id ||
+    !peerCase.inputs.some(input => input.work_id === source.id) ||
+    !peerCase.inputs.some(input => input.work_id === target.id) ||
+    !target.managed || target.managed.task_id !== recipientTaskId ||
+    ![pair.current_work_id, pair.other_work_id].includes(source.id) ||
+    ![pair.current_work_id, pair.other_work_id].includes(target.id)) return undefined;
+  const sourceChange = source.id === pair.current_work_id ? pair.current_change : pair.other_change;
+  const otherChange = source.id === pair.current_work_id ? pair.other_change : pair.current_change;
+  const evidence_id = canonicalHash([artifactId, pair.pair_id, sourceChange.evidence_id, otherChange.evidence_id]);
+  const content = JSON.stringify({ schema_version: 1, kind: "peer_overlap_evidence",
+    source_work_id: source.id, source_work_revision: source.revision, source_artifact_id: artifactId,
+    case_id: peerCase.id, case_revision: peerCase.revision, case_generation: peerCase.generation,
+    input: { repository_id: pair.input.repository_id, object_format: pair.input.object_format,
+      commit_oid: pair.input.commit_oid, tree_oid: pair.input.tree_oid,
+      path_sha256: createHash("sha256").update(pair.input.path).digest("hex"), range: pair.input_range },
+    subject_id: pair.subject_id, pair_id: pair.pair_id,
+    source_change: sourceChange, recipient_change: otherChange,
+    limitations: ["compact_correspondence_only", "changed_source_detail_unavailable", "authorship_unproven"] });
+  return { source_work_id: source.id, source_work_revision: source.revision,
+    case_id: peerCase.id, case_revision: peerCase.revision, case_generation: peerCase.generation,
+    evidence_id, evidence_revision: source.revision, content, evidence_digest: peerDeliveryContentDigest(content),
+    idempotency_key: canonicalHash([recipientTaskId, peerCase.id, peerCase.revision,
+      peerCase.generation, source.id, source.revision, evidence_id]) };
 }
 function announcementId(owner: string, operationKey: string): string {
   const hex = createHash("sha256").update(`passeur-announcement-v1:${owner}:${operationKey}`).digest("hex");
@@ -139,6 +167,7 @@ export class RepositoryRuntime {
   #observationStartupFailure: string | undefined;
   readonly #monitorEnabled: boolean;
   readonly #correspondence = new CorrespondenceIndex();
+  readonly #currentOverlapPairs = new Map<string, CorrespondencePair>();
   readonly #publishedArtifactIds = new Map<string, Readonly<{ id: string; owner: string }>>();
   readonly #pendingCorrespondenceNotices = new Map<string, PendingCorrespondenceNotice>();
   readonly #observationFailures = new Map<string, string>();
@@ -400,6 +429,7 @@ export class RepositoryRuntime {
             this.#publishedArtifactIds.set(artifactKey, { id: artifact.id, owner: work.owner });
             if (this.#publishedArtifactIds.size > 512) this.#publishedArtifactIds.delete(this.#publishedArtifactIds.keys().next().value!);
             const correspondence = this.#correspondence.upsert(pair.report);
+            this.#retainCorrespondence(correspondence);
             for (const [state, events] of [["overlap", correspondence.pairs], ["resolved", correspondence.resolved]] as const) {
               for (const event of events) {
                 this.#queueCorrespondenceNotice({ artifactId: artifact.id, recipient: work.owner, workId: work.id,
@@ -409,6 +439,7 @@ export class RepositoryRuntime {
                   workId: event.other_work_id, subjectId: event.subject_id, state });
               }
             }
+            for (const event of correspondence.pairs) await this.#queuePeerOverlap(event);
             await this.#drainCorrespondenceNotices();
           }
         },
@@ -426,6 +457,112 @@ export class RepositoryRuntime {
       }
     }
     return work;
+  }
+  /** The task control supplies the principal; envelope text and selectors never supply authority. */
+  async #authorizePeerDelivery(envelope: PeerDeliveryEnvelope): Promise<"current" | "stale" | "revoked"> {
+    this.#assertOpen(); this.#assertAuthority();
+    const binding = this.#binding, store = this.#store;
+    if (!binding || !store) return "stale";
+    const control = await store.readControl(envelope.recipient_task_id);
+    if (control.phase === "terminal" || control.phase === "finalizing" || control.cancel ||
+      control.control_generation !== envelope.recipient_control_generation || control.native.run_id !== envelope.recipient_run_id) return "stale";
+    const admission = await store.durableRequest(envelope.recipient_task_id);
+    const resource = await store.readResource(envelope.recipient_task_id);
+    if (admission.schema_version !== 5 || admission.project_id !== binding.repositoryId ||
+      resource?.state !== "pending" || resource.project_id !== binding.repositoryId ||
+      resource.worktree_path !== envelope.recipient_workspace) return "stale";
+    if (canonicalHash({ task_id: envelope.recipient_task_id, source_view: admission.source_view,
+      workspace: resource.worktree_path, base_commit: resource.base_commit, branch_ref: resource.branch_ref,
+      target_ref: resource.target_ref }) !== envelope.recipient_workspace_fingerprint) return "stale";
+
+    const metadata = this.#coordinationSession(binding);
+    // The elected metadata store is capacity bounded. A snapshot keeps case membership,
+    // selected inputs, work identity and grants at one metadata revision.
+    const snapshot = await (await metadata.observationStore()).snapshot();
+    const peerCase = snapshot.cases.find(item => item.id === envelope.case_id);
+    if (!peerCase || peerCase.state !== "active" || peerCase.revision !== envelope.case_revision ||
+      peerCase.generation !== envelope.case_generation ||
+      !peerCase.inputs.some(input => input.work_id === envelope.source_work_id)) return "stale";
+    const recipientWorks = snapshot.works.filter(item => item.managed?.task_id === envelope.recipient_task_id && item.state === "active");
+    const recipientWork = recipientWorks[0];
+    if (recipientWorks.length !== 1 || !recipientWork || recipientWork.owner !== control.owner_id ||
+      recipientWork.managed?.control_generation !== control.control_generation) return "stale";
+    if (!peerCase.inputs.some(input => input.work_id === recipientWork.id)) return "stale";
+    if (!peerCase.members.includes(control.owner_id)) return "revoked";
+    const source = snapshot.works.find(item => item.id === envelope.source_work_id);
+    if (!source || source.state !== "active" || source.revision !== envelope.source_work_revision) return "stale";
+    const grant = source.source_grants?.some(item => item.recipient === control.owner_id &&
+      item.work_revision === source.revision && (item.scope === "report" || item.scope === "detail"));
+    if (source.owner !== control.owner_id && !grant) return "revoked";
+    // An envelope is usable only while its exact compact pair and retained source artifact remain current.
+    let content: { pair_id?: unknown; source_artifact_id?: unknown };
+    try { content = JSON.parse(envelope.content) as typeof content; } catch { return "stale"; }
+    if (typeof content.pair_id !== "string" || typeof content.source_artifact_id !== "string") return "stale";
+    const pair = this.#currentOverlapPairs.get(content.pair_id);
+    if (!pair || ![pair.current_work_id, pair.other_work_id].includes(source.id) ||
+      ![pair.current_work_id, pair.other_work_id].includes(recipientWork.id)) return "stale";
+    const artifact = this.#publishedArtifactIds.get(JSON.stringify([source.id, pair.input.path]));
+    if (!artifact || artifact.id !== content.source_artifact_id || artifact.owner !== source.owner || !this.#observationStore) return "stale";
+    const currentCandidate = peerDeliveryCandidate(pair, peerCase, source, recipientWork,
+      envelope.recipient_task_id, artifact.id);
+    if (!currentCandidate || canonicalHash(currentCandidate) !== canonicalHash({
+      source_work_id: envelope.source_work_id, source_work_revision: envelope.source_work_revision,
+      case_id: envelope.case_id, case_revision: envelope.case_revision, case_generation: envelope.case_generation,
+      evidence_id: envelope.evidence_id, evidence_revision: envelope.evidence_revision,
+      evidence_digest: envelope.evidence_digest, content: envelope.content, idempotency_key: envelope.idempotency_key,
+    })) return "stale";
+    try {
+      const retained = await this.#observationStore.readRetainedPair(artifact.id, control.owner_id,
+        (recipient, workId, revision, generation) => this.#authorizeObservation(recipient, workId, revision, generation, "report"));
+      if (retained.work_id !== source.id || retained.work_revision !== source.revision ||
+        retained.path !== pair.input.path || retained.input.source.kind !== "commit" ||
+        retained.input.source.commit_oid !== pair.input.commit_oid ||
+        retained.input.source.repository_id !== pair.input.repository_id) return "stale";
+    } catch (error) {
+      const code = errorInfo(error).code;
+      if (code === "STRUCTURAL_SOURCE_FORBIDDEN") return "revoked";
+      if (code === "STRUCTURAL_DETAIL_UNAVAILABLE") return "stale";
+      throw error;
+    }
+    try { await metadata.authorizeSourceRead(control.owner_id, source.id, "report"); }
+    catch (error) {
+      if (errorInfo(error).code === "STRUCTURAL_SOURCE_FORBIDDEN") {
+        const current = await (await metadata.observationStore()).snapshot();
+        const currentCase = current.cases.find(item => item.id === envelope.case_id);
+        const currentWork = current.works.find(item => item.id === source.id);
+        return !currentCase || currentCase.state !== "active" || currentCase.revision !== envelope.case_revision ||
+          !currentWork || currentWork.state !== "active" || currentWork.revision !== envelope.source_work_revision ? "stale" : "revoked";
+      }
+      throw error;
+    }
+    let recipientSource;
+    try { recipientSource = await managedTaskSource(store, binding.repositoryId, envelope.recipient_task_id); }
+    catch (error) { if (errorInfo(error).code.startsWith("COORDINATION_TASK_")) return "stale"; throw error; }
+    if (recipientSource.root !== envelope.recipient_workspace || recipientSource.input_oid !== recipientWork.input_oid) return "stale";
+    const { CoordinationRepository } = await import("../coordination/repository.js");
+    try {
+      const repository = await CoordinationRepository.open(recipientSource.root, binding.repositoryId, coordinationLimits.max_worktrees);
+      const workspace = await repository.inspect(recipientSource.root);
+      if (workspace.workspace_id !== recipientWork.workspace_id || workspace.repository_id !== binding.repositoryId) return "stale";
+      if (source.managed) {
+        const sourceControl = await store.readControl(source.managed.task_id);
+        if (sourceControl.owner_id !== source.owner || sourceControl.control_generation !== source.managed.control_generation) return "stale";
+        let sourceTask;
+        try { sourceTask = await managedTaskSource(store, binding.repositoryId, source.managed.task_id); }
+        catch (error) { if (errorInfo(error).code.startsWith("COORDINATION_TASK_")) return "stale"; throw error; }
+        if (sourceTask.input_oid !== source.input_oid) return "stale";
+        const sourceWorkspace = await repository.inspect(sourceTask.root);
+        if (sourceWorkspace.workspace_id !== source.workspace_id || sourceWorkspace.repository_id !== binding.repositoryId) return "stale";
+        const latestSourceControl = await store.readControl(source.managed.task_id);
+        if (latestSourceControl.owner_id !== source.owner || latestSourceControl.control_generation !== source.managed.control_generation) return "stale";
+      }
+    } catch (error) {
+      if (["COORDINATION_WORKSPACE_UNREGISTERED", "COORDINATION_WORKSPACE_UNAVAILABLE", "COORDINATION_WORKSPACE_CHANGED"].includes(errorInfo(error).code)) return "stale";
+      throw error;
+    }
+    if ((await (await metadata.observationStore()).snapshot()).revision !== snapshot.revision) return "stale";
+    this.#assertAuthority();
+    return "current";
   }
   async #authorizeObservation(recipient: string, workId: string, workRevision: number,
     generation: ObservationGeneration, scope: "report" | "detail"): Promise<void> {
@@ -545,6 +682,7 @@ export class RepositoryRuntime {
           const compared = await compareCapturedWork({ work_id: work.id, parent_id: work.owner, dialect,
             input: retained.input, observed: retained.observed }, this.#nativeAnalysis, this.#lifetime.signal);
           const update = this.#correspondence.upsert(compared.report);
+          this.#retainCorrespondence(update);
           for (const event of update.pairs) {
             this.#queueCorrespondenceNotice({ artifactId: item.id, recipient: work.owner, workId: work.id,
               subjectId: event.subject_id, state: "overlap" });
@@ -552,6 +690,7 @@ export class RepositoryRuntime {
             if (peer) this.#queueCorrespondenceNotice({ artifactId: peer.id, recipient: peer.owner,
               workId: event.other_work_id, subjectId: event.subject_id, state: "overlap" });
           }
+          for (const event of update.pairs) await this.#queuePeerOverlap(event);
           await this.#drainCorrespondenceNotices();
         } catch (error) {
           this.#observationRehydrationGaps.add(work.id);
@@ -658,11 +797,31 @@ export class RepositoryRuntime {
     if (workspaceId && workspaceId !== attached) this.#observationMonitor?.detach(workId, workspaceId);
     this.#observationAttached.delete(workId);
     this.#correspondence.remove(workId);
+    for (const [key, pair] of this.#currentOverlapPairs) {
+      if (pair.current_work_id === workId || pair.other_work_id === workId) this.#currentOverlapPairs.delete(key);
+    }
     for (const key of this.#publishedArtifactIds.keys()) if (JSON.parse(key)[0] === workId) this.#publishedArtifactIds.delete(key);
     for (const [key, notice] of this.#pendingCorrespondenceNotices) if (notice.workId === workId) this.#pendingCorrespondenceNotices.delete(key);
     this.#observationFailures.delete(workId);
     this.#observationRehydrationGaps.delete(workId);
     if (attached || attaching || workspaceId) this.#fillObservationSlots();
+  }
+  #retainCorrespondence(update: CorrespondenceUpdate): void {
+    for (const resolved of update.resolved) this.#currentOverlapPairs.delete(resolved.pair_id);
+    for (const pair of update.pairs) {
+      if (!this.#currentOverlapPairs.has(pair.pair_id) && this.#currentOverlapPairs.size >= 8192)
+        this.#currentOverlapPairs.delete(this.#currentOverlapPairs.keys().next().value!);
+      this.#currentOverlapPairs.set(pair.pair_id, pair);
+    }
+  }
+  async #recordPeerDeliveryFailure(taskId: string, pairId: string, code: string): Promise<void> {
+    const store = this.#store;
+    if (!store) return;
+    try {
+      const retained = await store.appendEvent(taskId, { kind: "peer_delivery_unavailable", pair_id: pairId,
+        code: code.slice(0, 128) });
+      if (!retained) await this.#controls?.change(taskId, state => { state.telemetry_omitted = true; });
+    } catch (error) { this.#failure ??= diagnosticInfo(error); }
   }
   #queueCorrespondenceNotice(notice: PendingCorrespondenceNotice): void {
     const key = JSON.stringify([notice.artifactId, notice.recipient, notice.subjectId, notice.state]);
@@ -683,6 +842,80 @@ export class RepositoryRuntime {
         // A pruned or retired peer cannot be recovered by recapturing its old working source.
         this.#pendingCorrespondenceNotices.delete(key);
       }
+    }
+  }
+  /** Observation publication owns this attempt; delivery admission and dispatch remain Coordinator owned. */
+  async #queuePeerOverlap(pair: CorrespondencePair): Promise<void> {
+    const coordinator = this.#coordinator, binding = this.#binding, store = this.#store;
+    if (!coordinator || !binding || !store || coordinator.frozenReason) return;
+    const workIds = [pair.current_work_id, pair.other_work_id] as const;
+    let snapshot;
+    try { snapshot = await (await this.#coordinationSession(binding).observationStore()).snapshot(); }
+    catch (error) {
+      const limitation = `peer_delivery_unavailable:${errorInfo(error).code}`.slice(0, 256);
+      for (const id of workIds) {
+        if (!this.#observationFailures.has(id) && this.#observationFailures.size >= coordinationResourceRecords)
+          this.#observationFailures.delete(this.#observationFailures.keys().next().value!);
+        this.#observationFailures.set(id, limitation);
+      }
+      return;
+    }
+    for (const targetId of workIds) {
+      const target = snapshot.works.find(work => work.id === targetId);
+      const source = snapshot.works.find(work => work.id === workIds.find(id => id !== targetId));
+      const taskId = target?.managed?.task_id;
+      if (!target || !source || target.state !== "active" || source.state !== "active" ||
+        !taskId || !coordinator.isActive(taskId)) continue;
+      try {
+        const control = await store.readControl(taskId);
+        if (control.owner_id !== target.owner || control.control_generation !== target.managed!.control_generation) {
+          await this.#recordPeerDeliveryFailure(taskId, pair.pair_id, "PEER_DELIVERY_STALE");
+          continue;
+        }
+        const peerCases = snapshot.cases.filter(item => item.state === "active" &&
+          item.members.includes(control.owner_id) &&
+          item.inputs.some(input => input.work_id === target.id) &&
+          item.inputs.some(input => input.work_id === source.id)).sort((a, b) => a.id.localeCompare(b.id));
+        if (!peerCases.length) continue;
+        const artifact = this.#publishedArtifactIds.get(JSON.stringify([source.id, pair.input.path]));
+        if (!artifact || artifact.owner !== source.owner) {
+          await this.#recordPeerDeliveryFailure(taskId, pair.pair_id, "PEER_DELIVERY_UNAVAILABLE");
+          continue;
+        }
+        // The compact pair is source-derived. Reauthorize before including any of it in a candidate.
+        const authorized = await this.#currentSourceWork(control.owner_id, source.id, "report");
+        if (authorized.revision !== source.revision || authorized.workspace_id !== source.workspace_id) {
+          await this.#recordPeerDeliveryFailure(taskId, pair.pair_id, "PEER_DELIVERY_STALE");
+          continue;
+        }
+        const retained = await this.#observationStore!.readRetainedPair(artifact.id, control.owner_id,
+          (recipient, workId, revision, generation) => this.#authorizeObservation(recipient, workId, revision, generation, "report"));
+        if (retained.work_id !== source.id || retained.work_revision !== source.revision ||
+          retained.path !== pair.input.path || retained.input.source.kind !== "commit" ||
+          retained.input.source.commit_oid !== pair.input.commit_oid ||
+          retained.input.source.repository_id !== pair.input.repository_id) {
+          await this.#recordPeerDeliveryFailure(taskId, pair.pair_id, "PEER_DELIVERY_STALE");
+          continue;
+        }
+        for (const peerCase of peerCases) {
+          const candidate = peerDeliveryCandidate(pair, peerCase, source, target, taskId, artifact.id);
+          if (candidate) await coordinator.queuePeerDelivery(taskId, candidate);
+        }
+      } catch (error) {
+        const code = errorInfo(error).code;
+        await this.#recordPeerDeliveryFailure(taskId, pair.pair_id,
+          code === "STRUCTURAL_SOURCE_FORBIDDEN" ? "PEER_DELIVERY_REVOKED" : code);
+      }
+    }
+  }
+  async #retrySelectedCase(caseId: string): Promise<void> {
+    if (!this.#binding || !this.#coordinator || !this.#currentOverlapPairs.size) return;
+    const snapshot = await (await this.#coordinationSession(this.#binding).observationStore()).snapshot();
+    const peerCase = snapshot.cases.find(item => item.id === caseId && item.state === "active");
+    if (!peerCase) return;
+    const selected = new Set(peerCase.inputs.map(input => input.work_id));
+    for (const pair of this.#currentOverlapPairs.values()) {
+      if (selected.has(pair.current_work_id) && selected.has(pair.other_work_id)) await this.#queuePeerOverlap(pair);
     }
   }
   async #execution(): Promise<Coordinator> {
@@ -706,6 +939,7 @@ export class RepositoryRuntime {
         const registry = new AgentRegistry(profile, definitions);
         this.#assertOpen(); this.#assertAuthority();
         this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority(), this.#controls);
+        this.#coordinator.onAuthorizePeerDelivery = envelope => this.#authorizePeerDelivery(envelope);
         this.#coordinator.onSettled = () => this.onSettled?.();
         this.#coordinator.onTaskSettled = taskId => this.#scheduleTerminalBinding(taskId);
         this.#coordinator.onCoordinatedWorkspacePrepared = async (record, workspace) => {
@@ -1010,6 +1244,10 @@ export class RepositoryRuntime {
       // session after shutdown has already selected the owners it will close.
       this.#assertOpen();
       const reply = await this.#coordinationSession(binding).handle(connection, request);
+      if (reply.kind === "receipt" && reply.receipt.action === "select_inputs") {
+        try { await this.#retrySelectedCase(reply.receipt.item_id); }
+        catch (error) { this.#failure ??= diagnosticInfo(error); }
+      }
       if (reply.kind === "receipt" && (reply.receipt.action === "grant_source" ||
         reply.receipt.action === "watch_source" || reply.receipt.action === "share_work")) {
         this.#forgetObservation(reply.receipt.item_id);

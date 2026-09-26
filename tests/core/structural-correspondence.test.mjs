@@ -43,8 +43,8 @@ test('exact common input declaration produces one compact stable pair and revers
   assert.match(pair.pair_id, /^[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(pair).includes('function run'), false);
   assert.equal(index.upsert(report('b', [modified(declaration, 'f'.repeat(64))])).pairs.length, 0);
-  assert.equal(index.upsert(report('b', [modified(declaration, '1'.repeat(64))])).pairs.length, 0,
-    'a new concealed body digest keeps the same compact overlap');
+  assert.equal(index.upsert(report('b', [modified(declaration, '1'.repeat(64))])).pairs.length, 1,
+    'a new concealed body digest advances the correspondence evidence');
   const reverted = index.upsert(report('b', []));
   assert.deepEqual(reverted.pairs, []);
   assert.deepEqual(reverted.resolved, [{ current_work_id: 'b', other_work_id: 'a',
@@ -52,7 +52,7 @@ test('exact common input declaration produces one compact stable pair and revers
   assert.equal(index.upsert(report('b', [])).resolved.length, 0);
 });
 
-test('concealed default revisions remain quiet while declaration and change markers notify', () => {
+test('concealed default revisions advance evidence while declaration and change markers notify', () => {
   const index = new CorrespondenceIndex();
   const defaultChange = (value, signature = declaration.signature, declarationChanged = false) => ({
     kind: 'modified', correspondence: 'unique_syntax_correspondence', input: declaration,
@@ -62,8 +62,8 @@ test('concealed default revisions remain quiet while declaration and change mark
   });
   index.upsert(report('a', [modified()]));
   assert.equal(index.upsert(report('b', [defaultChange('e'.repeat(64))])).pairs.length, 1);
-  assert.equal(index.upsert(report('b', [defaultChange('f'.repeat(64))])).pairs.length, 0,
-    'a new concealed default digest keeps the same compact overlap');
+  assert.equal(index.upsert(report('b', [defaultChange('f'.repeat(64))])).pairs.length, 1,
+    'a new concealed default digest advances the compact evidence');
   assert.equal(index.upsert(report('b', [defaultChange('f'.repeat(64), 'function run(value: number): void', true)])).pairs.length, 1,
     'a new declaration signature changes compact evidence');
   assert.equal(index.upsert(report('b', [defaultChange('f'.repeat(64), 'function run(value: number): void')])).pairs.length, 1,

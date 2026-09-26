@@ -3,7 +3,10 @@ import { BridgeError } from "../core/errors.js";
 import type { WorkerRun } from "./types.js";
 
 import { REPORT_MARKER } from "./report-format.js";
+import { PeerDeliveryKeySchema } from "../contracts/peer-delivery.js";
 const bounded = (n: number) => z.string().min(1).max(n);
+/** Observation alone conveys no agreement, application, or proposal authority. */
+const peerObserved = { peer_observed: PeerDeliveryKeySchema.optional() };
 const finalFields = {
   summary: bounded(8192), assessment: z.enum(["met", "partial", "unmet", "unknown"]),
   blockers: z.array(bounded(2048)).max(64), questions: z.array(bounded(2048)).max(64),
@@ -12,9 +15,9 @@ const finalFields = {
 };
 /** Runtime messages are versioned independently of historical reports on disk. */
 export const WorkerMessageSchema = z.discriminatedUnion("kind", [
-  z.object({ schema_version: z.literal(2), kind: z.literal("final"), ...finalFields }).strict(),
-  z.object({ schema_version: z.literal(2), kind: z.literal("input_required"), question: bounded(8192) }).strict(),
-  z.object({ schema_version: z.literal(2), kind: z.literal("blocked"), reason: bounded(8192) }).strict(),
+  z.object({ schema_version: z.literal(2), kind: z.literal("final"), ...finalFields, ...peerObserved }).strict(),
+  z.object({ schema_version: z.literal(2), kind: z.literal("input_required"), question: bounded(8192), ...peerObserved }).strict(),
+  z.object({ schema_version: z.literal(2), kind: z.literal("blocked"), reason: bounded(8192), ...peerObserved }).strict(),
 ]);
 export type WorkerMessage = z.output<typeof WorkerMessageSchema>;
 export function parseWorkerMessage(text: string | undefined): WorkerMessage {

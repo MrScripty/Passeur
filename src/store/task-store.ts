@@ -7,6 +7,7 @@ import { KeyedMutex, canonicalHash, stableHash } from "../core/async.js";
 import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
 import type { CurrentDurableRequest, CoordinatedLink, CoordinatedLinkSettlement, AnnouncementPayload, AnnouncementControl, TaskControl } from "../contracts/tasks.js";
 import { AnnouncementPayloadSchema, AnnouncementControlSchema, CoordinatedLinkSettlementSchema, TaskControlSchema, TaskIdSchema } from "../contracts/tasks.js";
+import type { PeerDeliveryRecord } from "../contracts/peer-delivery.js";
 import type { TaskState } from "../core/state.js";
 import { decodeRequest, decodeState, decodeResult, decodeResource, decodeReceipt, decodeSafety, assertResultAdmission } from "./record-codecs.js";
 
@@ -181,6 +182,10 @@ export class TaskStore {
     const state = await this.readState(id);
     if (!("schema_version" in state) || state.schema_version !== 2) throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "Historical state has no durable task control");
     return state;
+  }
+  /** Durable control is authoritative; the capped event stream is telemetry only. */
+  async readPeerDeliveries(id: string): Promise<readonly PeerDeliveryRecord[]> {
+    return structuredClone((await this.readControl(id)).peer_deliveries ?? []);
   }
   async writeControl(id: string, state: TaskControl): Promise<void> {
     await this.writeState(id, state);
