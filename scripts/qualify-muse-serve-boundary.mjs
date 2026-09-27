@@ -4,7 +4,7 @@ import { MuseClient, readSessionDurability, spawnMspConnection } from '@muse-cod
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, mkdir, chmod, readFile, readlink, realpath, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, chmod, lstat, readFile, readlink, realpath, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -118,6 +118,32 @@ export function selectChoice(request, decision) {
 
 export function serveArgs(sessionStart) {
   return sessionStart === 'raw-memory' ? ['serve', '--no-session-log'] : ['serve'];
+}
+
+export async function prepareSessionsDirectory(home, {
+  makeDirectory = mkdir, inspect = lstat, list = readdir, uid = process.getuid?.(),
+} = {}) {
+  const createdDirectories = [];
+  const parts = ['.local', 'share', 'muse', 'sessions'];
+  let path = home;
+  try {
+    if (!Number.isSafeInteger(uid) || uid < 0) throw new Error('process UID unavailable');
+    for (const part of parts) {
+      path = join(path, part);
+      await makeDirectory(path, { mode: 0o700 });
+      const entry = await inspect(path);
+      const mode = entry.mode & 0o7777;
+      createdDirectories.push({ path: relative(home, path), mode });
+      if (!entry.isDirectory() || entry.uid !== uid || mode !== 0o700) {
+        throw new Error('created session directory has an unexpected type, owner or mode');
+      }
+    }
+    if ((await list(path)).length !== 0) throw new Error('created sessions directory is not empty');
+    return { condition: 'precreated_empty_sessions_directory', createdDirectories };
+  } catch (cause) {
+    throw Object.assign(new Error('disposable sessions directory preparation failed', { cause }),
+      { code: 'SESSION_DIRECTORY_INVALID', createdDirectories });
+  }
 }
 
 export function traceArgs(pid, output) {
@@ -341,7 +367,8 @@ async function file(path) {
 export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario = 'inside', decision = 'deny',
   sessionStart = 'facade', runProcess = runManagedProcess, spawnConnection = spawnMspConnection,
   startDaemonDiscovery = waitForDaemonTrace, stopDaemon = stopDaemonTrace,
-  startLoopbackFixture = startFixture, resolveNativeExecutable = pinnedNativeExecutable } = {}) {
+  startLoopbackFixture = startFixture, resolveNativeExecutable = pinnedNativeExecutable,
+  prepareSessions = prepareSessionsDirectory } = {}) {
   const commands = {
     inside: 'printf shell-ran > shell-canary',
     git: 'printf git-ran > .git/probe',
@@ -349,8 +376,8 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     auth: 'cat "$HOME/.config/muse/auth.json" > auth-canary; env > env-canary',
   };
   if (!(scenario in commands) || !['allow', 'deny'].includes(decision)) throw new Error('invalid scenario or decision');
-  if (!['facade', 'raw', 'raw-memory', 'raw-trace', 'raw-trace-daemon', 'quickstart'].includes(sessionStart)) {
-    throw new Error('sessionStart must be facade, raw, raw-memory, raw-trace, raw-trace-daemon or quickstart');
+  if (!['facade', 'raw', 'raw-memory', 'raw-trace', 'raw-trace-daemon', 'raw-precreated-sessions', 'quickstart'].includes(sessionStart)) {
+    throw new Error('sessionStart must be facade, raw, raw-memory, raw-trace, raw-trace-daemon, raw-precreated-sessions or quickstart');
   }
   const quickstart = sessionStart === 'quickstart';
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-serve-boundary-'));
@@ -369,6 +396,7 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
   let daemonDiscovery;
   let daemonTrace;
   let result;
+  let sessionDirectoryPreparation;
   let stderr = '';
   let stage = 'version';
   try {
@@ -399,6 +427,10 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     await writeFile(join(configDir, 'auth.json'), `${JSON.stringify({ schema_version: 1, providers: { meta: { api_key: DUMMY } } })}\n`);
     const approvals = [];
     const approvalErrors = [];
+    if (sessionStart === 'raw-precreated-sessions') {
+      stage = 'session_directory_preparation';
+      sessionDirectoryPreparation = await prepareSessions(home);
+    }
     stage = 'host_spawn';
     const pidFile = join(root, 'serve.stat');
     const wrapper = join(root, 'serve-wrapper');
@@ -451,11 +483,13 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
         return result;
       }
     }
-    if (sessionStart === 'raw' || sessionStart === 'raw-memory' || sessionStart === 'raw-trace' || daemonMode || quickstart) {
+    if (sessionStart === 'raw' || sessionStart === 'raw-memory' || sessionStart === 'raw-trace' ||
+      sessionStart === 'raw-precreated-sessions' || daemonMode || quickstart) {
       stage = 'session_start';
       const started = await within('session/start', startRawSession(spawned.connection, workspace), STARTUP_MS);
       result = { kind: 'raw_session_started', sessionStart, hostArgs, sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(),
         sessionId: started.session.sessionId, status: started.session.status, viewCursor: started.viewCursor,
+        ...(sessionDirectoryPreparation ? { sessionDirectoryPreparation } : {}),
         requests: fixture.requests };
       return result;
     }
@@ -495,12 +529,14 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     return result;
   } catch (error) {
     if (error.code === 'GROUP_NOT_STOPPED') uncertainPreHostStop = true;
-    result = { kind: error.code === 'DAEMON_TRACE_UNAVAILABLE' ||
+    result = { kind: error.code === 'SESSION_DIRECTORY_INVALID' ? 'session_directory_invalid' : error.code === 'DAEMON_TRACE_UNAVAILABLE' ||
       (sessionStart === 'raw-trace-daemon' && stage === 'daemon_trace_discovery')
       ? 'native_trace_unavailable' : 'qualification_error',
       stage, scenario, decision,
       ...(sessionStart !== 'facade' ? { sessionStart } : {}), code: error.code ?? error.name,
       ...(hostSpawnAttempted ? { hostArgs } : {}),
+      ...(sessionDirectoryPreparation ? { sessionDirectoryPreparation } :
+        error.createdDirectories ? { sessionDirectoryPreparation: { condition: 'unverified', createdDirectories: error.createdDirectories } } : {}),
       message: String(error.message).slice(0, 1_000), sdkVersion: '1.3.0', stderr: stderr.slice(-2_000),
       requests: fixture?.requests };
     return result;

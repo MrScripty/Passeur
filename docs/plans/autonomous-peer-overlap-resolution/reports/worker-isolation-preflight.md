@@ -173,6 +173,21 @@ The session index had already been created and opened, with no subsequent
 proof of the deletion-registry cause. No turn, approval, model tool or real
 account occurred.
 
+The next reviewed counterfactual precreated an empty
+`.local/share/muse/sessions` directory inside a fresh disposable HOME before
+launching persistent `serve`. It also created the three missing ancestors;
+all four were verified as real owner-owned mode-0700 directories, and the leaf
+was empty. The focused suite passed 26/26 and independent Astra High review
+found no P1/P2. One installed no-account raw `session/start` returned idle
+session `01a0e4b6-f956-79b3-a6da-d5ee0c855170` with no turn, approval or
+tool, and only the fake model-catalog GET. Its retained
+`/tmp/passeur-muse-serve-boundary-yNEXWS` now contains a `session.jsonl` and
+MSP view files. SDK close and sampled group observation were quiet, but
+descendant stop remains unverified; the root was retained. This prepared
+directory state is sufficient for startup on the installed host. It does not
+prove a precise deletion-registry defect or a supported deployment setup, and
+does not qualify restart recovery, permissions, isolation or real workers.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.

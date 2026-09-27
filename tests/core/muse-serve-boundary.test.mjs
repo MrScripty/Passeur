@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createFixtureDirs, observedHostTree, observedHostQuiet, parseHostMarker, quickstartEnvironment,
-  retainFixtureRoots, selectChoice, serveArgs, startRawSession, qualify, within, traceArgs,
+  prepareSessionsDirectory, retainFixtureRoots, selectChoice, serveArgs, startRawSession, qualify, within, traceArgs,
   startNativeTrace, stopNativeTrace, failedTraceLeads } from '../../scripts/qualify-muse-serve-boundary.mjs';
 import { daemonTraceArgs, discoverDaemonTrace, waitForDaemonTrace, stopDaemonTrace,
   pinnedNativeExecutable } from '../../scripts/qualify-muse-serve-boundary.mjs';
@@ -78,6 +78,108 @@ test('raw memory-only selection changes only the host serve argument', () => {
   assert.deepEqual(serveArgs('raw-memory'), [...raw, '--no-session-log']);
   for (const mode of ['facade', 'quickstart']) assert.deepEqual(serveArgs(mode), raw);
   assert.deepEqual(serveArgs('raw-trace'), raw);
+  assert.deepEqual(serveArgs('raw-precreated-sessions'), raw);
+});
+
+test('explicit sessions preseed records every actual private directory and mode', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'passeur-sessions-layout-test-'));
+  try {
+    const preparation = await prepareSessionsDirectory(home);
+    assert.deepEqual(preparation, { condition: 'precreated_empty_sessions_directory', createdDirectories: [
+      '.local', '.local/share', '.local/share/muse', '.local/share/muse/sessions',
+    ].map(path => ({ path, mode: 0o700 })) });
+    assert.deepEqual(await readdir(home), ['.local']);
+    for (const { path } of preparation.createdDirectories) {
+      const entry = await lstat(join(home, path));
+      assert.equal(entry.isDirectory(), true);
+      assert.equal(entry.uid, process.getuid());
+      assert.equal(entry.mode & 0o7777, 0o700);
+    }
+    assert.deepEqual(await readdir(join(home, '.local/share/muse/sessions')), []);
+    await assert.rejects(prepareSessionsDirectory(home), { code: 'SESSION_DIRECTORY_INVALID' });
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test('sessions preseed rejects wrong type, owner, mode and nonempty leaf', async () => {
+  for (const failure of ['type', 'owner', 'mode', 'nonempty']) {
+    const home = await mkdtemp(join(tmpdir(), 'passeur-sessions-invalid-test-'));
+    try {
+      const inspect = async path => {
+        const entry = await lstat(path);
+        if (failure === 'nonempty' || !path.endsWith('/sessions')) return entry;
+        return { isDirectory: () => failure !== 'type', uid: failure === 'owner' ? entry.uid + 1 : entry.uid,
+          mode: failure === 'mode' ? 0o40755 : entry.mode };
+      };
+      await assert.rejects(prepareSessionsDirectory(home, { inspect,
+        list: failure === 'nonempty' ? async () => ['unexpected'] : readdir,
+      }), error => error.code === 'SESSION_DIRECTORY_INVALID' &&
+        error.createdDirectories.length === 4);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  }
+});
+
+test('only explicit mode prepares sessions before host spawn; failed preparation prevents launch', async () => {
+  const holder = await mkdtemp(join(tmpdir(), 'passeur-sessions-mode-test-'));
+  const muse = join(holder, 'muse');
+  await writeFile(muse, '#!/bin/sh\nprintf "muse 1.4.0-R4302.1\\n"\n', { mode: 0o755 });
+  const roots = [];
+  try {
+    for (const sessionStart of ['raw', 'raw-precreated-sessions']) {
+      let prepared = 0;
+      const result = await qualify({ muse, sessionStart,
+        startLoopbackFixture: async () => ({ url: 'http://127.0.0.1:1', requests: [], close: async () => undefined }),
+        prepareSessions: async home => { prepared++;
+          return prepareSessionsDirectory(home);
+        },
+        spawnConnection: ({ args, env }) => {
+          assert.deepEqual(args, ['serve']);
+          assert.equal(env.MUSE_NO_AUTO_UPDATE, '1');
+          throw new Error('stop before initialize');
+        },
+      });
+      assert.equal(prepared, sessionStart === 'raw' ? 0 : 1);
+      assert.equal(result.stage, 'host_spawn');
+      assert.equal(result.kind, 'qualification_error');
+      assert.equal(result.stopProof, 'descendants_unverified');
+      roots.push(...result.retainedFixtures);
+      const home = join(result.retainedFixtures[0], 'home');
+      assert.deepEqual(await readdir(home), sessionStart === 'raw' ? ['.config'] : ['.config', '.local']);
+      assert.equal(result.sessionDirectoryPreparation?.createdDirectories.length,
+        sessionStart === 'raw' ? undefined : 4);
+    }
+    let spawned = false;
+    let invalidHome;
+    const invalid = await qualify({ muse, sessionStart: 'raw-precreated-sessions',
+      startLoopbackFixture: async () => ({ url: 'http://127.0.0.1:1', requests: [], close: async () => undefined }),
+      prepareSessions: async home => { invalidHome = home; return prepareSessionsDirectory(home, {
+        inspect: async path => { const entry = await lstat(path); return path.endsWith('/sessions')
+          ? { isDirectory: () => true, uid: entry.uid, mode: 0o40755 } : entry; },
+      }); },
+      spawnConnection: () => { spawned = true; throw new Error('must not spawn'); },
+    });
+    assert.equal(spawned, false);
+    assert.equal(invalid.kind, 'session_directory_invalid');
+    assert.equal(invalid.code, 'SESSION_DIRECTORY_INVALID');
+    assert.equal(invalid.stage, 'session_directory_preparation');
+    assert.equal(invalid.hostArgs, undefined);
+    assert.equal(invalid.retainedFixtures, undefined);
+    assert.equal(invalid.sessionDirectoryPreparation.createdDirectories.length, 4);
+    await assert.rejects(lstat(invalidHome), { code: 'ENOENT' });
+
+    const retained = await qualify({ muse, sessionStart: 'raw-precreated-sessions',
+      startLoopbackFixture: async () => ({ url: 'http://127.0.0.1:1', requests: [],
+        close: async () => { throw new Error('fixture close uncertain'); } }),
+      prepareSessions: async home => prepareSessionsDirectory(home, { list: async () => ['unexpected'] }),
+      spawnConnection: () => { spawned = true; throw new Error('must not spawn'); },
+    });
+    assert.equal(spawned, false);
+    assert.equal(retained.kind, 'session_directory_invalid');
+    assert.equal((await lstat(retained.retainedFixtures[0])).isDirectory(), true);
+    roots.push(...retained.retainedFixtures);
+  } finally {
+    for (const root of roots) await rm(root, { recursive: true, force: true });
+    await rm(holder, { recursive: true, force: true });
+  }
 });
 
 test('native trace uses only timestamped file/process metadata and separately observes stop', async () => {
