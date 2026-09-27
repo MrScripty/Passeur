@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createFixtureDirs, observedHostTree, observedHostQuiet, parseHostMarker, quickstartEnvironment,
-  retainFixtureRoots, selectChoice, serveArgs, startRawSession, qualify, within } from '../../scripts/qualify-muse-serve-boundary.mjs';
+  retainFixtureRoots, selectChoice, serveArgs, startRawSession, qualify, within, traceArgs,
+  startNativeTrace, stopNativeTrace, failedTraceLeads } from '../../scripts/qualify-muse-serve-boundary.mjs';
 
 function procStat(pid, { state = 'S', parent = 1, group = pid, session = pid, start = '100' } = {}) {
   const fields = Array(20).fill('0');
@@ -73,6 +75,78 @@ test('raw memory-only selection changes only the host serve argument', () => {
   assert.deepEqual(raw, ['serve']);
   assert.deepEqual(serveArgs('raw-memory'), [...raw, '--no-session-log']);
   for (const mode of ['facade', 'quickstart']) assert.deepEqual(serveArgs(mode), raw);
+  assert.deepEqual(serveArgs('raw-trace'), raw);
+});
+
+test('native trace uses only timestamped file/process metadata and separately observes stop', async () => {
+  const child = new EventEmitter();
+  child.pid = 234;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = signal => { assert.equal(signal, 'SIGINT'); queueMicrotask(() => child.emit('exit', 0, null)); return true; };
+  let args;
+  const trace = await startNativeTrace({ pid: 123, start: 'birth' }, '/tmp/trace', {
+    spawnTrace: (_command, supplied) => { args = supplied; return child; },
+    readStatus: async () => 'TracerPid:\t234\n',
+    verifyHost: async () => undefined,
+    wait: async () => undefined,
+    attachMs: 50,
+  });
+  // Production's verifier rechecks the host birth identity before the request.
+  assert.deepEqual(args, traceArgs(123, '/tmp/trace'));
+  assert.deepEqual(args, ['-f', '-ttt', '-s', '128', '-e', 'trace=%file,%process', '-o', '/tmp/trace', '-p', '123']);
+  assert.equal(trace.attached, true);
+  assert.deepEqual(await stopNativeTrace(trace), { state: 'observed', code: 0, signal: null });
+});
+
+test('failed tracer attachment remains unavailable and its exit is observed', async () => {
+  const child = new EventEmitter();
+  child.pid = 235;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => true;
+  const trace = await startNativeTrace({ pid: 123, start: 'birth' }, '/tmp/trace', {
+    spawnTrace: () => { queueMicrotask(() => { child.exitCode = 1; child.emit('exit', 1, null); }); return child; },
+    readStatus: async () => 'TracerPid:\t0\n',
+    wait: async () => undefined,
+    attachMs: 50,
+  });
+  assert.equal(trace.attached, false);
+  assert.deepEqual(await stopNativeTrace(trace), { state: 'observed', code: 1, signal: null });
+});
+
+test('EPERM signaling an attached tracer does not prove its exit', async () => {
+  const child = new EventEmitter();
+  child.pid = 236;
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => {
+    child.emit('error', Object.assign(new Error('permission denied'), { code: 'EPERM' }));
+    return false;
+  };
+  const trace = await startNativeTrace({ pid: 123, start: 'birth' }, '/tmp/trace', {
+    spawnTrace: () => child,
+    readStatus: async () => 'TracerPid:\t236\n',
+    verifyHost: async () => undefined,
+    wait: async () => undefined,
+    attachMs: 50,
+  });
+  assert.equal(trace.attached, true);
+  assert.deepEqual(await stopNativeTrace(trace), { state: 'uncertain' });
+  assert.equal(trace.exit, null);
+  assert.equal(trace.processError, 'EPERM');
+});
+
+test('failed trace leads expose only bounded disposable paths', () => {
+  const source = [
+    '777 1780000000.123 openat(AT_FDCWD, "/tmp/control/workspace/.git/index", O_RDONLY) = -1 ENOENT (No such file)',
+    '1780000000.124 openat(AT_FDCWD, "/tmp/control/home/.config/muse/auth.json", O_RDONLY) = -1 EACCES (Permission denied)',
+    '1780000000.125 openat(AT_FDCWD, "/home/person/private", O_RDONLY) = -1 EACCES (Permission denied)',
+    '1780000000.126 read(4, "credential-secret", 32) = -1 EPERM (Operation not permitted)',
+  ].join('\n');
+  assert.deepEqual(failedTraceLeads(source, [
+    { name: 'home', path: '/tmp/control/home' }, { name: 'workspace', path: '/tmp/control/workspace' },
+  ]), [{ syscall: 'openat', path: 'workspace/.git/index', errno: 'ENOENT' }]);
 });
 
 test('raw session start uses the quickstart command shape without overrides', async () => {

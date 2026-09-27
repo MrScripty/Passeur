@@ -139,6 +139,20 @@ retained. This localizes the failure to persistent-session behavior bypassed
 by the flag; the deletion-registry cause and durable-session recovery are still
 unknown. The memory-only result is not a usable worker lifecycle qualification.
 
+A separate reviewed `raw-trace` probe kept persistent `serve` and the exact raw
+request. It launched a metadata-only `strace` sidecar after host initialization,
+but could not verify attachment. It returned `native_trace_unavailable` before
+`session/start`; no persistent result or syscall path was observed. The fake
+endpoint received only the catalog GET. Tracer PID 18203 exited code 1, the
+retained trace is empty, and read-only Yama `ptrace_scope` is `1`; this is
+consistent with restricted sibling attachment, without proving the sidecar's
+exact error because its stderr was discarded. Bounded SDK close observed quiet
+captured descendants but did not prove all descendants stopped. The fixture
+`/tmp/passeur-muse-serve-boundary-ihvDfS` remains retained. The trace probe's
+focused tests passed 15/15 after independent review and repair of a tracer
+stop-reporting bug. No kernel policy was changed. Persistent MSP and protected
+worker admission remain open.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.

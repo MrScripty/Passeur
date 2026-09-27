@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Offline installed-host experiment. Every file and credential here is disposable.
 import { MuseClient, readSessionDurability, spawnMspConnection } from '@muse-code/sdk';
+import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, chmod, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFixture, runManagedProcess } from './qualify-muse-native-shell.mjs';
 
@@ -13,6 +14,8 @@ const MODEL = 'fixture-native-shell';
 const TURN_MS = 20_000;
 const STARTUP_MS = 15_000;
 const CLOSE_MS = 8_000;
+const TRACE_ATTACH_MS = 2_000;
+const TRACE_STOP_MS = 3_000;
 
 function shellQuote(value) { return `'${value.replaceAll("'", "'\\''")}'`; }
 
@@ -114,6 +117,77 @@ export function serveArgs(sessionStart) {
   return sessionStart === 'raw-memory' ? ['serve', '--no-session-log'] : ['serve'];
 }
 
+export function traceArgs(pid, output) {
+  return ['-f', '-ttt', '-s', '128', '-e', 'trace=%file,%process', '-o', output, '-p', String(pid)];
+}
+
+function tracerPid(status) { return Number(/^TracerPid:\s*(\d+)$/m.exec(status)?.[1] ?? 0); }
+
+export async function startNativeTrace(identity, output, { spawnTrace = spawn,
+  readStatus = path => readFile(path, 'utf8'), wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  verifyHost = async () => observedHostTree(identity.pid, await processTable(), identity.start),
+  attachMs = TRACE_ATTACH_MS } = {}) {
+  const child = spawnTrace('strace', traceArgs(identity.pid, output), { stdio: 'ignore' });
+  let resolveExit;
+  const exited = new Promise(resolve => { resolveExit = resolve; });
+  const trace = { child, exited, output, attached: false, spawnError: null, processError: null, exit: null };
+  child.once('exit', (code, signal) => { trace.exit = { code, signal }; resolveExit(trace.exit); });
+  child.on('error', error => {
+    if (child.pid === undefined) trace.spawnError = error.code ?? 'SPAWN_ERROR';
+    else trace.processError = error.code ?? 'PROCESS_ERROR';
+  });
+  const deadline = Date.now() + attachMs;
+  while (Date.now() < deadline && !trace.exit && !trace.spawnError) {
+    try {
+      if (tracerPid(await readStatus(`/proc/${identity.pid}/status`)) === child.pid) {
+        // /proc birth identity is checked again before allowing the raw request.
+        await verifyHost();
+        if (!trace.exit && !trace.spawnError) {
+          trace.attached = true;
+          return trace;
+        }
+      }
+    } catch { /* A raced exit or unreadable status cannot establish attachment. */ }
+    await wait(25);
+  }
+  return trace;
+}
+
+export async function stopNativeTrace(trace) {
+  if (!trace) return { state: 'not_started' };
+  if (trace.spawnError) return { state: 'not_started', reason: 'spawn_failed' };
+  if (trace.exit) return { state: 'observed', ...trace.exit };
+  if (trace.child.exitCode !== null || trace.child.signalCode !== null) {
+    return { state: 'observed', code: trace.child.exitCode, signal: trace.child.signalCode };
+  }
+  try { if (!trace.child.kill('SIGINT')) return { state: 'uncertain' }; }
+  catch { return { state: 'uncertain' }; }
+  try {
+    const exit = await within('tracer stop', trace.exited, TRACE_STOP_MS);
+    return { state: 'observed', ...exit };
+  } catch { return { state: 'uncertain' }; }
+}
+
+export function failedTraceLeads(source, roots) {
+  const leads = [];
+  for (const line of source.split('\n')) {
+    if (leads.length === 8) break;
+    const match = /^(?:\d+\s+)?\d+\.\d+\s+(\w+)\((.{1,512})\)\s+= -1 (ENOENT|EACCES|EPERM|ENOTDIR|ELOOP)\b/.exec(line);
+    if (!match) continue;
+    const [, syscall, args, errno] = match;
+    const path = /"([^"\n]{1,128})"/.exec(args)?.[1];
+    if (!path) continue;
+    if (!['open', 'openat', 'openat2', 'newfstatat', 'stat', 'statx', 'access', 'faccessat', 'readlink', 'readlinkat', 'mkdir', 'unlink'].includes(syscall)) continue;
+    const root = roots.find(({ path: base }) => path === base || (relative(base, path) !== '..' && !relative(base, path).startsWith('../') && !relative(base, path).startsWith('/')));
+    if (!root) continue;
+    const name = relative(root.path, path);
+    // Credential filenames and arbitrary external paths stay in the retained trace only.
+    if (/(?:auth|credential|key|token|secret)/i.test(name)) continue;
+    leads.push({ syscall, path: `${root.name}/${name}`.slice(0, 160), errno });
+  }
+  return leads;
+}
+
 export async function startRawSession(connection, workspaceRoot) {
   // Exact session-new command in the official quickstart journey.
   const started = await connection.command('session/start', { workspaceRoot }, { maxAttempts: 1 });
@@ -140,8 +214,8 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     auth: 'cat "$HOME/.config/muse/auth.json" > auth-canary; env > env-canary',
   };
   if (!(scenario in commands) || !['allow', 'deny'].includes(decision)) throw new Error('invalid scenario or decision');
-  if (!['facade', 'raw', 'raw-memory', 'quickstart'].includes(sessionStart)) {
-    throw new Error('sessionStart must be facade, raw, raw-memory or quickstart');
+  if (!['facade', 'raw', 'raw-memory', 'raw-trace', 'quickstart'].includes(sessionStart)) {
+    throw new Error('sessionStart must be facade, raw, raw-memory, raw-trace or quickstart');
   }
   const quickstart = sessionStart === 'quickstart';
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-serve-boundary-'));
@@ -155,6 +229,8 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
   let hostArgs;
   let uncertainPreHostStop = false;
   let hostIdentity;
+  let trace;
+  let traceStop;
   let result;
   let stderr = '';
   let stage = 'version';
@@ -202,7 +278,16 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
       throw Object.assign(new Error('SDK host marker did not identify its process group'), { code: 'HOST_IDENTITY_UNVERIFIED' });
     }
     hostIdentity = observedHostTree(birth.pid, await processTable(), birth.start);
-    if (sessionStart === 'raw' || sessionStart === 'raw-memory' || quickstart) {
+    if (sessionStart === 'raw-trace') {
+      stage = 'trace_attach';
+      trace = await startNativeTrace(hostIdentity, join(root, 'native-file-process.trace'));
+      if (!trace.attached || trace.child.exitCode !== null || trace.child.signalCode !== null) {
+        result = { kind: 'native_trace_unavailable', sessionStart, stage, hostArgs, reason: 'attachment_unverified',
+          sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(), requests: fixture.requests };
+        return result;
+      }
+    }
+    if (sessionStart === 'raw' || sessionStart === 'raw-memory' || sessionStart === 'raw-trace' || quickstart) {
       stage = 'session_start';
       const started = await within('session/start', startRawSession(spawned.connection, workspace), STARTUP_MS);
       result = { kind: 'raw_session_started', sessionStart, hostArgs, sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(),
@@ -254,6 +339,17 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     return result;
   } finally {
     let closeSucceeded = false;
+    if (trace) {
+      traceStop = await stopNativeTrace(trace);
+      if (result) {
+        result.trace = { pid: trace.child.pid ?? null, attached: trace.attached, output: trace.output, stop: traceStop };
+        if (trace.attached) {
+          try { result.trace.failedPathLeads = failedTraceLeads(await readFile(trace.output, 'utf8'), [
+            { name: 'home', path: home }, { name: 'workspace', path: workspace }, { name: 'fixture', path: root },
+          ]); } catch { result.trace.failedPathLeads = []; result.trace.read = 'unavailable'; }
+        }
+      }
+    }
     if (hostIdentity) {
       try {
         const beforeClose = observedHostTree(hostIdentity.pid, await processTable(), hostIdentity.start);
@@ -276,7 +372,7 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     }
     // A child can fork and escape after our last live snapshot. The two /proc scans
     // are useful observations but cannot authorize deleting a host-owned fixture.
-    const retain = retainFixtureRoots({ hostSpawnAttempted, uncertainPreHostStop, fixtureClosed });
+    const retain = retainFixtureRoots({ hostSpawnAttempted, uncertainPreHostStop, fixtureClosed }) || traceStop?.state === 'uncertain';
     if (result && (hostSpawnAttempted || uncertainPreHostStop)) {
       result.stopProof = 'descendants_unverified';
       if (hostSpawnAttempted) result.observedStop = observedQuiet
