@@ -49,6 +49,12 @@ function digest(value: unknown): string {
 function pairId(subjectId: string, a: string, b: string): string {
   return digest([subjectId, ...[a, b].sort()]);
 }
+function correspondencePair(current: Candidate, other: Candidate): CorrespondencePair {
+  return Object.freeze({ current_work_id: current.work_id, other_work_id: other.work_id,
+    subject_id: current.subject_id, pair_id: pairId(current.subject_id, current.work_id, other.work_id),
+    input: current.input, input_range: current.input_range,
+    current_change: current.change, other_change: other.change });
+}
 function direct(change: DeclarationChange): change is DeclarationChange & { input: Declaration } {
   return change.input !== undefined && change.input.header_complete &&
     (change.kind === "modified" && change.correspondence === "unique_syntax_correspondence" ||
@@ -131,14 +137,28 @@ export class CorrespondenceIndex {
       if (previous?.candidates.get(id)?.change.evidence_id === current.change.evidence_id) continue;
       for (const [otherKey, other] of this.#anchors.get(id) ?? []) {
         if (otherKey === reportKey || other.work_id === report.work_id) continue;
-        pairs.push(Object.freeze({ current_work_id: report.work_id, other_work_id: other.work_id,
-          subject_id: id, pair_id: pairId(id, report.work_id, other.work_id), input: current.input,
-          input_range: current.input_range, current_change: current.change, other_change: other.change }));
+        pairs.push(correspondencePair(current, other));
       }
     }
     pairs.sort((a, b) => a.subject_id.localeCompare(b.subject_id) || a.other_work_id.localeCompare(b.other_work_id));
     resolved.sort((a, b) => a.subject_id.localeCompare(b.subject_id) || a.other_work_id.localeCompare(b.other_work_id));
     return Object.freeze({ pairs: Object.freeze(pairs), resolved: Object.freeze(resolved) });
+  }
+
+  /** Current compact pairs for an already indexed report; querying emits no change event. */
+  pairsFor(workId: string, path: string): readonly CorrespondencePair[] {
+    const reportKey = JSON.stringify([workId, path]);
+    const report = this.#reports.get(reportKey);
+    if (!report) return [];
+    const pairs: CorrespondencePair[] = [];
+    for (const [id, current] of report.candidates) {
+      for (const [otherKey, other] of this.#anchors.get(id) ?? []) {
+        if (otherKey !== reportKey && other.work_id !== workId)
+          pairs.push(correspondencePair(current, other));
+      }
+    }
+    pairs.sort((a, b) => a.subject_id.localeCompare(b.subject_id) || a.other_work_id.localeCompare(b.other_work_id));
+    return Object.freeze(pairs);
   }
 
   remove(workId: string): void {

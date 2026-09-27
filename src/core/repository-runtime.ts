@@ -988,7 +988,10 @@ export class RepositoryRuntime {
       if (this.#publishedArtifactIds.get(JSON.stringify([work.id, item.path]))?.id !== item.id) return undefined;
       const update = this.#correspondence.upsert(compared.report);
       this.#publishedComparisons.set(JSON.stringify([work.id, item.path]), compared.report);
-      this.#retainCorrespondence(update);
+      const emitted = new Set(update.pairs.map(pair => pair.pair_id));
+      const missing = this.#correspondence.pairsFor(work.id, item.path).filter(pair =>
+        !emitted.has(pair.pair_id) && !this.#currentOverlapPairs.has(pair.pair_id));
+      this.#retainCorrespondence({ pairs: [...update.pairs, ...missing], resolved: update.resolved });
       for (const event of update.pairs) {
         this.#queueCorrespondenceNotice({ artifactId: item.id, recipient: work.owner, workId: work.id,
           subjectId: event.subject_id, state: "overlap" });

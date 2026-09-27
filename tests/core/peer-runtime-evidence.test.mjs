@@ -346,7 +346,8 @@ test('older retained comparison cannot overwrite a newer same-live capture', t =
   currentCaptureReplacementScenario(t, true));
 
 async function pendingObservedCaseScenario(t, captureRace = false, removalRace = false,
-  artifactEviction = false, pairEviction = false, artifactSettlementFirst = false, pairSettlementFirst = false) {
+  artifactEviction = false, pairEviction = false, artifactSettlementFirst = false,
+  pairSettlementFirst = false, retainedPairRestoreRace = false) {
   const fixture = await serviceFixture(t);
   const base = pairEviction || pairSettlementFirst
     ? await fixture.commit(fixture.root, 'helper.ts', 'export function assist() { return 0; }\n')
@@ -361,6 +362,8 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
     return { promise, release }; };
   const nativeHolds = Array.from({ length: 5 }, pause), obsoleteTurn = pause(), continuePeer = pause();
   const helperWrite = pause(), helperWritten = pause();
+  const restoreRelease = pause();
+  let restoreRetained, retrySelectedCase, restoreWorkId, restoreArtifactId, restoreArmed = false;
   const captureOrder = [];
   let captureRaceWorkId, captureRaceArmed = false;
   const removalOrder = [];
@@ -426,6 +429,15 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
         pairEvictions.push({ pairId, workIds, path, artifacts, admitted });
         if (helperArmed && path === 'source.ts' && admitted.path === 'helper.ts') pairOrder.push('evicted');
       } } : {}),
+    ...(retainedPairRestoreRace ? {
+      onRetainedCaptureRestoreForTest: restore => { restoreRetained = restore; },
+      beforeRetainedCaptureInstallForTest: async (workId, artifactId) => {
+        if (!restoreArmed || workId !== restoreWorkId) return;
+        restoreArtifactId = artifactId;
+        await restoreRelease.promise;
+      },
+      onObservedCaseExtensionPublishedForTest: (_caseId, retry) => { retrySelectedCase = retry; },
+    } : {}),
     store: () => store,
     onObservedCaseSettlement: attempt => settlementAttempts.push(attempt),
     ...(captureRace ? {
@@ -477,7 +489,7 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
     }])),
   });
   fixture.sessions.push({ close: async () => { stop = true; obsoleteTurn.release(); continuePeer.release();
-    helperWrite.release(); helperWritten.release();
+    helperWrite.release(); helperWritten.release(); restoreRelease.release();
     settlementRelease?.release(); nativeHolds.forEach(hold => hold.release()); await runtime.shutdown(); } });
   await runtime.coordinate({ schema_version: 1, kind: 'initialize', limits: fixture.limits }, actor, fixture.root);
   const submit = index => runtime.submitCoordinated({ schema_version: 2, kind: 'inline',
@@ -623,6 +635,42 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
     assert.ok(evictedReceipt, 'the exact evicted pair and still-indexed source artifact retain an observed native receipt');
     assert.ok(deliveries.some(record => record.state === 'observed' &&
       record.envelope.delivery_id === replacement.delivery_id), 'replacement native receipt remains retained');
+    if (retainedPairRestoreRace) {
+      assert.ok(restoreRetained && retrySelectedCase, 'same-live retained restore and case retry seams are available');
+      restoreWorkId = evicted.workIds.find(id => id !== workIds[0]);
+      const indexed = evicted.artifacts.find(item => item.workId === restoreWorkId && item.path === 'source.ts');
+      assert.ok(restoreWorkId && indexed?.artifactId);
+      restoreArmed = true;
+      const restoring = restoreRetained(restoreWorkId);
+      await waitFor('genuine retained comparison reached protected install', async () => restoreArtifactId, Boolean, 400);
+      assert.equal(restoreArtifactId, indexed.artifactId);
+      const pausedAttemptStart = settlementAttempts.length;
+      await retrySelectedCase();
+      const pausedRejection = await waitFor('paused retained restore rejected missing pair evidence', async () =>
+        settlementAttempts.slice(pausedAttemptStart).find(attempt => attempt.recipient_work_id === workIds[0] &&
+          attempt.observed_delivery_ids.includes(evictedReceipt.envelope.delivery_id)), Boolean, 400);
+      assert.equal(pausedRejection.outcome, 'rejected');
+      let caseDuring = (await state()).cases.find(item => item.id === joined.id);
+      assert.ok(caseDuring.delivery_pending.includes(workIds[0]));
+      assert.equal(caseDuring.delivery_observed.filter(item => item.work_id === workIds[0]).length, 0);
+      const helperWork = (await state()).works.find(work => work.id === helperWorkIds[0]);
+      await runtime.coordinate(command({ kind: 'close_work', operation_key: randomUUID(),
+        work_id: helperWork.id, expected_revision: helperWork.revision }), actor, fixture.root);
+      restoreRelease.release();
+      assert.equal(await restoring, true, 'exact retained comparison reinstalled after helper-pair removal');
+      await retrySelectedCase();
+      const completed = await waitFor('restored current pair settled exact delivery once', async () =>
+        settlementAttempts.find(attempt => attempt.recipient_work_id === workIds[0] &&
+          attempt.outcome === 'completed'), Boolean, 400);
+      assert.ok(completed.observed_delivery_ids.includes(evictedReceipt.envelope.delivery_id));
+      assert.ok(completed.observed_delivery_ids.includes(replacement.delivery_id));
+      caseDuring = (await state()).cases.find(item => item.id === joined.id);
+      assert.ok(!caseDuring.delivery_pending.includes(workIds[0]));
+      assert.equal(caseDuring.delivery_observed.filter(item => item.work_id === workIds[0]).length, 1);
+      assert.ok(deliveries.some(record => record.state === 'observed' &&
+        record.envelope.delivery_id === obsoleteRevised.delivery_id), 'historical native receipt remains retained');
+      return;
+    }
     const rejected = await waitFor('evicted pair evidence reconciliation rejected', async () =>
       settlementAttempts.slice(attemptStart).find(attempt => attempt.recipient_work_id === workIds[0] &&
         attempt.observed_delivery_ids.includes(evictedReceipt.envelope.delivery_id)), Boolean, 400);
@@ -869,6 +917,8 @@ test('unrelated genuine capture eviction leaves a selected observed case pending
   pendingObservedCaseScenario(t, false, false, true));
 test('unrelated genuine pair eviction leaves selected source artifacts and delivery pending', t =>
   pendingObservedCaseScenario(t, false, false, false, true));
+test('same-live retained comparison restore rejects pending delivery until exact pair is reindexed', t =>
+  pendingObservedCaseScenario(t, false, false, false, true, false, false, true));
 test('exact settlement precedes unrelated genuine artifact eviction', t =>
   pendingObservedCaseScenario(t, false, false, false, false, true));
 test('exact settlement precedes unrelated genuine pair eviction', t =>

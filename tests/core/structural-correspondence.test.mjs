@@ -52,6 +52,17 @@ test('exact common input declaration produces one compact stable pair and revers
   assert.equal(index.upsert(report('b', [])).resolved.length, 0);
 });
 
+test('current indexed pairs can be replayed without a duplicate change notification', () => {
+  const index = new CorrespondenceIndex();
+  index.upsert(report('a', [modified()]));
+  const pair = index.upsert(report('b', [modified(declaration, 'f'.repeat(64))])).pairs[0];
+  assert.deepEqual(index.upsert(report('b', [modified(declaration, 'f'.repeat(64))])).pairs, []);
+  assert.deepEqual(index.pairsFor('b', 'src/source.ts'), [pair]);
+  assert.deepEqual(index.pairsFor('missing', 'src/source.ts'), []);
+  index.remove('a');
+  assert.deepEqual(index.pairsFor('b', 'src/source.ts'), [], 'removed work cannot appear in replay');
+});
+
 test('concealed default revisions advance evidence while declaration and change markers notify', () => {
   const index = new CorrespondenceIndex();
   const defaultChange = (value, signature = declaration.signature, declarationChanged = false) => ({
