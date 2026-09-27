@@ -59,6 +59,16 @@ version-matched native host with fake credentials, exact native tool/file
 denial, network policy, Git hooks and a worker-created commit before a paid
 pair or a claim that this replacement boundary is equivalent.
 
+A disposable no-provider launch at `/tmp/passeur-muse-echo-jqdnha7o` mounted
+only the installed static Muse binary directory read-only and used the
+preserved absolute workspace path. The exact installed 1.4.0-R4302.1 binary
+ran `exec --provider echo --disable-sandbox --no-session-log
+--no-foreign-personal-context` inside the outer wrapper and returned `echo:
+hello` with exit 0. This confirms startup and path compatibility for that
+no-provider process. Echo did not invoke shell or file tools, authenticate,
+exercise MSP, create a commit, or test network/credential denial. The
+disposable canary directory remained outside the namespace.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.

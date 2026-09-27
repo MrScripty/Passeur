@@ -34,12 +34,12 @@ export function isWithin(root: string, candidate: string): boolean {
   return value !== ".." && !value.startsWith(`..${sep}`) && !isAbsolute(value);
 }
 
-async function runGit(root: string, args: string[], signal?: AbortSignal, input?: string, environment?: Readonly<Record<string, string>>): Promise<string> {
+async function runGit(root: string, args: string[], signal?: AbortSignal, input?: string, environment?: Readonly<Record<string, string>>, sterile = false): Promise<string> {
   throwIfAborted(signal);
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn("git", ["-C", root, ...args], {
       stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], detached: process.platform !== "win32",
-      ...(environment ? { env: { ...process.env, ...environment } } : {}),
+      ...(environment || sterile ? { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !sterile || !key.startsWith("GIT_"))), ...environment } } : {}),
     });
     const stdout: Buffer[] = [], stderr: Buffer[] = [];
     let bytes = 0, failure: unknown, killTimer: NodeJS.Timeout | undefined, lastTimer: NodeJS.Timeout | undefined;
@@ -83,6 +83,12 @@ export async function git(root: string, args: string[], signal?: AbortSignal, in
 /** Object inspection must fail locally instead of contacting a configured promisor remote. */
 export async function gitWithoutLazyFetch(root: string, args: string[], signal?: AbortSignal): Promise<string> {
   return runGit(root, args, signal, undefined, { GIT_NO_LAZY_FETCH: "1" });
+}
+/** Use only with a service-created repository whose local config is inert. Worker Git metadata is never a safe root here. */
+export async function gitSterile(root: string, args: string[], signal?: AbortSignal, input?: string): Promise<string> {
+  const environment = { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+    GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0" };
+  return runGit(root, ["-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never", ...args], signal, input, environment, true);
 }
 export function validateOid(value: string): void {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value)) throw new BridgeError("INVALID_COMMIT", "Expected a full Git object ID");
