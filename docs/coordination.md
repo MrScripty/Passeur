@@ -170,7 +170,20 @@ receipt; a changed request under the same key conflicts. Awaiting a case change
 uses bounded in-memory waiters awakened by the existing store publication; it
 has no polling, deadline, second scheduler, or parent relay. Cancellation,
 authority loss, close, case invalidation, or source-grant revocation rejects
-the wait, and no uncertain native inference is replayed.
+the wait, and no uncertain native inference is replayed. Cancellation first
+commits task-owned intent, then independently dispatches native cancellation
+and installs the coordination invalidation fence; a failed invalidation keeps
+the fence for retry. Exact settled `inspect` and `await_change` results are
+replayed only after current task, native, workspace, and source-grant checks.
+Concurrent observation settlement keeps the first durable result, including
+when a later observer becomes stale before it reaches settlement.
+
+Worker publication uses a short task reservation only around final metadata
+publication and retained-result disclosure. Native and other asynchronous
+callbacks run outside task mutexes; task revision, native lifecycle, coverage,
+and obligations are checked before and after the reservation. This keeps
+external callbacks from running under task locks while preventing a task
+transition from crossing the published worker authority boundary.
 
 The public parent coordination contract has no worker-operation variant. A
 parent read or command cannot supply a worker principal or turn a parent

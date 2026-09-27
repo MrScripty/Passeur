@@ -9,7 +9,7 @@ export type WorkerPeerOperationRequest = Readonly<{ schema_version: 1; operation
   | Readonly<{ kind: "inspect" }>
   | Readonly<{ kind: "propose" | "counter_propose"; proposal: PeerResolutionProposal }>
   | Readonly<{ kind: "acknowledge" | "withdraw"; note_id: string }>
-  | Readonly<{ kind: "await_change"; after_case_revision: number; after_case_generation: number }>
+  | Readonly<{ kind: "await_change"; after_case_revision: number; after_case_generation: number; after_negotiation_cursor?: string }>
 );
 /** Adapter calls these only between settled native turns; no model-owned route or native turn is created here. */
 export type WorkerPeerPort = Readonly<{

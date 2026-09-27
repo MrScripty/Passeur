@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { canonicalHash, KeyedMutex } from "./async.js";
 import { BridgeError } from "./errors.js";
 import type { TaskControl, TaskObservation, CurrentDurableRequest, ControlReceipt, InputData, PendingInput } from "../contracts/tasks.js";
@@ -34,26 +35,70 @@ function observation(record: CurrentDurableRequest, state: TaskControl): TaskObs
 }
 export class TaskControls {
   readonly #locks = new KeyedMutex();
+  readonly #publicationContext = new AsyncLocalStorage<string>();
+  readonly #publications = new Map<string, { token: string; done: Promise<void>; release: () => void }>();
   readonly #waiters = new Map<string, Set<Waiter>>();
   #waiting = 0;
   constructor(readonly store: ControlStore, public maxWaiters: number, public maxReceipts: number) {}
   async withTaskMutation<T>(id: string, mutation: () => Promise<T>): Promise<T> {
-    try { return await this.#locks.run(id, mutation); }
+    try {
+      for (;;) {
+        await this.#awaitPublication(id);
+        const outcome = await this.#locks.run(id, async () => this.#publications.has(id)
+          ? { busy: true as const } : { busy: false as const, result: await mutation() });
+        if (!outcome.busy) return outcome.result;
+      }
+    }
     finally { for (const waiter of this.#waiters.get(id) ?? []) waiter.resolve(); }
   }
+  /** Reserve publication under short task locks; callbacks run after all locks release. */
+  async withTaskPublication<T>(ids: readonly string[], publication: () => Promise<T>): Promise<T> {
+    const ordered = [...new Set(ids)].sort();
+    const token = randomUUID();
+    let release!: () => void;
+    const done = new Promise<void>(resolve => { release = resolve; });
+    for (;;) {
+      for (const id of ordered) await this.#awaitPublication(id);
+      const reserve = (index: number): Promise<boolean> => index === ordered.length
+        ? (async () => {
+          if (ordered.some(id => this.#publications.has(id))) return false;
+          for (const id of ordered) this.#publications.set(id, { token, done, release });
+          return true;
+        })() : this.#locks.run(ordered[index]!, () => reserve(index + 1));
+      if (await reserve(0)) break;
+    }
+    try { return await this.#publicationContext.run(token, publication); }
+    finally {
+      for (const id of ordered) if (this.#publications.get(id)?.token === token) this.#publications.delete(id);
+      release();
+    }
+  }
+  async #awaitPublication(id: string): Promise<void> {
+    const reservation = this.#publications.get(id);
+    if (!reservation) return;
+    if (reservation.token === this.#publicationContext.getStore()) {
+      throw new BridgeError("COORDINATION_TASK_BUSY", "Task mutation re-entered its own peer publication");
+    }
+    await reservation.done;
+  }
   async change<T>(id: string, change: (draft: TaskControl) => T | Promise<T>): Promise<T> {
-    const result = await this.#locks.run(id, async () => {
+    for (;;) {
+      await this.#awaitPublication(id);
+      const outcome = await this.#locks.run(id, async () => {
+      if (this.#publications.has(id)) return { busy: true as const };
       const old = await this.store.readControl(id), draft = structuredClone(old);
       const value = await change(draft);
       if (canonicalHash(old) !== canonicalHash(draft)) {
         draft.revision = old.revision + 1; draft.updated_at = now();
         await this.store.writeControl(id, draft);
       }
-      return value;
-    });
+      return { busy: false as const, value };
+      });
+      if (outcome.busy) continue;
     // A signal is advisory. The committed snapshot is authoritative, even if a peer disconnects.
     for (const waiter of this.#waiters.get(id) ?? []) waiter.resolve();
-    return result;
+      return outcome.value;
+    }
   }
   receipt(state: TaskControl, key: string, kind: ControlReceipt["kind"], contents: unknown): ControlReceipt | undefined {
     const existing = state.receipts.find((r) => r.operation_key === key);
@@ -70,9 +115,10 @@ export class TaskControls {
   async cancel(id: string, actor: ClientActor, generation: number, operation_key: string, reason: string): Promise<ControlReceipt> {
     const contents = { id, generation, reason };
     return this.change(id, (state) => {
-      owns(state, actor, generation);
+      owns(state, actor);
       const saved = state.receipts.find((r) => r.operation_key === operation_key);
       if (saved) { this.receipt(state, operation_key, "cancel", contents); return saved; }
+      owns(state, actor, generation);
       // Accepted cancellation is task-specific and immutable; another key observes that intent.
       if (state.cancel) {
         const receipt = state.receipts.find((r) => r.operation_key === state.cancel!.operation_key);
@@ -93,6 +139,25 @@ export class TaskControls {
         }
       }
       return receipt;
+    });
+  }
+  /** Preflight is serialized with native changes; cancel still validates at the commit point. */
+  async preflightCancel(id: string, actor: ClientActor, generation: number, operation_key: string,
+    reason: string): Promise<{ transition: boolean; receipt?: ControlReceipt }> {
+    return this.#locks.run(id, async () => {
+      const state = await this.store.readControl(id);
+      owns(state, actor, generation);
+      const contents = { id, generation, reason };
+      const saved = state.receipts.find(receipt => receipt.operation_key === operation_key);
+      if (saved) { this.receipt(state, operation_key, "cancel", contents); return { transition: false, receipt: saved }; }
+      if (state.cancel) {
+        const receipt = state.receipts.find(item => item.operation_key === state.cancel!.operation_key);
+        if (!receipt) throw new BridgeError("CONTROL_CORRUPT", "Cancellation has no durable receipt");
+        return { transition: false, receipt: { ...receipt,
+          outcome: state.phase === "terminal" || state.settled_outcome ? "already_terminal" : "accepted" } };
+      }
+      this.receipt(state, operation_key, "cancel", contents);
+      return { transition: state.phase !== "terminal" && !state.settled_outcome };
     });
   }
   async adopt(id: string, actor: ClientActor, operation_key: string): Promise<ControlReceipt> {

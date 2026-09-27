@@ -1,9 +1,58 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fixture, A, B, C, key, register, claim, caseOp, post } from '../fixtures/structural/coordination-fixture.mjs';
 import { decodeCommand, decodeControl } from '../../.passeur-core/src/contracts/coordination-control.js';
 import { encodePeerResolutionRecord, PEER_RESOLUTION_ACTIONS } from '../../.passeur-core/src/coordination/peer-resolution.js';
+import { CoordinationService } from '../../.passeur-core/src/service/coordination.js';
+import { CoordinationStore } from '../../.passeur-core/src/store/coordination-store.js';
+
+test('task transition does not open optional metadata before a coordination session exists', async () => {
+  const service = new CoordinationService({ store_root: '/absent-optional-coordination', repository_id: 'a'.repeat(24) },
+    { assertOwned() {}, async authorizeInitialization() {}, externalWorkspaces: { async assertExternalRegistration() {} } },
+    { ordinary_requests: 1, control_requests: 1, max_source_operations: 1, max_worktrees: 8 });
+  try {
+    assert.equal(await service.withWorkerTaskTransition({ owner_id: A.owner_id, source_view: '/source' }, key(), async () => 'cancelled'), 'cancelled');
+  } finally { await service.close(); }
+});
+
+test('lazy metadata opening cannot admit worker paths through a pending task transition', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-transition-open-'));
+  const repository_id = 'a'.repeat(24);
+  const initial = await CoordinationStore.initialize(root, repository_id,
+    { works: 8, cases: 8, notes: 8, receipts: 16, note_bytes: 4096 }, () => {});
+  await initial.close();
+  const service = new CoordinationService({ store_root: root, repository_id },
+    { assertOwned() {}, async authorizeInitialization() {}, externalWorkspaces: { async assertExternalRegistration() {} } },
+    { ordinary_requests: 2, control_requests: 2, max_source_operations: 1, max_worktrees: 8 });
+  const connection = { owner_id: A.owner_id, source_view: '/source' };
+  const actor = { ...connection, task_id: key(), run_id: key(), control_generation: 1,
+    workspace_id: 'workspace:test', case_id: key() };
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const reached = new Promise(resolve => { entered = resolve; });
+  const transition = service.withWorkerTaskTransition(connection, actor.task_id, async () => { entered(); await blocked; return 'done'; });
+  await reached;
+  try {
+    await assert.rejects(service.workerPeerOperation(connection, actor, {}), { code: 'PEER_OPERATION_STALE' });
+    await service.observationStore();
+    await assert.rejects(service.workerPeerOperation(connection, actor, {}), { code: 'PEER_OPERATION_STALE' });
+    // A committed stop must be able to notify waiters while adoption owns the
+    // transition marker; neither finalizer may clear the other's fence.
+    await service.invalidateCancelledTask(actor.task_id);
+    await assert.rejects(service.workerPeerOperation(connection, actor, {}), { code: 'PEER_OPERATION_STALE' });
+    await assert.rejects(service.workerPeerStoredResult(connection, actor, {}, {}), { code: 'PEER_OPERATION_STALE' });
+    await assert.rejects(service.workerPeerCommittedReceipt(connection, actor, {}), { code: 'PEER_OPERATION_STALE' });
+  } finally {
+    release();
+    assert.equal(await transition, 'done');
+    await service.close();
+    await rm(root, { recursive: true });
+  }
+});
 
 async function selected(t, options = {}) {
   const f = await fixture(t, options);

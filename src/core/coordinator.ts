@@ -15,7 +15,7 @@ import { BridgeError, errorInfo } from "./errors.js";
 import { Mutex, canonicalHash } from "./async.js";
 import { baseResult } from "./result.js";
 import { workerMessageInstructions } from "../agents/report-format.js";
-import type { TaskStore } from "../store/task-store.js";
+import { TaskStore } from "../store/task-store.js";
 import { collectChanges, createDiff, createManifest, observeDelivery, prepareWorkspace, type Workspace } from "../workspace/worktree.js";
 import { currentRevision, digestFiles, sourceStatus } from "../workspace/project.js";
 
@@ -461,17 +461,23 @@ export class Coordinator {
   }
   async cancel(id: string, actor: ClientActor, generation: number, operation: string, reason: string) {
     const receipt = await this.controls.cancel(id, actor, generation, operation, reason);
-    if (receipt.outcome === "accepted") {
-      await this.#admission.run(async () => {
-        const entry = this.#entries.get(id);
-        if (entry) { entry.controller.abort(new BridgeError("TASK_CANCELLED", reason)); return; }
-        const record = await this.store.durableRequest(id);
-        if (record.schema_version === 5) await this.#settleNeverStartedCoordinatedCancellation(id);
-        else await this.#cancelRecoveredQueue(id);
-      });
-      this.#kick();
-    }
+    await this.dispatchCommittedCancellation(id);
     return receipt;
+  }
+  /** Dispatch a retained stop without reauthorizing the caller or its old generation. */
+  async dispatchCommittedCancellation(id: string): Promise<void> {
+    const control = await this.store.readControl(id);
+    if (!control.cancel) return;
+    const entry = await this.#admission.run(() => this.#entries.get(id));
+    if (entry) {
+      // Abort listeners may re-enter coordinator admission.
+      entry.controller.abort(new BridgeError("TASK_CANCELLED", control.cancel.reason));
+    } else {
+      const record = await this.store.durableRequest(id);
+      if (record.schema_version === 5) await this.#settleNeverStartedCoordinatedCancellation(id);
+      else await this.#cancelRecoveredQueue(id);
+    }
+    this.#kick();
   }
   async #settleNeverStartedCoordinatedCancellation(id: string): Promise<void> {
     const record = await this.store.durableRequest(id);
@@ -618,7 +624,13 @@ export class Coordinator {
         summary: run.summary, blockers: run.blockers, questions: run.questions, checks: run.checks,
         model: { ...(record.execution.requested_model ? { requested: record.execution.requested_model } : {}), ...(run.reported_model ? { reported: run.reported_model } : {}) }, ...(run.error ? { error: run.error } : {}) };
       const state = await this.store.readControl(id);
+      const uncertainPeerOperations = this.store instanceof TaskStore
+        ? (await this.store.listPeerOperations(id)).filter(operation => operation.disposition !== "settled") : [];
       if (state.cancel) result.execution_status = "cancelled";
+      if (uncertainPeerOperations.length && result.execution_status === "completed") {
+        result.execution_status = "interrupted";
+        result.error = { code: "PEER_OPERATION_RECOVERY_REQUIRED", message: "A retained worker peer operation has no proven result" };
+      }
       if (run.status === "completed" && !state.cancel && (state.native.coverage !== "turn_scoped" || state.native.obligations.length || state.inputs.some((i) => i.state === "pending" || i.state === "answer_intent" || i.state === "delivery_unknown"))) {
         result.execution_status = "failed"; result.error = { code: "COMPLETION_EVIDENCE_MISSING", message: "Native completion did not account for required obligations" };
       }

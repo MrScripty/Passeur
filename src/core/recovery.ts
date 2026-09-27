@@ -2,7 +2,7 @@ import { baseResult } from "./result.js";
 import type { AgentResult } from "../contracts/agents.js";
 import type { ResourceRecord, StoredResult } from "../contracts/types.js";
 import { BridgeError } from "./errors.js";
-import type { TaskStore } from "../store/task-store.js";
+import { TaskStore } from "../store/task-store.js";
 const now = () => new Date().toISOString();
 /** Must run under the repository-owner lease, before admission. Never replays inference. */
 export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
@@ -13,6 +13,14 @@ export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
     if ("schema_version" in record && (record.schema_version === 4 || record.schema_version === 5)) {
       const control = await store.readControl(record.task_id);
       const resource = await store.readResource(record.task_id);
+      const peerOperations = store instanceof TaskStore ? await store.listPeerOperations(record.task_id) : [];
+      for (const operation of peerOperations) {
+        if (operation.disposition === "started") await store.unavailablePeerOperation(record.task_id, operation.request.operation_key);
+      }
+      if (peerOperations.some(operation => operation.disposition !== "settled") && saved?.execution_status === "completed") {
+        await store.freeze(`Task ${record.task_id} claims completion with an unproven worker peer operation`);
+        continue;
+      }
       let peerChanged = false;
       for (const delivery of control.peer_deliveries ?? []) {
         if (delivery.state === "queued") { delivery.state = control.cancel ? "cancelled" : "stale"; delivery.disposition_at = now(); peerChanged = true; }

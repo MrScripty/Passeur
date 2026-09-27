@@ -3,6 +3,7 @@ import { AssignmentSchema, ExecutionSnapshotSchema, ExecutionIdentitySchema } fr
 import { canonicalHash, stableHash } from "../core/async.js";
 import { z } from "zod";
 import { immutablePeerEnvelope } from "../contracts/peer-delivery.js";
+import { decodePeerWorkerOperation, decodePeerWorkerOperationResult, type PeerWorkerOperation, type PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 import { DelegateRequestSchema, FinalizeOperationSchema } from "../contracts/index.js";
 import type { FinalizeReceipt, ResourceRecord, StoredResult } from "../contracts/types.js";
 import type { TaskState } from "../core/state.js";
@@ -108,6 +109,32 @@ const finalizeReceipt = z.object({
 }).strict().refine((r) => r.operation.task_id === r.resource.task_id, "receipt task identity mismatch")
   .refine((r) => r.request_hash === stableHash(r.operation), "receipt operation hash mismatch");
 const safetyRecord = z.object({ reason: nonempty, at: instant }).strict();
+
+export type StoredPeerOperation = Readonly<{ schema_version: 1; task_id: string; request: PeerWorkerOperation;
+  request_hash: string; disposition: "started" | "settled" | "unavailable";
+  result?: PeerWorkerOperationResult; updated_at: string }>;
+export function decodeStoredPeerOperation(value: unknown, id: string, key?: string): StoredPeerOperation {
+  const shape = z.object({ schema_version: z.literal(1), task_id: uuid, request: z.unknown(),
+    request_hash: nonempty, disposition: z.enum(["started", "settled", "unavailable"]),
+    result: z.unknown().optional(), updated_at: instant }).strict();
+  const record = parse(shape, value, "store.peer_operation");
+  let request: PeerWorkerOperation, result: PeerWorkerOperationResult | undefined;
+  try {
+    request = decodePeerWorkerOperation(record.request);
+    result = record.result === undefined ? undefined : decodePeerWorkerOperationResult(record.result);
+  } catch (cause) {
+    throw new BridgeError("STORE_CORRUPT", "Persisted peer operation is invalid", { cause, stage: "store.peer_operation" });
+  }
+  if (record.task_id !== id || request.task_id !== id || key !== undefined && request.operation_key !== key ||
+      record.request_hash !== canonicalHash(request) || (record.disposition === "settled") !== (result !== undefined) ||
+      result?.kind === "pending" || result && (result.task_id !== id || result.operation_key !== request.operation_key ||
+        result.run_id !== request.run_id || result.control_generation !== request.control_generation ||
+        result.workspace_id !== request.workspace_id || result.source_view !== request.source_view ||
+        result.case_id !== request.case_id || result.operation !== request.kind)) {
+    throw new BridgeError("STORE_CORRUPT", "Persisted peer operation contradicts its task, request or result");
+  }
+  return { ...record, request, ...(result ? { result } : {}) } as StoredPeerOperation;
+}
 
 function recordObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

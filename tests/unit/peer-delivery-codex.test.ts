@@ -93,7 +93,9 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
     try {
       const run = await new CodexAdapter({ codex_bin: bin, codex_home: home, model: "fixture-model", network_access: false,
         allow_command_escalation: false, subscription_confirmed: true, experimental_opt_in: true }).run(input);
-      const prompts = JSON.parse(await readFile(join(home, "prompts.json"), "utf8")) as string[];
+      const prompts = JSON.parse(await readFile(join(home, "prompts.json"), "utf8").catch((error: unknown) => {
+        throw new Error(`Fixture did not record a native turn: ${JSON.stringify(run)}`, { cause: error });
+      })) as string[];
       return { run, prompts, events, correlated, polls, background: await readFile(join(home, "background-settled"), "utf8").catch(() => undefined) };
     } finally { await rm(root, { recursive: true, force: true }); }
   }

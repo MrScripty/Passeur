@@ -26,7 +26,8 @@ export type PeerWorkerOperation =
   | (RequestBase & Readonly<{ kind: "inspect" }>)
   | (RequestBase & Readonly<{ kind: "propose" | "counter_propose"; proposal: PeerResolutionProposal }>)
   | (RequestBase & Readonly<{ kind: "acknowledge" | "withdraw"; note_id: string }>)
-  | (RequestBase & Readonly<{ kind: "await_change"; after_case_revision: number; after_case_generation: number }>);
+  | (RequestBase & Readonly<{ kind: "await_change"; after_case_revision: number; after_case_generation: number;
+      after_negotiation_cursor?: string }>);
 
 type ResultBase = RequestBase;
 
@@ -34,11 +35,12 @@ type ResultBase = RequestBase;
 export type PeerWorkerOperationResult =
   | (ResultBase & Readonly<{ kind: "current"; operation: "inspect" | "await_change";
       case_revision: number; case_generation: number; evidence_id: string; evidence_revision: number;
-      proposal_note_id: string | null; proposal: PeerResolutionProposal | null }>)
+      negotiation_cursor: string; proposal_note_id: string | null; proposal: PeerResolutionProposal | null;
+      participant_task_ids: string[]; acknowledged_task_ids: string[] }>)
   | (ResultBase & Readonly<{ kind: "receipt"; operation: "propose" | "counter_propose" | "acknowledge" | "withdraw";
       receipt_revision: number; note_id: string }>)
   | (ResultBase & Readonly<{ kind: "pending"; operation: "await_change";
-      after_case_revision: number; after_case_generation: number }>);
+      after_case_revision: number; after_case_generation: number; after_negotiation_cursor?: string }>);
 
 function invalid(message: string): never {
   throw new BridgeError("PEER_OPERATION_INVALID", message);
@@ -164,9 +166,10 @@ export function decodePeerWorkerOperation(value: unknown): PeerWorkerOperation {
       exact(entry, [...baseFields, "note_id"]);
       return Object.freeze({ ...common, kind: entry.kind, note_id: uuid(entry.note_id) });
     case "await_change":
-      exact(entry, [...baseFields, "after_case_revision", "after_case_generation"]);
+      exact(entry, [...baseFields, "after_case_revision", "after_case_generation", ...(Object.hasOwn(entry, "after_negotiation_cursor") ? ["after_negotiation_cursor"] : [])]);
       return Object.freeze({ ...common, kind: "await_change", after_case_revision: positive(entry.after_case_revision),
-        after_case_generation: positive(entry.after_case_generation) });
+        after_case_generation: positive(entry.after_case_generation),
+        ...(Object.hasOwn(entry, "after_negotiation_cursor") ? { after_negotiation_cursor: digest(entry.after_negotiation_cursor) } : {}) });
     case "apply": case "verify":
       throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "Application and verification are not worker peer operations");
     default:
@@ -179,11 +182,16 @@ export function decodePeerWorkerOperationResult(value: unknown): PeerWorkerOpera
   const common = base(entry);
   switch (entry.kind) {
     case "current": {
-      exact(entry, [...baseFields, "operation", "case_revision", "case_generation", "evidence_id", "evidence_revision", "proposal_note_id", "proposal"]);
+      exact(entry, [...baseFields, "operation", "case_revision", "case_generation", "evidence_id", "evidence_revision", "negotiation_cursor", "proposal_note_id", "proposal", "participant_task_ids", "acknowledged_task_ids"]);
       if (entry.operation !== "inspect" && entry.operation !== "await_change") invalid("Current result has an unsupported operation");
       if ((entry.proposal_note_id === null) !== (entry.proposal === null)) invalid("Current proposal and note identity must appear together");
+      const participant_task_ids = taskIds(entry.participant_task_ids), acknowledged_task_ids = taskIds(entry.acknowledged_task_ids);
+      if (acknowledged_task_ids.some(id => !participant_task_ids.includes(id)) || entry.proposal === null && acknowledged_task_ids.length) {
+        invalid("Acknowledgments must name participants in the selected proposal");
+      }
       return Object.freeze({ ...common, kind: "current", operation: entry.operation, case_revision: positive(entry.case_revision),
         case_generation: positive(entry.case_generation), evidence_id: digest(entry.evidence_id), evidence_revision: positive(entry.evidence_revision),
+        negotiation_cursor: digest(entry.negotiation_cursor), participant_task_ids, acknowledged_task_ids,
         proposal_note_id: entry.proposal_note_id === null ? null : uuid(entry.proposal_note_id),
         proposal: entry.proposal === null ? null : proposal(entry.proposal, object(entry.proposal).action === "counter_propose" ? "counter_propose" : "propose", common.case_id) });
     }
@@ -195,11 +203,25 @@ export function decodePeerWorkerOperationResult(value: unknown): PeerWorkerOpera
       return Object.freeze({ ...common, kind: "receipt", operation: entry.operation,
         receipt_revision: positive(entry.receipt_revision), note_id: uuid(entry.note_id) });
     case "pending":
-      exact(entry, [...baseFields, "operation", "after_case_revision", "after_case_generation"]);
+      exact(entry, [...baseFields, "operation", "after_case_revision", "after_case_generation", ...(Object.hasOwn(entry, "after_negotiation_cursor") ? ["after_negotiation_cursor"] : [])]);
       if (entry.operation !== "await_change") invalid("Pending result must continue await_change");
       return Object.freeze({ ...common, kind: "pending", operation: "await_change",
-        after_case_revision: positive(entry.after_case_revision), after_case_generation: positive(entry.after_case_generation) });
+        after_case_revision: positive(entry.after_case_revision), after_case_generation: positive(entry.after_case_generation),
+        ...(Object.hasOwn(entry, "after_negotiation_cursor") ? { after_negotiation_cursor: digest(entry.after_negotiation_cursor) } : {}) });
     default:
       throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "Unsupported worker peer result");
   }
+}
+
+function taskIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 64 || Reflect.ownKeys(value).length !== value.length + 1) {
+    invalid("Peer participants exceed their bound or contain extra fields");
+  }
+  const ids = Array.from({ length: value.length }, (_, index) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) invalid("Peer participants must be dense data values");
+    return uuid(descriptor.value);
+  });
+  if (new Set(ids).size !== ids.length) invalid("Peer participants must be distinct");
+  return ids;
 }

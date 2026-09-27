@@ -17,6 +17,15 @@ export type CoordinationActor = Readonly<{ owner_id: string }>;
 export type WorkerPeerActor = CoordinationActor & Readonly<{
   task_id: string; run_id: string; control_generation: number; workspace_id: string; source_view: string; case_id: string;
 }>;
+export type WorkerPeerAuthority = Readonly<{
+  assertCurrent(actor: WorkerPeerActor, state: ControlState, item: Case): Promise<void>;
+  assertConsentCurrent(state: ControlState, item: Case, note: Note): Promise<void>;
+  /** Runtime checks every historical source, including sources no longer selected by the case. */
+  assertRetainedSources?(actor: WorkerPeerActor, state: ControlState, sources: readonly PeerResolutionSource[]): Promise<void>;
+  /** Reserve selected task publication only for the final metadata commit or disclosure. */
+  withPublication?<T>(state: ControlState, item: Case, actor: WorkerPeerActor | undefined,
+    retainedSources: readonly PeerResolutionSource[], publish: () => Promise<T>, consent?: Note): Promise<T>;
+}>;
 export type SourceVersions = ReadonlyArray<Readonly<{ task_id: string; version: number }>>;
 export type RetirementReservation = Readonly<{ release(): Promise<void> }>;
 const WORKER_PEER_KEY_PREFIX = "worker-peer-v1:";
@@ -30,7 +39,13 @@ export class CoordinationControl {
   readonly #resourceVersions = new Map<string, number>();
   readonly #retirements = new Map<string, Promise<void>>();
   readonly #peerWaiters = new Set<PeerWaiter>();
-  constructor(private readonly store: CoordinationStore) {}
+  readonly #peerRefreshes = new Set<Promise<void>>();
+  readonly #transitionTasks = new Set<string>();
+  readonly #transitionCases = new Set<string>();
+  #transitionEpoch = 0;
+  #close: Promise<void> | undefined;
+  constructor(private readonly store: CoordinationStore, private readonly workerAuthority?: WorkerPeerAuthority,
+    private readonly serviceTransitions?: ReadonlySet<string>) {}
 
   get repositoryId(): string { return this.store.repositoryId; }
 
@@ -260,14 +275,41 @@ export class CoordinationControl {
     const versions = sourceVersions ? sourceVersions.map(v => ({ ...v })) : [];
     if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
     if (command.operation_key.startsWith(WORKER_PEER_KEY_PREFIX)) throw new BridgeError("COORDINATION_FORBIDDEN", "Worker peer operation keys are reserved");
-    return this.#ordering.run(() => this.#executeCommand(owner, command, versions));
+    let consentGuard: { revision: number; epoch: number } | undefined;
+    let consentPublication: { state: ControlState; item: Case; consent: Note } | undefined;
+    if (command.kind === "post_note") {
+      const record = decodePeerResolutionText(command.text);
+      if (record && record.kind !== "peer_resolution_proposal") {
+        const captured = await this.#ordering.run(async () => {
+          const state = immutableSnapshot(await this.store.snapshot()), item = state.cases.find(candidate => candidate.id === record.case_id);
+          if (item) this.#assertCaseTransition(state, item);
+          const consent = item && workerConsentNote(state, item, record);
+          return consent && item ? { state, item, consent, epoch: this.#transitionEpoch } : undefined;
+        });
+        if (captured) {
+          if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker consent authority is unavailable");
+          await this.workerAuthority.assertConsentCurrent(captured.state, captured.item, captured.consent);
+          consentGuard = { revision: captured.state.revision, epoch: captured.epoch };
+          consentPublication = { state: captured.state, item: captured.item, consent: captured.consent };
+        }
+      }
+    }
+    const publish = () => this.#ordering.run(() => this.#executeCommand(owner, command, versions, consentGuard));
+    return consentPublication
+      ? this.#withWorkerPublication(consentPublication.state, consentPublication.item, undefined, [], publish,
+        consentPublication.consent)
+      : publish();
   }
 
-  /** The caller holds #ordering; workers enter here only after task and case admission. */
-  async #executeCommand(owner: ParentId, command: Command, versions: SourceVersions): Promise<Receipt> {
+  /** The caller holds #ordering. Worker consent, when required, was checked outside it. */
+  async #executeCommand(owner: ParentId, command: Command, versions: SourceVersions,
+    consentGuard?: { revision: number; epoch: number }): Promise<Receipt> {
     const hash = canonicalHash({ owner, command });
       this.store.assertMutable();
       const current = await this.store.snapshot();
+      if (consentGuard && (current.revision !== consentGuard.revision || this.#transitionEpoch !== consentGuard.epoch)) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Worker consent changed during authority validation");
+      }
       if (recoveryReceipts(current).some(r => r.operator === owner && r.command.operation_key === command.operation_key)) {
         throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already identifies operator recovery");
       }
@@ -279,6 +321,11 @@ export class CoordinationControl {
         if (prior.request_hash !== hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key already names different intent");
         // Historical acknowledgment, not a current ownership token or permission to repeat an external effect.
         return structuredClone(prior);
+      }
+      if ((command.kind === "ack_note" || command.kind === "withdraw_note")
+        && current.receipts.some(receipt => receipt.action === "post_note" && receipt.item_id === command.note_id
+          && receipt.key.startsWith(WORKER_PEER_KEY_PREFIX))) {
+        throw new BridgeError("COORDINATION_FORBIDDEN", "Worker proposal consent and withdrawal require task authority");
       }
       for (const resource of versions) {
         if (this.#retirements.has(resource.task_id) || (this.#resourceVersions.get(resource.task_id) ?? 0) !== resource.version) {
@@ -293,9 +340,31 @@ export class CoordinationControl {
         }
       }
       if (command.kind === "register_task_work" && this.#retirements.has(command.managed.task_id)) throw new BridgeError("COORDINATION_RETIREMENT_ACTIVE", "The task is being retired");
+      let peerCase: Case | undefined;
+      if (command.kind === "ack_note" || command.kind === "withdraw_note") {
+        const note = current.notes.find(candidate => candidate.id === command.note_id);
+        const peerRecord = note && retainedPeerRecord(note.text);
+        if (peerRecord) {
+          peerCase = current.cases.find(candidate => candidate.id === peerRecord.case_id);
+          if (peerCase) this.#assertCaseTransition(current, peerCase);
+        }
+      }
       if (command.kind === "post_note") {
         const peerRecord = decodePeerResolutionText(command.text);
-        if (peerRecord) assertPeerResolutionPost(current, owner, command.subject, command.note_kind, command.parties, peerRecord);
+        if (peerRecord) {
+          const item = current.cases.find(candidate => candidate.id === peerRecord.case_id);
+          peerCase = item;
+          if (item) this.#assertCaseTransition(current, item);
+          if (peerRecord.kind !== "peer_resolution_proposal") {
+            const consent = item && workerConsentNote(current, item, peerRecord);
+            if (item && consent) {
+              if (!consentGuard) throw new BridgeError("PEER_OPERATION_STALE", "Worker consent requires current authority validation");
+              this.#assertCaseTransition(current, item);
+            }
+          }
+          assertPeerResolutionPost(current, owner, command.subject, command.note_kind, command.parties, peerRecord);
+          if (item) this.#assertCaseTransition(current, item);
+        }
       }
       const next: ControlState = command.kind === "watch_source"
         ? current.schema_version === SOURCE_WATCH_CONTROL_SCHEMA ? structuredClone(current)
@@ -321,12 +390,19 @@ export class CoordinationControl {
         action: command.kind, entity: result.entity, item_id: result.item_id, outcome: "recorded" };
       next.receipts.push(receipt);
       checkCapacity(next);
+      if (peerCase) this.#assertCaseTransition(current, peerCase);
       await this.#publish(current, next);
       return structuredClone(receipt);
   }
 
   /** Task identity is supplied by the coordinator; worker text only requests a bounded operation. */
-  async workerPeerOperation(actor: WorkerPeerActor, raw: unknown, signal?: AbortSignal): Promise<PeerWorkerOperationResult> {
+  async workerPeerOperation(actor: WorkerPeerActor, raw: unknown, signal?: AbortSignal,
+    deferDisclosure = false): Promise<PeerWorkerOperationResult> {
+    return this.#workerPeerOperation(actor, raw, signal, 0, deferDisclosure);
+  }
+  async #workerPeerOperation(actor: WorkerPeerActor, raw: unknown, signal: AbortSignal | undefined,
+    retries: number, deferDisclosure: boolean): Promise<PeerWorkerOperationResult> {
+    if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
     const operation = decodePeerWorkerOperation(raw);
     const owner = parentId(actor.owner_id);
     for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
@@ -334,14 +410,33 @@ export class CoordinationControl {
     }
     if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
     if (signal?.aborted) throw signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Peer wait was cancelled");
-    const result = await this.#ordering.run(async (): Promise<{ value?: PeerWorkerOperationResult; wait?: Promise<PeerWorkerOperationResult> }> => {
+    const captured = await this.#ordering.run(async () => {
+      const state = immutableSnapshot(await this.store.snapshot()), item = workerPeerCase(state, owner, actor);
+      this.#assertWorkerTransition(actor, item, state);
+      return { state, item, epoch: this.#transitionEpoch };
+    });
+    await this.workerAuthority.assertCurrent(actor, captured.state, captured.item);
+    const immediatelyChanged = operation.kind === "await_change" && (captured.item.revision !== operation.after_case_revision
+      || captured.item.generation !== operation.after_case_generation || operation.after_negotiation_cursor !== undefined
+        && operation.after_negotiation_cursor !== workerPeerFingerprint(captured.state, captured.item));
+    const currentValue = operation.kind === "inspect" || immediatelyChanged
+      ? await workerPeerCurrent(captured.state, captured.item, operation as Extract<PeerWorkerOperation, { kind: "inspect" | "await_change" }>, this.workerAuthority) : undefined;
+    const publish = () => this.#ordering.run(async (): Promise<{ value?: PeerWorkerOperationResult; wait?: Promise<PeerWorkerOperationResult>; retry?: true }> => {
       if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
+      if (signal?.aborted) throw signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Peer operation was cancelled");
       const state = await this.store.snapshot();
       const item = workerPeerCase(state, owner, actor);
-      if (operation.kind === "inspect") return { value: workerPeerCurrent(state, item, operation) };
+      this.#assertWorkerTransition(actor, item, state);
+      if (state.revision !== captured.state.revision || this.#transitionEpoch !== captured.epoch) {
+        if (operation.kind === "inspect" || operation.kind === "await_change") return { retry: true };
+        throw new BridgeError("PEER_OPERATION_STALE", "Peer metadata changed during authority validation");
+      }
+      if (operation.kind === "inspect") return { value: currentValue! };
       if (operation.kind === "await_change") {
-        if (item.revision !== operation.after_case_revision || item.generation !== operation.after_case_generation) {
-          return { value: workerPeerCurrent(state, item, operation) };
+        if (item.revision !== operation.after_case_revision || item.generation !== operation.after_case_generation
+          || operation.after_negotiation_cursor !== undefined
+            && operation.after_negotiation_cursor !== workerPeerFingerprint(state, item)) {
+          return { value: currentValue! };
         }
         if (this.#peerWaiters.size >= MAX_PEER_WAITERS) throw new BridgeError("PEER_OPERATION_CAPACITY", "Too many retained peer change waits");
         if (signal?.aborted) throw signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Peer wait was cancelled");
@@ -358,43 +453,272 @@ export class CoordinationControl {
       }
       this.store.assertMutable();
       const key = workerPeerKey(operation);
-      let command: Command;
+      const hash = canonicalHash({ owner, operation });
+      const prior = state.receipts.find(receipt => receipt.owner === owner && receipt.key === key);
+      if (prior) {
+        if (prior.request_hash !== hash && prior.request_hash !== legacyWorkerPeerHash(owner, operation, item)) {
+          throw new BridgeError("COORDINATION_KEY_CONFLICT", "Key names different worker intent");
+        }
+        return { value: workerPeerReceipt(operation, prior) };
+      }
+      const parties = workerPeerParties(state, item);
+      const principal = workerPeerPrincipal(state, actor);
+      let action: Receipt["action"];
+      let noteId: string;
+      const next = structuredClone(state);
       if (operation.kind === "propose" || operation.kind === "counter_propose") {
-        command = { kind: "post_note", operation_key: key, subject: { kind: "case", id: item.id },
-          note_kind: "agreement_proposal", text: encodePeerResolutionRecord(operation.proposal), parties: [...item.members] };
+        assertPeerResolutionPost(state, owner, { kind: "case", id: item.id }, "agreement_proposal", item.members, operation.proposal, "worker");
+        const text = encodePeerResolutionRecord(operation.proposal);
+        noteId = randomUUID(); action = "post_note";
+        next.notes.push({ id: noteId, subject: { kind: "case", id: item.id }, author: owner, kind: "agreement_proposal",
+          text, work_refs: item.inputs.map(input => input.work_id), parties: parties.map(party => party.principal),
+          acknowledged: [], withdrawn: false });
       } else if ("note_id" in operation) {
-        const noteId = operation.note_id;
+        noteId = operation.note_id;
         const note = state.notes.find(candidate => candidate.id === noteId);
         const proposal = note && retainedPeerRecord(note.text);
-        const recorded = state.receipts.some(receipt => receipt.owner === owner && receipt.key === key);
         if (!note || note.subject.kind !== "case" || note.subject.id !== item.id || note.kind !== "agreement_proposal"
-          || proposal?.kind !== "peer_resolution_proposal" || !recorded && !peerRecordCurrent(state, note, proposal)) {
+          || proposal?.kind !== "peer_resolution_proposal" || !peerRecordCurrent(state, note, proposal)
+          || !sameSet(note.parties, parties.map(party => party.principal))) {
           throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker note is not a current proposal in this case");
         }
-        if (operation.kind === "withdraw" && !recorded && !state.receipts.some(receipt => receipt.owner === owner
+        if (operation.kind === "withdraw" && !state.receipts.some(receipt => receipt.owner === owner
           && receipt.key.startsWith(workerPeerTaskPrefix(actor)) && receipt.action === "post_note" && receipt.item_id === note.id)) {
           throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Only the proposing task may withdraw its proposal");
         }
-        command = { kind: operation.kind === "acknowledge" ? "ack_note" : "withdraw_note", operation_key: key, note_id: noteId };
+        const changed = next.notes.find(candidate => candidate.id === noteId)!;
+        if (operation.kind === "acknowledge") {
+          if (note.withdrawn) throw new BridgeError("COORDINATION_NOTE_WITHDRAWN", "Withdrawn agreements cannot receive acknowledgment");
+          if (!note.parties.includes(principal)) throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Task is not a named proposal participant");
+          assertPeerResolutionAcknowledgment(state, note, proposal, true);
+          if (note.acknowledged.includes(principal)) throw new BridgeError("COORDINATION_ALREADY_ACKNOWLEDGED", "Use the original operation key to retrieve an acknowledgment");
+          changed.acknowledged.push(principal); action = "ack_note";
+        } else {
+          if (note.withdrawn) throw new BridgeError("COORDINATION_NOTE_WITHDRAWN", "Note is already withdrawn");
+          changed.withdrawn = true; action = "withdraw_note";
+        }
       } else {
         throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "Unsupported worker peer mutation");
       }
-      const receipt = await this.#executeCommand(owner, command, []);
-      return { value: { schema_version: operation.schema_version, task_id: operation.task_id, run_id: operation.run_id,
-        control_generation: operation.control_generation, workspace_id: operation.workspace_id, source_view: operation.source_view,
-        case_id: operation.case_id, operation_key: operation.operation_key, kind: "receipt", operation: operation.kind,
-        receipt_revision: receipt.revision, note_id: receipt.item_id } };
+      next.revision++;
+      const receipt: Receipt = { owner, key, request_hash: hash, revision: next.revision,
+        action, entity: { kind: "case", id: item.id }, item_id: noteId, outcome: "recorded" };
+      next.receipts.push(receipt);
+      checkCapacity(next);
+      if (signal?.aborted) throw signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Peer operation was cancelled");
+      await this.#publish(state, next);
+      return { value: workerPeerReceipt(operation, receipt) };
     });
-    return result.value ?? result.wait!;
+    // A suspended wait owns no task reservation. Only publication and immediate
+    // observation disclosure need exclusion from native task mutations.
+    const result = operation.kind === "await_change" && !immediatelyChanged
+      ? await publish()
+      : await this.#withWorkerPublication(captured.state, captured.item, actor, [], publish);
+    if (result.retry) {
+      if (retries >= 3) throw new BridgeError("PEER_OPERATION_STALE", "Peer metadata changed repeatedly during authority validation");
+      return this.#workerPeerOperation(actor, raw, signal, retries + 1, deferDisclosure);
+    }
+    const value = result.value ?? await result.wait!;
+    if (operation.kind === "inspect" || operation.kind === "await_change") {
+      if (signal?.aborted) throw signal.reason ?? new BridgeError("REQUEST_CANCELLED", "Peer operation was cancelled");
+      // The runtime settles this captured value first, then authorizes disclosure
+      // of the exact durable winner. Direct control callers retain fresh checks.
+      if (deferDisclosure) return value;
+      return this.workerPeerStoredResult(actor, raw, value);
+    }
+    return value;
+  }
+
+  /** Linearize disclosure of a retained task result with source grants and task transitions. */
+  async workerPeerStoredResult(actor: WorkerPeerActor, raw: unknown, value: PeerWorkerOperationResult): Promise<PeerWorkerOperationResult> {
+    return this.#workerPeerResult(actor, raw, value, false);
+  }
+  /** Only the runtime may select this path after reading an exact settled TaskStore key. */
+  async workerPeerRetainedResult(actor: WorkerPeerActor, raw: unknown, value: PeerWorkerOperationResult): Promise<PeerWorkerOperationResult> {
+    return this.#workerPeerResult(actor, raw, value, true);
+  }
+  async #workerPeerResult(actor: WorkerPeerActor, raw: unknown, value: PeerWorkerOperationResult,
+    retainedExact: boolean): Promise<PeerWorkerOperationResult> {
+    if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
+    const operation = decodePeerWorkerOperation(raw), owner = parentId(actor.owner_id);
+    for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
+      if (actor[field] !== operation[field] || value[field] !== operation[field]) {
+        throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Stored peer result identity differs from authenticated task authority");
+      }
+    }
+    if (value.operation_key !== operation.operation_key || value.operation !== operation.kind
+      || value.kind === "pending" || value.kind === "current" && operation.kind !== "inspect" && operation.kind !== "await_change"
+      || value.kind === "receipt" && (operation.kind === "inspect" || operation.kind === "await_change")) {
+      throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Stored peer result differs from the exact operation");
+    }
+    const captured = await this.#ordering.run(async () => {
+      const state = immutableSnapshot(await this.store.snapshot()), item = workerPeerCase(state, owner, actor);
+      this.#assertWorkerTransition(actor, item, state);
+      if (!retainedExact && value.kind === "current" && (value.case_revision !== item.revision || value.case_generation !== item.generation
+        || value.negotiation_cursor !== workerPeerFingerprint(state, item))) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Stored peer inspection no longer matches current metadata");
+      }
+      if (retainedExact && value.kind === "current" && value.proposal) {
+        for (const source of value.proposal.sources) {
+          const work = state.works.find(candidate => candidate.id === source.work_id);
+          const grant = work?.source_grants?.find(candidate => candidate.recipient === owner && candidate.work_revision === work.revision);
+          if (!work || work.state !== "active" || work.revision !== source.work_revision ||
+            work.owner !== owner && (!grant || grant.scope !== "report" && grant.scope !== "detail")) {
+            throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Retained peer source is no longer authorized");
+          }
+        }
+      }
+      return { state, item, epoch: this.#transitionEpoch };
+    });
+    await this.workerAuthority.assertCurrent(actor, captured.state, captured.item);
+    if (retainedExact && value.kind === "current" && value.proposal?.sources.length) {
+      // Standalone control fixtures retain metadata-only validation when they
+      // have no native task store. The runtime always supplies this callback.
+      await this.workerAuthority.assertRetainedSources?.(actor, captured.state, value.proposal.sources);
+    }
+    if (!retainedExact) await assertWorkerResultConsent(captured.state, captured.item, value, this.workerAuthority);
+    return this.#withWorkerPublication(captured.state, captured.item, actor,
+      retainedExact && value.kind === "current" ? value.proposal?.sources ?? [] : [], () => this.#ordering.run(async () => {
+      const state = immutableSnapshot(await this.store.snapshot()), item = workerPeerCase(state, owner, actor);
+      this.#assertWorkerTransition(actor, item, state);
+      if (state.revision !== captured.state.revision || this.#transitionEpoch !== captured.epoch) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Peer result authority changed during disclosure");
+      }
+      return structuredClone(value);
+    }));
+  }
+
+  #withWorkerPublication<T>(state: ControlState, item: Case, actor: WorkerPeerActor | undefined,
+    retainedSources: readonly PeerResolutionSource[], publish: () => Promise<T>, consent?: Note): Promise<T> {
+    return this.workerAuthority?.withPublication?.(state, item, actor, retainedSources, publish, consent) ?? publish();
+  }
+
+  /** A started task intent may recover only a committed, exact metadata receipt. */
+  async workerPeerCommittedReceipt(actor: WorkerPeerActor, raw: unknown): Promise<PeerWorkerOperationResult | undefined> {
+    if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
+    const operation = decodePeerWorkerOperation(raw), owner = parentId(actor.owner_id);
+    if (operation.kind === "inspect" || operation.kind === "await_change") return undefined;
+    for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
+      if (actor[field] !== operation[field]) throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker receipt identity differs from authenticated task authority");
+    }
+    const captured = await this.#ordering.run(async () => {
+      const state = immutableSnapshot(await this.store.snapshot()), item = workerPeerCase(state, owner, actor);
+      this.#assertWorkerTransition(actor, item, state);
+      return { state, item, epoch: this.#transitionEpoch };
+    });
+    await this.workerAuthority.assertCurrent(actor, captured.state, captured.item);
+    return this.#ordering.run(async () => {
+      const state = await this.store.snapshot(), item = workerPeerCase(state, owner, actor);
+      this.#assertWorkerTransition(actor, item, state);
+      if (state.revision !== captured.state.revision || this.#transitionEpoch !== captured.epoch) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Peer receipt authority changed during lookup");
+      }
+      const receipt = state.receipts.find(candidate => candidate.owner === owner && candidate.key === workerPeerKey(operation));
+      if (!receipt) return undefined;
+      const hash = canonicalHash({ owner, operation });
+      if (receipt.request_hash !== hash && receipt.request_hash !== legacyWorkerPeerHash(owner, operation, item)) {
+        throw new BridgeError("COORDINATION_KEY_CONFLICT", "Key names different worker intent");
+      }
+      return workerPeerReceipt(operation, receipt);
+    });
+  }
+
+  /** Serialize adoption with metadata publication and reject suspended old workers. */
+  async withWorkerTaskTransition<T>(taskId: string, transition: () => Promise<T>): Promise<T> {
+    const affected = await this.#ordering.run(async () => {
+      const state = await this.store.snapshot();
+      const affected = new Set(state.cases.filter(item => item.state === "active" && item.inputs.some(input =>
+        state.works.find(work => work.id === input.work_id)?.managed?.task_id === taskId)).map(item => item.id));
+      if (this.#transitionTasks.has(taskId) || [...affected].some(id => this.#transitionCases.has(id))) {
+        throw new BridgeError("PEER_OPERATION_STALE", "A selected task transition is already active");
+      }
+      this.#transitionTasks.add(taskId);
+      for (const id of affected) this.#transitionCases.add(id);
+      this.#transitionEpoch++;
+      for (const waiter of this.#peerWaiters) if (waiter.actor.task_id === taskId || affected.has(waiter.actor.case_id)) {
+        this.#peerWaiters.delete(waiter); waiter.cleanup();
+        waiter.reject(new BridgeError("PEER_OPERATION_STALE", "Task authority changed during peer wait"));
+      }
+      return affected;
+    });
+    try { return await transition(); }
+    finally {
+      await this.#ordering.run(async () => {
+        this.#transitionTasks.delete(taskId);
+        for (const id of affected) this.#transitionCases.delete(id);
+        this.#transitionEpoch++;
+      });
+    }
+  }
+
+  /** Notify the metadata owner of an already committed stop, including during adoption. */
+  async invalidateCancelledTask(taskId: string): Promise<void> {
+    const rejected = await this.#ordering.run(async () => {
+      const state = await this.store.snapshot();
+      const affected = new Set(state.cases.filter(item => item.state === "active" && item.inputs.some(input =>
+        state.works.find(work => work.id === input.work_id)?.managed?.task_id === taskId)).map(item => item.id));
+      this.#transitionEpoch++;
+      const waiters = [...this.#peerWaiters].filter(waiter => waiter.actor.task_id === taskId || affected.has(waiter.actor.case_id));
+      for (const waiter of waiters) { this.#peerWaiters.delete(waiter); waiter.cleanup(); }
+      return waiters;
+    });
+    for (const waiter of rejected) waiter.reject(new BridgeError("PEER_OPERATION_STALE", "Task cancellation invalidated peer wait"));
   }
 
   async #publish(current: ControlState, next: ControlState): Promise<void> {
     await this.store.publish(current, next);
+    this.#schedulePeerRefresh();
+  }
+  #schedulePeerRefresh(): void {
+    if (this.#closing || !this.#peerWaiters.size) return;
+    const refresh = Promise.resolve().then(() => this.#refreshPeerWaiters());
+    this.#peerRefreshes.add(refresh);
+    void refresh.then(() => this.#peerRefreshes.delete(refresh), () => this.#peerRefreshes.delete(refresh));
+  }
+  #assertWorkerTransition(actor: WorkerPeerActor, item: Case, state: ControlState): void {
+    if (this.#transitionTasks.has(actor.task_id) || this.serviceTransitions?.has(actor.task_id)) {
+      throw new BridgeError("PEER_OPERATION_STALE", "Selected task authority is changing");
+    }
+    this.#assertCaseTransition(state, item);
+  }
+  #assertCaseTransition(state: ControlState, item: Case): void {
+    if (this.#transitionCases.has(item.id) || item.inputs.some(input => {
+      const taskId = state.works.find(work => work.id === input.work_id)?.managed?.task_id;
+      return taskId !== undefined && (this.#transitionTasks.has(taskId) || this.serviceTransitions?.has(taskId));
+    })) {
+      throw new BridgeError("PEER_OPERATION_STALE", "Selected task authority is changing");
+    }
+  }
+  async #refreshPeerWaiters(): Promise<void> {
     for (const waiter of this.#peerWaiters) {
+      if (this.#closing) return;
       try {
-        const item = workerPeerCase(next, parentId(waiter.actor.owner_id), waiter.actor);
-        if (workerPeerFingerprint(next, item) === waiter.fingerprint) continue;
-        this.#peerWaiters.delete(waiter); waiter.cleanup(); waiter.resolve(workerPeerCurrent(next, item, waiter.operation));
+        const captured = await this.#ordering.run(async () => {
+          if (this.#closing || !this.#peerWaiters.has(waiter)) return undefined;
+          const state = immutableSnapshot(await this.store.snapshot());
+          const item = workerPeerCase(state, parentId(waiter.actor.owner_id), waiter.actor);
+          this.#assertWorkerTransition(waiter.actor, item, state);
+          const changed = item.revision !== waiter.operation.after_case_revision
+            || item.generation !== waiter.operation.after_case_generation
+            || waiter.operation.after_negotiation_cursor !== undefined
+              && workerPeerFingerprint(state, item) !== waiter.fingerprint;
+          return changed ? { state, item, epoch: this.#transitionEpoch } : undefined;
+        });
+        if (!captured) continue;
+        if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
+        await this.workerAuthority.assertCurrent(waiter.actor, captured.state, captured.item);
+        const value = await workerPeerCurrent(captured.state, captured.item, waiter.operation, this.workerAuthority);
+        await this.#ordering.run(async () => {
+          if (this.#closing || !this.#peerWaiters.has(waiter)) return;
+          const state = await this.store.snapshot();
+          const item = workerPeerCase(state, parentId(waiter.actor.owner_id), waiter.actor);
+          this.#assertWorkerTransition(waiter.actor, item, state);
+          if (this.#transitionEpoch !== captured.epoch || state.revision !== captured.state.revision) {
+            this.#schedulePeerRefresh();
+            return;
+          }
+          this.#peerWaiters.delete(waiter); waiter.cleanup(); waiter.resolve(value);
+        });
       } catch (error) {
         this.#peerWaiters.delete(waiter); waiter.cleanup(); waiter.reject(error);
       }
@@ -476,16 +800,55 @@ export class CoordinationControl {
   }
   async note(actor: CoordinationActor, id: string): Promise<Note & { agreement: "not_applicable" | "pending" | "acknowledged" | "withdrawn"; peer_resolution?: PeerResolutionRecord; peer_resolution_state?: "current" | "stale" }> {
     const owner = parentId(actor.owner_id), noteId = entityId(id);
-    return this.#ordering.run(async () => {
-      const state = await this.store.snapshot(), note = state.notes.find(n => n.id === noteId);
+    const captured = await this.#ordering.run(async () => {
+      const state = immutableSnapshot(await this.store.snapshot()), note = state.notes.find(n => n.id === noteId);
       if (!note) return unavailable();
       requireNoteAccess(state, owner, note);
-      const peer_resolution = retainedPeerRecord(note.text);
-      const peer_resolution_state = peer_resolution ? peerRecordCurrent(state, note, peer_resolution) ? "current" : "stale" : undefined;
+      return { state, note, epoch: this.#transitionEpoch };
+    });
+    const { state, note } = captured;
+    const peer_resolution = retainedPeerRecord(note.text);
+    let peer_resolution_state: "current" | "stale" | undefined = peer_resolution
+        ? peerRecordCurrent(state, note, peer_resolution) ? "current" : "stale" : undefined;
+      if (peer_resolution_state === "current" && peer_resolution) {
+        const item = state.cases.find(candidate => candidate.id === peer_resolution.case_id);
+        if (item) {
+          try { this.#assertCaseTransition(state, item); }
+          catch { peer_resolution_state = "stale"; }
+        }
+        const consent = item && workerConsentNote(state, item, peer_resolution, note);
+        if (consent && peer_resolution_state === "current") {
+          if (!this.workerAuthority) peer_resolution_state = "stale";
+          else {
+          try {
+            await this.workerAuthority.assertConsentCurrent(state, item, consent);
+          }
+          catch { peer_resolution_state = "stale"; }
+          }
+        }
+        if (item && peer_resolution_state === "current") {
+          try { this.#assertCaseTransition(state, item); }
+          catch { peer_resolution_state = "stale"; }
+        }
+      }
       const agreement = note.kind !== "agreement_proposal" ? "not_applicable" : note.withdrawn ? "withdrawn"
         : note.parties.every(p => note.acknowledged.includes(p)) && peer_resolution_state !== "stale" ? "acknowledged" : "pending";
-      return { ...structuredClone(note), agreement, ...(peer_resolution ? { peer_resolution } : {}), ...(peer_resolution_state ? { peer_resolution_state } : {}) };
-    });
+    if (peer_resolution) {
+      const finalCheck = () => this.#ordering.run(async () => {
+      const latest = await this.store.snapshot();
+      if (latest.revision !== state.revision || this.#transitionEpoch !== captured.epoch) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Peer note changed during consent validation");
+      }
+      const item = latest.cases.find(candidate => candidate.id === peer_resolution.case_id);
+      if (item && peer_resolution_state === "current") this.#assertCaseTransition(latest, item);
+      });
+      const item = state.cases.find(candidate => candidate.id === peer_resolution.case_id);
+      const consent = item && peer_resolution_state === "current" && workerConsentNote(state, item, peer_resolution, note);
+      if (item && consent) {
+        await this.#withWorkerPublication(state, item, undefined, [], finalCheck, consent);
+      } else await finalCheck();
+    }
+    return { ...structuredClone(note), agreement, ...(peer_resolution ? { peer_resolution } : {}), ...(peer_resolution_state ? { peer_resolution_state } : {}) };
   }
   async reconciliation(actor: CoordinationActor, id: string): Promise<Case> {
     const owner = parentId(actor.owner_id), caseId = entityId(id);
@@ -544,15 +907,63 @@ export class CoordinationControl {
     for (const waiter of this.#peerWaiters) {
       this.#peerWaiters.delete(waiter); waiter.cleanup(); waiter.reject(new BridgeError("COORDINATION_CLOSED", "Coordination closed during peer wait"));
     }
-    await Promise.all([...this.#retirements.values()]);
-    await this.#ordering.run(() => this.store.close());
+    this.#close ??= (async () => {
+      await Promise.allSettled([...this.#peerRefreshes]);
+      await Promise.all([...this.#retirements.values()]);
+      await this.#ordering.run(() => this.store.close());
+    })();
+    return this.#close;
   }
+}
+/** Authority callbacks receive detached, recursively immutable metadata. */
+function immutableSnapshot<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) immutableSnapshot(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 function workerPeerTaskPrefix(actor: WorkerPeerActor): string {
   return `${WORKER_PEER_KEY_PREFIX}${actor.task_id}:${actor.run_id}:`;
 }
 function workerPeerKey(operation: PeerWorkerOperation): string {
   return `${WORKER_PEER_KEY_PREFIX}${operation.task_id}:${operation.run_id}:${canonicalHash(operation.operation_key)}`;
+}
+function legacyWorkerPeerHash(owner: ParentId, operation: Exclude<PeerWorkerOperation, { kind: "inspect" | "await_change" }>, item: Case): string {
+  const command: Command = "note_id" in operation
+    ? { kind: operation.kind === "acknowledge" ? "ack_note" : "withdraw_note",
+        operation_key: workerPeerKey(operation), note_id: operation.note_id }
+    : { kind: "post_note", operation_key: workerPeerKey(operation), subject: { kind: "case", id: item.id },
+        note_kind: "agreement_proposal", text: encodePeerResolutionRecord(operation.proposal), parties: [...item.members] };
+  return canonicalHash({ owner, command });
+}
+function workerPeerPrincipal(state: ControlState, actor: WorkerPeerActor): string {
+  const work = state.works.find(candidate => candidate.managed?.task_id === actor.task_id);
+  if (!work || work.owner !== actor.owner_id || work.workspace_id !== actor.workspace_id
+    || work.managed?.control_generation !== actor.control_generation) {
+    throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker principal no longer has its selected work");
+  }
+  return canonicalHash({ task_id: actor.task_id, owner: work.owner, control_generation: actor.control_generation,
+    workspace_id: actor.workspace_id });
+}
+function workerPeerParties(state: ControlState, item: Case): Array<{ task_id: string; principal: string }> {
+  const parties = item.inputs.map(input => {
+    const work = state.works.find(candidate => candidate.id === input.work_id);
+    if (!work?.managed || work.state !== "active") throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Every peer participant needs current managed work");
+    return { task_id: work.managed.task_id, principal: canonicalHash({ task_id: work.managed.task_id, owner: work.owner,
+      control_generation: work.managed.control_generation, workspace_id: work.workspace_id }) };
+  });
+  if (parties.length > MAX_PARTIES || new Set(parties.map(party => party.principal)).size !== parties.length
+    || item.members.some(member => !item.inputs.some(input => state.works.find(work => work.id === input.work_id)?.owner === member))) {
+    throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Peer case participants lack distinct selected task authority");
+  }
+  return parties;
+}
+function workerPeerReceipt(operation: Exclude<PeerWorkerOperation, { kind: "inspect" | "await_change" }>, receipt: Receipt): PeerWorkerOperationResult {
+  return { schema_version: operation.schema_version, task_id: operation.task_id, run_id: operation.run_id,
+    control_generation: operation.control_generation, workspace_id: operation.workspace_id, source_view: operation.source_view,
+    case_id: operation.case_id, operation_key: operation.operation_key, kind: "receipt", operation: operation.kind,
+    receipt_revision: receipt.revision, note_id: receipt.item_id };
 }
 function workerPeerCase(state: ControlState, owner: ParentId, actor: WorkerPeerActor): Case {
   const item = state.cases.find(candidate => candidate.id === actor.case_id);
@@ -568,6 +979,14 @@ function workerPeerCase(state: ControlState, owner: ParentId, actor: WorkerPeerA
   if (!binding || binding.source_view !== actor.source_view || binding.state !== "bound" && binding.state !== "settled") {
     throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Task source view or submission authority is no longer current");
   }
+  for (const input of item.inputs) {
+    const selected = state.works.find(candidate => candidate.id === input.work_id);
+    if (!selected || selected.state !== "active" || selected.owner !== owner
+      && !selected.source_grants?.some(grant => grant.recipient === owner && grant.work_revision === selected.revision
+        && (grant.scope === "report" || grant.scope === "detail"))) {
+      throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker source grant is no longer current");
+    }
+  }
   return item;
 }
 function workerPeerFingerprint(state: ControlState, item: Case): string {
@@ -575,17 +994,33 @@ function workerPeerFingerprint(state: ControlState, item: Case): string {
     works: item.inputs.map(input => state.works.find(work => work.id === input.work_id)),
     bindings: submissionBindings(state).filter(binding => item.inputs.some(input => input.work_id === binding.task_id)) });
 }
-function workerPeerCurrent(state: ControlState, item: Case,
-  operation: Extract<PeerWorkerOperation, { kind: "inspect" | "await_change" }>): PeerWorkerOperationResult {
-  const selected = peerProposalNotes(state, item).filter(candidate => peerRecordCurrent(state, candidate.note, candidate.proposal)).at(-1);
+async function workerPeerCurrent(state: ControlState, item: Case,
+  operation: Extract<PeerWorkerOperation, { kind: "inspect" | "await_change" }>,
+  authority: WorkerPeerAuthority): Promise<PeerWorkerOperationResult> {
+  const parties = workerPeerParties(state, item);
+  const selected = peerProposalNotes(state, item).filter(candidate => peerRecordCurrent(state, candidate.note, candidate.proposal)
+    && sameSet(candidate.note.parties, parties.map(party => party.principal))).at(-1);
+  if (selected) await authority.assertConsentCurrent(state, item, selected.note);
   const evidence_id = selected?.proposal.evidence_id ?? canonicalHash({ case_id: item.id, revision: item.revision,
     generation: item.generation, target_oid: item.target_oid, inputs: item.inputs });
   return { schema_version: operation.schema_version, task_id: operation.task_id, run_id: operation.run_id,
     control_generation: operation.control_generation, workspace_id: operation.workspace_id, source_view: operation.source_view,
     case_id: operation.case_id, operation_key: operation.operation_key, kind: "current", operation: operation.kind,
-    case_revision: item.revision, case_generation: item.generation, evidence_id,
+    case_revision: item.revision, case_generation: item.generation, negotiation_cursor: workerPeerFingerprint(state, item), evidence_id,
     evidence_revision: selected?.proposal.evidence_revision ?? item.revision,
-    proposal_note_id: selected?.note.id ?? null, proposal: selected?.proposal ?? null };
+    proposal_note_id: selected?.note.id ?? null, proposal: selected?.proposal ?? null,
+    participant_task_ids: selected ? parties.map(party => party.task_id) : [],
+    acknowledged_task_ids: selected ? parties.filter(party => selected.note.acknowledged.includes(party.principal)).map(party => party.task_id) : [] };
+}
+async function assertWorkerResultConsent(state: ControlState, item: Case, value: PeerWorkerOperationResult,
+  authority: WorkerPeerAuthority): Promise<void> {
+  if (value.kind !== "current" || !value.proposal_note_id) return;
+  const note = state.notes.find(candidate => candidate.id === value.proposal_note_id);
+  const proposal = note && retainedPeerRecord(note.text);
+  if (!note || proposal?.kind !== "peer_resolution_proposal" || !peerRecordCurrent(state, note, proposal)) {
+    throw new BridgeError("PEER_OPERATION_STALE", "Worker proposal consent changed before result disclosure");
+  }
+  await authority.assertConsentCurrent(state, item, note);
 }
 function submissionState(current: ControlState): Extract<ControlState, { schema_version: 4 | 5 | 6 }> {
   return current.schema_version === 4 || current.schema_version === 5 || current.schema_version === 6 ? structuredClone(current) : {
@@ -682,7 +1117,32 @@ function peerProposalNotes(state: ControlState, item: Case, includeWithdrawn = f
     return proposal?.kind === "peer_resolution_proposal" ? [{ note, proposal }] : [];
   });
 }
-function acknowledged(note: Note): boolean { return note.parties.every(party => note.acknowledged.includes(party)); }
+function workerProposalReceipt(state: ControlState, note: Note): Receipt | undefined {
+  return state.receipts.find(receipt => receipt.action === "post_note" && receipt.item_id === note.id
+    && receipt.key.startsWith(WORKER_PEER_KEY_PREFIX));
+}
+function workerProposalCurrent(state: ControlState, item: Case, note: Note): boolean {
+  const record = retainedPeerRecord(note.text);
+  if (record?.kind === "peer_resolution_proposal" && record.action === "counter_propose") {
+    const predecessor = matchingPredecessor(state, item, record);
+    if (predecessor && workerProposalLineage(state, item, predecessor.note, new Set()) && !workerProposalReceipt(state, note)) return false;
+  }
+  if (!workerProposalReceipt(state, note)) return true;
+  try { return sameSet(note.parties, workerPeerParties(state, item).map(party => party.principal)); }
+  catch { return false; }
+}
+function workerProposalLineage(state: ControlState, item: Case, note: Note, seen: Set<string>): boolean {
+  if (seen.has(note.id)) return false;
+  seen.add(note.id);
+  if (workerProposalReceipt(state, note)) return true;
+  const record = retainedPeerRecord(note.text);
+  if (record?.kind !== "peer_resolution_proposal" || record.action !== "counter_propose") return false;
+  const predecessor = matchingPredecessor(state, item, record);
+  return predecessor !== undefined && workerProposalLineage(state, item, predecessor.note, seen);
+}
+function acknowledged(state: ControlState, item: Case, note: Note): boolean {
+  return workerProposalCurrent(state, item, note) && note.parties.every(party => note.acknowledged.includes(party));
+}
 function peerProposalSuperseded(state: ControlState, item: Case, proposal: PeerResolutionProposal, ignoredSuccessorNoteId?: string): boolean {
   const successors = peerProposalNotes(state, item).filter(candidate => candidate.note.id !== ignoredSuccessorNoteId
     && samePeerEvidence(candidate.proposal, proposal));
@@ -693,7 +1153,7 @@ function peerProposalSuperseded(state: ControlState, item: Case, proposal: PeerR
       if (candidate.proposal.predecessor_digest !== digest || candidate.proposal.resolution_digest === digest
         || seen.has(candidate.note.id)) continue;
       seen.add(candidate.note.id);
-      if (acknowledged(candidate.note)) return true;
+      if (acknowledged(state, item, candidate.note)) return true;
       pending.push(candidate.proposal.resolution_digest);
     }
   }
@@ -710,7 +1170,7 @@ function matchingProposal(state: ControlState, item: Case, record: PeerResolutio
   const matches = peerProposalNotes(state, item, true).filter(candidate => candidate.proposal.resolution_digest === record.proposal_digest
     && samePeerEvidence(candidate.proposal, record));
   const match = matches.length === 1 ? matches[0] : undefined;
-  return match && !match.note.withdrawn && acknowledged(match.note)
+  return match && !match.note.withdrawn && acknowledged(state, item, match.note)
     && !peerProposalSuperseded(state, item, match.proposal) ? match : undefined;
 }
 function samePeerEvidence(left: PeerResolutionRecord, right: PeerResolutionRecord): boolean {
@@ -726,11 +1186,19 @@ function matchingAppliedApplication(state: ControlState, item: Case, record: Pee
   }).find(candidate => candidate.application.application_digest === record.application_digest && candidate.application.status === "applied"
     && samePeerEvidence(candidate.application, record) && peerRecordCurrent(state, candidate.note, candidate.application));
 }
+function workerConsentNote(state: ControlState, item: Case, record: PeerResolutionRecord, note?: Note): Note | undefined {
+  if (record.kind === "peer_resolution_proposal") return note && workerProposalReceipt(state, note) ? note : undefined;
+  const application = record.kind === "peer_resolution_application" ? record : matchingAppliedApplication(state, item, record)?.application;
+  if (!application) return undefined;
+  const proposal = matchingProposal(state, item, application);
+  return proposal && workerProposalReceipt(state, proposal.note) ? proposal.note : undefined;
+}
 function peerRecordCurrent(state: ControlState, note: Note, record: PeerResolutionRecord, ignoredSuccessorNoteId?: string): boolean {
   if (note.withdrawn || note.subject.kind !== "case" || note.subject.id !== record.case_id
     || note.kind !== (record.kind === "peer_resolution_proposal" ? "agreement_proposal" : "resolution_update")) return false;
   const item = state.cases.find(candidate => candidate.id === record.case_id);
   if (!item || item.state !== "active" || item.revision !== record.case_revision || item.generation !== record.case_generation) return false;
+  if (record.kind === "peer_resolution_proposal" && !workerProposalCurrent(state, item, note)) return false;
   if (record.kind === "peer_resolution_proposal" && peerProposalSuperseded(state, item, record, ignoredSuccessorNoteId)) return false;
   if (!record.sources.every(source => {
     const work = state.works.find(candidate => candidate.id === source.work_id);
@@ -750,7 +1218,8 @@ function peerRecordCurrent(state: ControlState, note: Note, record: PeerResoluti
   if (record.kind === "peer_resolution_verification") return matchingAppliedApplication(state, item, record) !== undefined;
   return true;
 }
-function assertPeerResolutionPost(state: ControlState, parent: ParentId, subject: Subject, noteKind: Note["kind"], parties: readonly ParentId[], record: PeerResolutionRecord): void {
+function assertPeerResolutionPost(state: ControlState, parent: ParentId, subject: Subject, noteKind: Note["kind"], parties: readonly ParentId[], record: PeerResolutionRecord,
+  origin: "public" | "worker" = "public"): void {
   if (record.kind === "peer_resolution_proposal" && noteKind !== "agreement_proposal" || record.kind !== "peer_resolution_proposal" && noteKind !== "resolution_update") {
     throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution record kind must match its coordination note kind");
   }
@@ -777,6 +1246,9 @@ function assertPeerResolutionPost(state: ControlState, parent: ParentId, subject
       if (!predecessor || !peerRecordCurrent(state, predecessor.note, predecessor.proposal)) {
         throw new BridgeError("PEER_RESOLUTION_INVALID", "Counter-proposals require one current, unwithdrawn predecessor in the same context and next revision");
       }
+      if (origin === "public" && workerProposalLineage(state, item, predecessor.note, new Set())) {
+        throw new BridgeError("COORDINATION_FORBIDDEN", "Worker proposal successors require task-authenticated consent");
+      }
       if (peerProposalNotes(state, item).some(candidate => candidate.proposal.predecessor_digest === record.predecessor_digest
         && samePeerEvidence(candidate.proposal, record))) {
         throw new BridgeError("PEER_RESOLUTION_INVALID", "An active counter-proposal already names this predecessor in the same context");
@@ -798,7 +1270,7 @@ function assertPeerResolutionPost(state: ControlState, parent: ParentId, subject
     }
   }
 }
-function assertPeerResolutionAcknowledgment(state: ControlState, note: Note, record: PeerResolutionRecord): void {
+function assertPeerResolutionAcknowledgment(state: ControlState, note: Note, record: PeerResolutionRecord, worker = false): void {
   if (record.kind !== "peer_resolution_proposal") return;
   const item = state.cases.find(candidate => candidate.id === record.case_id);
   if (!item || item.state !== "active" || item.revision !== record.case_revision || item.generation !== record.case_generation) {
@@ -815,7 +1287,8 @@ function assertPeerResolutionAcknowledgment(state: ControlState, note: Note, rec
   if (record.action === "counter_propose" && !peerRecordCurrent(state, note, record)) {
     throw new BridgeError("COORDINATION_STALE_REVISION", "Peer-resolution acknowledgment names a stale counter lineage");
   }
-  if (!note.parties.every(party => record.participants.includes(party))) throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution acknowledgment parties are not in the proposal");
+  const expected = worker ? workerPeerParties(state, item).map(party => party.principal) : record.participants;
+  if (!sameSet(note.parties, expected)) throw new BridgeError("PEER_RESOLUTION_INVALID", "Peer-resolution acknowledgment parties are not in the proposal");
 }
 function ownWork(state: ControlState, parent: ParentId, id: string, revision: number): Work {
   const work = visibleWork(state, parent, id);

@@ -8,8 +8,10 @@ import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
 import type { CurrentDurableRequest, CoordinatedLink, CoordinatedLinkSettlement, AnnouncementPayload, AnnouncementControl, TaskControl } from "../contracts/tasks.js";
 import { AnnouncementPayloadSchema, AnnouncementControlSchema, CoordinatedLinkSettlementSchema, TaskControlSchema, TaskIdSchema } from "../contracts/tasks.js";
 import type { PeerDeliveryRecord } from "../contracts/peer-delivery.js";
+import type { PeerWorkerOperation, PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 import type { TaskState } from "../core/state.js";
-import { decodeRequest, decodeState, decodeResult, decodeResource, decodeReceipt, decodeSafety, assertResultAdmission } from "./record-codecs.js";
+import { decodeRequest, decodeState, decodeResult, decodeResource, decodeReceipt, decodeSafety, decodeStoredPeerOperation,
+  type StoredPeerOperation, assertResultAdmission } from "./record-codecs.js";
 
 export type LegacyStoredRequest = {
   task_id: string; project_id: string; canonical_hash: string;
@@ -23,6 +25,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A bounded read rejects oversized authoritative records without labeling or quarantining them as corrupt.
 const MAX_RECORD_BYTES = 8 * 1024 * 1024;
 const MAX_ANNOUNCEMENTS = 4096;
+const MAX_PEER_OPERATIONS = 256;
 const absent = (error: unknown) => nativeCode(error) === "ENOENT";
 
 /** Low-level persistence. Production mutation callers supply their current lease authority. */
@@ -187,6 +190,67 @@ export class TaskStore {
   async readPeerDeliveries(id: string): Promise<readonly PeerDeliveryRecord[]> {
     return structuredClone((await this.readControl(id)).peer_deliveries ?? []);
   }
+  #peerOperationPath(id: string, key: string): string {
+    return join(this.taskDir(id), "peer-operations", `${stableHash(key)}.json`);
+  }
+  async readPeerOperation(id: string, key: string): Promise<StoredPeerOperation | undefined> {
+    const value = await this.#json(this.#peerOperationPath(id, key));
+    return value === undefined ? undefined : decodeStoredPeerOperation(value, id, key);
+  }
+  async listPeerOperations(id: string): Promise<StoredPeerOperation[]> {
+    const directory = join(this.taskDir(id), "peer-operations");
+    const entries = await this.#directories(directory);
+    if (entries.length > MAX_PEER_OPERATIONS) throw new BridgeError("STORE_CORRUPT", "Peer operation capacity exceeded");
+    const records: StoredPeerOperation[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/.test(entry.name)) throw new BridgeError("STORE_CORRUPT", "Invalid peer operation record name");
+      const value = decodeStoredPeerOperation(await this.#required(join(directory, entry.name)), id);
+      if (`${stableHash(value.request.operation_key)}.json` !== entry.name) throw new BridgeError("STORE_CORRUPT", "Peer operation filename differs from its key");
+      records.push(value);
+    }
+    return records;
+  }
+  async startPeerOperation(id: string, request: PeerWorkerOperation): Promise<{ record: StoredPeerOperation; created: boolean }> {
+    return this.#writes.run(id, async () => {
+      const previous = await this.readPeerOperation(id, request.operation_key);
+      if (previous) {
+        if (previous.request_hash !== canonicalHash(request)) throw new BridgeError("OPERATION_KEY_CONFLICT", "Peer operation key belongs to a different request");
+        return { record: previous, created: false };
+      }
+      if ((await this.listPeerOperations(id)).length >= MAX_PEER_OPERATIONS) throw new BridgeError("PEER_OPERATION_CAPACITY", "Task peer operation capacity is exhausted");
+      const record = decodeStoredPeerOperation({ schema_version: 1, task_id: id, request,
+        request_hash: canonicalHash(request), disposition: "started", updated_at: new Date().toISOString() }, id);
+      await this.#write(this.#peerOperationPath(id, request.operation_key), record);
+      return { record, created: true };
+    });
+  }
+  async settlePeerOperation(id: string, key: string, result: PeerWorkerOperationResult): Promise<StoredPeerOperation> {
+    return (await this.settlePeerOperationOutcome(id, key, result)).record;
+  }
+  async settlePeerOperationOutcome(id: string, key: string, result: PeerWorkerOperationResult): Promise<{ record: StoredPeerOperation; created: boolean }> {
+    return this.#writes.run(id, async () => {
+      const previous = await this.readPeerOperation(id, key);
+      if (result.kind === "pending") throw new BridgeError("PEER_OPERATION_RECOVERY_REQUIRED", "Peer continuation has no durable completion evidence");
+      if (previous?.disposition === "settled") {
+        if (canonicalHash(previous.result) !== canonicalHash(result)) {
+          throw new BridgeError("OPERATION_KEY_CONFLICT", "Peer operation key already has a different settled result");
+        }
+        return { record: previous, created: false };
+      }
+      if (!previous || previous.disposition !== "started") throw new BridgeError("PEER_OPERATION_RECOVERY_REQUIRED", "Peer operation has no live unsettled intent");
+      const record = decodeStoredPeerOperation({ ...previous, disposition: "settled", result,
+        updated_at: new Date().toISOString() }, id, key);
+      await this.#write(this.#peerOperationPath(id, key), record);
+      return { record, created: true };
+    });
+  }
+  async unavailablePeerOperation(id: string, key: string): Promise<void> {
+    await this.#writes.run(id, async () => {
+      const previous = await this.readPeerOperation(id, key);
+      if (!previous || previous.disposition !== "started") return;
+      await this.#write(this.#peerOperationPath(id, key), { ...previous, disposition: "unavailable", updated_at: new Date().toISOString() });
+    });
+  }
   async writeControl(id: string, state: TaskControl): Promise<void> {
     await this.writeState(id, state);
   }
@@ -339,7 +403,7 @@ export class TaskStore {
       const checks = [
         async () => { if (!await this.find({ task_id: entry.name })) throw new BridgeError("STORE_INCOMPLETE", "Task disappeared before recovery"); },
         () => this.readState(entry.name), () => this.readResult(entry.name), () => this.readResource(entry.name),
-        () => this.#checkOperations(entry.name),
+        () => this.#checkOperations(entry.name), () => this.listPeerOperations(entry.name),
       ];
       for (const check of checks) {
         this.authority?.();

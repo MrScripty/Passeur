@@ -8,6 +8,7 @@ import { decodePeerResolutionText, PEER_RESOLUTION_PREFIX, PEER_RESOLUTION_MAX_B
 const bounded = (n: number) => z.string().min(1).max(n);
 const uuid = z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
 const positive = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const negotiationCursor = z.string().regex(/^[a-f0-9]{64}$/);
 const operationKey = bounded(256).refine((value) => Buffer.byteLength(value, "utf8") <= 256 &&
   Buffer.from(value, "utf8").toString("utf8") === value && !/[\u0000-\u001f\u007f]/.test(value));
 const operationBase = { schema_version: z.literal(1), operation_key: operationKey, case_id: uuid };
@@ -28,7 +29,10 @@ const peerOperation = z.discriminatedUnion("kind", [
   z.object({ ...operationBase, kind: z.literal("counter_propose"), proposal }).strict(),
   z.object({ ...operationBase, kind: z.literal("acknowledge"), note_id: uuid }).strict(),
   z.object({ ...operationBase, kind: z.literal("withdraw"), note_id: uuid }).strict(),
-  z.object({ ...operationBase, kind: z.literal("await_change"), after_case_revision: positive, after_case_generation: positive }).strict(),
+  z.object({ ...operationBase, kind: z.literal("await_change"), after_case_revision: positive, after_case_generation: positive,
+    after_negotiation_cursor: negotiationCursor.optional() }).strict().transform(({ after_negotiation_cursor, ...request }) => ({
+      ...request, ...(after_negotiation_cursor === undefined ? {} : { after_negotiation_cursor }),
+    })),
 ]).superRefine((value, context) => {
   if ((value.kind === "propose" || value.kind === "counter_propose") &&
       (value.proposal.action !== value.kind || value.proposal.case_id !== value.case_id)) {

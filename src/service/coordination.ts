@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 import { canonicalHash, throwIfAborted, withAbort } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
 import { CoordinationStore } from "../store/coordination-store.js";
-import { CoordinationControl, type CoordinationActor, type RetirementReservation, type WorkerPeerActor } from "../coordination/control.js";
+import { CoordinationControl, type CoordinationActor, type RetirementReservation, type WorkerPeerActor, type WorkerPeerAuthority } from "../coordination/control.js";
 import { RepositoryCoordination, type BindingLimits, type CoordinationConnection, type ExternalWorkspaceAuthority, type ManagedWorkspaceAuthority } from "../coordination/bound-control.js";
 import { decodeLimits, decodeAnnouncementInput, decodeSubmissionPreflightInput, decodeSubmissionBindInput,
   internalCoordinationOperationKey, publicCoordinationOperationKey, parentId, type Limits, type Receipt,
@@ -21,6 +21,7 @@ export type CoordinationServiceAuthority = Readonly<{
   authorizeRecovery?: (actor: CoordinationActor) => Promise<void>;
   externalWorkspaces: ExternalWorkspaceAuthority;
   managedWorkspaces?: ManagedWorkspaceAuthority;
+  workerPeerAuthority?: WorkerPeerAuthority;
 }>;
 export type CoordinationServiceLimits = BindingLimits & Readonly<{ ordinary_requests: number; control_requests: number }>;
 type Opened = { store: CoordinationStore; control: CoordinationControl };
@@ -31,6 +32,9 @@ export class CoordinationService {
   readonly #authority: CoordinationServiceAuthority;
   readonly #limits: CoordinationServiceLimits;
   readonly #pending = new Set<Promise<unknown>>();
+  readonly #taskTransitions = new Set<string>();
+  readonly #activeTransitions = new Set<string>();
+  readonly #cancelFences = new Set<string>();
   #opened: Opened | undefined;
   #opening: Promise<Opened> | undefined;
   #bound: RepositoryCoordination | undefined;
@@ -111,13 +115,78 @@ export class CoordinationService {
     return this.#submission(connection, "control", false, signal, (control, actor) => control.submissionBindingByRequestKey(actor, requestKey));
   }
   /** Internal task-bound worker path; public parent coordination never supplies worker identity. */
-  workerPeerOperation(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown, signal?: AbortSignal): Promise<PeerWorkerOperationResult> {
-    return this.#submission(connection, "ordinary", false, signal, (control, authenticated) => {
+  workerPeerOperation(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown, signal?: AbortSignal,
+    deferDisclosure = false): Promise<PeerWorkerOperationResult> {
+    if (this.#taskTransitions.size) return Promise.reject(new BridgeError("PEER_OPERATION_STALE", "Task authority is changing during peer operation"));
+    // Control owns the abort/publication boundary; detaching here can report abort after commit.
+    return this.#submission(connection, "ordinary", false, undefined, (control, authenticated) => {
+      if (this.#taskTransitions.size) throw new BridgeError("PEER_OPERATION_STALE", "Task authority is changing during peer operation");
       if (actor.owner_id !== authenticated.owner_id || actor.source_view !== connection.source_view) {
         throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker operation identity differs from its authenticated coordination connection");
       }
-      return control.workerPeerOperation(actor, raw, signal);
+      return control.workerPeerOperation(actor, raw, signal, deferDisclosure);
     });
+  }
+  workerPeerStoredResult(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown,
+    result: PeerWorkerOperationResult): Promise<PeerWorkerOperationResult> {
+    if (this.#taskTransitions.size) return Promise.reject(new BridgeError("PEER_OPERATION_STALE", "Task authority is changing during peer result disclosure"));
+    return this.#submission(connection, "control", false, undefined, (control, authenticated) => {
+      if (this.#taskTransitions.size) throw new BridgeError("PEER_OPERATION_STALE", "Task authority is changing during peer result disclosure");
+      if (actor.owner_id !== authenticated.owner_id || actor.source_view !== connection.source_view) {
+        throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker result identity differs from its authenticated coordination connection");
+      }
+      return control.workerPeerStoredResult(actor, raw, result);
+    });
+  }
+  workerPeerRetainedResult(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown,
+    result: PeerWorkerOperationResult): Promise<PeerWorkerOperationResult> {
+    if (this.#taskTransitions.size) return Promise.reject(new BridgeError("PEER_OPERATION_STALE", "Task authority is changing during retained result disclosure"));
+    return this.#submission(connection, "control", false, undefined, (control, authenticated) => {
+      if (this.#taskTransitions.size) throw new BridgeError("PEER_OPERATION_STALE", "Task authority is changing during retained result disclosure");
+      if (actor.owner_id !== authenticated.owner_id || actor.source_view !== connection.source_view) {
+        throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Retained result identity differs from its authenticated connection");
+      }
+      return control.workerPeerRetainedResult(actor, raw, result);
+    });
+  }
+  workerPeerCommittedReceipt(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown): Promise<PeerWorkerOperationResult | undefined> {
+    if (this.#taskTransitions.size) return Promise.reject(new BridgeError("PEER_OPERATION_STALE", "Task authority is changing during peer receipt lookup"));
+    return this.#submission(connection, "control", false, undefined, (control, authenticated) => {
+      if (this.#taskTransitions.size) throw new BridgeError("PEER_OPERATION_STALE", "Task authority is changing during peer receipt lookup");
+      if (actor.owner_id !== authenticated.owner_id || actor.source_view !== connection.source_view) {
+        throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker operation identity differs from its authenticated coordination connection");
+      }
+      return control.workerPeerCommittedReceipt(actor, raw);
+    });
+  }
+  async withWorkerTaskTransition<T>(connection: CoordinationConnection, taskId: string, transition: () => Promise<T>): Promise<T> {
+    // A service object can exist for an identity read before metadata is enabled.
+    // Retain the marker even if metadata opens while the task callback is pending.
+    if (this.#taskTransitions.has(taskId)) throw new BridgeError("PEER_OPERATION_STALE", "A task transition is already active");
+    this.#taskTransitions.add(taskId);
+    this.#activeTransitions.add(taskId);
+    try {
+      const opened = this.#opened;
+      return await (opened ? opened.control.withWorkerTaskTransition(taskId, transition) : transition());
+    } finally {
+      this.#activeTransitions.delete(taskId);
+      if (!this.#cancelFences.has(taskId)) this.#taskTransitions.delete(taskId);
+    }
+  }
+  /** A durable cancellation is a notification, so overlapping transitions cannot reject it. */
+  async invalidateCancelledTask(taskId: string): Promise<void> {
+    this.#cancelFences.add(taskId);
+    this.#taskTransitions.add(taskId);
+    try {
+      // Do not open metadata solely to announce a stop. An opening control inherits
+      // the service marker and will reject stale worker activity.
+      await this.#opened?.control.invalidateCancelledTask(taskId);
+      this.#cancelFences.delete(taskId);
+      if (!this.#activeTransitions.has(taskId)) this.#taskTransitions.delete(taskId);
+    } catch (error) {
+      // Keep the fail-closed marker until an exact retry completes invalidation.
+      throw error;
+    }
   }
   #matchSourceView(authenticatedSourceView: string, submittedSourceView: string): void {
     if (submittedSourceView !== authenticatedSourceView) throw new BridgeError("COORDINATION_SOURCE_VIEW_CONFLICT", "Submission source view differs from the authenticated connection");
@@ -231,7 +300,8 @@ export class CoordinationService {
       const store = initialize
         ? await CoordinationStore.initialize(this.#binding.store_root, this.#binding.repository_id, initialize, this.#authority.assertOwned)
         : await CoordinationStore.open(this.#binding.store_root, this.#binding.repository_id, this.#authority.assertOwned);
-      const opened = { store, control: new CoordinationControl(store) };
+      const opened = { store, control: new CoordinationControl(store, this.#authority.workerPeerAuthority,
+        this.#taskTransitions) };
       this.#opened = opened; return opened;
     })();
     this.#opening = attempt;
