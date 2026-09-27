@@ -223,6 +223,11 @@ export type RuntimeDependencies = {
   enableObservedCaseExtensionForTest?: true;
   /** Completion barrier for deterministic controlled reservation races; never used by service configuration. */
   onObservedCaseSlotsReservedForTest?: (taskIds: readonly string[], controls: TaskControls) => Promise<void>;
+  /** Controlled interruption before one queued revised edge; absent from production composition. */
+  beforeObservedCaseDeliveryQueueForTest?: (edge: Readonly<{ case_id: string; case_revision: number;
+    recipient_task_id: string; source_work_id: string }>) => void;
+  /** Exposes the existing same-runtime reconciliation call only to an injected controlled fixture. */
+  onObservedCaseExtensionPublishedForTest?: (caseId: string, retry: () => Promise<void>) => void;
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
@@ -1436,6 +1441,7 @@ export class RepositoryRuntime {
     }
     // The preflight validated every current capture. Re-observing here would replace those
     // captures while their revision-specific envelopes are being dispatched.
+    this.#deps.onObservedCaseExtensionPublishedForTest?.(peerCase.id, () => this.#retrySelectedCase(peerCase.id));
     await this.#retrySelectedCase(peerCase.id);
   }
   /** Observation publication owns this attempt; delivery admission and dispatch remain Coordinator owned. */
@@ -1508,6 +1514,9 @@ export class RepositoryRuntime {
           const candidate = peerDeliveryCandidate(pair, peerCase, source, target, taskId, artifact.id, evidence,
             { source_artifact_id: artifact.id, recipient_artifact_id: recipientArtifact.id });
           if (candidate) {
+            if (peerCase.observed_origin === "selected" && peerCase.inputs.length === 3)
+              this.#deps.beforeObservedCaseDeliveryQueueForTest?.({ case_id: peerCase.id,
+                case_revision: peerCase.revision, recipient_task_id: taskId, source_work_id: source.id });
             const reservationOperationKey = peerCase.observed_origin === "selected" && peerCase.inputs.length === 3
               ? `passeur-internal:observed-extension:${canonicalHash([peerCase.id, peerCase.inputs[2]!.work_id])}`
               : undefined;

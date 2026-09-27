@@ -505,7 +505,7 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
     attempt.outcome === 'completed').length, 1);
 });
 
-async function observedExtensionScenario(t, enable, replaceRun = false) {
+async function observedExtensionScenario(t, enable, replaceRun = false, partialQueue = false) {
   const fixture = await serviceFixture(t);
   await fixture.service.close();
   const intent = { project: fixture.root, stateRoot: fixture.state,
@@ -528,6 +528,9 @@ async function observedExtensionScenario(t, enable, replaceRun = false) {
       summary: 'Controlled peer stopped', blockers: [], questions: [], checks: [] };
   } }));
   let replacedTask;
+  let interruptRevisedQueue = partialQueue;
+  let retrySelectedCase;
+  const allowedDirected = new Set();
   const store = new TaskStore(binding.storeRoot);
   const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
     mode: 'development', node_version: process.version, node_executable: process.execPath,
@@ -538,6 +541,13 @@ async function observedExtensionScenario(t, enable, replaceRun = false) {
       replacedTask = taskIds[2];
       await controls.change(replacedTask, state => { state.native.run_id = randomUUID(); });
     } } : {}),
+    ...(partialQueue ? { beforeObservedCaseDeliveryQueueForTest: edge => {
+      if (!interruptRevisedQueue) return;
+      const key = `${edge.recipient_task_id}:${edge.source_work_id}`;
+      if (!allowedDirected.has(key) && allowedDirected.size === 2)
+        throw new Error('controlled postcommit queue interruption');
+      allowedDirected.add(key);
+    }, onObservedCaseExtensionPublishedForTest: (_caseId, retry) => { retrySelectedCase = retry; } } : {}),
     store: () => store,
     profile: async () => ({ schema_version: 3, execution: {
       stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
@@ -604,6 +614,27 @@ async function observedExtensionScenario(t, enable, replaceRun = false) {
   }
   assert.ok(joined, 'a single late capture must publish the controlled revised case');
   assert.equal(joined.revision, pair.revision + 1);
+  if (partialQueue) {
+    const partialMetadata = await state();
+    const partialCase = partialMetadata.cases.find(item => item.id === joined.id);
+    assert.equal(partialCase.revision, pair.revision + 1);
+    assert.equal(partialCase.delivery_pending.length, 3);
+    assert.deepEqual(partialCase.delivery_observed, [], 'queue interruption cannot infer native observation');
+    const reopenedPartial = await Promise.all(ids.map(id => new TaskStore(binding.storeRoot).readControl(id)));
+    const partialSlots = reopenedPartial.flatMap(control => control.peer_delivery_reservations ?? [])
+      .filter(slot => slot.case_id === joined.id && slot.case_revision === joined.revision);
+    assert.equal(partialSlots.length, 6);
+    assert.equal(partialSlots.filter(slot => slot.state === 'consumed').length, 2);
+    assert.equal(partialSlots.filter(slot => slot.state === 'reserved').length, 4);
+    assert.equal(reopenedPartial.flatMap(control => control.peer_deliveries ?? [])
+      .filter(record => record.envelope.case_id === joined.id &&
+        record.envelope.case_revision === joined.revision).length, 2);
+    assert.ok(reopenedPartial.every(control => (control.peer_deliveries?.length ?? 0) +
+      control.peer_delivery_reservations.filter(slot => slot.state === 'reserved').length <= 64));
+    assert.ok(retrySelectedCase, 'committed case must expose the existing same-live retry path');
+    interruptRevisedQueue = false;
+    await retrySelectedCase();
+  }
   for (let attempt = 0; attempt < 200; attempt++) {
     const controls = await Promise.all(ids.map(id => store.readControl(id)));
     if (controls.every(control => control.schema_version === 3 &&
@@ -622,6 +653,17 @@ async function observedExtensionScenario(t, enable, replaceRun = false) {
   }
   assert.equal((await state()).cases.find(item => item.id === joined.id).delivery_pending.length, 3,
     'queue admission alone does not settle the revised case');
+  if (partialQueue) {
+    const after = await state();
+    const current = after.cases.find(item => item.id === joined.id);
+    assert.deepEqual(current.delivery_observed, []);
+    const envelopes = (await Promise.all(ids.map(id => new TaskStore(binding.storeRoot).readPeerDeliveries(id))))
+      .flat().filter(record => record.envelope.case_id === joined.id &&
+        record.envelope.case_revision === joined.revision);
+    assert.equal(envelopes.length, 6);
+    assert.equal(new Set(envelopes.map(record => record.envelope.idempotency_key)).size, 6,
+      'same-live retry must not append duplicate directed obligations');
+  }
 }
 
 test('production-default Runtime leaves automatic observed extension disabled', t =>
@@ -630,6 +672,8 @@ test('controlled extension reserves and consumes six durable directed slots thro
   observedExtensionScenario(t, true));
 test('prepublication native run replacement prevents controlled extension and releases exact slots', t =>
   observedExtensionScenario(t, true, true));
+test('committed case retains partial directed enqueue across reopen and same-live retry', t =>
+  observedExtensionScenario(t, true, false, true));
 
 test('late third managed worker joins one observed case and each adapter consumes revised peer evidence', {
   skip: 'G4 gate: an in-flight revised envelope can become unknown and fail its adapter; case delivery remains pending',
