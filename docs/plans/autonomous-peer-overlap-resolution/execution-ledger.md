@@ -1,5 +1,11 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-27 — isolated same-host durable read
+
+- Operation `continue` under `docs/plans/autonomous-peer-overlap-resolution/plan.md`, from startup checkpoint `c92a4cf` and read admission `518eb66`. The exact two-file diagnostic adds opt-in `raw-precreated-read`; direct focused tests pass 27/27, syntax and diff checks pass. The unrelated untracked coordination plan remains unstaged.
+- Two fresh no-account runs reached `session/read` but the diagnostic treated the installed host's valid empty idle cursor as invalid. After a field-only error report and a focused regression for the empty cursor, a third fresh run returned an idle durable session with zero turns, no pending requests, excluded history and its canonical `session.jsonl` under the fresh HOME. Muse was 1.4.0-R4302.1, SDK 1.3.0; only a fake model-catalog GET occurred. No provider inference, turn, approval or account occurred.
+- The passing root `/tmp/passeur-muse-serve-boundary-WCRCbO` and the two rejected-read roots `/tmp/passeur-muse-serve-boundary-ErlVVc` and `/tmp/passeur-muse-serve-boundary-g1sdJR` are retained. SDK close and captured-group quiet were observed, but arbitrary descendant stop is unverified. Same-host read does not establish fresh-host resume, tool security, private Git or protected live workers.
+
 ## 2026-09-26/27 — current `continue` implementation and recovery
 
 - Actual starting checkout was `261928ed6101358c0bda9436ea7b02e3cf0bde45` on `main`, with only the unrelated untracked `docs/plans/Passeur_Concurrent_Change_Coordination_Plan.md`. The user admitted this plan's `continue` operation and superseded the older slice exclusions. The current plan admission at the top of `plan.md` owns the automatic-case and application path; historical slice text remains historical.

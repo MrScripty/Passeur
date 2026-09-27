@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createFixtureDirs, observedHostTree, observedHostQuiet, parseHostMarker, quickstartEnvironment,
-  prepareSessionsDirectory, retainFixtureRoots, selectChoice, serveArgs, startRawSession, qualify, within, traceArgs,
+  prepareSessionsDirectory, retainFixtureRoots, selectChoice, serveArgs, startRawSession, readRawSession, qualify, within, traceArgs,
   startNativeTrace, stopNativeTrace, failedTraceLeads } from '../../scripts/qualify-muse-serve-boundary.mjs';
 import { daemonTraceArgs, discoverDaemonTrace, waitForDaemonTrace, stopDaemonTrace,
   pinnedNativeExecutable } from '../../scripts/qualify-muse-serve-boundary.mjs';
@@ -79,6 +79,7 @@ test('raw memory-only selection changes only the host serve argument', () => {
   for (const mode of ['facade', 'quickstart']) assert.deepEqual(serveArgs(mode), raw);
   assert.deepEqual(serveArgs('raw-trace'), raw);
   assert.deepEqual(serveArgs('raw-precreated-sessions'), raw);
+  assert.deepEqual(serveArgs('raw-precreated-read'), raw);
 });
 
 test('explicit sessions preseed records every actual private directory and mode', async () => {
@@ -124,7 +125,7 @@ test('only explicit mode prepares sessions before host spawn; failed preparation
   await writeFile(muse, '#!/bin/sh\nprintf "muse 1.4.0-R4302.1\\n"\n', { mode: 0o755 });
   const roots = [];
   try {
-    for (const sessionStart of ['raw', 'raw-precreated-sessions']) {
+    for (const sessionStart of ['raw', 'raw-precreated-sessions', 'raw-precreated-read']) {
       let prepared = 0;
       const result = await qualify({ muse, sessionStart,
         startLoopbackFixture: async () => ({ url: 'http://127.0.0.1:1', requests: [], close: async () => undefined }),
@@ -472,6 +473,64 @@ test('raw session start rejects empty or malformed IDs and a wrong workspace', a
       code: 'INVALID_SESSION_START',
     });
   }
+});
+
+test('same-host session/read accepts only idle metadata and a canonical durable log under fresh HOME', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'passeur-muse-read-test-'));
+  const id = '0197134c-6a23-7a41-8a02-82f4a322f43f';
+  const workspace = join(home, 'workspace');
+  const log = join(home, 'session.jsonl');
+  const started = { session: { sessionId: id, workspaceRoot: workspace } };
+  const valid = { session: { sessionId: id, workspaceRoot: workspace, path: log,
+    activeTurnId: null, turnCount: 0, status: 'idle' },
+    pendingRequests: [], history: { mode: 'none', noneReason: 'excluded', items: null, snapshot: null },
+    viewCursor: 'opaque-read-head' };
+  const calls = [];
+  const connection = value => ({ command: async (...args) => { calls.push(args); return value; } });
+  try {
+    await writeFile(log, 'durable record\n');
+    assert.deepEqual(await readRawSession(connection(valid), started, workspace, home), valid);
+    assert.deepEqual(calls, [['session/read', { sessionId: id, excludeItems: true }, { maxAttempts: 1 }]]);
+    assert.equal((await readRawSession(connection({ ...valid, viewCursor: '' }), started, workspace, home)).viewCursor, '');
+    for (const changed of [
+      { session: { sessionId: 'wrong' } },
+      { session: { workspaceRoot: '/tmp/wrong' } },
+      { session: { path: '' } },
+      { session: { path: home } },
+      { session: { path: '/tmp/nonexistent-disposable-log' } },
+      { session: { activeTurnId: 'turn' } },
+      { session: { turnCount: 1 } },
+      { pendingRequests: [{}] },
+      { pendingRequests: null },
+      { history: { mode: 'inline' } },
+      { history: { noneReason: 'historyBudget' } },
+      { history: { items: [] } },
+      { history: { snapshot: {} } },
+      { viewCursor: null },
+    ]) {
+      const response = { ...valid, ...changed, session: { ...valid.session, ...changed.session },
+        history: { ...valid.history, ...changed.history } };
+      await assert.rejects(readRawSession(connection(response), started, workspace, home),
+        { code: 'INVALID_SESSION_READ' });
+    }
+    const outside = await mkdtemp(join(tmpdir(), 'passeur-muse-read-outside-'));
+    try {
+      const outsideLog = join(outside, 'session.jsonl');
+      await writeFile(outsideLog, 'outside\n');
+      await assert.rejects(readRawSession(connection({ ...valid,
+        session: { ...valid.session, path: outsideLog } }), started, workspace, home),
+      { code: 'INVALID_SESSION_READ' });
+      const link = join(home, 'linked-log');
+      await symlink(outsideLog, link);
+      await assert.rejects(readRawSession(connection({ ...valid,
+        session: { ...valid.session, path: link } }), started, workspace, home),
+      { code: 'INVALID_SESSION_READ' });
+    } finally { await rm(outside, { recursive: true, force: true }); }
+    await assert.rejects(readRawSession({ command: async () => { throw new Error('read failed'); } },
+      started, workspace, home), /read failed/);
+    assert.equal(retainFixtureRoots({ hostSpawnAttempted: true, uncertainPreHostStop: false,
+      fixtureClosed: true }), true);
+  } finally { await rm(home, { recursive: true, force: true }); }
 });
 
 test('version mismatch returns a typed result and removes its disposable HOME', async () => {

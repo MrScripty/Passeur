@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdtemp, mkdir, chmod, lstat, readFile, readlink, realpath, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFixture, runManagedProcess } from './qualify-muse-native-shell.mjs';
 
@@ -359,6 +359,46 @@ export async function startRawSession(connection, workspaceRoot) {
   return started;
 }
 
+export async function readRawSession(connection, started, workspaceRoot, home, {
+  canonicalize = realpath,
+} = {}) {
+  const sessionId = started.session.sessionId;
+  const read = await connection.command('session/read', { sessionId, excludeItems: true }, { maxAttempts: 1 });
+  const session = read?.session;
+  const history = read?.history;
+  const invalid = [
+    [session?.sessionId !== sessionId, 'sessionId'],
+    [session?.workspaceRoot !== workspaceRoot, 'workspaceRoot'],
+    [session?.activeTurnId !== null, 'activeTurnId'],
+    [session?.turnCount !== 0, 'turnCount'],
+    [typeof session?.status !== 'string' || session.status.length === 0, 'status'],
+    [!Array.isArray(read.pendingRequests) || read.pendingRequests.length !== 0, 'pendingRequests'],
+    [history?.mode !== 'none', 'history.mode'],
+    [history?.noneReason !== 'excluded', 'history.noneReason'],
+    [history?.items !== null, 'history.items'],
+    [history?.snapshot !== null, 'history.snapshot'],
+    [typeof read.viewCursor !== 'string', 'viewCursor'],
+    [typeof session?.path !== 'string' || !isAbsolute(session.path), 'path'],
+  ].filter(([failed]) => failed).map(([, field]) => field);
+  if (invalid.length) {
+    throw Object.assign(new Error(`session/read returned invalid idle durable metadata: ${invalid.join(', ')}`),
+      { code: 'INVALID_SESSION_READ' });
+  }
+  try {
+    const canonicalHome = await canonicalize(home);
+    const canonicalLog = await canonicalize(session.path);
+    const belowHome = relative(canonicalHome, canonicalLog);
+    if (belowHome === '' || belowHome === '..' || belowHome.startsWith('../') || belowHome.startsWith('/')) {
+      throw new Error('durable log is outside disposable HOME');
+    }
+    if (!(await lstat(canonicalLog)).isFile()) throw new Error('durable log is not a file');
+  } catch (cause) {
+    throw Object.assign(new Error('session/read durable log path was not canonically confined', { cause }),
+      { code: 'INVALID_SESSION_READ' });
+  }
+  return read;
+}
+
 async function file(path) {
   try { return await readFile(path, 'utf8'); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
@@ -376,8 +416,8 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     auth: 'cat "$HOME/.config/muse/auth.json" > auth-canary; env > env-canary',
   };
   if (!(scenario in commands) || !['allow', 'deny'].includes(decision)) throw new Error('invalid scenario or decision');
-  if (!['facade', 'raw', 'raw-memory', 'raw-trace', 'raw-trace-daemon', 'raw-precreated-sessions', 'quickstart'].includes(sessionStart)) {
-    throw new Error('sessionStart must be facade, raw, raw-memory, raw-trace, raw-trace-daemon, raw-precreated-sessions or quickstart');
+  if (!['facade', 'raw', 'raw-memory', 'raw-trace', 'raw-trace-daemon', 'raw-precreated-sessions', 'raw-precreated-read', 'quickstart'].includes(sessionStart)) {
+    throw new Error('sessionStart must be facade, raw, raw-memory, raw-trace, raw-trace-daemon, raw-precreated-sessions, raw-precreated-read or quickstart');
   }
   const quickstart = sessionStart === 'quickstart';
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-serve-boundary-'));
@@ -427,7 +467,7 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     await writeFile(join(configDir, 'auth.json'), `${JSON.stringify({ schema_version: 1, providers: { meta: { api_key: DUMMY } } })}\n`);
     const approvals = [];
     const approvalErrors = [];
-    if (sessionStart === 'raw-precreated-sessions') {
+    if (sessionStart === 'raw-precreated-sessions' || sessionStart === 'raw-precreated-read') {
       stage = 'session_directory_preparation';
       sessionDirectoryPreparation = await prepareSessions(home);
     }
@@ -484,9 +524,20 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
       }
     }
     if (sessionStart === 'raw' || sessionStart === 'raw-memory' || sessionStart === 'raw-trace' ||
-      sessionStart === 'raw-precreated-sessions' || daemonMode || quickstart) {
+      sessionStart === 'raw-precreated-sessions' || sessionStart === 'raw-precreated-read' || daemonMode || quickstart) {
       stage = 'session_start';
       const started = await within('session/start', startRawSession(spawned.connection, workspace), STARTUP_MS);
+      if (sessionStart === 'raw-precreated-read') {
+        stage = 'session_read';
+        const read = await within('session/read', readRawSession(spawned.connection, started, workspace, home), STARTUP_MS);
+        result = { kind: 'raw_session_read', sessionStart, hostArgs, sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(),
+          sessionId: read.session.sessionId, workspaceRoot: read.session.workspaceRoot,
+          durableLogPath: read.session.path, status: read.session.status, viewCursor: read.viewCursor,
+          activeTurnId: read.session.activeTurnId, turnCount: read.session.turnCount,
+          pendingRequests: read.pendingRequests, history: read.history,
+          sessionDirectoryPreparation, requests: fixture.requests };
+        return result;
+      }
       result = { kind: 'raw_session_started', sessionStart, hostArgs, sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(),
         sessionId: started.session.sessionId, status: started.session.status, viewCursor: started.viewCursor,
         ...(sessionDirectoryPreparation ? { sessionDirectoryPreparation } : {}),

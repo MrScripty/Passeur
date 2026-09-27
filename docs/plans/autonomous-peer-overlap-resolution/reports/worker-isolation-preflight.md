@@ -1,5 +1,11 @@
 # G2 worker isolation preflight — offline only
 
+## Same-host persistent read checkpoint — 2026-09-27
+
+The isolated no-account `muse serve` diagnostic now has an opt-in `raw-precreated-read` mode. It prepares an empty private sessions directory under a fresh HOME, starts one persistent session and reads that session's metadata on the same host with `excludeItems: true`. Installed Muse 1.4.0-R4302.1 and SDK 1.3.0 returned idle status, a canonical `session.jsonl` path within that HOME, zero turns, no pending requests, excluded history and an empty string view cursor. The diagnostic initially rejected the valid empty cursor twice; after correcting the check, a fresh run passed. Focused tests passed 27/27. The fake endpoint saw only `GET /muse-code/models`. The passing root `/tmp/passeur-muse-serve-boundary-WCRCbO` and the earlier two rejected-read roots remain retained because full descendant stop was unverified. This is same-host durable read evidence only; fresh-host resume and native worker boundaries remain open.
+
+Read-only follow-up found that the existing Bubblewrap worker has an unshared network namespace, so its loopback cannot reach the current fake provider on host loopback. A confined no-account transport candidate would start the fake listener and installed host in the same guest network namespace, then verify guest-positive fake catalog/Responses traffic and guest-negative external reachability. Do not infer credential isolation from a same-UID native shell sharing its mount view; real credential protection requires separate native evidence.
+
 **Plan and operation:** `docs/plans/autonomous-peer-overlap-resolution/plan.md`, `continue`. This is independent G2 preparation; it does not promote G1 or admit an installed/live run.
 
 ## Boundary recipe
