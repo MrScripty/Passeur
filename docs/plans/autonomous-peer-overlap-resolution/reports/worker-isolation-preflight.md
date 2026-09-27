@@ -16,6 +16,8 @@ Each worker must receive a separately prepared worktree and private writable Git
 
 ## Observed result
 
+The observations in this section describe the initial wrapper before the later canonical-mount checkpoint added `--unshare-net`. The current wrapper's network namespace and host-positive/guest-negative loopback evidence are recorded in the active plan and acceptance matrix; the historical shared-network statement below is not its current behavior.
+
 - Environment: Linux, Node `v24.12.0`, Git `2.43.0`, Bubblewrap `0.9.0` at `/usr/bin/bwrap`.
 - `node tests/core/experiment-worker-sandbox.test.mjs`: **4/4 pass** after the absolute-path addition. The parent process, under the same UID, successfully read fake oracle and sibling markers first. The sandboxed child wrote its own workspace and private Git mount, read an explicitly mounted runtime directory, could not write that read-only directory, and could not read sibling/oracle/control/pristine directories by direct host path, in-workspace absolute symlink, `/proc/self/root`, or `/proc/1/root`. A local Git commit executed its ordinary pre-commit hook; a command exit status of 37 remained 37. The new mode also confirmed that the child cwd and `HOME` equal the original host worktree path while a sibling path is absent.
 - The exact namespace probe succeeded with `--unshare-user --unshare-pid --unshare-ipc --unshare-uts`. A separate attempt with `--unshare-all` failed on network namespace setup: `bwrap: loopback: Failed to create NETLINK_ROUTE socket: Operation not permitted`. Network isolation is unproven and the wrapper shares the host network namespace, which a provider connection may require.
