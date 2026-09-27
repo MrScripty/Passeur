@@ -10,7 +10,9 @@ import type { AgentRegistry, SelectedAgent } from "../agents/registry.js";
 import type { WorkerEvent } from "../agents/types.js";
 import type { WorkerPeerOperationRequest, WorkerPeerPort } from "../agents/types.js";
 import type { PeerWorkerOperationResult } from "../contracts/peer-operations.js";
-import { immutablePeerEnvelope, parsePeerDeliverySource, PeerDeliveryNativeSessionIdSchema, MAX_PEER_DELIVERIES, type PeerDeliveryEnvelope, type PeerDeliverySource, type PeerDeliveryRecord, type PeerDeliveryReceiptStatus } from "../contracts/peer-delivery.js";
+import { immutablePeerEnvelope, parsePeerDeliverySource, PeerDeliveryNativeSessionIdSchema, PeerDeliverySlotBundleSchema,
+  MAX_PEER_DELIVERIES, type PeerDeliveryEnvelope, type PeerDeliverySource, type PeerDeliveryRecord,
+  type PeerDeliveryReceiptStatus, type PeerDeliverySlotBundle, type PeerDeliverySlotReservation } from "../contracts/peer-delivery.js";
 import { BridgeError, errorInfo } from "./errors.js";
 import { Mutex, canonicalHash } from "./async.js";
 import { baseResult } from "./result.js";
@@ -156,7 +158,55 @@ export class Coordinator {
     return decision;
   }
   /** Trusted coordination producer only. The supplied source confers no authority without the current grant hook. */
-  async queuePeerDelivery(recipientTaskId: string, candidate: unknown): Promise<PeerDeliveryEnvelope> {
+  async reservePeerDeliverySlots(raw: PeerDeliverySlotBundle): Promise<void> {
+    const bundle = PeerDeliverySlotBundleSchema.parse(raw);
+    await this.assertMutationAllowed();
+    await this.controls.change(bundle.recipient_task_id, async state => {
+      const entry = this.#entries.get(bundle.recipient_task_id);
+      const resource = await this.store.readResource(bundle.recipient_task_id);
+      if (!entry?.workspace || entry.record.schema_version !== 5 || state.phase !== "active" || state.cancel ||
+        state.native.state !== "observed_live" || state.native.run_id !== bundle.recipient_run_id ||
+        state.control_generation !== bundle.recipient_control_generation ||
+        resource?.state !== "pending" || resource.worktree_path !== bundle.recipient_workspace ||
+        entry.workspace !== bundle.recipient_workspace ||
+        canonicalHash({ task_id: bundle.recipient_task_id, source_view: entry.record.source_view,
+          workspace: entry.workspace, base_commit: resource.base_commit, branch_ref: resource.branch_ref,
+          target_ref: resource.target_ref }) !== bundle.recipient_workspace_fingerprint)
+        throw new BridgeError("PEER_DELIVERY_STALE", "Recipient task or workspace changed before capacity reservation");
+      if (state.schema_version === 2) Object.assign(state, { schema_version: 3, peer_delivery_reservations: [] });
+      const slots = (state as Extract<TaskControl, { schema_version: 3 }>).peer_delivery_reservations;
+      if (slots.some(slot => slot.state !== "released" && slot.case_id === bundle.case_id &&
+        slot.case_revision === bundle.case_revision && slot.case_generation === bundle.case_generation &&
+        slot.operation_key !== bundle.operation_key))
+        throw new BridgeError("PEER_DELIVERY_RESERVATION_CONFLICT", "A different extension already owns this case revision's recipient slots");
+      for (const source of bundle.sources) {
+        const slot: PeerDeliverySlotReservation = { schema_version: 1,
+          operation_key: bundle.operation_key, request_digest: bundle.request_digest,
+          case_id: bundle.case_id, expected_case_revision: bundle.expected_case_revision,
+          case_revision: bundle.case_revision, case_generation: bundle.case_generation,
+          recipient_task_id: bundle.recipient_task_id, recipient_run_id: bundle.recipient_run_id,
+          recipient_control_generation: bundle.recipient_control_generation,
+          recipient_workspace: bundle.recipient_workspace,
+          recipient_workspace_fingerprint: bundle.recipient_workspace_fingerprint,
+          source_work_id: source.work_id, source_work_revision: source.work_revision, state: "reserved" };
+        const prior = slots.find(candidate => candidate.operation_key === slot.operation_key &&
+          candidate.source_work_id === slot.source_work_id);
+        if (prior) {
+          const { state: _state, delivery_id: _deliveryId, ...identity } = prior;
+          const { state: _desiredState, ...wanted } = slot;
+          if (canonicalHash(identity) !== canonicalHash(wanted))
+            throw new BridgeError("PEER_DELIVERY_KEY_CONFLICT", "Reservation key names different recipient or source evidence");
+          if (prior.state === "released") throw new BridgeError("PEER_DELIVERY_RESERVATION_RELEASED", "Ruled-out extension slot cannot be reserved again");
+          continue;
+        }
+        if ((state.peer_deliveries?.length ?? 0) + slots.filter(candidate => candidate.state === "reserved").length >= MAX_PEER_DELIVERIES)
+          throw new BridgeError("PEER_DELIVERY_CAPACITY", "Recipient cannot reserve every directed extension obligation");
+        slots.push(slot);
+      }
+    });
+  }
+  async queuePeerDelivery(recipientTaskId: string, candidate: unknown,
+    reservationOperationKey?: string): Promise<PeerDeliveryEnvelope> {
     const source = parsePeerDeliverySource(candidate);
     await this.assertMutationAllowed();
     for (let attempt = 0; attempt < 128; attempt++) {
@@ -191,9 +241,48 @@ export class Coordinator {
         if (canonicalHash(previous) !== canonicalHash(source)) throw new BridgeError("PEER_DELIVERY_KEY_CONFLICT", "Peer delivery key names different evidence");
         return { kind: "value" as const, envelope: immutablePeerEnvelope(prior.envelope) };
       }
-      if ((state.peer_deliveries?.length ?? 0) >= MAX_PEER_DELIVERIES) throw new BridgeError("PEER_DELIVERY_CAPACITY", "Retained peer delivery capacity is exhausted");
+      const reservedForSource = state.schema_version === 3 ? state.peer_delivery_reservations.find(slot =>
+        slot.state === "reserved" && slot.recipient_task_id === recipientTaskId &&
+        slot.recipient_run_id === value.recipient_run_id &&
+        slot.recipient_control_generation === value.recipient_control_generation &&
+        slot.recipient_workspace === value.recipient_workspace &&
+        slot.recipient_workspace_fingerprint === value.recipient_workspace_fingerprint &&
+        slot.case_id === source.case_id && slot.case_revision === source.case_revision &&
+        slot.case_generation === source.case_generation && slot.source_work_id === source.source_work_id &&
+        slot.source_work_revision === source.source_work_revision) : undefined;
+      if (state.schema_version === 3 && state.peer_delivery_reservations.some(slot =>
+        slot.state === "released" && slot.case_id === source.case_id &&
+        slot.case_revision === source.case_revision && slot.case_generation === source.case_generation &&
+        slot.source_work_id === source.source_work_id && slot.operation_key === reservationOperationKey))
+        throw new BridgeError("PEER_DELIVERY_RESERVATION_RELEASED", "Ruled-out extension cannot queue a former obligation");
+      if (reservedForSource && reservedForSource.operation_key !== reservationOperationKey)
+        throw new BridgeError("PEER_DELIVERY_RESERVATION_REQUIRED", "Exact extension operation is required to consume its delivery slot");
+      const matchingSlot = reservedForSource;
+      if (reservationOperationKey && !matchingSlot) {
+        const consumed = state.schema_version === 3 ? state.peer_delivery_reservations.find(slot =>
+          slot.state === "consumed" && slot.operation_key === reservationOperationKey &&
+          slot.case_id === source.case_id && slot.case_revision === source.case_revision &&
+          slot.case_generation === source.case_generation && slot.source_work_id === source.source_work_id &&
+          slot.source_work_revision <= source.source_work_revision &&
+          slot.recipient_task_id === recipientTaskId && slot.recipient_run_id === value.recipient_run_id &&
+          slot.recipient_control_generation === value.recipient_control_generation &&
+          slot.recipient_workspace === value.recipient_workspace &&
+          slot.recipient_workspace_fingerprint === value.recipient_workspace_fingerprint) : undefined;
+        if (!consumed)
+          throw new BridgeError("PEER_DELIVERY_RESERVATION_STALE", "Extension delivery has no exact current reserved or consumed source slot");
+      }
+      const reserved = state.schema_version === 3
+        ? state.peer_delivery_reservations.filter(slot => slot.state === "reserved").length : 0;
+      if ((state.peer_deliveries?.length ?? 0) + reserved >= MAX_PEER_DELIVERIES && !matchingSlot) {
+        const pending = state.schema_version === 3 && state.peer_delivery_reservations.some(slot =>
+          slot.case_id === source.case_id && slot.case_revision === source.case_revision &&
+          slot.source_work_id === source.source_work_id);
+        throw new BridgeError(pending ? "PEER_DELIVERY_CAPACITY_PENDING" : "PEER_DELIVERY_CAPACITY",
+          "Retained peer deliveries and reserved obligations exhaust recipient capacity");
+      }
       changed = { envelope: value, state: "queued", queued_at: now() };
       (state.peer_deliveries ??= []).push(changed);
+      if (matchingSlot) { matchingSlot.state = "consumed"; matchingSlot.delivery_id = value.delivery_id; }
       return { kind: "value" as const, envelope: value };
       });
       if (outcome.kind === "retry") continue;

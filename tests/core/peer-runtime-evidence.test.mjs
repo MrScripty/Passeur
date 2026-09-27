@@ -505,6 +505,132 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
     attempt.outcome === 'completed').length, 1);
 });
 
+async function observedExtensionScenario(t, enable, replaceRun = false) {
+  const fixture = await serviceFixture(t);
+  await fixture.service.close();
+  const intent = { project: fixture.root, stateRoot: fixture.state,
+    profilePath: join(fixture.temp, 'missing-profile.json') };
+  const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
+  const token = await operatorToken(binding, true);
+  const actors = [createHash('sha256').update(token).digest('hex'), 'b'.repeat(64), 'c'.repeat(64)]
+    .map(owner_id => ({ owner_id, client_id: randomUUID() }));
+  const stops = [0, 1, 2].map(() => {
+    let release; const promise = new Promise(resolve => { release = resolve; });
+    return { promise, release };
+  });
+  const workers = stops.map((stop, index) => ({ async run(input) {
+    await writeFile(join(input.workspace, 'source.ts'), `export function run() { return ${index + 1}; }\n`);
+    await input.onEvent({ kind: 'turn_started', turn_id: `initial-${index}`, native_session_id: `session-${index}` });
+    await input.onEvent({ kind: 'turn_settled', turn_id: `initial-${index}`,
+      native_session_id: `session-${index}`, terminal: 'completed' });
+    await stop.promise;
+    return { status: 'completed', worker_stop: 'confirmed', worker_assessment: 'met',
+      summary: 'Controlled peer stopped', blockers: [], questions: [], checks: [] };
+  } }));
+  let replacedTask;
+  const store = new TaskStore(binding.storeRoot);
+  const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
+    mode: 'development', node_version: process.version, node_executable: process.execPath,
+    pid: process.pid, started_at: new Date().toISOString() }, {
+    ...(enable ? { enableObservedCaseExtensionForTest: true } : {}),
+    ...(replaceRun ? { onObservedCaseSlotsReservedForTest: async (taskIds, controls) => {
+      if (replacedTask) return;
+      replacedTask = taskIds[2];
+      await controls.change(replacedTask, state => { state.native.run_id = randomUUID(); });
+    } } : {}),
+    store: () => store,
+    profile: async () => ({ schema_version: 3, execution: {
+      stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
+      max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
+      implementation: { enabled: true, worktree_root: join(fixture.temp, 'managed-worktrees') },
+    }, agents: workers.map((_, index) => ({ agent_id: `peer${index}`, adapter_id: `peer${index}`,
+      description: '', enabled: true, options: {} })) }),
+    definitions: Object.fromEntries(workers.map((worker, index) => [`peer${index}`, {
+      configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {}, worker }),
+    }])),
+  });
+  fixture.sessions.push({ close: async () => { stops.forEach(stop => stop.release()); await runtime.shutdown(); } });
+  await runtime.coordinate({ schema_version: 1, kind: 'initialize', limits: fixture.limits }, actors[0], fixture.root);
+  const submit = index => runtime.submitCoordinated({ schema_version: 2, kind: 'inline',
+    assignment: { schema_version: 3, agent_id: `peer${index}`, request_key: randomUUID(),
+      mode: 'implement', objective: `Change source.ts for peer ${index}`, context: '',
+      acceptance_criteria: ['Edit source.ts'], allowed_paths: ['source.ts'],
+      base_commit: fixture.base, target_ref: 'refs/heads/main' },
+  }, actors[index], fixture.root, new AbortController().signal);
+  const ids = (await Promise.all([submit(0), submit(1)])).map(item => item.task_id);
+  const state = async () => JSON.parse(await readFile(join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
+  const refresh = async index => {
+    try { await runtime.structuralRefresh(ids[index], actors[index]); }
+    catch (error) { if (!['STRUCTURAL_SOURCE_FORBIDDEN', 'COORDINATION_NOT_FOUND'].includes(error.code)) throw error; }
+  };
+  let pair;
+  for (let attempt = 0; attempt < 150 && !pair; attempt++) {
+    await refresh(0); await refresh(1);
+    pair = (await state()).cases.find(item => item.observed_origin === 'selected' && item.inputs.length === 2);
+    if (!pair) await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(pair, 'the first two real captures must establish an observed case');
+  ids.push((await submit(2)).task_id);
+  for (let attempt = 0; attempt < 150; attempt++) {
+    const control = await store.readControl(ids[2]);
+    if (control.native.state === 'observed_live' && control.native.coverage === 'turn_scoped') break;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  await refresh(2);
+  if (replaceRun) {
+    assert.ok(replacedTask, 'reservation barrier must observe the selected recipient manifest');
+    const current = (await state()).cases.find(item => item.id === pair.id);
+    assert.equal(current.revision, pair.revision);
+    assert.equal(current.inputs.length, 2, 'changed native run must stop extension publication');
+    const reopened = await Promise.all(ids.map(id => new TaskStore(binding.storeRoot).readControl(id)));
+    assert.ok(reopened.every(control => control.schema_version === 3 &&
+      control.peer_delivery_reservations.every(slot => slot.state === 'released')));
+    assert.ok(reopened.every(control => !(control.peer_deliveries ?? []).some(record =>
+      record.envelope.case_id === pair.id && record.envelope.case_revision === pair.revision + 1)));
+    return;
+  }
+  if (!enable) {
+    const current = (await state()).cases.find(item => item.id === pair.id);
+    assert.equal(current.inputs.length, 2, 'production-default Runtime keeps automatic extension disabled');
+    assert.ok((await Promise.all(ids.map(id => store.readControl(id)))).every(control =>
+      control.schema_version === 2), 'disabled extension creates no delivery reservations');
+    return;
+  }
+  let joined;
+  for (let attempt = 0; attempt < 200; attempt++) {
+    joined = (await state()).cases.find(item => item.id === pair.id && item.inputs.length === 3);
+    if (joined) break;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(joined, 'a single late capture must publish the controlled revised case');
+  assert.equal(joined.revision, pair.revision + 1);
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const controls = await Promise.all(ids.map(id => store.readControl(id)));
+    if (controls.every(control => control.schema_version === 3 &&
+      control.peer_delivery_reservations.filter(slot => slot.case_id === joined.id &&
+        slot.case_revision === joined.revision && slot.state === 'consumed').length === 2)) break;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  const reopened = await Promise.all(ids.map(id => new TaskStore(binding.storeRoot).readControl(id)));
+  for (const control of reopened) {
+    assert.equal(control.schema_version, 3);
+    const slots = control.peer_delivery_reservations.filter(slot => slot.case_id === joined.id &&
+      slot.case_revision === joined.revision);
+    assert.equal(slots.length, 2);
+    assert.ok(slots.every(slot => slot.state === 'consumed' &&
+      control.peer_deliveries.some(record => record.envelope.delivery_id === slot.delivery_id)));
+  }
+  assert.equal((await state()).cases.find(item => item.id === joined.id).delivery_pending.length, 3,
+    'queue admission alone does not settle the revised case');
+}
+
+test('production-default Runtime leaves automatic observed extension disabled', t =>
+  observedExtensionScenario(t, false));
+test('controlled extension reserves and consumes six durable directed slots through the real Runtime', t =>
+  observedExtensionScenario(t, true));
+test('prepublication native run replacement prevents controlled extension and releases exact slots', t =>
+  observedExtensionScenario(t, true, true));
+
 test('late third managed worker joins one observed case and each adapter consumes revised peer evidence', {
   skip: 'G4 gate: an in-flight revised envelope can become unknown and fail its adapter; case delivery remains pending',
 }, async t => {

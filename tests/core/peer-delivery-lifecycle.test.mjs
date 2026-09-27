@@ -12,7 +12,9 @@ import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
 import { canonicalHash } from '../../.passeur-core/src/core/async.js';
 import { reconcileStoredTasks } from '../../.passeur-core/src/core/recovery.js';
 import { NativeEvidenceSchema } from '../../.passeur-core/src/contracts/tasks.js';
+import { TaskControls } from '../../.passeur-core/src/core/task-control.js';
 import { PeerDeliveryRecordSchema } from '../../.passeur-core/src/contracts/peer-delivery.js';
+import { decodeState } from '../../.passeur-core/src/store/record-codecs.js';
 
 const exec = promisify(execFile);
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -23,6 +25,27 @@ const free = () => new AbortController().signal;
 const source = (key = 'peer-1') => ({ source_work_id: randomUUID(), source_work_revision: 3, case_id: randomUUID(), case_revision: 2,
   case_generation: 1, evidence_id: hash('evidence'), evidence_revision: 1,
   content: 'Bounded overlap evidence', evidence_digest: hash('Bounded overlap evidence'), idempotency_key: key });
+const slotBundle = (recipient, sources) => ({ operation_key: `observed-extension:${randomUUID()}`,
+  request_digest: hash(randomUUID()), case_id: randomUUID(), expected_case_revision: 2,
+  case_revision: 3, case_generation: 1, recipient_task_id: recipient.recipient_task_id,
+  recipient_run_id: recipient.recipient_run_id,
+  recipient_control_generation: recipient.recipient_control_generation,
+  recipient_workspace: recipient.recipient_workspace,
+  recipient_workspace_fingerprint: recipient.recipient_workspace_fingerprint,
+  sources: sources.map(work_id => ({ work_id, work_revision: 3 })) });
+const reservedSource = (bundle, index, key) => ({ ...source(key), case_id: bundle.case_id,
+  case_revision: bundle.case_revision, case_generation: bundle.case_generation,
+  source_work_id: bundle.sources[index].work_id, source_work_revision: bundle.sources[index].work_revision });
+async function seedPeerDeliveries(f, count) {
+  const baseline = await f.coordinator.queuePeerDelivery(f.taskId, source('seed-0'));
+  await f.coordinator.controls.change(f.taskId, state => {
+    for (let index = 1; index < count; index++) state.peer_deliveries.push({
+      envelope: { ...baseline, delivery_id: randomUUID(), idempotency_key: `seed-${index}` },
+      state: 'queued', queued_at: new Date().toISOString(),
+    });
+  });
+  return baseline;
+}
 function decision(token) {
   const decision_identity = hash('peer decision'), binding = { schema_version: 1, task_id: token.task_id,
     request_key: token.request_key, owner_id: token.owner_id, intent_hash: token.intent_hash, decision_identity };
@@ -103,6 +126,299 @@ test('authenticated delivery is durable through queue, intent, native delivery a
   assert.deepEqual(observedCases, [evidence.case_id], 'only the new durable observed receipt wakes reconciliation');
   assert.equal((await f.store.readResult(f.taskId)).execution_status, 'completed');
   assert.equal(worker.task_id, f.taskId);
+});
+
+test('two durable extension slots at 62 retained deliveries exclude ordinary enqueue and consume exactly once', async t => {
+  const settled = hold(), proceed = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise; return done();
+  });
+  await settled.promise;
+  assert.equal((await f.store.readControl(f.taskId)).schema_version, 2);
+  const baseline = await seedPeerDeliveries(f, 62);
+  const bundle = slotBundle(baseline, [randomUUID(), randomUUID()]);
+  await f.coordinator.reservePeerDeliverySlots(bundle);
+  await f.coordinator.reservePeerDeliverySlots(bundle);
+  await assert.rejects(f.coordinator.reservePeerDeliverySlots({ ...bundle,
+    operation_key: `observed-extension:${randomUUID()}`, request_digest: hash(randomUUID()) }),
+  { code: 'PEER_DELIVERY_RESERVATION_CONFLICT' });
+  const reserved = await new TaskStore(f.store.root).readControl(f.taskId);
+  assert.equal(reserved.schema_version, 3);
+  assert.equal(reserved.peer_delivery_reservations.filter(slot => slot.state === 'reserved').length, 2);
+  assert.equal(reserved.peer_deliveries.length, 62);
+  assert.throws(() => decodeState({ ...reserved, peer_delivery_reservations: [
+    ...reserved.peer_delivery_reservations,
+    { ...reserved.peer_delivery_reservations[0], source_work_id: randomUUID() },
+  ] }), { code: 'STORE_CORRUPT' });
+  await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, source('ordinary-at-cap')),
+    { code: 'PEER_DELIVERY_CAPACITY' });
+  const first = reservedSource(bundle, 0, 'obligation-a');
+  const second = reservedSource(bundle, 1, 'obligation-b');
+  await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, first),
+    { code: 'PEER_DELIVERY_RESERVATION_REQUIRED' });
+  await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, first, 'wrong-extension-operation'),
+    { code: 'PEER_DELIVERY_RESERVATION_REQUIRED' });
+  const firstEnvelope = await f.coordinator.queuePeerDelivery(f.taskId, first, bundle.operation_key);
+  assert.deepEqual(await f.coordinator.queuePeerDelivery(f.taskId, first), firstEnvelope);
+  assert.equal((await f.store.readControl(f.taskId)).peer_delivery_reservations.find(slot =>
+    slot.source_work_id === first.source_work_id).delivery_id, firstEnvelope.delivery_id);
+  const secondEnvelope = await f.coordinator.queuePeerDelivery(f.taskId, second, bundle.operation_key);
+  const full = await new TaskStore(f.store.root).readControl(f.taskId);
+  assert.equal(full.peer_deliveries.length, 64);
+  assert.equal(full.peer_delivery_reservations.filter(slot => slot.state === 'consumed').length, 2);
+  assert.deepEqual(new Set(full.peer_delivery_reservations.map(slot => slot.delivery_id)),
+    new Set([firstEnvelope.delivery_id, secondEnvelope.delivery_id]));
+  await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, source('ordinary-after-cap')),
+    { code: 'PEER_DELIVERY_CAPACITY' });
+  assert.throws(() => decodeState({ ...full, schema_version: 4 }), { code: 'STORE_VERSION_UNSUPPORTED' });
+  proceed.resolve();
+});
+
+test('ordinary enqueue winning the 62-slot race prevents an all-or-nothing extension reservation', async t => {
+  const settled = hold(), proceed = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise; return done();
+  });
+  await settled.promise;
+  const baseline = await seedPeerDeliveries(f, 62);
+  const bundle = slotBundle(baseline, [randomUUID(), randomUUID()]);
+  await f.coordinator.queuePeerDelivery(f.taskId, source('ordinary-wins'));
+  await assert.rejects(f.coordinator.reservePeerDeliverySlots(bundle), { code: 'PEER_DELIVERY_CAPACITY' });
+  const after = await new TaskStore(f.store.root).readControl(f.taskId);
+  assert.equal(after.schema_version, 2, 'failed reservation cannot publish a partial schema upgrade');
+  assert.equal(after.peer_deliveries.length, 63);
+  proceed.resolve();
+});
+
+test('partially consumed reservations survive store reopen without creating native liveness', async t => {
+  const settled = hold(), proceed = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise; return done();
+  });
+  try {
+    await settled.promise;
+    const baseline = await seedPeerDeliveries(f, 62);
+    const bundle = slotBundle(baseline, [randomUUID(), randomUUID()]);
+    await f.coordinator.reservePeerDeliverySlots(bundle);
+    const first = await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 0, 'partial-first'), bundle.operation_key);
+    const reopened = await new TaskStore(f.store.root).readControl(f.taskId);
+    assert.equal(reopened.peer_deliveries.length, 63);
+    assert.equal(reopened.peer_delivery_reservations.find(slot => slot.source_work_id === bundle.sources[0].work_id).delivery_id,
+      first.delivery_id);
+    assert.equal(reopened.peer_delivery_reservations.find(slot => slot.source_work_id === bundle.sources[1].work_id).state,
+      'reserved');
+    await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, source('partial-ordinary')),
+      { code: 'PEER_DELIVERY_CAPACITY' });
+    await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 1, 'partial-second'), bundle.operation_key);
+  } finally { proceed.resolve(); }
+});
+
+test('publication-scoped release wins queued consumption and cannot escape its recipient fence', async t => {
+  const settled = hold(), proceed = hold(), entered = hold(), finish = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise; return done();
+  });
+  try {
+    await settled.promise;
+    const baseline = await seedPeerDeliveries(f, 62);
+    const bundle = slotBundle(baseline, [randomUUID(), randomUUID()]);
+    await f.coordinator.reservePeerDeliverySlots(bundle);
+    await assert.rejects(f.coordinator.controls.releasePeerDeliverySlotsInPublication(bundle),
+      { code: 'PEER_DELIVERY_RESERVATION_SCOPE' });
+    await f.coordinator.controls.withTaskPublication([randomUUID()], async () => {
+      await assert.rejects(f.coordinator.controls.releasePeerDeliverySlotsInPublication(bundle),
+        { code: 'PEER_DELIVERY_RESERVATION_SCOPE' });
+    });
+    const publication = f.coordinator.controls.withTaskPublication([f.taskId], async () => {
+      await assert.rejects(f.coordinator.controls.releasePeerDeliverySlotsInPublication({ ...bundle,
+        sources: [bundle.sources[0], { work_id: randomUUID(), work_revision: 3 }] }),
+      { code: 'PEER_DELIVERY_RESERVATION_MANIFEST' });
+      assert.equal((await f.store.readControl(f.taskId)).peer_delivery_reservations
+        .filter(slot => slot.state === 'reserved').length, 2);
+      await f.coordinator.controls.releasePeerDeliverySlotsInPublication(bundle);
+      await f.coordinator.controls.releasePeerDeliverySlotsInPublication(bundle);
+      entered.resolve(); await finish.promise;
+    });
+    await entered.promise;
+    const queued = f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 0, 'released-slot'), bundle.operation_key);
+    finish.resolve(); await publication;
+    await assert.rejects(queued, { code: 'PEER_DELIVERY_RESERVATION_RELEASED' });
+    await assert.rejects(f.coordinator.reservePeerDeliverySlots(bundle), { code: 'PEER_DELIVERY_RESERVATION_RELEASED' });
+    const reopened = await new TaskStore(f.store.root).readControl(f.taskId);
+    assert.equal(reopened.peer_delivery_reservations.filter(slot => slot.state === 'released').length, 2);
+    const successor = { ...bundle, operation_key: `observed-extension:${randomUUID()}`,
+      request_digest: hash(randomUUID()) };
+    await f.coordinator.reservePeerDeliverySlots(successor);
+    await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(successor, 0, 'successor-first'), successor.operation_key);
+    await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(successor, 1, 'successor-second'), successor.operation_key);
+    assert.equal((await f.store.readControl(f.taskId)).peer_deliveries.length, 64);
+    await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId,
+      reservedSource(bundle, 0, 'old-replay'), bundle.operation_key),
+    { code: 'PEER_DELIVERY_RESERVATION_RELEASED' });
+  } finally { finish.resolve(); proceed.resolve(); }
+});
+
+test('consumed slot cannot be released and an unrelated task stays blocked by the full selected publication fence', async t => {
+  const settled = hold(), proceed = hold(), entered = hold(), finish = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise; return done();
+  });
+  try {
+    await settled.promise;
+    const baseline = await seedPeerDeliveries(f, 62);
+    const bundle = slotBundle(baseline, [randomUUID(), randomUUID()]);
+    await f.coordinator.reservePeerDeliverySlots(bundle);
+    await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 0, 'consumption-wins'), bundle.operation_key);
+    await f.coordinator.controls.withTaskPublication([f.taskId], async () => {
+      await assert.rejects(f.coordinator.controls.releasePeerDeliverySlotsInPublication(bundle),
+        { code: 'PEER_DELIVERY_RESERVATION_CONSUMED' });
+    });
+    const retained = await f.store.readControl(f.taskId);
+    assert.equal(retained.peer_delivery_reservations.filter(slot => slot.state === 'reserved').length, 1);
+    const other = randomUUID(), third = randomUUID();
+    const otherControl = id => ({ ...structuredClone(retained), task_id: id,
+      peer_deliveries: [], peer_delivery_reservations: [] });
+    const states = new Map([[f.taskId, retained], [other, otherControl(other)], [third, otherControl(third)]]);
+    const controls = new TaskControls({
+      readControl: async id => structuredClone(states.get(id)),
+      writeControl: async (id, state) => { states.set(id, structuredClone(state)); },
+      durableRequest: async () => { throw new Error('unused'); },
+    }, 8, 64);
+    const publication = controls.withTaskPublication([f.taskId, other, third], async () => {
+      entered.resolve(); await finish.promise;
+    });
+    await entered.promise;
+    let changed = false;
+    const mutation = controls.change(third, state => { state.attention = 'after publication'; changed = true; });
+    await Promise.resolve();
+    assert.equal(changed, false);
+    finish.resolve(); await publication; await mutation;
+    assert.equal(changed, true);
+  } finally { finish.resolve(); proceed.resolve(); }
+});
+
+test('a refreshed source at the full cap reports pending capacity without rewriting historical slots', async t => {
+  const settled = hold(), proceed = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise; return done();
+  });
+  await settled.promise;
+  const baseline = await seedPeerDeliveries(f, 62);
+  const bundle = slotBundle(baseline, [randomUUID(), randomUUID()]);
+  await f.coordinator.reservePeerDeliverySlots(bundle);
+  await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 0, 'obligation-a'), bundle.operation_key);
+  await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 1, 'obligation-b'), bundle.operation_key);
+  const historical = await new TaskStore(f.store.root).readControl(f.taskId);
+  const replacement = { ...reservedSource(bundle, 0, 'replacement'), source_work_revision: 4 };
+  await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, replacement, bundle.operation_key),
+    { code: 'PEER_DELIVERY_CAPACITY_PENDING' });
+  assert.deepEqual((await new TaskStore(f.store.root).readControl(f.taskId)).peer_delivery_reservations,
+    historical.peer_delivery_reservations);
+  assert.equal((await f.store.readPeerDeliveries(f.taskId)).length, 64);
+  proceed.resolve();
+});
+
+test('a keyed current source refresh after slot consumption uses spare ordinary capacity', async t => {
+  const settled = hold(), proceed = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise; return done();
+  });
+  try {
+    await settled.promise;
+    const baseline = await f.coordinator.queuePeerDelivery(f.taskId, source('refresh-baseline'));
+    const bundle = slotBundle(baseline, [randomUUID()]);
+    await f.coordinator.reservePeerDeliverySlots(bundle);
+    const original = reservedSource(bundle, 0, 'refresh-original');
+    const first = await f.coordinator.queuePeerDelivery(f.taskId, original, bundle.operation_key);
+    const recaptured = { ...reservedSource(bundle, 0, 'refresh-same-revision'),
+      evidence_id: hash('new capture at same work revision'), evidence_revision: 2 };
+    const recapturedEnvelope = await f.coordinator.queuePeerDelivery(f.taskId, recaptured, bundle.operation_key);
+    assert.notEqual(recapturedEnvelope.delivery_id, first.delivery_id);
+    const refreshed = { ...reservedSource(bundle, 0, 'refresh-new'), source_work_revision: 4 };
+    await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, refreshed, 'unknown-extension'),
+      { code: 'PEER_DELIVERY_RESERVATION_STALE' });
+    const second = await f.coordinator.queuePeerDelivery(f.taskId, refreshed, bundle.operation_key);
+    assert.notEqual(second.delivery_id, first.delivery_id);
+    assert.deepEqual(await f.coordinator.queuePeerDelivery(f.taskId, refreshed, bundle.operation_key), second);
+    const reopened = await new TaskStore(f.store.root).readControl(f.taskId);
+    assert.equal(reopened.peer_deliveries.length, 4);
+    assert.equal(reopened.peer_delivery_reservations[0].state, 'consumed');
+    assert.equal(reopened.peer_delivery_reservations[0].delivery_id, first.delivery_id,
+      'new current evidence must retain the original exact slot receipt');
+    await f.coordinator.controls.change(f.taskId, state => { state.native.run_id = randomUUID(); });
+    await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId,
+      { ...reservedSource(bundle, 0, 'refresh-after-run'), source_work_revision: 5 }, bundle.operation_key),
+    { code: 'PEER_DELIVERY_RESERVATION_STALE' });
+  } finally { proceed.resolve(); }
+});
+
+test('replaced native run cannot spend an old extension slot even with spare ordinary capacity', async t => {
+  const settled = hold(), proceed = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise; return done();
+  });
+  try {
+    await settled.promise;
+    const baseline = await f.coordinator.queuePeerDelivery(f.taskId, source('spare-baseline'));
+    const bundle = slotBundle(baseline, [randomUUID()]);
+    await f.coordinator.reservePeerDeliverySlots(bundle);
+    await f.coordinator.controls.change(f.taskId, state => { state.native.run_id = randomUUID(); });
+    await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId,
+      reservedSource(bundle, 0, 'replaced-run-extension'), bundle.operation_key),
+    { code: 'PEER_DELIVERY_RESERVATION_STALE' });
+    const reopened = await new TaskStore(f.store.root).readControl(f.taskId);
+    assert.equal(reopened.peer_deliveries.length, 1);
+    assert.equal(reopened.peer_delivery_reservations[0].state, 'reserved');
+  } finally { proceed.resolve(); }
+});
+
+test('cancellation, adoption and replaced runs retain slots without transferring authority', async t => {
+  const cases = [
+    async (f, bundle) => f.coordinator.controls.cancel(f.taskId, f.actor, 1, 'cancel-slots', 'controlled stop'),
+    async (f, bundle) => f.coordinator.controls.adopt(f.taskId,
+      { owner_id: hash('new parent'), client_id: randomUUID() }, 'adopt-slots'),
+    async (f, bundle) => f.coordinator.controls.change(f.taskId, state => {
+      state.native.run_id = randomUUID();
+    }),
+  ];
+  for (const change of cases) {
+    const settled = hold(), proceed = hold();
+    const f = await fixture(t, async input => {
+      await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+      await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+      settled.resolve(); await proceed.promise; return done();
+    });
+    try {
+      await settled.promise;
+      const baseline = await seedPeerDeliveries(f, 62);
+      const bundle = slotBundle(baseline, [randomUUID(), randomUUID()]);
+      await f.coordinator.reservePeerDeliverySlots(bundle);
+      await change(f, bundle);
+      await assert.rejects(f.coordinator.reservePeerDeliverySlots(bundle),
+        { code: 'PEER_DELIVERY_STALE' });
+      await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 0, 'old-authority')),
+        error => ['PEER_DELIVERY_CANCELLED', 'PEER_DELIVERY_STALE', 'PEER_DELIVERY_CAPACITY_PENDING'].includes(error.code));
+      const retained = await new TaskStore(f.store.root).readControl(f.taskId);
+      assert.equal(retained.peer_delivery_reservations.filter(slot => slot.state === 'reserved').length, 2);
+      assert.equal(retained.peer_deliveries.length, 62);
+    } finally { proceed.resolve(); }
+  }
 });
 
 test('source supersession after native dispatch retains exact historical delivery and observation across reopen', async t => {

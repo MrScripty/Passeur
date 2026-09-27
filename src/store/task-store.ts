@@ -237,7 +237,8 @@ export class TaskStore {
   }
   async readControl(id: string): Promise<TaskControl> {
     const state = await this.readState(id);
-    if (!("schema_version" in state) || state.schema_version !== 2) throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "Historical state has no durable task control");
+    if (!("schema_version" in state) || state.schema_version !== 2 && state.schema_version !== 3)
+      throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "Historical state has no durable task control");
     return state;
   }
   /** Durable control is authoritative; the capped event stream is telemetry only. */

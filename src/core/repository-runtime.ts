@@ -33,7 +33,8 @@ import { applyPeerResolutionChanges } from "../coordination/peer-application.js"
 import type { AttributedComparison, SourceFile, SourceReference } from "../observation/model.js";
 import type { ObservationGeneration, ObservationPull } from "../contracts/observation.js";
 import { MAX_PEER_DELIVERIES, MAX_PEER_DELIVERY_ENVELOPE_BYTES, peerDeliveryContentDigest, peerDeliveryEnvelopeBytes,
-  peerDeliverySizingEnvelope, type PeerDeliveryEnvelope, type PeerDeliverySource } from "../contracts/peer-delivery.js";
+  peerDeliverySizingEnvelope, type PeerDeliveryEnvelope, type PeerDeliverySource,
+  type PeerDeliverySlotBundle } from "../contracts/peer-delivery.js";
 import { MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES, peerDeliveryPromptBytes } from "../agents/report-format.js";
 import { decodePeerWorkerOperation, type PeerWorkerOperation, type PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 
@@ -52,7 +53,6 @@ const coordinationResourceRecords = 4096;
 const PEER_DELIVERY_CONTENT_BYTES = 16_384;
 // A dispatched obsolete turn can currently freeze its worker. The controlled extension
 // remains unavailable until native receipts and current content authority are separated.
-const OBSERVED_CASE_EXTENSION_ENABLED = false;
 export function assertObservedExtensionDeliveryCapacity(retainedCounts: readonly number[], selectedCount: number): void {
   if (retainedCounts.some(count => count + selectedCount - 1 > MAX_PEER_DELIVERIES))
     throw new BridgeError("PEER_DELIVERY_CAPACITY", "Recipient cannot retain every revised peer envelope");
@@ -219,6 +219,10 @@ export type RuntimeDependencies = {
   /** Internal, completion-only observation of a durable delivery reconciliation attempt. */
   onObservedCaseSettlement?: (attempt: Readonly<{ case_id: string; recipient_work_id: string;
     observed_delivery_ids: readonly string[]; outcome: "completed" | "rejected" | "failed" }>) => void;
+  /** Controlled in-process composition only; production construction leaves extension disabled. */
+  enableObservedCaseExtensionForTest?: true;
+  /** Completion barrier for deterministic controlled reservation races; never used by service configuration. */
+  onObservedCaseSlotsReservedForTest?: (taskIds: readonly string[], controls: TaskControls) => Promise<void>;
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
@@ -1208,7 +1212,7 @@ export class RepositoryRuntime {
     const targetOid = await repository.target(resources[0]!.target);
     const existing = initial.cases.find(candidate => candidate.target === resources[0]!.target && candidate.state === "active");
     if (existing?.inputs.length && !ids.every(id => existing.inputs.some(input => input.work_id === id))) {
-      if (!OBSERVED_CASE_EXTENSION_ENABLED)
+      if (this.#deps.enableObservedCaseExtensionForTest !== true)
         throw new BridgeError("COORDINATION_OBSERVED_EXTENSION_DISABLED", "Automatic observed case extension awaits safe native receipt settlement");
       await this.#extendObservedCase(pair, existing, initial, targetOid);
       return;
@@ -1258,8 +1262,8 @@ export class RepositoryRuntime {
   }
   /** A connected clique is the bounded three-worker scope; other graphs need a case-scoped evidence model. */
   async #extendObservedCase(pair: CorrespondencePair, peerCase: Case, initial: ControlState, targetOid: string): Promise<void> {
-    const binding = this.#binding, store = this.#store;
-    if (!binding || !store) return;
+    const binding = this.#binding, store = this.#store, coordinator = this.#coordinator;
+    if (!binding || !store || !coordinator) return;
     if (peerCase.observed_origin !== "selected")
       throw new BridgeError("COORDINATION_OBSERVED_ORIGIN_UNAVAILABLE", "Manual or unknown case cannot join an observed worker");
     if (peerCase.inputs.length !== 2 || peerCase.external_effect !== "not_started" || peerCase.target_oid !== targetOid)
@@ -1297,21 +1301,23 @@ export class RepositoryRuntime {
     const metadata = this.#coordinationSession(binding);
     const resources = await Promise.all(selected.map(async work => {
       const taskId = work.managed!.task_id;
-      const [control, resource, source] = await Promise.all([
+      const [control, resource, source, admission] = await Promise.all([
         store.readControl(taskId), store.readResource(taskId), managedTaskSource(store, binding.repositoryId, taskId),
+        store.durableRequest(taskId),
       ]);
       if (control.owner_id !== work.owner || control.control_generation !== work.managed!.control_generation ||
         control.phase !== "active" || control.cancel || resource?.state !== "pending" ||
+        admission.schema_version !== 5 ||
         source.input_oid !== work.input_oid || source.root !== resource.worktree_path ||
         resource.target_ref !== peerCase.target)
         throw new BridgeError("PEER_OPERATION_STALE", "Selected task or workspace changed before observed extension");
-      return { taskId, controlGeneration: control.control_generation, root: source.root,
+      return { taskId, runId: control.native.run_id, controlGeneration: control.control_generation, root: source.root,
+        sourceView: admission.source_view,
+        fingerprint: canonicalHash({ task_id: taskId, source_view: admission.source_view,
+          workspace: resource.worktree_path, base_commit: resource.base_commit,
+          branch_ref: resource.branch_ref, target_ref: resource.target_ref }),
         workspace: work.workspace_id, base: source.input_oid, target: resource.target_ref };
     }));
-    const assertDeliveryCapacity = async () => assertObservedExtensionDeliveryCapacity(
-      await Promise.all(resources.map(async resource => (await store.readControl(resource.taskId)).peer_deliveries?.length ?? 0)),
-      selected.length);
-    await assertDeliveryCapacity();
     const { CoordinationRepository } = await import("../coordination/repository.js");
     const repository = await CoordinationRepository.open(binding.project, binding.repositoryId, coordinationLimits.max_worktrees);
     for (let index = 0; index < selected.length; index++) {
@@ -1339,9 +1345,45 @@ export class RepositoryRuntime {
         { source_artifact_id: artifact.id, recipient_artifact_id: recipientArtifact.id }))
         throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Complete selected context cannot be encoded");
     }
+    const operationKey = `passeur-internal:observed-extension:${canonicalHash([peerCase.id, incoming])}`;
+    const requestDigest = canonicalHash({ operation_key: operationKey, case_id: peerCase.id,
+      expected_revision: peerCase.revision, generation: peerCase.generation, new_work_id: incoming,
+      target_oid: targetOid, target: peerCase.target });
+    const bundles: PeerDeliverySlotBundle[] = selected.map((target, index) => ({
+      operation_key: operationKey, request_digest: requestDigest, case_id: peerCase.id,
+      expected_case_revision: peerCase.revision, case_revision: peerCase.revision + 1,
+      case_generation: peerCase.generation, recipient_task_id: resources[index]!.taskId,
+      recipient_run_id: resources[index]!.runId, recipient_control_generation: resources[index]!.controlGeneration,
+      recipient_workspace: resources[index]!.root, recipient_workspace_fingerprint: resources[index]!.fingerprint,
+      sources: selected.filter(source => source.id !== target.id)
+        .map(source => ({ work_id: source.id, work_revision: source.revision })),
+    }));
+    const controls = await this.#taskControls();
+    const releaseRuledOut = async () => controls.withTaskPublication(resources.map(resource => resource.taskId), async () => {
+      const current = await (await metadata.observationStore()).snapshot();
+      const currentCase = current.cases.find(item => item.id === peerCase.id);
+      if (current.epoch !== initial.epoch || current.revision !== initial.revision ||
+        currentCase?.revision !== peerCase.revision ||
+        currentCase.generation !== peerCase.generation ||
+        current.receipts.some(receipt => receipt.owner === peerCase.lead && receipt.key === operationKey))
+        throw new BridgeError("PEER_DELIVERY_RESERVATION_PENDING", "Extension publication cannot be ruled out at its original metadata epoch");
+      for (const bundle of bundles) await controls.releasePeerDeliverySlotsInPublication(bundle);
+    });
+    let admitted = 0;
+    try {
+      for (const bundle of [...bundles].sort((a, b) => a.recipient_task_id.localeCompare(b.recipient_task_id))) {
+        await coordinator.reservePeerDeliverySlots(bundle); admitted++;
+      }
+    } catch (error) {
+      if (admitted) {
+        try { await releaseRuledOut(); }
+        catch (releaseError) { throw new BridgeError("PEER_DELIVERY_RESERVATION_PENDING",
+          "Partial durable delivery reservations await serialized publication ruling", { cause: releaseError }); }
+      }
+      throw error;
+    }
     const exact = async () => {
       assertPinnedEvidence();
-      await assertDeliveryCapacity();
       const current = await (await metadata.observationStore()).snapshot();
       const currentCase = current.cases.find(item => item.id === peerCase.id);
       if (currentCase?.revision !== peerCase.revision || currentCase.generation !== peerCase.generation ||
@@ -1351,18 +1393,47 @@ export class RepositoryRuntime {
         const control = await store.readControl(resources[index]!.taskId);
         const resource = await store.readResource(resources[index]!.taskId);
         if (control.owner_id !== work.owner || control.control_generation !== resources[index]!.controlGeneration ||
-          control.phase !== "active" || control.cancel || resource?.state !== "pending" ||
-          resource.worktree_path !== resources[index]!.root || resource.target_ref !== resources[index]!.target)
+          control.phase !== "active" || control.cancel || control.native.state !== "observed_live" ||
+          control.native.run_id !== resources[index]!.runId || !coordinator.isActive(resources[index]!.taskId) ||
+          resource?.state !== "pending" || resource.worktree_path !== resources[index]!.root ||
+          resource.target_ref !== resources[index]!.target ||
+          canonicalHash({ task_id: resources[index]!.taskId, source_view: resources[index]!.sourceView,
+            workspace: resource.worktree_path, base_commit: resource.base_commit,
+            branch_ref: resource.branch_ref, target_ref: resource.target_ref }) !== resources[index]!.fingerprint)
           throw new BridgeError("PEER_OPERATION_STALE", "Selected task changed before case publication");
+        const bundle = bundles[index]!;
+        if (control.schema_version !== 3 || bundle.sources.some(source => !control.peer_delivery_reservations.some(slot =>
+          slot.state === "reserved" && slot.operation_key === bundle.operation_key &&
+          slot.request_digest === bundle.request_digest && slot.case_id === bundle.case_id &&
+          slot.expected_case_revision === bundle.expected_case_revision && slot.case_revision === bundle.case_revision &&
+          slot.case_generation === bundle.case_generation && slot.recipient_task_id === bundle.recipient_task_id &&
+          slot.recipient_run_id === bundle.recipient_run_id &&
+          slot.recipient_control_generation === bundle.recipient_control_generation &&
+          slot.recipient_workspace === bundle.recipient_workspace &&
+          slot.recipient_workspace_fingerprint === bundle.recipient_workspace_fingerprint &&
+          slot.source_work_id === source.work_id && slot.source_work_revision === source.work_revision)))
+          throw new BridgeError("PEER_DELIVERY_RESERVATION_STALE", "Directed delivery slots changed before case publication");
       }
     };
-    await (await this.#taskControls()).withTaskPublication(resources.map(resource => resource.taskId), async () => {
-      await exact();
+    let publicationAttempted = false;
+    try {
+      await this.#deps.onObservedCaseSlotsReservedForTest?.(resources.map(resource => resource.taskId), controls);
+      await controls.withTaskPublication(resources.map(resource => resource.taskId), async () => {
+      await exact(); publicationAttempted = true;
       await metadata.extendObservedCase({ owner_id: peerCase.lead, source_view: resources[ids.indexOf(peerCase.inputs[0]!.work_id)]!.root }, {
-        operation_key: `passeur-internal:observed-extension:${canonicalHash([peerCase.id, incoming])}`,
+        operation_key: operationKey,
         case_id: peerCase.id, expected_revision: peerCase.revision, generation: peerCase.generation,
         new_work_id: incoming, target_oid: targetOid, target: peerCase.target });
-    });
+      });
+    }
+    catch (error) {
+      if (!publicationAttempted) {
+        try { await releaseRuledOut(); }
+        catch (releaseError) { throw new BridgeError("PEER_DELIVERY_RESERVATION_PENDING",
+          "Durable delivery reservations await serialized publication ruling", { cause: releaseError }); }
+      }
+      throw error;
+    }
     // The preflight validated every current capture. Re-observing here would replace those
     // captures while their revision-specific envelopes are being dispatched.
     await this.#retrySelectedCase(peerCase.id);
@@ -1436,10 +1507,18 @@ export class RepositoryRuntime {
           if (!recipientArtifact) throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Recipient source capture is unavailable");
           const candidate = peerDeliveryCandidate(pair, peerCase, source, target, taskId, artifact.id, evidence,
             { source_artifact_id: artifact.id, recipient_artifact_id: recipientArtifact.id });
-          if (candidate) await coordinator.queuePeerDelivery(taskId, candidate);
+          if (candidate) {
+            const reservationOperationKey = peerCase.observed_origin === "selected" && peerCase.inputs.length === 3
+              ? `passeur-internal:observed-extension:${canonicalHash([peerCase.id, peerCase.inputs[2]!.work_id])}`
+              : undefined;
+            await coordinator.queuePeerDelivery(taskId, candidate, reservationOperationKey);
+            if (this.#observationFailures.get(targetId) === "PEER_DELIVERY_CAPACITY_PENDING")
+              this.#observationFailures.delete(targetId);
+          }
         }
       } catch (error) {
         const code = errorInfo(error).code;
+        if (code === "PEER_DELIVERY_CAPACITY_PENDING") this.#observationFailures.set(targetId, code);
         await this.#recordPeerDeliveryFailure(taskId, pair.pair_id,
           code === "STRUCTURAL_SOURCE_FORBIDDEN" ? "PEER_DELIVERY_REVOKED" : code);
       }

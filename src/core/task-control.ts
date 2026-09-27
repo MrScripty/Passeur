@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { canonicalHash, KeyedMutex } from "./async.js";
 import { BridgeError } from "./errors.js";
 import type { TaskControl, TaskObservation, CurrentDurableRequest, ControlReceipt, InputData, PendingInput } from "../contracts/tasks.js";
+import type { PeerDeliverySlotBundle, PeerDeliverySlotReservation } from "../contracts/peer-delivery.js";
 
 /** The store publishes a whole control invariant. Callbacks and native execution run outside these locks. */
 export interface ControlStore {
@@ -80,6 +81,51 @@ export class TaskControls {
       throw new BridgeError("COORDINATION_TASK_BUSY", "Task mutation re-entered its own peer publication");
     }
     await reservation.done;
+  }
+  /** Release only exact unconsumed slots while the caller owns this task's publication fence. */
+  async releasePeerDeliverySlotsInPublication(bundle: PeerDeliverySlotBundle): Promise<void> {
+    const id = bundle.recipient_task_id, token = this.#publicationContext.getStore();
+    if (!token || this.#publications.get(id)?.token !== token)
+      throw new BridgeError("PEER_DELIVERY_RESERVATION_SCOPE", "An active recipient publication fence is required");
+    await this.#locks.run(id, async () => {
+      if (this.#publications.get(id)?.token !== token)
+        throw new BridgeError("PEER_DELIVERY_RESERVATION_SCOPE", "Recipient publication fence expired");
+      const old = await this.store.readControl(id);
+      if (old.schema_version !== 3) return;
+      const draft = structuredClone(old);
+      const operationSlots = draft.peer_delivery_reservations.filter(item => item.operation_key === bundle.operation_key);
+      if (!operationSlots.length) return;
+      const sources = new Set(bundle.sources.map(source => source.work_id));
+      if (sources.size !== bundle.sources.length || operationSlots.length !== bundle.sources.length ||
+        operationSlots.some(slot => !sources.has(slot.source_work_id)))
+        throw new BridgeError("PEER_DELIVERY_RESERVATION_MANIFEST", "Publication release must name the full exact source manifest");
+      for (const source of bundle.sources) {
+        const expected: Omit<PeerDeliverySlotReservation, "state" | "delivery_id"> = {
+          schema_version: 1, operation_key: bundle.operation_key, request_digest: bundle.request_digest,
+          case_id: bundle.case_id, expected_case_revision: bundle.expected_case_revision,
+          case_revision: bundle.case_revision, case_generation: bundle.case_generation,
+          recipient_task_id: bundle.recipient_task_id, recipient_run_id: bundle.recipient_run_id,
+          recipient_control_generation: bundle.recipient_control_generation,
+          recipient_workspace: bundle.recipient_workspace,
+          recipient_workspace_fingerprint: bundle.recipient_workspace_fingerprint,
+          source_work_id: source.work_id, source_work_revision: source.work_revision,
+        };
+        const slot = draft.peer_delivery_reservations.find(item => item.operation_key === bundle.operation_key &&
+          item.source_work_id === source.work_id);
+        if (!slot) throw new BridgeError("PEER_DELIVERY_RESERVATION_MANIFEST", "Publication release omits a reserved source");
+        const { state: _state, delivery_id: _deliveryId, ...identity } = slot;
+        if (canonicalHash(identity) !== canonicalHash(expected))
+          throw new BridgeError("PEER_DELIVERY_KEY_CONFLICT", "Publication release names different reserved evidence");
+        if (slot.state === "consumed")
+          throw new BridgeError("PEER_DELIVERY_RESERVATION_CONSUMED", "A consumed delivery slot cannot be released");
+        slot.state = "released";
+      }
+      if (canonicalHash(old) !== canonicalHash(draft)) {
+        draft.revision = old.revision + 1; draft.updated_at = now();
+        await this.store.writeControl(id, draft);
+      }
+    });
+    for (const waiter of this.#waiters.get(id) ?? []) waiter.resolve();
   }
   async change<T>(id: string, change: (draft: TaskControl) => T | Promise<T>): Promise<T> {
     for (;;) {

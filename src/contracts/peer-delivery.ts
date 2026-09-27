@@ -39,6 +39,36 @@ export type PeerDeliveryRecord = z.output<typeof PeerDeliveryRecordSchema>;
 export type PeerDeliveryReceiptStatus = "current" | "superseded";
 
 export const MAX_PEER_DELIVERIES = 64;
+/** A task-owned capacity claim; it never grants permission to disclose source content. */
+export const PeerDeliverySlotReservationSchema = z.object({
+  schema_version: z.literal(1), operation_key: PeerDeliveryKeySchema, request_digest: hash,
+  case_id: uuid, expected_case_revision: positive, case_revision: positive, case_generation: positive,
+  recipient_task_id: uuid, recipient_run_id: uuid, recipient_control_generation: positive,
+  recipient_workspace: bounded(4096), recipient_workspace_fingerprint: hash,
+  source_work_id: uuid, source_work_revision: positive,
+  state: z.enum(["reserved", "consumed", "released"]),
+  delivery_id: uuid.optional(),
+}).strict().superRefine((slot, context) => {
+  if ((slot.state === "consumed") !== (slot.delivery_id !== undefined))
+    context.addIssue({ code: "custom", message: "consumed delivery slot requires exactly one delivery identity" });
+  if (slot.case_revision !== slot.expected_case_revision + 1)
+    context.addIssue({ code: "custom", message: "delivery slot result revision must follow its expected case" });
+});
+export type PeerDeliverySlotReservation = z.output<typeof PeerDeliverySlotReservationSchema>;
+export const PeerDeliverySlotRequestSchema = PeerDeliverySlotReservationSchema.omit({ state: true, delivery_id: true });
+export type PeerDeliverySlotRequest = z.output<typeof PeerDeliverySlotRequestSchema>;
+export const PeerDeliverySlotBundleSchema = z.object({
+  operation_key: PeerDeliveryKeySchema, request_digest: hash, case_id: uuid,
+  expected_case_revision: positive, case_revision: positive, case_generation: positive,
+  recipient_task_id: uuid, recipient_run_id: uuid, recipient_control_generation: positive,
+  recipient_workspace: bounded(4096), recipient_workspace_fingerprint: hash,
+  sources: z.array(z.object({ work_id: uuid, work_revision: positive }).strict()).min(1).max(MAX_PEER_DELIVERIES),
+}).strict().superRefine((bundle, context) => {
+  if (bundle.case_revision !== bundle.expected_case_revision + 1 ||
+    new Set(bundle.sources.map(source => source.work_id)).size !== bundle.sources.length)
+    context.addIssue({ code: "custom", message: "delivery slot bundle has duplicate sources or inconsistent case revision" });
+});
+export type PeerDeliverySlotBundle = z.output<typeof PeerDeliverySlotBundleSchema>;
 export type PeerDeliverySource = Readonly<Pick<PeerDeliveryEnvelope, "source_work_id" | "source_work_revision" | "case_id" | "case_revision" | "case_generation" | "evidence_id" | "evidence_revision" | "evidence_digest" | "content" | "idempotency_key">>;
 /** Fixed-width recipient placeholders make sizing conservative before queue admission. */
 export function peerDeliverySizingEnvelope(source: PeerDeliverySource, recipientWorkspace: string): PeerDeliveryEnvelope {

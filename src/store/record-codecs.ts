@@ -185,7 +185,7 @@ export function decodeRequest(value: unknown, id: string): StoredRequest {
 }
 export function decodeState(value: unknown): TaskState {
   if (recordObject(value) && value.schema_version !== undefined) {
-    version(value, [2], "store.state");
+    version(value, [2, 3], "store.state");
     const control = parse(TaskControlSchema, value, "store.state");
     for (const delivery of control.peer_deliveries ?? []) {
       try { immutablePeerEnvelope(delivery.envelope); }

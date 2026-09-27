@@ -2,7 +2,7 @@ import { z } from "zod";
 import { isAbsolute } from "node:path";
 import { AssignmentSchema, AgentRegistrationSchema, SafeConfigurationSchema, AgentIdSchema } from "./agents.js";
 import type { DelegateResult } from "./types.js";
-import { MAX_PEER_DELIVERIES, PeerDeliveryRecordSchema } from "./peer-delivery.js";
+import { MAX_PEER_DELIVERIES, PeerDeliveryRecordSchema, PeerDeliverySlotReservationSchema } from "./peer-delivery.js";
 
 const key = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -125,8 +125,8 @@ export const ControlReceiptSchema = z.object({
   at: instant, input_id: TaskIdSchema.optional(), generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 }).strict();
 export type ControlReceipt = z.output<typeof ControlReceiptSchema>;
-export const TaskControlSchema = z.object({
-  schema_version: z.literal(2), task_id: TaskIdSchema, revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+const taskControlFields = {
+  task_id: TaskIdSchema, revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   owner_id: hash, control_generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   phase: z.enum(["queued", "starting", "active", "awaiting_input", "needs_attention", "stopping", "finalizing", "terminal"]),
   outcome: z.enum(["completed", "blocked", "failed", "cancelled", "interrupted"]).optional(),
@@ -136,7 +136,9 @@ export const TaskControlSchema = z.object({
   cancel: z.object({ reason: z.string().min(1).max(2048), at: instant, operation_key: key }).strict().optional(),
   settled_outcome: z.enum(["completed", "blocked", "failed", "cancelled", "interrupted"]).optional(),
   attention: z.string().max(2048).optional(), telemetry_omitted: z.boolean().default(false),
-}).strict().superRefine((v, c) => {
+};
+const taskControlBase = z.object(taskControlFields).strict();
+function validateTaskControl(v: z.output<typeof taskControlBase>, c: z.RefinementCtx): void {
   if ((v.phase === "terminal") !== (v.outcome !== undefined)) c.addIssue({ code: "custom", message: "terminal phase/outcome mismatch" });
   if (v.outcome === "completed" && v.cancel) c.addIssue({ code: "custom", message: "cancelled task cannot complete" });
   if (new Set(v.inputs.map((i) => i.input_id)).size !== v.inputs.length || new Set(v.receipts.map((r) => r.operation_key)).size !== v.receipts.length) c.addIssue({ code: "custom", message: "duplicate control identities" });
@@ -144,7 +146,36 @@ export const TaskControlSchema = z.object({
   if (v.peer_deliveries && (new Set(v.peer_deliveries.map((delivery) => delivery.envelope.idempotency_key)).size !== v.peer_deliveries.length ||
     v.peer_deliveries.some((delivery) => delivery.envelope.recipient_task_id !== v.task_id))) c.addIssue({ code: "custom", message: "duplicate or foreign peer delivery" });
   if (v.phase === "terminal" && v.inputs.some((i) => i.state === "pending" || i.state === "answer_intent" || i.state === "delivery_unknown")) c.addIssue({ code: "custom", message: "terminal input obligation unresolved" });
+}
+export const TaskControlV2Schema = taskControlBase.extend({ schema_version: z.literal(2) }).strict().superRefine(validateTaskControl);
+export const TaskControlV3Schema = taskControlBase.extend({
+  schema_version: z.literal(3), peer_delivery_reservations: z.array(PeerDeliverySlotReservationSchema).max(MAX_PEER_DELIVERIES),
+}).strict().superRefine((v, c) => {
+  validateTaskControl(v, c);
+  const slots = v.peer_delivery_reservations;
+  if ((v.peer_deliveries?.length ?? 0) + slots.filter(slot => slot.state === "reserved").length > MAX_PEER_DELIVERIES)
+    c.addIssue({ code: "custom", message: "retained peer deliveries and reserved slots exceed capacity" });
+  const keys = slots.map(slot => `${slot.operation_key}:${slot.source_work_id}`);
+  if (new Set(keys).size !== keys.length || slots.some(slot => slot.recipient_task_id !== v.task_id ||
+    slot.state === "consumed" && !v.peer_deliveries?.some(delivery =>
+      delivery.envelope.delivery_id === slot.delivery_id && delivery.envelope.case_id === slot.case_id &&
+      delivery.envelope.case_revision === slot.case_revision && delivery.envelope.case_generation === slot.case_generation &&
+      delivery.envelope.source_work_id === slot.source_work_id &&
+      delivery.envelope.source_work_revision === slot.source_work_revision &&
+      delivery.envelope.recipient_task_id === slot.recipient_task_id &&
+      delivery.envelope.recipient_run_id === slot.recipient_run_id &&
+      delivery.envelope.recipient_control_generation === slot.recipient_control_generation &&
+      delivery.envelope.recipient_workspace === slot.recipient_workspace &&
+      delivery.envelope.recipient_workspace_fingerprint === slot.recipient_workspace_fingerprint)))
+    c.addIssue({ code: "custom", message: "duplicate, foreign or unbound peer delivery slot" });
+  const operationDigests = new Map<string, string>();
+  for (const slot of slots) {
+    const prior = operationDigests.get(slot.operation_key);
+    if (prior && prior !== slot.request_digest) c.addIssue({ code: "custom", message: "reservation operation digest conflict" });
+    operationDigests.set(slot.operation_key, slot.request_digest);
+  }
 });
+export const TaskControlSchema = z.union([TaskControlV2Schema, TaskControlV3Schema]);
 export type TaskControl = z.output<typeof TaskControlSchema>;
 export type LifecycleResult = Omit<DelegateResult, "schema_version" | "model" | "execution_status"> & {
   schema_version: 4; execution_status: "completed" | "blocked" | "failed" | "cancelled" | "interrupted";
@@ -158,7 +189,7 @@ export const NativeObservationSchema = NativeEvidenceSchema.omit({ obligations: 
 export const TaskObservationSchema = z.object({
   schema_version: z.literal(1), task_id: TaskIdSchema, request_key: key, agent_id: AgentIdSchema,
   source_view: path, revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), control_generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  phase: TaskControlSchema.shape.phase, outcome: TaskControlSchema.shape.outcome,
+  phase: taskControlBase.shape.phase, outcome: taskControlBase.shape.outcome,
   native: NativeObservationSchema, updated_at: instant,
   inputs: z.array(z.object({ input_id: TaskIdSchema, kind: z.enum(["permission", "clarification"]), state: PendingInputSchema.shape.state, summary: z.string().max(512) }).strict()).max(8), inputs_count: z.number().int().min(0).max(4096),
   attention: z.string().max(2048).optional(), telemetry_omitted: z.boolean(),
