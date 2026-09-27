@@ -9,6 +9,8 @@ export const SUBMISSION_CONTROL_SCHEMA = 4;
 export const SOURCE_GRANT_CONTROL_SCHEMA = 5;
 export const SOURCE_WATCH_CONTROL_SCHEMA = 6;
 export const OBSERVED_CASE_CONTROL_SCHEMA = 7;
+/** Transient internal precondition; it is never stored or included in a receipt identity. */
+export type ObservedDeliveryMetadataGuard = Readonly<{ epoch: string; revision: number }>;
 export const WORK_INTENT_BYTES = 4096;
 export const CONTROL_MAX_BYTES = 2 * 1024 * 1024;
 // More than the worst-case escaped closure receipt and its bounded counter changes.

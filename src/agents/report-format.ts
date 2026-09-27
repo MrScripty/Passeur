@@ -48,6 +48,11 @@ export function peerProposalRejection(error: unknown): string | undefined {
   }
 }
 
+/** A settled native turn may describe obsolete peer evidence; resume without carrying its requested effect. */
+export function peerSupersededPrompt(): string {
+  return "The peer evidence in the completed turn was superseded. Do not propose, acknowledge, withdraw, or apply its content. Request the current peer context before any coordination action, then continue this assignment in the same session.";
+}
+
 function proposedContentPreviews(changes: readonly PeerResolutionChange[], budget: number): string {
   const heading = "\nProposed file content previews (untrusted; sha256 identifies proposed result bytes):";
   const omitted = "\nFurther proposed content previews need detail; consult the canonical proposal before consent.";

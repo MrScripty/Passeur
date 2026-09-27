@@ -12,6 +12,8 @@ import { selectPeerOverlapEvidence } from '../../.passeur-core/src/observation/o
 import { serviceFixture } from '../fixtures/structural/service-fixture.mjs';
 import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
 import { operatorToken } from '../../.passeur-core/src/service/operator-token.js';
+import { CoordinationStore } from '../../.passeur-core/src/store/coordination-store.js';
+import { CoordinationControl } from '../../.passeur-core/src/coordination/control.js';
 
 const task = randomUUID();
 const source = { id: randomUUID(), owner: 'a'.repeat(64), workspace_id: 'first',
@@ -225,6 +227,282 @@ test('real incomplete parser coverage reaches the queued peer delivery', async t
   assert.equal(content.selected_evidence.coverage, 'incomplete');
   assert.ok(content.selected_evidence.limitations.some(value => value.includes('comparison:') &&
     (value.includes('syntax') || value.includes('parse'))), JSON.stringify(content.selected_evidence.limitations));
+});
+
+test('current capture replacement preserves exact native receipt without changing case or work revision', async t => {
+  const fixture = await serviceFixture(t);
+  await fixture.service.close();
+  const intent = { project: fixture.root, stateRoot: fixture.state,
+    profilePath: join(fixture.temp, 'missing-profile.json') };
+  const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
+  const token = await operatorToken(binding, true);
+  const actors = [{ owner_id: createHash('sha256').update(token).digest('hex'), client_id: randomUUID() },
+    { owner_id: 'b'.repeat(64), client_id: randomUUID() }];
+  let releaseNative, releasePeer, captured = false, deliveredStatus, observedStatus;
+  const nativeHold = new Promise(resolve => { releaseNative = resolve; });
+  const peerHold = new Promise(resolve => { releasePeer = resolve; });
+  const workspaces = [];
+  const workers = [0, 1].map(index => ({ async run(input) {
+    workspaces[index] = input.workspace;
+    await writeFile(join(input.workspace, 'source.ts'), `export function run() { return ${index + 1}; }\n`);
+    await input.onEvent({ kind: 'turn_started', turn_id: `initial-${index}`, native_session_id: `session-${index}` });
+    await input.onEvent({ kind: 'turn_settled', turn_id: `initial-${index}`, native_session_id: `session-${index}`, terminal: 'completed' });
+    if (index === 1) await nativeHold;
+    else {
+      let envelope;
+      for (let attempt = 0; attempt < 200 && !envelope; attempt++) {
+        envelope = await input.peer.next();
+        if (!envelope) await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      if (!envelope) throw Error('controlled peer envelope was never queued');
+      await input.onEvent({ kind: 'turn_started', turn_id: 'peer-native', native_session_id: 'session-0' });
+      captured = true; await peerHold;
+      deliveredStatus = await input.peer.delivered(envelope.idempotency_key, 'peer-native', 'session-0');
+      await input.onEvent({ kind: 'turn_settled', turn_id: 'peer-native', native_session_id: 'session-0', terminal: 'completed' });
+      observedStatus = await input.peer.observed(envelope.idempotency_key, 'peer-native', 'session-0');
+    }
+    return { status: 'completed', worker_stop: 'confirmed', worker_assessment: 'met',
+      summary: 'Controlled peer stopped', blockers: [], questions: [], checks: [] };
+  } }));
+  const store = new TaskStore(binding.storeRoot);
+  const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
+    mode: 'development', node_version: process.version, node_executable: process.execPath,
+    pid: process.pid, started_at: new Date().toISOString() }, {
+    store: () => store,
+    profile: async () => ({ schema_version: 3, execution: {
+      stop_grace_ms: 1000, max_workers: 2, max_queued_tasks: 2, max_clients: 32,
+      max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
+      implementation: { enabled: true, worktree_root: join(fixture.temp, 'managed-worktrees') },
+    }, agents: workers.map((_, index) => ({ agent_id: `peer${index}`, adapter_id: `peer${index}`,
+      description: '', enabled: true, options: {} })) }),
+    definitions: Object.fromEntries(workers.map((worker, index) => [`peer${index}`, {
+      configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {},
+        worker: { run: input => worker.run(input) } }),
+    }])),
+  });
+  fixture.sessions.push({ close: async () => { releasePeer(); releaseNative(); await runtime.shutdown(); } });
+  await runtime.coordinate({ schema_version: 1, kind: 'initialize', limits: fixture.limits }, actors[0], fixture.root);
+  const submissions = await Promise.all(workers.map((_, index) => runtime.submitCoordinated({
+    schema_version: 2, kind: 'inline', assignment: { schema_version: 3,
+      agent_id: `peer${index}`, request_key: randomUUID(), mode: 'implement',
+      objective: `Change source.ts for peer ${index}`, context: '', acceptance_criteria: ['Edit source.ts'],
+      allowed_paths: ['source.ts'], base_commit: fixture.base, target_ref: 'refs/heads/main' },
+  }, actors[index], fixture.root, new AbortController().signal)));
+  const ids = submissions.map(item => item.task_id);
+  for (let attempt = 0; attempt < 160 && !captured; attempt++) {
+    for (const [index, id] of ids.entries()) {
+      try { await runtime.structuralRefresh(id, actors[index]); }
+      catch (error) { if (!['STRUCTURAL_SOURCE_FORBIDDEN', 'COORDINATION_NOT_FOUND'].includes(error.code)) throw error; }
+    }
+    if (!captured) await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(captured, 'a real observed pair must reach a native peer turn');
+  const before = JSON.parse(await readFile(join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
+  await writeFile(join(workspaces[1], 'source.ts'), 'export function run() { return 3; }\n');
+  await runtime.structuralRefresh(ids[1], actors[1]);
+  const after = JSON.parse(await readFile(join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
+  assert.equal(after.cases[0].revision, before.cases[0].revision);
+  assert.deepEqual(after.works.map(work => work.revision), before.works.map(work => work.revision));
+  releasePeer();
+  for (let attempt = 0; attempt < 120 && !observedStatus; attempt++)
+    await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(deliveredStatus, 'superseded');
+  assert.equal(observedStatus, 'superseded');
+  const records = await store.readPeerDeliveries(ids[0]);
+  assert.ok(records.some(record => record.state === 'observed' && record.native_turn_id === 'peer-native'));
+});
+
+test('pending observed case keeps an obsolete native receipt pending until fresh peer evidence is observed', async t => {
+  const fixture = await serviceFixture(t);
+  await fixture.service.close();
+  const intent = { project: fixture.root, stateRoot: fixture.state,
+    profilePath: join(fixture.temp, 'missing-profile.json') };
+  const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
+  const token = await operatorToken(binding, true);
+  const actor = { owner_id: createHash('sha256').update(token).digest('hex'), client_id: randomUUID() };
+  const pause = () => { let release; const promise = new Promise(resolve => { release = resolve; });
+    return { promise, release }; };
+  const nativeHolds = [pause(), pause(), pause()], obsoleteTurn = pause(), continuePeer = pause();
+  const workspaces = [], received = [], statuses = [], settlementAttempts = [];
+  let otherRevised, obsoleteRevised, obsoleteObserved, settlementRelease, stop = false;
+  const workers = [0, 1, 2].map(index => ({ async run(input) {
+    workspaces[index] = input.workspace;
+    await writeFile(join(input.workspace, 'source.ts'), `export function run() { return ${index + 1}; }\n`);
+    await input.onEvent({ kind: 'turn_started', turn_id: `initial-${index}`, native_session_id: `session-${index}` });
+    await input.onEvent({ kind: 'turn_settled', turn_id: `initial-${index}`, native_session_id: `session-${index}`, terminal: 'completed' });
+    if (index !== 0) await nativeHolds[index].promise;
+    else {
+      let sequence = 0;
+      while (!stop) {
+        const envelope = await input.peer.next();
+        if (!envelope) { await new Promise(resolve => setTimeout(resolve, 25)); continue; }
+        const turn_id = `peer-0-${++sequence}`;
+        await input.onEvent({ kind: 'turn_started', turn_id, native_session_id: 'session-0' });
+        if (envelope.case_revision > 2 && otherRevised &&
+          envelope.source_work_id !== otherRevised.source_work_id && !obsoleteRevised) {
+          obsoleteRevised = envelope;
+          await obsoleteTurn.promise;
+        }
+        const delivered = await input.peer.delivered(envelope.idempotency_key, turn_id, 'session-0');
+        await input.onEvent({ kind: 'turn_settled', turn_id, native_session_id: 'session-0', terminal: 'completed' });
+        const observed = await input.peer.observed(envelope.idempotency_key, turn_id, 'session-0');
+        received.push(envelope); statuses.push({ delivered, observed });
+        if (envelope.case_revision > 2 && !otherRevised) otherRevised = envelope;
+        if (envelope === obsoleteRevised) { obsoleteObserved = observed; await continuePeer.promise; }
+      }
+    }
+    return { status: 'completed', worker_stop: 'confirmed', worker_assessment: 'met',
+      summary: 'Controlled peer stopped', blockers: [], questions: [], checks: [] };
+  } }));
+  const store = new TaskStore(binding.storeRoot);
+  const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
+    mode: 'development', node_version: process.version, node_executable: process.execPath,
+    pid: process.pid, started_at: new Date().toISOString() }, {
+    store: () => store,
+    onObservedCaseSettlement: attempt => settlementAttempts.push(attempt),
+    profile: async () => ({ schema_version: 3, execution: {
+      stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
+      max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
+      implementation: { enabled: true, worktree_root: join(fixture.temp, 'managed-worktrees') },
+    }, agents: workers.map((_, index) => ({ agent_id: `peer${index}`, adapter_id: `peer${index}`,
+      description: '', enabled: true, options: {} })) }),
+    definitions: Object.fromEntries(workers.map((worker, index) => [`peer${index}`, {
+      configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {},
+        worker: { run: input => worker.run(input) } }),
+    }])),
+  });
+  fixture.sessions.push({ close: async () => { stop = true; obsoleteTurn.release(); continuePeer.release();
+    settlementRelease?.release(); nativeHolds.forEach(hold => hold.release()); await runtime.shutdown(); } });
+  await runtime.coordinate({ schema_version: 1, kind: 'initialize', limits: fixture.limits }, actor, fixture.root);
+  const submit = index => runtime.submitCoordinated({ schema_version: 2, kind: 'inline',
+    assignment: { schema_version: 3, agent_id: `peer${index}`, request_key: randomUUID(),
+      mode: 'implement', objective: `Change source.ts for peer ${index}`, context: '',
+      acceptance_criteria: ['Edit source.ts'], allowed_paths: ['source.ts'],
+      base_commit: fixture.base, target_ref: 'refs/heads/main' },
+  }, actor, fixture.root, new AbortController().signal);
+  const ids = (await Promise.all([submit(0), submit(1)])).map(item => item.task_id);
+  const state = async () => JSON.parse(await readFile(join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
+  const waitFor = async (description, read, predicate, attempts = 160) => {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const value = await read(); if (predicate(value)) return value;
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    assert.fail(`${description} did not become true`);
+  };
+  const refresh = async index => {
+    try { await runtime.structuralRefresh(ids[index], actor); }
+    catch (error) { if (!['STRUCTURAL_SOURCE_FORBIDDEN', 'COORDINATION_NOT_FOUND'].includes(error.code)) throw error; }
+  };
+  let pairCase;
+  for (let attempt = 0; attempt < 160 && !pairCase; attempt++) {
+    await refresh(0); await refresh(1);
+    pairCase = (await state()).cases.find(item => item.observed_origin === 'selected' && item.inputs.length === 2);
+    if (!pairCase) await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(pairCase, 'two real captures must establish an observed case');
+  const third = await submit(2); ids.push(third.task_id);
+  await waitFor('third native task', () => store.readControl(third.task_id),
+    control => control.native.state === 'observed_live' && control.native.coverage === 'turn_scoped');
+  const before = await state();
+  const workIds = ids.map(id => before.works.find(work => work.managed?.task_id === id)?.id);
+  assert.ok(workIds.every(Boolean), 'all three managed works are registered');
+  const control = new CoordinationControl(await CoordinationStore.open(binding.storeRoot, binding.repositoryId, () => {}));
+  t.after(() => control.close());
+  await control.extendObservedCase(actor, { operation_key: randomUUID(), case_id: pairCase.id,
+    expected_revision: pairCase.revision, generation: pairCase.generation,
+    new_work_id: workIds[2], target_oid: pairCase.target_oid });
+  const joined = (await state()).cases.find(item => item.id === pairCase.id);
+  assert.deepEqual([...joined.delivery_pending].sort(), [...workIds].sort());
+  await refresh(2);
+  await waitFor('other revised source observed before obsolete final source', async () => otherRevised, Boolean);
+  await waitFor('final needed revised envelope held', async () => obsoleteRevised, Boolean);
+  assert.notEqual(otherRevised.source_work_id, obsoleteRevised.source_work_id);
+  assert.ok((await store.readPeerDeliveries(ids[0])).some(record => record.state === 'observed' &&
+    record.envelope.delivery_id === otherRevised.delivery_id));
+  const sourceIndex = workIds.indexOf(obsoleteRevised.source_work_id);
+  assert.ok(sourceIndex > 0, 'held revised envelope comes from another worker');
+  await writeFile(join(workspaces[sourceIndex], 'source.ts'), 'export function run() { return 42; }\n');
+  await refresh(sourceIndex);
+  const changed = await state();
+  assert.equal(changed.cases.find(item => item.id === joined.id).revision, joined.revision);
+  assert.deepEqual(changed.works.map(work => work.revision), before.works.map(work => work.revision));
+  obsoleteTurn.release();
+  await waitFor('historical observed receipt', async () => obsoleteObserved, Boolean);
+  assert.equal(obsoleteObserved, 'superseded');
+  const historical = await store.readPeerDeliveries(ids[0]);
+  assert.ok(historical.some(record => record.state === 'observed' &&
+    record.envelope.delivery_id === obsoleteRevised.delivery_id));
+  assert.ok(historical.some(record => record.state === 'observed' &&
+    record.envelope.delivery_id === otherRevised.delivery_id));
+  const obsoleteAttempt = await waitFor('obsolete final source reconciliation completed', async () =>
+    settlementAttempts.find(attempt => attempt.recipient_work_id === workIds[0] &&
+      attempt.observed_delivery_ids.includes(obsoleteRevised.delivery_id)), Boolean, 400);
+  assert.equal(obsoleteAttempt.outcome, 'rejected');
+  assert.ok((await state()).cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]),
+    'an obsolete observed native turn cannot discharge the current obligation');
+  const reopenedTasks = new TaskStore(binding.storeRoot);
+  const reopenedMetadata = await CoordinationStore.open(binding.storeRoot, binding.repositoryId, () => {});
+  try {
+    assert.ok((await reopenedTasks.readPeerDeliveries(ids[0])).some(record => record.state === 'observed' &&
+      record.envelope.delivery_id === obsoleteRevised.delivery_id));
+    assert.ok((await reopenedMetadata.snapshot()).cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]));
+  } finally { await reopenedMetadata.close(); }
+  const settlementEntered = pause(), firstGuardFinished = pause(); settlementRelease = pause();
+  const observeDelivery = CoordinationControl.prototype.observeCaseDelivery;
+  let guarded = false, guardRejected = false, pendingAtGuardRejection = false;
+  CoordinationControl.prototype.observeCaseDelivery = async function (...args) {
+    let firstAttempt = false;
+    if (args[1].case_id === joined.id && args[1].recipient_work_id === workIds[0]) {
+      if (!guarded) { guarded = true; firstAttempt = true; settlementEntered.release(); }
+      await settlementRelease.promise;
+      if (!firstAttempt) await firstGuardFinished.promise;
+    }
+    try { return await observeDelivery.apply(this, args); }
+    catch (error) {
+      if (firstAttempt && error.code === 'PEER_DELIVERY_STALE') {
+        const snapshot = await this.store.snapshot();
+        pendingAtGuardRejection = snapshot.cases.find(item => item.id === joined.id)
+          .delivery_pending.includes(workIds[0]) &&
+          !snapshot.cases.find(item => item.id === joined.id).delivery_observed.some(item => item.work_id === workIds[0]);
+        guardRejected = true;
+      }
+      throw error;
+    } finally { if (firstAttempt) firstGuardFinished.release(); }
+  };
+  t.after(() => { settlementRelease.release(); firstGuardFinished.release();
+    CoordinationControl.prototype.observeCaseDelivery = observeDelivery; });
+  continuePeer.release();
+  await waitFor('current evidence reached guarded metadata settlement', async () => guarded, Boolean, 400);
+  await control.execute(actor, { kind: 'post_note', operation_key: randomUUID(),
+    subject: { kind: 'case', id: joined.id }, note_kind: 'statement', text: 'unrelated metadata revision', parties: [] });
+  assert.ok((await state()).cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]),
+    'a pending obligation remains held before the guarded commit');
+  settlementRelease.release();
+  await waitFor('stale metadata guard rejected earlier proof', async () => guardRejected, Boolean);
+  assert.ok(pendingAtGuardRejection, 'rejected stale proof publishes no observed delivery receipt');
+  let completedAttempt;
+  try { completedAttempt = await waitFor('fresh current peer evidence reconciliation completed', async () =>
+    settlementAttempts.find(attempt => attempt.recipient_work_id === workIds[0] &&
+      attempt.outcome === 'completed'), Boolean, 400); }
+  catch (error) {
+    const latest = await state(), records = await store.readPeerDeliveries(ids[0]);
+    throw new Error(`${error.message}: ${JSON.stringify({ pending: latest.cases.find(item => item.id === joined.id)?.delivery_pending,
+      deliveries: records.filter(record => record.envelope.case_id === joined.id).map(record => ({
+        revision: record.envelope.case_revision, source: record.envelope.source_work_id,
+        state: record.state, delivery: record.envelope.delivery_id })),
+      received: received.map(envelope => ({ revision: envelope.case_revision, source: envelope.source_work_id,
+        delivery: envelope.delivery_id })), statuses, guardRejected, runtime: runtime.status().coordination })}`);
+  }
+  assert.ok(statuses.some(item => item.observed === 'current'));
+  const replacement = received.find(envelope => envelope.case_revision === joined.revision &&
+    envelope.source_work_id === obsoleteRevised.source_work_id && envelope.delivery_id !== obsoleteRevised.delivery_id);
+  assert.ok(replacement);
+  const settled = await state();
+  assert.ok(!settled.cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]));
+  assert.equal(settled.cases.find(item => item.id === joined.id).delivery_observed.filter(item => item.work_id === workIds[0]).length, 1);
+  assert.ok(completedAttempt.observed_delivery_ids.includes(replacement.delivery_id));
+  assert.equal(settlementAttempts.filter(attempt => attempt.recipient_work_id === workIds[0] &&
+    attempt.outcome === 'completed').length, 1);
 });
 
 test('late third managed worker joins one observed case and each adapter consumes revised peer evidence', {

@@ -135,9 +135,9 @@ export class CoordinationService {
   observeCaseDelivery(connection: CoordinationConnection, command: Readonly<{
     operation_key: string; case_id: string; case_revision: number; generation: number;
     recipient_work_id: string; observation_digest: string;
-  }>): Promise<Receipt> {
+  }>, guard: import("../contracts/coordination-control.js").ObservedDeliveryMetadataGuard): Promise<Receipt> {
     return this.#submission(connection, "control", true, undefined, (control, actor) =>
-      control.observeCaseDelivery(actor, command));
+      control.observeCaseDelivery(actor, command, guard));
   }
   submissionBinding(connection: CoordinationConnection, taskId: string, signal?: AbortSignal): Promise<SubmissionBinding> {
     return this.#submission(connection, "control", false, signal, (control, actor) => control.submissionBinding(actor, taskId));

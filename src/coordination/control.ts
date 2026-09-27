@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalHash, Mutex } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
 import { MANAGED_CONTROL_SCHEMA, SUBMISSION_CONTROL_SCHEMA, SOURCE_GRANT_CONTROL_SCHEMA, SOURCE_WATCH_CONTROL_SCHEMA, OBSERVED_CASE_CONTROL_SCHEMA, CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
-  coordinationOperationKey, controlReceiptCount, recoveryReceipts, decodeRecoveryCommand, MAX_PARTIES, MAX_REGIONS, type RecoveryCommand, type RecoveryReceipt, type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
+  coordinationOperationKey, controlReceiptCount, recoveryReceipts, decodeRecoveryCommand, MAX_PARTIES, MAX_REGIONS, type RecoveryCommand, type RecoveryReceipt, type ParentId, type Receipt, type Region, type Subject, type Work, type ObservedDeliveryMetadataGuard } from "../contracts/coordination-control.js";
 import { announcements, submissionBindings, submissionEvents, decodeAnnouncementInput, decodeAnnouncementWithdrawalInput,
   decodeSubmissionPreflightInput, decodeSubmissionBindInput, decodeSubmissionDispositionInput, decodeSubmissionTerminalInput,
   type AnnouncementRecord, type SubmissionBinding, type SubmissionEvent, type SubmissionPreflightInput } from "../contracts/coordination-control.js";
@@ -310,7 +310,7 @@ export class CoordinationControl {
   async observeCaseDelivery(actor: CoordinationActor, input: Readonly<{
     operation_key: string; case_id: string; case_revision: number; generation: number;
     recipient_work_id: string; observation_digest: string;
-  }>): Promise<Receipt> {
+  }>, guard: ObservedDeliveryMetadataGuard): Promise<Receipt> {
     const owner = parentId(actor.owner_id), command = { kind: "observe_case_delivery" as const,
       operation_key: coordinationOperationKey(input.operation_key), case_id: entityId(input.case_id),
       case_revision: input.case_revision, generation: input.generation,
@@ -324,6 +324,8 @@ export class CoordinationControl {
         if (prior.request_hash !== hash || prior.action !== command.kind) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Delivery observation key identifies different evidence");
         return structuredClone(prior);
       }
+      if (!guard || current.epoch !== guard.epoch || current.revision !== guard.revision)
+        throw new BridgeError("PEER_DELIVERY_STALE", "Metadata changed after current delivery evidence was checked");
       const item = current.cases.find(candidate => candidate.id === command.case_id && candidate.state === "active");
       if (!item || item.lead !== owner || item.revision !== command.case_revision || item.generation !== command.generation ||
         item.observed_origin !== "selected" || !item.delivery_pending?.includes(command.recipient_work_id))

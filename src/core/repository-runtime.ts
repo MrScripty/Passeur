@@ -216,6 +216,9 @@ export type RuntimeDependencies = {
   legacyRoots?: (binding: ResolvedBinding, signal: AbortSignal) => Promise<string[]>;
   profile?: (path: string) => Promise<SharedProfile>;
   definitions?: Readonly<Record<string, AdapterDefinition>>;
+  /** Internal, completion-only observation of a durable delivery reconciliation attempt. */
+  onObservedCaseSettlement?: (attempt: Readonly<{ case_id: string; recipient_work_id: string;
+    observed_delivery_ids: readonly string[]; outcome: "completed" | "rejected" | "failed" }>) => void;
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
@@ -279,6 +282,7 @@ export class RepositoryRuntime {
   #observationResuming = false;
   #observationStartupFailure: string | undefined;
   readonly #monitorEnabled: boolean;
+  readonly #captureIndex = new Mutex();
   readonly #correspondence = new CorrespondenceIndex();
   readonly #currentOverlapPairs = new Map<string, CorrespondencePair>();
   readonly #publishedArtifactIds = new Map<string, Readonly<{ id: string; owner: string }>>();
@@ -565,9 +569,10 @@ export class RepositoryRuntime {
             const managedTaskId = job.workspace.control_generation ?
               (await (await this.#coordinationSession(this.#binding!).observationStore()).snapshot()).works
                 .find(work => work.id === job.workspace.work_id)?.managed?.task_id : undefined;
+            const publishProtected = () => this.#captureIndex.run(publish);
             const published = managedTaskId
-              ? await (await this.#taskControls()).withTaskPublication([managedTaskId], publish)
-              : await publish();
+              ? await (await this.#taskControls()).withTaskPublication([managedTaskId], publishProtected)
+              : await publishProtected();
             if (!published) return;
             if (published.sourceChanged) await this.#coordinationSession(this.#binding!).notifyPeerObservation(published.workId, published.path);
             for (const event of published.correspondence.pairs) await this.#queuePeerOverlap(event);
@@ -841,14 +846,15 @@ export class RepositoryRuntime {
     // any live rescan can replace an overlap with an offline reversion.
     for (const work of selected) {
       try {
-        let current = owners.get(work.owner);
-        if (!current) {
-          current = await store.listCurrent(work.owner, (recipient, workId, revision, generation) =>
+        const restore = () => this.#captureIndex.run(async () => {
+          const current = await store.listCurrent(work.owner, (recipient, workId, revision, generation) =>
             this.#authorizeObservation(recipient, workId, revision, generation, "report"));
           owners.set(work.owner, current);
-        }
-        for (const item of current.reports.filter(item => item.work_id === work.id && item.work_revision === work.revision))
-          this.#publishedArtifactIds.set(JSON.stringify([work.id, item.path]), { id: item.id, owner: work.owner });
+          for (const item of current.reports.filter(item => item.work_id === work.id && item.work_revision === work.revision))
+            this.#publishedArtifactIds.set(JSON.stringify([work.id, item.path]), { id: item.id, owner: work.owner });
+        });
+        if (work.managed) await (await this.#taskControls()).withTaskPublication([work.managed.task_id], restore);
+        else await restore();
       } catch (error) { this.#observationFailures.set(work.id, errorInfo(error).code); }
     }
     const { compareCapturedWork } = await import("../observation/comparison.js");
@@ -867,16 +873,24 @@ export class RepositoryRuntime {
           if (!dialect) continue;
           const compared = await compareCapturedWork({ work_id: work.id, parent_id: work.owner, dialect,
             input: retained.input, observed: retained.observed }, this.#nativeAnalysis, this.#lifetime.signal);
-          const update = this.#correspondence.upsert(compared.report);
-          this.#publishedComparisons.set(JSON.stringify([work.id, item.path]), compared.report);
-          this.#retainCorrespondence(update);
-          for (const event of update.pairs) {
-            this.#queueCorrespondenceNotice({ artifactId: item.id, recipient: work.owner, workId: work.id,
-              subjectId: event.subject_id, state: "overlap" });
-            const peer = this.#publishedArtifactIds.get(JSON.stringify([event.other_work_id, item.path]));
-            if (peer) this.#queueCorrespondenceNotice({ artifactId: peer.id, recipient: peer.owner,
-              workId: event.other_work_id, subjectId: event.subject_id, state: "overlap" });
-          }
+          const restore = () => this.#captureIndex.run(() => {
+            if (this.#publishedArtifactIds.get(JSON.stringify([work.id, item.path]))?.id !== item.id) return undefined;
+            const update = this.#correspondence.upsert(compared.report);
+            this.#publishedComparisons.set(JSON.stringify([work.id, item.path]), compared.report);
+            this.#retainCorrespondence(update);
+            for (const event of update.pairs) {
+              this.#queueCorrespondenceNotice({ artifactId: item.id, recipient: work.owner, workId: work.id,
+                subjectId: event.subject_id, state: "overlap" });
+              const peer = this.#publishedArtifactIds.get(JSON.stringify([event.other_work_id, item.path]));
+              if (peer) this.#queueCorrespondenceNotice({ artifactId: peer.id, recipient: peer.owner,
+                workId: event.other_work_id, subjectId: event.subject_id, state: "overlap" });
+            }
+            return update;
+          });
+          const update = work.managed
+            ? await (await this.#taskControls()).withTaskPublication([work.managed.task_id], restore)
+            : await restore();
+          if (!update) continue;
           for (const event of update.pairs) await this.#queuePeerOverlap(event);
           await this.#drainCorrespondenceNotices();
         } catch (error) {
@@ -1002,9 +1016,9 @@ export class RepositoryRuntime {
       .works.find(work => work.id === workId)?.managed?.task_id;
     if (taskId) {
       await (await this.#taskControls()).withTaskPublication([taskId], async () => {
-        this.#forgetObservation(workId, workspaceId);
+        await this.#captureIndex.run(() => this.#forgetObservation(workId, workspaceId));
       });
-    } else this.#forgetObservation(workId, workspaceId);
+    } else await this.#captureIndex.run(() => this.#forgetObservation(workId, workspaceId));
   }
   #retainCorrespondence(update: CorrespondenceUpdate): void {
     for (const resolved of update.resolved) this.#currentOverlapPairs.delete(resolved.pair_id);
@@ -1237,7 +1251,9 @@ export class RepositoryRuntime {
     await assertCurrent();
     await (await this.#taskControls()).withTaskPublication(works.map(work => work!.managed!.task_id), async () => {
       await assertCurrent();
-      for (const id of ids) { this.#forgetObservation(id); this.#scheduleObservation(id); }
+      await this.#captureIndex.run(() => {
+        for (const id of ids) { this.#forgetObservation(id); this.#scheduleObservation(id); }
+      });
     });
   }
   /** A connected clique is the bounded three-worker scope; other graphs need a case-scoped evidence model. */
@@ -1445,42 +1461,78 @@ export class RepositoryRuntime {
     const binding = this.#binding, store = this.#store;
     if (!binding || !store) return;
     const metadata = this.#coordinationSession(binding);
-    const snapshot = await (await metadata.observationStore()).snapshot();
-    const item = snapshot.cases.find(candidate => candidate.id === caseId && candidate.state === "active");
-    if (!item?.delivery_pending?.length || item.observed_origin !== "selected") return;
-    for (const recipientWorkId of item.delivery_pending) {
-      const recipient = snapshot.works.find(work => work.id === recipientWorkId);
-      if (!recipient?.managed || recipient.state !== "active") continue;
-      const control = await store.readControl(recipient.managed.task_id);
-      if (control.owner_id !== recipient.owner || control.control_generation !== recipient.managed.control_generation ||
-        control.phase !== "active" || control.cancel) continue;
-      const peers = item.inputs.filter(input => input.work_id !== recipientWorkId);
-      const observations = [];
-      for (const peer of peers) {
-        const source = snapshot.works.find(work => work.id === peer.work_id);
-        if (!source?.managed || source.state !== "active") break;
-        const exact = (control.peer_deliveries ?? []).filter(record => record.state === "observed" &&
-          record.envelope.case_id === item.id && record.envelope.case_revision === item.revision &&
-          record.envelope.case_generation === item.generation && record.envelope.recipient_task_id === recipient.managed!.task_id &&
-          record.envelope.recipient_control_generation === control.control_generation &&
-          record.envelope.recipient_run_id === control.native.run_id &&
-          record.envelope.source_work_id === source.id && record.envelope.source_work_revision === source.revision)
-          .sort((a, b) => a.envelope.delivery_id.localeCompare(b.envelope.delivery_id))[0];
-        if (!exact) break;
-        observations.push({ source_work_id: source.id, delivery_id: exact.envelope.delivery_id,
-          native_turn_id: exact.native_turn_id, native_session_id: exact.native_session_id });
+    const observationMetadata = await metadata.observationStore();
+    const first = await observationMetadata.snapshot();
+    const selectedCase = first.cases.find(candidate => candidate.id === caseId && candidate.state === "active");
+    if (!selectedCase?.delivery_pending?.length || selectedCase.observed_origin !== "selected") return;
+    const selectedTasks = selectedCase.inputs.map(input => first.works.find(work => work.id === input.work_id)?.managed?.task_id);
+    if (selectedTasks.some(id => !id)) return;
+    const taskIds = selectedTasks.filter((id): id is string => id !== undefined);
+    const pending = [...selectedCase.delivery_pending];
+    type Attempt = { case_id: string; recipient_work_id: string; observed_delivery_ids: string[];
+      outcome: "completed" | "rejected" | "failed" };
+    const attempts: Attempt[] = [];
+    let failure: unknown;
+    try { await (await this.#taskControls()).withTaskPublication(taskIds, () => this.#captureIndex.run(async () => {
+      for (const recipientWorkId of pending) {
+        const snapshot = await (await metadata.observationStore()).snapshot();
+        const item = snapshot.cases.find(candidate => candidate.id === caseId && candidate.state === "active");
+        if (!item || item.revision !== selectedCase.revision || item.generation !== selectedCase.generation ||
+          item.observed_origin !== "selected" || item.inputs.length !== taskIds.length ||
+          item.inputs.some((input, index) => snapshot.works.find(work => work.id === input.work_id)?.managed?.task_id !== taskIds[index])) return;
+        if (!item.delivery_pending?.includes(recipientWorkId)) continue;
+        const recipient = snapshot.works.find(work => work.id === recipientWorkId);
+        if (!recipient?.managed || recipient.state !== "active") continue;
+        const control = await store.readControl(recipient.managed.task_id);
+        if (control.owner_id !== recipient.owner || control.control_generation !== recipient.managed.control_generation ||
+          control.phase !== "active" || control.cancel) continue;
+        const attempt: Attempt = { case_id: caseId, recipient_work_id: recipientWorkId,
+          observed_delivery_ids: [], outcome: "rejected" };
+        attempts.push(attempt);
+        const peers = item.inputs.filter(input => input.work_id !== recipientWorkId);
+        const observations = [];
+        for (const peer of peers) {
+          const source = snapshot.works.find(work => work.id === peer.work_id);
+          if (!source?.managed || source.state !== "active") break;
+          const exact = (control.peer_deliveries ?? []).filter(record => record.state === "observed" &&
+            record.envelope.case_id === item.id && record.envelope.case_revision === item.revision &&
+            record.envelope.case_generation === item.generation && record.envelope.recipient_task_id === recipient.managed!.task_id &&
+            record.envelope.recipient_control_generation === control.control_generation &&
+            record.envelope.recipient_run_id === control.native.run_id &&
+            record.envelope.source_work_id === source.id && record.envelope.source_work_revision === source.revision)
+            .sort((a, b) => a.envelope.delivery_id.localeCompare(b.envelope.delivery_id));
+          let current;
+          for (const record of exact) {
+            attempt.observed_delivery_ids.push(record.envelope.delivery_id);
+            try { if (await this.#authorizePeerDelivery(record.envelope) === "current") { current = record; break; } }
+            catch { /* A failed current evidence check cannot settle the durable obligation. */ }
+          }
+          if (!current) break;
+          observations.push({ source_work_id: source.id, delivery_id: current.envelope.delivery_id,
+            native_turn_id: current.native_turn_id, native_session_id: current.native_session_id });
+        }
+        if (observations.length !== peers.length) continue;
+        try {
+          await metadata.observeCaseDelivery({ owner_id: item.lead, source_view: binding.project }, {
+            operation_key: `passeur-internal:observed-delivery:${canonicalHash([item.id, item.revision, recipientWorkId])}`,
+            case_id: item.id, case_revision: item.revision, generation: item.generation,
+            recipient_work_id: recipientWorkId, observation_digest: canonicalHash(observations),
+          }, { epoch: snapshot.epoch, revision: snapshot.revision });
+          attempt.outcome = "completed";
+        } catch (error) {
+          if (errorInfo(error).code !== "PEER_DELIVERY_STALE") throw error;
+        }
       }
-      if (observations.length !== peers.length) continue;
-      try {
-        await metadata.observeCaseDelivery({ owner_id: item.lead, source_view: binding.project }, {
-          operation_key: `passeur-internal:observed-delivery:${canonicalHash([item.id, item.revision, recipientWorkId])}`,
-          case_id: item.id, case_revision: item.revision, generation: item.generation,
-          recipient_work_id: recipientWorkId, observation_digest: canonicalHash(observations),
-        });
-      } catch (error) {
-        if (errorInfo(error).code !== "PEER_DELIVERY_STALE") throw error;
-      }
+    })); }
+    catch (error) { failure = error; if (attempts.length) attempts[attempts.length - 1]!.outcome = "failed"; }
+    // This observer has no authority or backpressure. It runs after task and capture
+    // reservations release, and cannot affect the canonical receipt or case state.
+    for (const attempt of attempts) {
+      try { this.#deps.onObservedCaseSettlement?.(Object.freeze({ ...attempt,
+        observed_delivery_ids: Object.freeze([...attempt.observed_delivery_ids]) })); }
+      catch { /* Advisory test/diagnostic observer cannot change settlement. */ }
     }
+    if (failure) throw failure;
   }
   async #workerPeerOperation(taskId: string, request: WorkerPeerOperationRequest, signal: AbortSignal): Promise<PeerWorkerOperationResult> {
     const store = this.#store, binding = this.#binding;
@@ -1821,7 +1873,7 @@ export class RepositoryRuntime {
         this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority(), this.#controls);
         this.#coordinator.onAuthorizePeerDelivery = envelope => this.#authorizePeerDelivery(envelope);
         this.#coordinator.onPeerDeliveryObserved = caseId =>
-          this.#track(() => this.#settleObservedCaseDeliveries(caseId), false);
+          this.#track(async () => { await this.#settleObservedCaseDeliveries(caseId); await this.#retrySelectedCase(caseId); }, false);
         this.#coordinator.onPeerDeliveryQueuedStale = caseId =>
           this.#track(() => this.#retrySelectedCase(caseId), false);
         this.#coordinator.onWorkerPeerOperation = (taskId, request, signal) => this.#workerPeerOperation(taskId, request, signal);
@@ -2693,7 +2745,7 @@ export class RepositoryRuntime {
             { owner_id: actor.owner_id, source_view: this.#binding.project }, id,
             () => controls.adopt(id, actor, operation))
           : await controls.adopt(id, actor, operation);
-        await controls.withTaskPublication([id], async () => { this.#forgetObservation(id); });
+        await controls.withTaskPublication([id], () => this.#captureIndex.run(() => this.#forgetObservation(id)));
         return { receipt, task: await controls.read(id, actor) };
       } finally { release(); }
     });

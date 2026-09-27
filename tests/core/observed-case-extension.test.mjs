@@ -100,16 +100,31 @@ test('partial adapter observation clears only one recipient without changing cas
   const joined = await f.control.reconciliation(A, f.item.id);
   const command = { operation_key: key(), case_id: joined.id, case_revision: joined.revision,
     generation: joined.generation, recipient_work_id: f.ids[0], observation_digest: 'd'.repeat(64) };
-  const receipt = await f.control.observeCaseDelivery(A, command);
-  assert.deepEqual(await f.control.observeCaseDelivery(A, command), receipt);
+  const snapshot = await f.store.snapshot(), guard = { epoch: snapshot.epoch, revision: snapshot.revision };
+  const receipt = await f.control.observeCaseDelivery(A, command, guard);
+  assert.deepEqual(await f.control.observeCaseDelivery(A, command, guard), receipt);
   const current = await f.control.reconciliation(A, joined.id);
   assert.equal(current.revision, joined.revision, 'adapter receipt does not stale other queued envelopes');
   assert.deepEqual(current.delivery_pending, f.ids.slice(1));
   assert.deepEqual(current.delivery_observed, [{ work_id: f.ids[0], observation_digest: 'd'.repeat(64) }]);
-  await assert.rejects(f.control.observeCaseDelivery(A, { ...command, operation_key: key(), recipient_work_id: f.ids[0] }),
+  await assert.rejects(f.control.observeCaseDelivery(A, { ...command, operation_key: key(), recipient_work_id: f.ids[0] }, guard),
     { code: 'PEER_DELIVERY_STALE' });
   const disk = await f.disk();
   assert.equal(decodeControl(disk, 'coordination-fixture').cases[0].delivery_pending.length, 2);
+});
+
+test('metadata publication between evidence check and settlement leaves delivery pending', async t => {
+  const f = await observedPair(t);
+  await f.control.extendObservedCase(A, extension(f.item, f.ids[2]));
+  const item = await f.control.reconciliation(A, f.item.id);
+  const snapshot = await f.store.snapshot(), guard = { epoch: snapshot.epoch, revision: snapshot.revision };
+  const work = await f.control.work(A, f.ids[0]);
+  await f.control.execute(A, { kind: 'share_work', operation_key: key(), work_id: work.id,
+    expected_revision: work.revision, readers: [B.owner_id] });
+  await assert.rejects(f.control.observeCaseDelivery(A, { operation_key: key(), case_id: item.id,
+    case_revision: item.revision, generation: item.generation, recipient_work_id: f.ids[1],
+    observation_digest: 'e'.repeat(64) }, guard), { code: 'PEER_DELIVERY_STALE' });
+  assert.deepEqual((await f.control.reconciliation(A, item.id)).delivery_pending, f.ids);
 });
 
 for (const [name, principals] of [['same-parent', [A, A, A]], ['mixed-parent', [A, A, C]]]) {

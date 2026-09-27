@@ -4,7 +4,7 @@ import { BridgeError, errorInfo, safeText } from "../../core/errors.js";
 import { withAbort } from "../../core/async.js";
 import { processIdentity } from "../../service/process.js";
 import { parseWorkerMessage, finalReport } from "../report.js";
-import { peerOperationResultPrompt, peerProposalCorrectionPrompt, peerProposalRejection, peerDeliveryPrompt, MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES } from "../report-format.js";
+import { peerOperationResultPrompt, peerProposalCorrectionPrompt, peerProposalRejection, peerSupersededPrompt, peerDeliveryPrompt, MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES } from "../report-format.js";
 import type { WorkerAdapter, WorkerInput, WorkerRun } from "../types.js";
 import { PeerDeliveryNativeSessionIdSchema, type PeerDeliveryEnvelope } from "../../contracts/peer-delivery.js";
 import type { CodexOptions } from "./config.js";
@@ -188,6 +188,7 @@ export class CodexAdapter implements WorkerAdapter {
       let pendingPeerAwait: { case_id: string; operation_key: string } | undefined;
       while (true) {
         signal.throwIfAborted();
+        let supersededPeer = false;
         if (peerTurn && !PeerDeliveryNativeSessionIdSchema.safeParse(threadId).success) {
           throw new BridgeError("PEER_DELIVERY_SESSION_ID_UNKNOWN", "Codex did not establish a bounded native thread identity for peer delivery");
         }
@@ -198,7 +199,7 @@ export class CodexAdapter implements WorkerAdapter {
         await input.onEvent({ kind: "turn_started", turn_id: id, native_session_id: threadId });
         // Early native notifications wait on turn.ready. Retain the delivery receipt
         // before releasing them, so an early terminal cannot outrun the receipt.
-        try { if (peerTurn) await input.peer!.delivered(peerTurn.idempotency_key, id, threadId); }
+        try { if (peerTurn) supersededPeer = await input.peer!.delivered(peerTurn.idempotency_key, id, threadId) === "superseded"; }
         finally { turn.open(id); }
         const terminal = await withAbort(Promise.race([turn.done, transport.failure]), signal);
         await events;
@@ -220,8 +221,13 @@ export class CodexAdapter implements WorkerAdapter {
           if (message.peer_observed !== peerTurn.idempotency_key) {
             throw new BridgeError("PEER_DELIVERY_OBSERVATION_MISSING", "Peer turn did not acknowledge the exact delivered envelope");
           }
-          await input.peer!.observed(peerTurn.idempotency_key, id, threadId);
+          supersededPeer = await input.peer!.observed(peerTurn.idempotency_key, id, threadId) === "superseded" || supersededPeer;
           peerTurn = undefined;
+        }
+        if (supersededPeer) {
+          pendingPeerAwait = undefined;
+          prompt = peerSupersededPrompt();
+          continue;
         }
         if (message.kind === "peer_proposal_invalid") {
           if (pendingPeerAwait) throw new BridgeError("PEER_OPERATION_PENDING", "A pending peer await requires its exact retained continuation key");

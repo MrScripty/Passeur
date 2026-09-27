@@ -5,7 +5,7 @@ import { setTimeout as observeAgain } from "node:timers/promises";
 import { BridgeError, errorInfo, safeText } from "../core/errors.js";
 import { settlesWithin, throwIfAborted, withAbort } from "../core/async.js";
 import { parseWorkerMessage, finalReport } from "../agents/report.js";
-import { peerOperationResultPrompt, peerProposalCorrectionPrompt, peerProposalRejection, peerDeliveryPrompt, MAX_MUSE_PEER_DELIVERY_PROMPT_BYTES } from "../agents/report-format.js";
+import { peerOperationResultPrompt, peerProposalCorrectionPrompt, peerProposalRejection, peerSupersededPrompt, peerDeliveryPrompt, MAX_MUSE_PEER_DELIVERY_PROMPT_BYTES } from "../agents/report-format.js";
 import type { WorkerAdapter, WorkerRun } from "../agents/types.js";
 import type { PeerDeliveryEnvelope } from "../contracts/peer-delivery.js";
 import type { MuseOptions } from "./config.js";
@@ -202,7 +202,7 @@ export class MuseSdkAdapter implements WorkerAdapter {
         const turnId = peerTurn ? turn.turnId : localTurnId;
         if (peerTurn) await emit({ kind: "turn_correlated", provisional_turn_id: localTurnId, turn_id: turnId, native_session_id: sessionId! });
         if (eventError) throw eventError;
-        if (peerTurn) await wait(input.peer!.delivered(peerTurn.idempotency_key, turnId, sessionId!));
+        let supersededPeer = peerTurn ? await wait(input.peer!.delivered(peerTurn.idempotency_key, turnId, sessionId!)) === "superseded" : false;
         let lastText: string | undefined;
         consumeError = undefined;
         consume = (async () => {
@@ -257,7 +257,12 @@ export class MuseSdkAdapter implements WorkerAdapter {
           if (message.peer_observed !== deliveredPeer.idempotency_key || peerEvidenceUnknown) {
             throw new BridgeError("PEER_DELIVERY_OBSERVATION_MISSING", "Muse peer turn lacks an exact receipt or complete native evidence");
           }
-          await wait(input.peer!.observed(deliveredPeer.idempotency_key, turnId, sessionId!));
+          supersededPeer = await wait(input.peer!.observed(deliveredPeer.idempotency_key, turnId, sessionId!)) === "superseded" || supersededPeer;
+        }
+        if (supersededPeer) {
+          pendingPeerAwait = undefined;
+          prompt = peerSupersededPrompt();
+          continue;
         }
         if (message.kind === "peer_proposal_invalid") {
           if (pendingPeerAwait) throw new BridgeError("PEER_OPERATION_PENDING", "A pending peer await requires its exact retained continuation key");

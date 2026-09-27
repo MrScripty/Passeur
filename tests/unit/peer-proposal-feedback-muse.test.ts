@@ -45,8 +45,8 @@ async function run(messages: string[], operation: NonNullable<NonNullable<Worker
       max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512, stop_grace_ms: 1000 },
     signal: new AbortController().signal, approve: async () => { throw Error("Unexpected approval"); },
     input: async () => { humanInputs++; throw Error("Unexpected human input"); },
-    onEvent: async () => {}, peer: { next: async () => undefined, delivered: async () => {},
-      observed: async () => {}, operation } });
+    onEvent: async () => {}, peer: { next: async () => undefined, delivered: async () => "current" as const,
+      observed: async () => "current" as const, operation } });
   return { result, prompts, sessions, humanInputs };
 }
 

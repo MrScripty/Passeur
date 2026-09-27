@@ -42,6 +42,10 @@ const handleLine = line => {
           work_id: '44444444-4444-4444-8444-444444444444', report_id: '6666666666666666666666666666666666666666666666666666666666666666',
           side: 'observed', start_byte: 0, end_byte: 12 } } :
         scenario === 'apply-unknown' && turnCount === 2 ? { schema_version: 2, kind: 'blocked', reason: 'Application effect unknown; inspect before retry' } :
+        scenario === 'superseded' && turnCount === 2 ? { schema_version: 2, kind: 'peer_operation', peer_observed: 'peer-key', operation: {
+          schema_version: 1, operation_key: 'obsolete-apply', case_id: '55555555-5555-4555-8555-555555555555', kind: 'apply',
+          note_id: '77777777-7777-4777-8777-777777777777', expected_case_revision: 2,
+          expected_case_generation: 3, proposal_digest: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' } } :
         scenario === 'blocked' ? { schema_version: 2, kind: 'blocked', reason: 'Native blocker' } : { schema_version: 2, kind: 'final',
           summary: 'Fixture complete', assessment: 'met', blockers: [], questions: [], checks: [],
           ...(turnCount === 2 && scenario !== 'missing-receipt' ? { peer_observed: 'peer-key' } : {}) }) };
@@ -115,8 +119,8 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
         if ("turn_id" in event) correlated.push(event); },
       peer: {
         next: async () => { polls++; return name === "source-detail" || name === "apply-unknown" ? undefined : polls === 1 ? envelope : undefined; },
-        delivered: async (key, id, sessionId) => { expect([key, id, sessionId]).toEqual(["peer-key", "turn-2", "same-thread"]); events.push("delivered"); },
-        observed: async (key, id, sessionId) => { expect([key, id, sessionId]).toEqual(["peer-key", "turn-2", "same-thread"]); events.push("observed"); },
+        delivered: async (key, id, sessionId) => { expect([key, id, sessionId]).toEqual(["peer-key", "turn-2", "same-thread"]); events.push("delivered"); return "current"; },
+        observed: async (key, id, sessionId) => { expect([key, id, sessionId]).toEqual(["peer-key", "turn-2", "same-thread"]); events.push("observed"); return name === "superseded" ? "superseded" : "current"; },
         operation: async request => {
           operations.push(request);
           expect(events).toContain("turn_settled:turn-1");
@@ -172,6 +176,18 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
     expect(result.run).toMatchObject({ status: "failed", worker_stop: "confirmed", error: { code: "PEER_DELIVERY_OBSERVATION_MISSING" } });
     expect(result.events).toContain("delivered");
     expect(result.events).not.toContain("observed");
+  });
+
+  it("drains a superseded native turn and refreshes the same thread without its obsolete apply", async () => {
+    const result = await scenario("superseded");
+    expect(result.run).toMatchObject({ status: "completed", worker_stop: "confirmed" });
+    expect(result.prompts).toHaveLength(3);
+    expect(result.prompts[2]).toContain("superseded");
+    expect(result.prompts[2]).not.toContain(envelope.content);
+    expect(result.operations).toEqual([]);
+    expect(result.events).toContain("observed");
+    expect(result.correlated.filter(event => event.kind === "turn_started").map(event => event.native_session_id))
+      .toEqual(["same-thread", "same-thread", "same-thread"]);
   });
 
   it("does not start another turn after an invalid peer disposition", async () => {

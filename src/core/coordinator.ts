@@ -10,7 +10,7 @@ import type { AgentRegistry, SelectedAgent } from "../agents/registry.js";
 import type { WorkerEvent } from "../agents/types.js";
 import type { WorkerPeerOperationRequest, WorkerPeerPort } from "../agents/types.js";
 import type { PeerWorkerOperationResult } from "../contracts/peer-operations.js";
-import { immutablePeerEnvelope, parsePeerDeliverySource, PeerDeliveryNativeSessionIdSchema, MAX_PEER_DELIVERIES, type PeerDeliveryEnvelope, type PeerDeliverySource, type PeerDeliveryRecord } from "../contracts/peer-delivery.js";
+import { immutablePeerEnvelope, parsePeerDeliverySource, PeerDeliveryNativeSessionIdSchema, MAX_PEER_DELIVERIES, type PeerDeliveryEnvelope, type PeerDeliverySource, type PeerDeliveryRecord, type PeerDeliveryReceiptStatus } from "../contracts/peer-delivery.js";
 import { BridgeError, errorInfo } from "./errors.js";
 import { Mutex, canonicalHash } from "./async.js";
 import { baseResult } from "./result.js";
@@ -131,7 +131,7 @@ export class Coordinator {
       await this.controls.change(id, (state) => { state.telemetry_omitted = true; });
     }
   }
-  async #peerValidity(id: string, state: import("../contracts/tasks.js").TaskControl, envelope: PeerDeliveryEnvelope): Promise<"current" | "stale" | "revoked" | "cancelled" | "replaced"> {
+  async #peerReceiptBinding(id: string, state: import("../contracts/tasks.js").TaskControl, envelope: PeerDeliveryEnvelope): Promise<"current" | "stale" | "cancelled" | "replaced"> {
     if (state.cancel || state.phase === "stopping") return "cancelled";
     if (state.phase === "terminal" || state.phase === "finalizing" || state.settled_outcome) return "stale";
     if (state.phase === "needs_attention" || state.native.state !== "observed_live") return "stale";
@@ -143,6 +143,11 @@ export class Coordinator {
         base_commit: resource.base_commit, branch_ref: resource.branch_ref, target_ref: resource.target_ref,
       })) return "replaced";
     if (envelope.recipient_control_generation !== state.control_generation) return "stale";
+    return "current";
+  }
+  async #peerValidity(id: string, state: import("../contracts/tasks.js").TaskControl, envelope: PeerDeliveryEnvelope): Promise<"current" | "stale" | "revoked" | "cancelled" | "replaced"> {
+    const binding = await this.#peerReceiptBinding(id, state, envelope);
+    if (binding !== "current") return binding;
     if (!this.onAuthorizePeerDelivery) return "revoked";
     const decision = await this.onAuthorizePeerDelivery(envelope);
     if (decision !== "current" && decision !== "stale" && decision !== "revoked") {
@@ -231,14 +236,22 @@ export class Coordinator {
           if (outcome.kind === "retry" || outcome.kind === "drain") continue;
           const current = await this.#peerValidity(id, await this.store.readControl(id), outcome.envelope);
           if (current !== "current") {
-            let revoked: PeerDeliveryRecord | undefined;
+            let withheld: PeerDeliveryRecord | undefined;
             await this.controls.change(id, state => {
               const delivery = state.peer_deliveries?.find(record => record.envelope.delivery_id === outcome.envelope.delivery_id);
               if (delivery?.state === "dispatch_intent") {
-                delivery.state = "unknown"; delivery.disposition_at = now(); revoked = structuredClone(delivery);
+                // next() has not returned the envelope, so the native adapter cannot
+                // have submitted it. An interrupted intent remains unknown on recovery.
+                delivery.state = current; delivery.disposition_at = now(); withheld = structuredClone(delivery);
               }
             });
-            if (revoked) await this.#peerEvent(id, revoked);
+            if (withheld) {
+              await this.#peerEvent(id, withheld);
+              if (withheld.state === "stale") {
+                const callback = this.onPeerDeliveryQueuedStale;
+                if (callback) void Promise.resolve().then(() => callback(withheld!.envelope.case_id)).catch(() => undefined);
+              }
+            }
             continue;
           }
           return outcome.envelope;
@@ -256,7 +269,7 @@ export class Coordinator {
       },
     });
   }
-  async #acceptPeerReceipt(id: string, key: string, nativeTurnId: string, nativeSessionId: string, target: "delivered" | "observed"): Promise<void> {
+  async #acceptPeerReceipt(id: string, key: string, nativeTurnId: string, nativeSessionId: string, target: "delivered" | "observed"): Promise<PeerDeliveryReceiptStatus> {
     if (!PeerDeliveryNativeSessionIdSchema.safeParse(nativeSessionId).success) {
       throw new BridgeError("PEER_DELIVERY_STALE", "Peer receipt lacks a bounded native session identity");
     }
@@ -264,17 +277,17 @@ export class Coordinator {
       const captured = await this.store.readControl(id);
       const selected = captured.peer_deliveries?.find((record) => record.envelope.idempotency_key === key);
       if (!selected) throw new BridgeError("PEER_DELIVERY_UNKNOWN", "Peer delivery receipt unknown");
-      const validity = await this.#peerValidity(id, captured, selected.envelope);
+      const binding = await this.#peerReceiptBinding(id, captured, selected.envelope);
       let changed: PeerDeliveryRecord | undefined;
       const outcome = await this.controls.change(id, (state) => {
       if (state.revision !== captured.revision) return "retry";
       const delivery = state.peer_deliveries?.find((record) => record.envelope.idempotency_key === key);
       if (!delivery) return "unknown";
-      if (validity !== "current") {
+      if (binding !== "current") {
         if (delivery.state === "dispatch_intent" || delivery.state === "delivered") {
           delivery.state = "unknown"; delivery.disposition_at = now(); changed = structuredClone(delivery);
         }
-        return validity;
+        return binding;
       }
       if (delivery.state === target && delivery.native_turn_id === nativeTurnId && delivery.native_session_id === nativeSessionId &&
         state.native.turn_id === nativeTurnId && state.native.native_session_id === nativeSessionId) return "accepted";
@@ -296,7 +309,10 @@ export class Coordinator {
       const callback = this.onPeerDeliveryObserved;
       if (callback) void Promise.resolve().then(() => callback(changed!.envelope.case_id)).catch(() => undefined);
     }
-    return;
+    // A later case/source change cannot erase this exact native receipt, but the
+    // adapter must discard obsolete content and obtain a fresh context.
+    try { return await this.#peerValidity(id, await this.store.readControl(id), selected.envelope) === "current" ? "current" : "superseded"; }
+    catch { return "superseded"; }
     }
     throw new BridgeError("PEER_DELIVERY_STALE", "Recipient control changed during peer receipt");
   }

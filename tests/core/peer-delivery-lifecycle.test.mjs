@@ -105,6 +105,61 @@ test('authenticated delivery is durable through queue, intent, native delivery a
   assert.equal(worker.task_id, f.taskId);
 });
 
+test('source supersession after native dispatch retains exact historical delivery and observation across reopen', async t => {
+  const settled = hold(), proceed = hold(), dispatched = hold(), resume = hold();
+  let deliveredStatus, observedStatus, validity = 'current';
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    settled.resolve(); await proceed.promise;
+    const envelope = await input.peer.next();
+    await input.onEvent({ kind: 'turn_started', turn_id: 'peer-native', native_session_id: 'session-a' });
+    dispatched.resolve(); await resume.promise;
+    await assert.rejects(input.peer.delivered(envelope.idempotency_key, 'wrong-turn', 'session-a'),
+      { code: 'PEER_DELIVERY_STALE' });
+    deliveredStatus = await input.peer.delivered(envelope.idempotency_key, 'peer-native', 'session-a');
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'peer-native', native_session_id: 'session-a', terminal: 'completed' });
+    observedStatus = await input.peer.observed(envelope.idempotency_key, 'peer-native', 'session-a');
+    return done();
+  });
+  await settled.promise;
+  f.coordinator.onAuthorizePeerDelivery = async () => validity;
+  await f.coordinator.queuePeerDelivery(f.taskId, source('historical-native-receipt'));
+  proceed.resolve(); await dispatched.promise;
+  validity = 'stale'; resume.resolve(); await f.coordinator.waitForIdle();
+  assert.equal(deliveredStatus, 'superseded');
+  assert.equal(observedStatus, 'superseded');
+  const reopened = new TaskStore(f.store.root);
+  const [record] = await reopened.readPeerDeliveries(f.taskId);
+  assert.equal(record.state, 'observed');
+  assert.equal(record.native_turn_id, 'peer-native');
+  assert.equal(record.native_session_id, 'session-a');
+});
+
+test('source evidence replacement after delivered receipt preserves settled native observation', async t => {
+  const settled = hold(), proceed = hold(), nativeDelivered = hold(), resume = hold();
+  let observedStatus, validity = 'current';
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    settled.resolve(); await proceed.promise;
+    const envelope = await input.peer.next();
+    await input.onEvent({ kind: 'turn_started', turn_id: 'peer-native', native_session_id: 'session-a' });
+    assert.equal(await input.peer.delivered(envelope.idempotency_key, 'peer-native', 'session-a'), 'current');
+    nativeDelivered.resolve(); await resume.promise;
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'peer-native', native_session_id: 'session-a', terminal: 'completed' });
+    observedStatus = await input.peer.observed(envelope.idempotency_key, 'peer-native', 'session-a');
+    return done();
+  });
+  await settled.promise;
+  f.coordinator.onAuthorizePeerDelivery = async () => validity;
+  await f.coordinator.queuePeerDelivery(f.taskId, source('replacement-after-delivery'));
+  proceed.resolve(); await nativeDelivered.promise;
+  validity = 'stale'; resume.resolve(); await f.coordinator.waitForIdle();
+  assert.equal(observedStatus, 'superseded');
+  assert.equal((await f.store.readPeerDeliveries(f.taskId))[0].state, 'observed');
+});
+
 test('native session and turn are retained and mismatched peer receipts fail closed', async t => {
   const settled = hold(), proceed = hold();
   const f = await fixture(t, async input => {
@@ -309,11 +364,11 @@ test('dispatch rechecks revocation before returning an envelope to the worker', 
   f.coordinator.onAuthorizePeerDelivery = async () => ++calls === 1 ? 'current' : 'revoked';
   proceed.resolve(); await f.coordinator.waitForIdle();
   assert.equal(calls, 2);
-  assert.equal((await f.store.readPeerDeliveries(f.taskId))[0].state, 'unknown');
+  assert.equal((await f.store.readPeerDeliveries(f.taskId))[0].state, 'revoked');
 });
 
-test('observed receipt idempotency still checks current authority', async t => {
-  const settled = hold(), proceed = hold(); let receiptError;
+test('duplicate historical observation stays exact while current authority is revoked', async t => {
+  const settled = hold(), proceed = hold(); let duplicateStatus;
   const f = await fixture(t, async input => {
     await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
     await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' }); settled.resolve();
@@ -324,14 +379,13 @@ test('observed receipt idempotency still checks current authority', async t => {
     await input.onEvent({ kind: 'turn_settled', turn_id: 'peer', native_session_id: 'session-a', terminal: 'completed' });
     await input.peer.observed(envelope.idempotency_key, 'peer', 'session-a');
     f.coordinator.onAuthorizePeerDelivery = async () => 'revoked';
-    try { await input.peer.observed(envelope.idempotency_key, 'peer', 'session-a'); }
-    catch (error) { receiptError = error; }
+    duplicateStatus = await input.peer.observed(envelope.idempotency_key, 'peer', 'session-a');
     return done();
   });
   await settled.promise;
   await f.coordinator.queuePeerDelivery(f.taskId, source('duplicate-receipt'));
   proceed.resolve(); await f.coordinator.waitForIdle();
-  assert.equal(receiptError?.code, 'PEER_DELIVERY_REVOKED');
+  assert.equal(duplicateStatus, 'superseded');
   assert.equal((await f.store.readPeerDeliveries(f.taskId))[0].state, 'observed');
 });
 

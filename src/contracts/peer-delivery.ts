@@ -35,6 +35,8 @@ export const PeerDeliveryRecordSchema = z.object({
   if (["stale", "revoked", "cancelled", "replaced", "unknown"].includes(record.state) && !record.disposition_at) context.addIssue({ code: "custom", message: "disposition evidence missing" });
 });
 export type PeerDeliveryRecord = z.output<typeof PeerDeliveryRecordSchema>;
+/** Native transmission history is separate from authority to use its current content. */
+export type PeerDeliveryReceiptStatus = "current" | "superseded";
 
 export const MAX_PEER_DELIVERIES = 64;
 export type PeerDeliverySource = Readonly<Pick<PeerDeliveryEnvelope, "source_work_id" | "source_work_revision" | "case_id" | "case_revision" | "case_generation" | "evidence_id" | "evidence_revision" | "evidence_digest" | "content" | "idempotency_key">>;
