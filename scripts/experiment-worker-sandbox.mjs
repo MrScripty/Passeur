@@ -3,7 +3,7 @@
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 const ROOTS = ['/usr', '/bin', '/lib', '/lib64'];
 const RESERVED = new Set(['/workspace', '/proc', '/dev', '/tmp']);
@@ -46,6 +46,15 @@ export function prepareSandbox(config, command) {
   }
   const workspace = sourceDirectory(config.workspace, 'workspace');
   if (workspace === '/') fail('SOURCE_INVALID', 'workspace must not be the host root');
+  const workspaceTarget = config.preserveWorkspacePath === true ? config.workspace : '/workspace';
+  if (config.preserveWorkspacePath !== undefined && typeof config.preserveWorkspacePath !== 'boolean') {
+    fail('CONFIG_INVALID', 'preserveWorkspacePath must be boolean');
+  }
+  if (config.preserveWorkspacePath) {
+    if (config.workspace !== workspace || !workspace.startsWith('/tmp/')) {
+      fail('WORKSPACE_PATH_UNSUPPORTED', 'preserved workspace path must be canonical and under /tmp');
+    }
+  }
   const mounts = Array.isArray(config.mounts) ? config.mounts : [];
   if (!Array.isArray(config.denied) || config.denied.length === 0) {
     fail('DENY_SET_REQUIRED', 'denied must list protected host directories');
@@ -57,14 +66,20 @@ export function prepareSandbox(config, command) {
     }
   };
   assertNotDenied(workspace, 'workspace');
-  const seenGuests = ['/workspace'];
+  const seenGuests = [workspaceTarget];
   const writable = [workspace];
   const args = ['--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--disable-userns', '--die-with-parent', '--new-session', '--clearenv'];
   for (const root of ROOTS) if (existsSync(root)) {
     assertNotDenied(sourceDirectory(root, `system ${root}`), `system ${root}`);
     args.push('--ro-bind', root, root);
   }
-  args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/mounts', '--bind', workspace, '/workspace');
+  args.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/mounts');
+  if (config.preserveWorkspacePath) {
+    const parents = [];
+    for (let parent = dirname(workspaceTarget); parent !== '/tmp'; parent = dirname(parent)) parents.unshift(parent);
+    for (const parent of parents) args.push('--dir', parent);
+  }
+  args.push('--bind', workspace, workspaceTarget);
   for (const [index, mount] of mounts.entries()) {
     if (!mount || !['ro', 'rw'].includes(mount.mode)) fail('MOUNT_INVALID', `mount ${index} needs mode ro or rw`);
     const source = sourceDirectory(mount.source, `mount ${index} source`);
@@ -81,15 +96,15 @@ export function prepareSandbox(config, command) {
   }
   const env = config.env ?? {};
   if (typeof env !== 'object' || Array.isArray(env) || env === null) fail('ENV_INVALID', 'env must be an object');
-  const baseEnv = { HOME: '/workspace', TMPDIR: '/tmp', PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' };
+  const baseEnv = { HOME: workspaceTarget, TMPDIR: '/tmp', PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' };
   for (const [key, value] of Object.entries({ ...baseEnv, ...env })) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || key.includes('\0') || value.includes('\0')) {
       fail('ENV_INVALID', `invalid environment entry ${key}`);
     }
     args.push('--setenv', key, value);
   }
-  args.push('--chdir', '/workspace', '--', ...command);
-  return { executable: 'bwrap', args, workspace, writable };
+  args.push('--chdir', workspaceTarget, '--', ...command);
+  return { executable: 'bwrap', args, workspace, workspaceTarget, writable };
 }
 
 export function probeBubblewrap() {

@@ -7,8 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { prepareSandbox, probeBubblewrap } from '../../scripts/experiment-worker-sandbox.mjs';
 
-function fixture(fn) {
-  const root = mkdtempSync(join(tmpdir(), 'passeur-worker-sandbox-'));
+function fixture(fn, rootDirectory = tmpdir()) {
+  const root = mkdtempSync(join(rootDirectory, 'passeur-worker-sandbox-'));
   const paths = Object.fromEntries(['worker', 'sibling', 'oracle', 'control', 'pristine', 'git-private', 'runtime'].map((name) => {
     const path = join(root, name);
     mkdirSync(path);
@@ -39,7 +39,28 @@ test('preflight rejects protected and overlapping mount sources with typed diagn
   assert.throws(() => prepareSandbox({ ...base, workspace: '/' }, ['/bin/true']), /SOURCE_INVALID/);
   assert.throws(() => prepareSandbox({ ...base, mounts: [{ mode: 'rw', source: '/', target: '/mounts/host' }] }, ['/bin/true']), /SOURCE_INVALID/);
   assert.throws(() => prepareSandbox({ ...base, denied: ['/usr'] }, ['/bin/true']), /SOURCE_DENIED: system \/usr/);
+  assert.throws(() => prepareSandbox({ ...base, preserveWorkspacePath: 'yes' }, ['/bin/true']), /CONFIG_INVALID/);
+  assert.throws(() => prepareSandbox({ ...base, workspace: paths.worker + '/.', preserveWorkspacePath: true }, ['/bin/true']), /WORKSPACE_PATH_UNSUPPORTED/);
+  assert.throws(() => prepareSandbox({ ...base, workspace: '/usr', preserveWorkspacePath: true }, ['/bin/true']), /WORKSPACE_PATH_UNSUPPORTED/);
 }));
+
+test('preserved host workspace path is the native cwd and excludes sibling paths', { skip: process.platform !== 'linux' }, () => fixture((paths) => {
+  probeBubblewrap();
+  const script = [
+    "const fs=require('fs');",
+    "const assert=require('assert/strict');",
+    "const workspace=process.argv[1],sibling=process.argv[2];",
+    "assert.equal(process.cwd(),workspace);",
+    "assert.equal(process.env.HOME,workspace);",
+    "assert.equal(fs.existsSync(sibling+'/marker'),false);",
+    "fs.writeFileSync(workspace+'/path-match','yes');",
+  ].join('');
+  const prepared = prepareSandbox({ ...config(paths), preserveWorkspacePath: true }, ['/usr/bin/node', '-e', script, paths.worker, paths.sibling]);
+  assert.equal(prepared.workspaceTarget, paths.worker);
+  const result = spawnSync(prepared.executable, prepared.args, { encoding: 'utf8', env: {} });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(paths.worker, 'path-match'), 'utf8'), 'yes');
+}, '/tmp'));
 
 test('fake host can write own workspace and private Git while protected paths and symlink/proc routes stay absent', { skip: process.platform !== 'linux' }, () => fixture((paths) => {
   probeBubblewrap();
