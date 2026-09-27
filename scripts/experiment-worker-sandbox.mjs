@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Disposable experiment boundary. This is an outer host wrapper, never an adapter fallback.
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
@@ -39,6 +39,34 @@ function overlaps(a, b) {
   return a === b || a === '/' || b === '/' || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 }
 
+function privateGitBinding(config, workspace, denied) {
+  if (config.privateGit === undefined) return undefined;
+  const binding = config.privateGit;
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding)) fail('PRIVATE_GIT_INVALID', 'privateGit must name one prepared view');
+  const { view } = binding;
+  if (!view || typeof view !== 'object' || Array.isArray(view)) fail('PRIVATE_GIT_INVALID', 'prepared view required');
+  const controlRoot = sourceDirectory(binding.controlRoot, 'privateGit controlRoot');
+  const source = sourceDirectory(view.private_common_dir, 'privateGit source');
+  const target = sourceDirectory(view.canonical_common_dir, 'privateGit canonical target');
+  if (binding.controlRoot !== controlRoot || view.private_common_dir !== source || view.canonical_common_dir !== target ||
+      source !== resolve(controlRoot, 'private-git') || !denied.includes(controlRoot) || !target.startsWith('/tmp/') ||
+      source === '/' || target === '/' || overlaps(source, workspace) || overlaps(target, workspace) ||
+      denied.some((path) => path !== controlRoot && overlaps(path, source)) ||
+      denied.some((path) => overlaps(path, target)) ||
+      !/^worktrees\/[A-Za-z0-9._-]+$/.test(view.admin_relative ?? '')) {
+    fail('PRIVATE_GIT_INVALID', 'privateGit paths do not identify a separate canonical linked worktree view');
+  }
+  const dotGit = resolve(workspace, '.git');
+  if (!lstatSync(dotGit).isFile() || realpathSync(dotGit) !== dotGit ||
+      readFileSync(dotGit, 'utf8').trim() !== `gitdir: ${target}/${view.admin_relative}` ||
+      !lstatSync(resolve(source, view.admin_relative)).isDirectory() ||
+      realpathSync(resolve(source, view.admin_relative)) !== resolve(source, view.admin_relative) ||
+      readFileSync(resolve(source, view.admin_relative, 'commondir'), 'utf8').trim() !== '../..') {
+    fail('PRIVATE_GIT_INVALID', 'privateGit view differs from the canonical worktree pointer');
+  }
+  return { source, target, controlRoot };
+}
+
 export function prepareSandbox(config, command) {
   if (!config || typeof config !== 'object') fail('CONFIG_INVALID', 'configuration object required');
   if (!Array.isArray(command) || command.length === 0 || command.some((arg) => typeof arg !== 'string')) {
@@ -66,9 +94,13 @@ export function prepareSandbox(config, command) {
     }
   };
   assertNotDenied(workspace, 'workspace');
+  if (config.privateGit !== undefined && !config.preserveWorkspacePath) {
+    fail('PRIVATE_GIT_INVALID', 'privateGit requires the canonical preserved workspace path');
+  }
+  const privateGit = privateGitBinding(config, workspace, denied);
   const seenGuests = [workspaceTarget];
   const writable = [workspace];
-  const args = ['--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--disable-userns', '--die-with-parent', '--new-session', '--clearenv'];
+  const args = ['--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-net', '--disable-userns', '--die-with-parent', '--new-session', '--clearenv'];
   for (const root of ROOTS) if (existsSync(root)) {
     assertNotDenied(sourceDirectory(root, `system ${root}`), `system ${root}`);
     args.push('--ro-bind', root, root);
@@ -80,6 +112,14 @@ export function prepareSandbox(config, command) {
     for (const parent of parents) args.push('--dir', parent);
   }
   args.push('--bind', workspace, workspaceTarget);
+  if (privateGit) {
+    const parents = [];
+    for (let parent = dirname(privateGit.target); parent !== '/tmp'; parent = dirname(parent)) parents.unshift(parent);
+    for (const parent of parents) if (parent !== workspaceTarget) args.push('--dir', parent);
+    args.push('--dir', privateGit.target, '--bind', privateGit.source, privateGit.target);
+    seenGuests.push(privateGit.target);
+    writable.push(privateGit.source);
+  }
   for (const [index, mount] of mounts.entries()) {
     if (!mount || !['ro', 'rw'].includes(mount.mode)) fail('MOUNT_INVALID', `mount ${index} needs mode ro or rw`);
     const source = sourceDirectory(mount.source, `mount ${index} source`);
@@ -104,13 +144,13 @@ export function prepareSandbox(config, command) {
     args.push('--setenv', key, value);
   }
   args.push('--chdir', workspaceTarget, '--', ...command);
-  return { executable: 'bwrap', args, workspace, workspaceTarget, writable };
+  return { executable: 'bwrap', args, workspace, workspaceTarget, writable, privateGit };
 }
 
 export function probeBubblewrap() {
   const version = spawnSync('bwrap', ['--version'], { encoding: 'utf8' });
   if (version.status !== 0) fail('BWRAP_UNAVAILABLE', version.error?.message ?? version.stderr.trim());
-  const probeArgs = ['--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--disable-userns', '--clearenv'];
+  const probeArgs = ['--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-net', '--disable-userns', '--clearenv'];
   for (const root of ROOTS) if (existsSync(root)) probeArgs.push('--ro-bind', root, root);
   probeArgs.push('--proc', '/proc', '--dev', '/dev', '--', '/usr/bin/true');
   const probe = spawnSync('bwrap', probeArgs, { encoding: 'utf8' });

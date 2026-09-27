@@ -42,6 +42,8 @@ test('preflight rejects protected and overlapping mount sources with typed diagn
   assert.throws(() => prepareSandbox({ ...base, preserveWorkspacePath: 'yes' }, ['/bin/true']), /CONFIG_INVALID/);
   assert.throws(() => prepareSandbox({ ...base, workspace: paths.worker + '/.', preserveWorkspacePath: true }, ['/bin/true']), /WORKSPACE_PATH_UNSUPPORTED/);
   assert.throws(() => prepareSandbox({ ...base, workspace: '/usr', preserveWorkspacePath: true }, ['/bin/true']), /WORKSPACE_PATH_UNSUPPORTED/);
+  assert.ok(prepareSandbox(base, ['/bin/true']).args.includes('--unshare-net'));
+  assert.throws(() => prepareSandbox({ ...base, privateGit: {} }, ['/bin/true']), /PRIVATE_GIT_INVALID/);
 }));
 
 test('preserved host workspace path is the native cwd and excludes sibling paths', { skip: process.platform !== 'linux' }, () => fixture((paths) => {
