@@ -110,6 +110,10 @@ export function selectChoice(request, decision) {
   return request.availableChoices.find(choice => choice.decision === wanted && choice.scope === 'once')?.choiceId;
 }
 
+export function serveArgs(sessionStart) {
+  return sessionStart === 'raw-memory' ? ['serve', '--no-session-log'] : ['serve'];
+}
+
 export async function startRawSession(connection, workspaceRoot) {
   // Exact session-new command in the official quickstart journey.
   const started = await connection.command('session/start', { workspaceRoot }, { maxAttempts: 1 });
@@ -136,7 +140,9 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     auth: 'cat "$HOME/.config/muse/auth.json" > auth-canary; env > env-canary',
   };
   if (!(scenario in commands) || !['allow', 'deny'].includes(decision)) throw new Error('invalid scenario or decision');
-  if (!['facade', 'raw', 'quickstart'].includes(sessionStart)) throw new Error('sessionStart must be facade, raw or quickstart');
+  if (!['facade', 'raw', 'raw-memory', 'quickstart'].includes(sessionStart)) {
+    throw new Error('sessionStart must be facade, raw, raw-memory or quickstart');
+  }
   const quickstart = sessionStart === 'quickstart';
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-serve-boundary-'));
   let home;
@@ -146,6 +152,7 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
   let client;
   let handshake;
   let hostSpawnAttempted = false;
+  let hostArgs;
   let uncertainPreHostStop = false;
   let hostIdentity;
   let result;
@@ -183,8 +190,9 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     const pidFile = join(root, 'serve.stat');
     const wrapper = join(root, 'serve-wrapper');
     await writeFile(wrapper, `#!/bin/sh\nset -eu\ncat /proc/$$/stat > ${shellQuote(pidFile)}\nexec ${shellQuote(muse)} "$@"\n`, { mode: 0o700 });
+    hostArgs = serveArgs(sessionStart);
     hostSpawnAttempted = true;
-    handshake = spawnMspConnection({ command: wrapper, args: ['serve'], cwd: workspace, env, shutdownTimeoutMs: 2_000,
+    handshake = spawnMspConnection({ command: wrapper, args: hostArgs, cwd: workspace, env, shutdownTimeoutMs: 2_000,
       onStderr: chunk => { stderr = (stderr + chunk).slice(-4_000); } });
     const spawned = await within('host initialize', handshake.initialize({ clientInfo: {
       name: 'passeur_disposable_qualification', version: '0.1.0',
@@ -194,10 +202,10 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
       throw Object.assign(new Error('SDK host marker did not identify its process group'), { code: 'HOST_IDENTITY_UNVERIFIED' });
     }
     hostIdentity = observedHostTree(birth.pid, await processTable(), birth.start);
-    if (sessionStart === 'raw' || quickstart) {
+    if (sessionStart === 'raw' || sessionStart === 'raw-memory' || quickstart) {
       stage = 'session_start';
       const started = await within('session/start', startRawSession(spawned.connection, workspace), STARTUP_MS);
-      result = { kind: 'raw_session_started', sessionStart, sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(),
+      result = { kind: 'raw_session_started', sessionStart, hostArgs, sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(),
         sessionId: started.session.sessionId, status: started.session.status, viewCursor: started.viewCursor,
         requests: fixture.requests };
       return result;
@@ -240,6 +248,7 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     if (error.code === 'GROUP_NOT_STOPPED') uncertainPreHostStop = true;
     result = { kind: 'qualification_error', stage, scenario, decision,
       ...(sessionStart !== 'facade' ? { sessionStart } : {}), code: error.code ?? error.name,
+      ...(hostSpawnAttempted ? { hostArgs } : {}),
       message: String(error.message).slice(0, 1_000), sdkVersion: '1.3.0', stderr: stderr.slice(-2_000),
       requests: fixture?.requests };
     return result;

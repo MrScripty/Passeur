@@ -126,6 +126,19 @@ The native root cause is unproven. Do not repeat either unchanged request until
 a supported host-state correction or additional diagnostic evidence changes the
 precondition.
 
+A subsequent changed-state diagnostic used the same raw `{ workspaceRoot }`
+request, disposable HOME/workspace and fake loopback provider, changing only
+the installed host arguments to `serve --no-session-log`. The reviewed probe's
+focused core suite passed 11/11. One installed Muse 1.4.0-R4302.1 / SDK 1.3.0
+run returned `raw_session_started`, idle session
+`01a0e493-6f60-7043-9a7f-31a6b4adb261`, after only
+`GET /muse-code/models`. No turn, approval or model tool occurred. Bounded close
+reported quiet captured descendants but retained stop proof
+`descendants_unverified`, so `/tmp/passeur-muse-serve-boundary-v2T2fW` remains
+retained. This localizes the failure to persistent-session behavior bypassed
+by the flag; the deletion-registry cause and durable-session recovery are still
+unknown. The memory-only result is not a usable worker lifecycle qualification.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.

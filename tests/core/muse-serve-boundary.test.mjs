@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createFixtureDirs, observedHostTree, observedHostQuiet, parseHostMarker, quickstartEnvironment,
-  retainFixtureRoots, selectChoice, startRawSession, qualify, within } from '../../scripts/qualify-muse-serve-boundary.mjs';
+  retainFixtureRoots, selectChoice, serveArgs, startRawSession, qualify, within } from '../../scripts/qualify-muse-serve-boundary.mjs';
 
 function procStat(pid, { state = 'S', parent = 1, group = pid, session = pid, start = '100' } = {}) {
   const fields = Array(20).fill('0');
@@ -66,6 +66,13 @@ test('approval routing selects only the offered once-only decision', () => {
   assert.equal(selectChoice(request, 'allow'), 'once-allow');
   assert.equal(selectChoice(request, 'deny'), 'once-deny');
   assert.equal(selectChoice({ availableChoices: request.availableChoices.slice(0, 1) }, 'allow'), undefined);
+});
+
+test('raw memory-only selection changes only the host serve argument', () => {
+  const raw = serveArgs('raw');
+  assert.deepEqual(raw, ['serve']);
+  assert.deepEqual(serveArgs('raw-memory'), [...raw, '--no-session-log']);
+  for (const mode of ['facade', 'quickstart']) assert.deepEqual(serveArgs(mode), raw);
 });
 
 test('raw session start uses the quickstart command shape without overrides', async () => {
