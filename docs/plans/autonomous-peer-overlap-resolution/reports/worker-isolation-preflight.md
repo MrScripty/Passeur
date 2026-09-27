@@ -35,6 +35,30 @@ configuration path; the wrapper's `--setenv` arguments are unsuitable for
 passing its secret contents. The inventory checked path and permission facts
 only, without reading credentials or starting Muse.
 
+The subsequent G2 Git-isolation decision is recorded in the active plan. A
+disposable linked-worktree probe showed that binding a task-private Git common
+view at Git's expected absolute path permits an ordinary worker commit without
+changing the host branch. A trusted post-stop import and host index refresh
+restored a clean canonical worktree in that probe. It did not exercise
+Passeur's retained publication intent, untrusted Git-data quarantine, crash
+recovery, actual Muse or credential isolation; those remain requirements
+before installed admission.
+
+The actual native shell posture has a further condition. Current [Muse
+permissions](https://dev.meta.ai/docs/muse-code/permissions?project_id=1775916636764246&team_id=1331104075427093)
+and [immutable-guardrails guidance](https://dev.meta.ai/docs/cookbook/immutable-guardrails?project_id=1661600634933790&team_id=2096920474558192)
+say default OS sandboxing mounts workspace `.git` read-only, independently of
+approval. The installed 1.4.0-R4302.1 `muse serve --help` lists
+`--disable-sandbox`; its documented use inside an already-isolated host is a
+conditional candidate, not an admitted setting. It removes Muse's file-tool
+workspace confinement and forces network egress within the namespace. The
+current wrapper shares the host network namespace and does not isolate a
+credential from worker tools, so neither an allow-once decision nor the
+private-Git mount proves a real Muse commit or blinded isolation. Qualify a
+version-matched native host with fake credentials, exact native tool/file
+denial, network policy, Git hooks and a worker-created commit before a paid
+pair or a claim that this replacement boundary is equivalent.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.
