@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { fixture, A, B, repo, limits, key, register, claim, post } from '../fixtures/structural/coordination-fixture.mjs';
 import { CoordinationStore } from '../../.passeur-core/src/store/coordination-store.js';
 import { CoordinationControl } from '../../.passeur-core/src/coordination/control.js';
-import { decodeCommand, decodeControl, assertControlTransition } from '../../.passeur-core/src/contracts/coordination-control.js';
+import { decodeCommand, decodeControl, assertControlTransition, OBSERVED_CASE_CONTROL_SCHEMA } from '../../.passeur-core/src/contracts/coordination-control.js';
 import { atomicJson } from '../../.passeur-core/src/store/atomic-json.js';
 const run = promisify(execFile);
 const childScript = fileURLToPath(new URL('../fixtures/structural/coordination-reopen.mjs', import.meta.url));
@@ -58,7 +58,7 @@ test('corrupt, unsupported and foreign-repository states remain distinguishable 
   await writeFile(f.file, '{truncated');
   await assert.rejects(CoordinationStore.open(f.root, repo, () => {}), { code: 'COORDINATION_RECORD_CORRUPT' });
   assert.equal(await readFile(f.file, 'utf8'), '{truncated');
-  const future = JSON.parse(original); future.schema_version = 7; await writeFile(f.file, JSON.stringify(future));
+  const future = JSON.parse(original); future.schema_version = OBSERVED_CASE_CONTROL_SCHEMA + 1; await writeFile(f.file, JSON.stringify(future));
   await assert.rejects(CoordinationStore.open(f.root, repo, () => {}), { code: 'COORDINATION_VERSION_UNSUPPORTED' });
   const foreign = JSON.parse(original); foreign.repository_id = 'other'; await writeFile(f.file, JSON.stringify(foreign));
   await assert.rejects(CoordinationStore.open(f.root, repo, () => {}), { code: 'COORDINATION_BINDING_CONFLICT' });
@@ -177,7 +177,7 @@ test('the shared atomic writer preserves the old file until the rename boundary'
 });
 test('complete decoding distinguishes unsupported operation from malformed data', () => {
   assert.throws(() => decodeCommand({ kind: 'merge', operation_key: 'not-supported' }), { code: 'COORDINATION_OPERATION_UNSUPPORTED' });
-  assert.throws(() => decodeControl({ schema_version: 7 }, repo), { code: 'COORDINATION_VERSION_UNSUPPORTED' });
+  assert.throws(() => decodeControl({ schema_version: OBSERVED_CASE_CONTROL_SCHEMA + 1 }, repo), { code: 'COORDINATION_VERSION_UNSUPPORTED' });
   assert.throws(() => decodeControl({ schema_version: null }, repo), { code: 'COORDINATION_INVALID' });
 });
 

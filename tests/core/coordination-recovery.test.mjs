@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { fixture, A, B, C, register, claim, caseOp, post, key } from '../fixtures/structural/coordination-fixture.mjs';
-import { decodeControl, decodeCommand, decodeRecoveryCommand, decodeRecoveryReceipt, CONTROL_RELEASE_BYTES } from '../../.passeur-core/src/contracts/coordination-control.js';
+import { decodeControl, decodeCommand, decodeRecoveryCommand, decodeRecoveryReceipt, CONTROL_RELEASE_BYTES, OBSERVED_CASE_CONTROL_SCHEMA } from '../../.passeur-core/src/contracts/coordination-control.js';
 import { CoordinationControl } from '../../.passeur-core/src/coordination/control.js';
 import { CoordinationStore } from '../../.passeur-core/src/store/coordination-store.js';
 import { canonicalHash } from '../../.passeur-core/src/core/async.js';
@@ -34,13 +34,13 @@ test('adoption atomically upgrades metadata and preserves source, statements and
   const before = await f.disk();
   const c = await recovery(f, 'adopt_work', w, {new_owner:B.owner_id});
   const receipt = await f.control.recoverAuthorized(C,c), after = await f.disk();
-  assert.equal(after.schema_version,2); assert.equal(after.recoveries.length,1); assert.deepEqual(after.receipts,before.receipts);
+  assert.equal(after.schema_version,OBSERVED_CASE_CONTROL_SCHEMA); assert.equal(after.recoveries.length,1); assert.deepEqual(after.receipts,before.receipts);
   assert.deepEqual(after.notes,before.notes); assert.deepEqual(after.works[0], {...w,owner:B.owner_id,readers:[],revision:2});
   assert.equal(receipt.operator,C.owner_id); assert.equal(receipt.revision,before.revision+1);
   assert.equal((await f.control.note(B,nr.item_id)).agreement,'pending');
   await assert.rejects(f.control.execute(A,{kind:'share_work',operation_key:key(),work_id:w.id,expected_revision:2,readers:[]}),{code:'COORDINATION_NOT_FOUND'});
   await f.control.execute(B,{kind:'close_work',operation_key:key(),work_id:w.id,expected_revision:2});
-  assert.equal((await f.disk()).schema_version,2);
+  assert.equal((await f.disk()).schema_version,OBSERVED_CASE_CONTROL_SCHEMA);
 });
 test('recovery retry is a historical receipt, not a second transfer after another adoption', async t => {
   const f=await fixture(t),w=await work(f),first=await recovery(f,'adopt_work',w,{new_owner:B.owner_id});
@@ -187,6 +187,7 @@ test('lost operator receipt is recovered by a new process without repeating adop
   await assert.rejects(run(process.execPath, [child, f.root, requestPath, 'lose-receipt']), { code: 74 });
   const original = await readFile(f.file);
   const disk = JSON.parse(original.toString('utf8'));
+  // Recovery alone upgrades a v1 control to v2; no note or observed case is published here.
   assert.equal(disk.schema_version, 2);
   assert.equal(disk.works[0].owner, B.owner_id);
   assert.equal(disk.works[0].revision, 2);
