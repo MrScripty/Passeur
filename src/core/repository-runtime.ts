@@ -235,6 +235,11 @@ export type RuntimeDependencies = {
   /** Lowers only the in-memory artifact index limit for a controlled race fixture. */
   artifactIndexLimitForTest?: number;
   onArtifactIndexEvictedForTest?: (workId: string, path: string, artifactId: string) => void;
+  /** Lowers only the in-memory pair index limit for a controlled race fixture. */
+  pairIndexLimitForTest?: number;
+  onPairIndexEvictedForTest?: (pairId: string, workIds: readonly string[], path: string,
+    artifacts: readonly Readonly<{ workId: string; path: string; artifactId: string }>[],
+    admitted: Readonly<{ pairId: string; workIds: readonly string[]; path: string }>) => void;
   /** Signals an actual capture-index removal before and after its protected mutation. */
   onCaptureRemovalAttemptForTest?: (workId: string) => void;
   onCaptureRemovalCompletedForTest?: (workId: string) => void;
@@ -306,6 +311,7 @@ export class RepositoryRuntime {
   #observationStartupFailure: string | undefined;
   readonly #monitorEnabled: boolean;
   readonly #artifactIndexLimit: number;
+  readonly #pairIndexLimit: number;
   readonly #captureIndex = new Mutex();
   readonly #correspondence = new CorrespondenceIndex();
   readonly #currentOverlapPairs = new Map<string, CorrespondencePair>();
@@ -347,6 +353,9 @@ export class RepositoryRuntime {
     this.#artifactIndexLimit = dependencies.artifactIndexLimitForTest ?? 512;
     if (!Number.isSafeInteger(this.#artifactIndexLimit) || this.#artifactIndexLimit < 1 || this.#artifactIndexLimit > 512)
       throw new BridgeError("STRUCTURAL_MONITOR_CONFIGURATION_INVALID", "Invalid controlled artifact index limit");
+    this.#pairIndexLimit = dependencies.pairIndexLimitForTest ?? 8192;
+    if (!Number.isSafeInteger(this.#pairIndexLimit) || this.#pairIndexLimit < 1 || this.#pairIndexLimit > 8192)
+      throw new BridgeError("STRUCTURAL_MONITOR_CONFIGURATION_INVALID", "Invalid controlled pair index limit");
     this.#environment = { HOME: environment.HOME, XDG_STATE_HOME: environment.XDG_STATE_HOME, XDG_CONFIG_HOME: environment.XDG_CONFIG_HOME };
   }
   get configuredProfile() { return this.#profile; }
@@ -598,7 +607,7 @@ export class RepositoryRuntime {
               if (this.#publishedComparisons.size > this.#artifactIndexLimit)
                 this.#publishedComparisons.delete(this.#publishedComparisons.keys().next().value!);
               const correspondence = this.#correspondence.upsert(pair.report);
-              this.#retainCorrespondence(correspondence);
+              const evictedPairs = this.#retainCorrespondence(correspondence);
               for (const [state, events] of [["overlap", correspondence.pairs], ["resolved", correspondence.resolved]] as const) {
                 for (const event of events) {
                   this.#queueCorrespondenceNotice({ artifactId: artifact.id, recipient: work.owner, workId: work.id,
@@ -608,7 +617,12 @@ export class RepositoryRuntime {
                     workId: event.other_work_id, subjectId: event.subject_id, state });
                 }
               }
-              return { correspondence, sourceChanged, workId: work.id, path, artifactId: artifact.id, evictedArtifact };
+              return { correspondence, sourceChanged, workId: work.id, path, artifactId: artifact.id,
+                evictedArtifact, evictedPairs,
+                indexedArtifacts: evictedPairs.length ? [...this.#publishedArtifactIds].map(([key, value]) => {
+                  const [id, artifactPath] = JSON.parse(key) as [string, string];
+                  return { workId: id, path: artifactPath, artifactId: value.id };
+                }) : [] };
             };
             const managedTaskId = job.workspace.control_generation ?
               (await (await this.#coordinationSession(this.#binding!).observationStore()).snapshot()).works
@@ -622,6 +636,12 @@ export class RepositoryRuntime {
             this.#deps.onCapturePublicationCompletedForTest?.(published.workId, published.path, published.artifactId);
             if (published.evictedArtifact) this.#deps.onArtifactIndexEvictedForTest?.(
               published.evictedArtifact.workId, published.evictedArtifact.path, published.evictedArtifact.artifactId);
+            for (const evicted of published.evictedPairs) this.#deps.onPairIndexEvictedForTest?.(
+              evicted.evicted.pair_id, [evicted.evicted.current_work_id, evicted.evicted.other_work_id],
+              evicted.evicted.input.path, published.indexedArtifacts,
+              { pairId: evicted.admitted.pair_id,
+                workIds: [evicted.admitted.current_work_id, evicted.admitted.other_work_id],
+                path: evicted.admitted.input.path });
             if (published.sourceChanged) await this.#coordinationSession(this.#binding!).notifyPeerObservation(published.workId, published.path);
             for (const event of published.correspondence.pairs) await this.#queuePeerOverlap(event);
             await this.#drainCorrespondenceNotices();
@@ -1076,13 +1096,18 @@ export class RepositoryRuntime {
     } else await this.#captureIndex.run(() => this.#forgetObservation(workId, workspaceId));
     this.#deps.onCaptureRemovalCompletedForTest?.(workId);
   }
-  #retainCorrespondence(update: CorrespondenceUpdate): void {
+  #retainCorrespondence(update: CorrespondenceUpdate): Array<{ evicted: CorrespondencePair; admitted: CorrespondencePair }> {
+    const evicted: Array<{ evicted: CorrespondencePair; admitted: CorrespondencePair }> = [];
     for (const resolved of update.resolved) this.#currentOverlapPairs.delete(resolved.pair_id);
     for (const pair of update.pairs) {
-      if (!this.#currentOverlapPairs.has(pair.pair_id) && this.#currentOverlapPairs.size >= 8192)
-        this.#currentOverlapPairs.delete(this.#currentOverlapPairs.keys().next().value!);
+      if (!this.#currentOverlapPairs.has(pair.pair_id) && this.#currentOverlapPairs.size >= this.#pairIndexLimit) {
+        const oldestId = this.#currentOverlapPairs.keys().next().value!;
+        evicted.push({ evicted: this.#currentOverlapPairs.get(oldestId)!, admitted: pair });
+        this.#currentOverlapPairs.delete(oldestId);
+      }
       this.#currentOverlapPairs.set(pair.pair_id, pair);
     }
+    return evicted;
   }
   async #recordPeerDeliveryFailure(taskId: string, pairId: string, code: string): Promise<void> {
     const store = this.#store;
