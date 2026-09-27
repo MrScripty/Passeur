@@ -9,7 +9,7 @@ import { MAX_PEER_DELIVERY_ENVELOPE_BYTES, parsePeerDeliverySource, peerDelivery
   peerDeliverySizingEnvelope } from '../../.passeur-core/src/contracts/peer-delivery.js';
 import { MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES, peerDeliveryPromptBytes } from '../../.passeur-core/src/agents/report-format.js';
 import { selectPeerOverlapEvidence } from '../../.passeur-core/src/observation/overlap.js';
-import { serviceFixture } from '../fixtures/structural/service-fixture.mjs';
+import { serviceFixture, command } from '../fixtures/structural/service-fixture.mjs';
 import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
 import { operatorToken } from '../../.passeur-core/src/service/operator-token.js';
 import { CoordinationStore } from '../../.passeur-core/src/store/coordination-store.js';
@@ -312,7 +312,7 @@ test('current capture replacement preserves exact native receipt without changin
   assert.ok(records.some(record => record.state === 'observed' && record.native_turn_id === 'peer-native'));
 });
 
-test('pending observed case keeps an obsolete native receipt pending until fresh peer evidence is observed', async t => {
+async function pendingObservedCaseScenario(t, captureRace = false, removalRace = false) {
   const fixture = await serviceFixture(t);
   await fixture.service.close();
   const intent = { project: fixture.root, stateRoot: fixture.state,
@@ -323,6 +323,10 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
   const pause = () => { let release; const promise = new Promise(resolve => { release = resolve; });
     return { promise, release }; };
   const nativeHolds = [pause(), pause(), pause()], obsoleteTurn = pause(), continuePeer = pause();
+  const captureOrder = [];
+  let captureRaceWorkId, captureRaceArmed = false;
+  const removalOrder = [];
+  let removalWorkId, removalArmed = false;
   const workspaces = [], received = [], statuses = [], settlementAttempts = [];
   let otherRevised, obsoleteRevised, obsoleteObserved, settlementRelease, stop = false;
   const workers = [0, 1, 2].map(index => ({ async run(input) {
@@ -358,8 +362,29 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
   const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
     mode: 'development', node_version: process.version, node_executable: process.execPath,
     pid: process.pid, started_at: new Date().toISOString() }, {
+    enableObservedCaseExtensionForTest: true,
     store: () => store,
     onObservedCaseSettlement: attempt => settlementAttempts.push(attempt),
+    ...(captureRace ? {
+      onCapturePublicationAttemptForTest: workId => {
+        if (captureRaceArmed && workId === captureRaceWorkId) {
+          captureOrder.push('capture-attempt');
+        }
+      },
+      onCapturePublicationCompletedForTest: workId => {
+        if (captureRaceArmed && workId === captureRaceWorkId) {
+          captureOrder.push('capture-published');
+        }
+      },
+    } : {}),
+    ...(removalRace ? {
+      onCaptureRemovalAttemptForTest: workId => {
+        if (removalArmed && workId === removalWorkId) removalOrder.push('remove-attempt');
+      },
+      onCaptureRemovalCompletedForTest: workId => {
+        if (removalArmed && workId === removalWorkId) removalOrder.push('remove-completed');
+      },
+    } : {}),
     profile: async () => ({ schema_version: 3, execution: {
       stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
       max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
@@ -400,6 +425,10 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
     if (!pairCase) await new Promise(resolve => setTimeout(resolve, 30));
   }
   assert.ok(pairCase, 'two real captures must establish an observed case');
+  await waitFor('original pair observed before revising its case', () => store.readPeerDeliveries(ids[0]),
+    records => records.some(record => record.state === 'observed' &&
+      record.envelope.case_id === pairCase.id && record.envelope.case_revision === pairCase.revision), 400);
+  await refresh(0); await refresh(1);
   const third = await submit(2); ids.push(third.task_id);
   await waitFor('third native task', () => store.readControl(third.task_id),
     control => control.native.state === 'observed_live' && control.native.coverage === 'turn_scoped');
@@ -408,12 +437,10 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
   assert.ok(workIds.every(Boolean), 'all three managed works are registered');
   const control = new CoordinationControl(await CoordinationStore.open(binding.storeRoot, binding.repositoryId, () => {}));
   t.after(() => control.close());
-  await control.extendObservedCase(actor, { operation_key: randomUUID(), case_id: pairCase.id,
-    expected_revision: pairCase.revision, generation: pairCase.generation,
-    new_work_id: workIds[2], target_oid: pairCase.target_oid });
-  const joined = (await state()).cases.find(item => item.id === pairCase.id);
-  assert.deepEqual([...joined.delivery_pending].sort(), [...workIds].sort());
   await refresh(2);
+  const joined = await waitFor('controlled third worker extension', async () =>
+    (await state()).cases.find(item => item.id === pairCase.id && item.inputs.length === 3), Boolean, 400);
+  assert.deepEqual([...joined.delivery_pending].sort(), [...workIds].sort());
   await waitFor('other revised source observed before obsolete final source', async () => otherRevised, Boolean);
   await waitFor('final needed revised envelope held', async () => obsoleteRevised, Boolean);
   assert.notEqual(otherRevised.source_work_id, obsoleteRevised.source_work_id);
@@ -457,13 +484,18 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
       await settlementRelease.promise;
       if (!firstAttempt) await firstGuardFinished.promise;
     }
-    try { return await observeDelivery.apply(this, args); }
+    try {
+      const result = await observeDelivery.apply(this, args);
+      if (captureRace && firstAttempt) captureOrder.push('settled');
+      return result;
+    }
     catch (error) {
       if (firstAttempt && error.code === 'PEER_DELIVERY_STALE') {
         const snapshot = await this.store.snapshot();
         pendingAtGuardRejection = snapshot.cases.find(item => item.id === joined.id)
           .delivery_pending.includes(workIds[0]) &&
           !snapshot.cases.find(item => item.id === joined.id).delivery_observed.some(item => item.work_id === workIds[0]);
+        if (removalRace) removalOrder.push('settlement-rejected');
         guardRejected = true;
       }
       throw error;
@@ -473,6 +505,60 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
     CoordinationControl.prototype.observeCaseDelivery = observeDelivery; });
   continuePeer.release();
   await waitFor('current evidence reached guarded metadata settlement', async () => guarded, Boolean, 400);
+  if (captureRace) {
+    captureRaceWorkId = workIds[sourceIndex]; captureRaceArmed = true;
+    const oldArtifact = (await runtime.structuralCurrent(actor)).reports
+      .find(report => report.work_id === captureRaceWorkId && report.path === 'source.ts')?.id;
+    assert.ok(oldArtifact, 'selected source has an exact retained capture before replacement');
+    await writeFile(join(workspaces[sourceIndex], 'source.ts'), 'export function run() { return 43; }\n');
+    const replacementRefresh = refresh(sourceIndex);
+    await waitFor('selected capture publication reached its reservation', async () =>
+      captureOrder.includes('capture-attempt'), Boolean, 400);
+    assert.ok(!captureOrder.includes('capture-published'));
+    assert.equal((await runtime.structuralCurrent(actor)).reports
+      .find(report => report.work_id === captureRaceWorkId && report.path === 'source.ts')?.id,
+    oldArtifact, 'selected publication waits while current receipt settlement holds capture protection');
+    settlementRelease.release();
+    await waitFor('guarded current receipt committed before capture replacement', async () =>
+      (await state()).cases.find(item => item.id === joined.id).delivery_observed.some(item => item.work_id === workIds[0]), Boolean);
+    await replacementRefresh;
+    await waitFor('selected capture published after settlement', async () =>
+      captureOrder.includes('capture-published'), Boolean, 400);
+    assert.ok(captureOrder.indexOf('settled') < captureOrder.indexOf('capture-published'));
+    const completed = await waitFor('settlement observer after capture race', async () =>
+      settlementAttempts.find(attempt => attempt.recipient_work_id === workIds[0] &&
+        attempt.outcome === 'completed'), Boolean);
+    assert.ok(completed.observed_delivery_ids.includes(received.find(envelope =>
+      envelope.case_revision === joined.revision && envelope.source_work_id === obsoleteRevised.source_work_id &&
+      envelope.delivery_id !== obsoleteRevised.delivery_id)?.delivery_id));
+    assert.ok((await store.readPeerDeliveries(ids[0])).some(record => record.state === 'observed' &&
+      record.envelope.delivery_id === obsoleteRevised.delivery_id), 'obsolete native receipt remains historical');
+    return;
+  }
+  if (removalRace) {
+    const selectedSource = workIds[sourceIndex];
+    removalWorkId = selectedSource; removalArmed = true;
+    const sourceRevision = (await state()).works.find(work => work.id === selectedSource).revision;
+    const closing = runtime.coordinate(command({ kind: 'close_work', operation_key: randomUUID(),
+      work_id: selectedSource, expected_revision: sourceRevision }), actor, fixture.root);
+    await waitFor('selected work closure published before capture removal', async () =>
+      (await state()).works.find(work => work.id === selectedSource)?.state === 'closed', Boolean, 400);
+    await waitFor('selected capture removal reached protected mutation', async () =>
+      removalOrder.includes('remove-attempt'), Boolean, 400);
+    assert.ok(!removalOrder.includes('remove-completed'),
+      'selected capture cannot be removed while exact receipt settlement owns its task/capture fence');
+    assert.ok((await state()).cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]));
+    settlementRelease.release();
+    await waitFor('closed selected source rejected stale settlement', async () => guardRejected, Boolean, 400);
+    await closing;
+    assert.ok(removalOrder.includes('remove-completed'));
+    assert.ok(removalOrder.indexOf('settlement-rejected') < removalOrder.indexOf('remove-completed'));
+    assert.ok(pendingAtGuardRejection, 'closed source cannot discharge a pending recipient');
+    assert.ok((await store.readPeerDeliveries(ids[0])).some(record => record.state === 'observed' &&
+      record.envelope.delivery_id === obsoleteRevised.delivery_id), 'obsolete native receipt remains historical');
+    assert.ok((await state()).cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]));
+    return;
+  }
   await control.execute(actor, { kind: 'post_note', operation_key: randomUUID(),
     subject: { kind: 'case', id: joined.id }, note_kind: 'statement', text: 'unrelated metadata revision', parties: [] });
   assert.ok((await state()).cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]),
@@ -503,7 +589,14 @@ test('pending observed case keeps an obsolete native receipt pending until fresh
   assert.ok(completedAttempt.observed_delivery_ids.includes(replacement.delivery_id));
   assert.equal(settlementAttempts.filter(attempt => attempt.recipient_work_id === workIds[0] &&
     attempt.outcome === 'completed').length, 1);
-});
+}
+
+test('pending observed case keeps an obsolete native receipt pending until fresh peer evidence is observed', t =>
+  pendingObservedCaseScenario(t));
+test('selected capture replacement follows a guarded exact receipt settlement', t =>
+  pendingObservedCaseScenario(t, true));
+test('selected capture removal follows closed-work authority and cannot settle an old receipt', t =>
+  pendingObservedCaseScenario(t, false, true));
 
 async function observedExtensionScenario(t, enable, replaceRun = false, partialQueue = false) {
   const fixture = await serviceFixture(t);

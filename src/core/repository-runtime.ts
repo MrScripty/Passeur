@@ -228,6 +228,13 @@ export type RuntimeDependencies = {
     recipient_task_id: string; source_work_id: string }>) => void;
   /** Exposes the existing same-runtime reconciliation call only to an injected controlled fixture. */
   onObservedCaseExtensionPublishedForTest?: (caseId: string, retry: () => Promise<void>) => void;
+  /** Signals a controlled capture publication before its task/capture reservation. */
+  onCapturePublicationAttemptForTest?: (workId: string, path: string) => void;
+  /** Signals a controlled capture publication after its reservation releases. */
+  onCapturePublicationCompletedForTest?: (workId: string, path: string, artifactId: string) => void;
+  /** Signals an actual capture-index removal before and after its protected mutation. */
+  onCaptureRemovalAttemptForTest?: (workId: string) => void;
+  onCaptureRemovalCompletedForTest?: (workId: string) => void;
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
@@ -573,16 +580,18 @@ export class RepositoryRuntime {
                     workId: event.other_work_id, subjectId: event.subject_id, state });
                 }
               }
-              return { correspondence, sourceChanged, workId: work.id, path };
+              return { correspondence, sourceChanged, workId: work.id, path, artifactId: artifact.id };
             };
             const managedTaskId = job.workspace.control_generation ?
               (await (await this.#coordinationSession(this.#binding!).observationStore()).snapshot()).works
                 .find(work => work.id === job.workspace.work_id)?.managed?.task_id : undefined;
             const publishProtected = () => this.#captureIndex.run(publish);
+            this.#deps.onCapturePublicationAttemptForTest?.(job.workspace.work_id, pair.report.comparison.input.source.path);
             const published = managedTaskId
               ? await (await this.#taskControls()).withTaskPublication([managedTaskId], publishProtected)
               : await publishProtected();
             if (!published) return;
+            this.#deps.onCapturePublicationCompletedForTest?.(published.workId, published.path, published.artifactId);
             if (published.sourceChanged) await this.#coordinationSession(this.#binding!).notifyPeerObservation(published.workId, published.path);
             for (const event of published.correspondence.pairs) await this.#queuePeerOverlap(event);
             await this.#drainCorrespondenceNotices();
@@ -1023,11 +1032,13 @@ export class RepositoryRuntime {
     const binding = this.#binding;
     const taskId = binding && (await (await this.#coordinationSession(binding).observationStore()).snapshot())
       .works.find(work => work.id === workId)?.managed?.task_id;
+    this.#deps.onCaptureRemovalAttemptForTest?.(workId);
     if (taskId) {
       await (await this.#taskControls()).withTaskPublication([taskId], async () => {
         await this.#captureIndex.run(() => this.#forgetObservation(workId, workspaceId));
       });
     } else await this.#captureIndex.run(() => this.#forgetObservation(workId, workspaceId));
+    this.#deps.onCaptureRemovalCompletedForTest?.(workId);
   }
   #retainCorrespondence(update: CorrespondenceUpdate): void {
     for (const resolved of update.resolved) this.#currentOverlapPairs.delete(resolved.pair_id);
