@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { onTestFinished, test } from "vitest";
 // @ts-expect-error The disposable Git fixture is shared with the core suite.
-import { serviceFixture } from "../fixtures/structural/service-fixture.mjs";
+import { git, serviceFixture } from "../fixtures/structural/service-fixture.mjs";
 import { MuseSdkAdapter } from "../../src/muse/adapter.js";
 import type { MuseOptions } from "../../src/muse/config.js";
 import type { WorkerInput, WorkerPeerOperationRequest } from "../../src/agents/types.js";
 import { parseWorkerMessage } from "../../src/agents/report.js";
+import type { StoredPeerOperation } from "../../src/store/record-codecs.js";
 
 const source = (value: number) => `export function run() { return ${value}; }\n`;
+const execFileAsync = promisify(execFile);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const message = (value: Record<string, unknown>) => `PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, ...value })}`;
 const final = (summary: string, extra: Record<string, unknown> = {}) => message({ kind: "final", summary,
@@ -19,10 +23,10 @@ const final = (summary: string, extra: Record<string, unknown> = {}) => message(
 
 type NativePeer = { prompts: string[]; operations: string[]; errors: string[]; portErrors: string[];
   release: () => void; edited: Promise<void>; proposalNote: () => string | undefined;
-  observedOutcome: () => unknown };
+  observedOutcome: () => unknown; committedHead: () => string | undefined };
 
 /** The scripted native peer sees only its assigned prompt, delivered turn, and operation replies. */
-function controlledMuse(index: number): { adapter: MuseSdkAdapter; peer: NativePeer } {
+function controlledMuse(index: number, commitApplied = false): { adapter: MuseSdkAdapter; peer: NativePeer } {
   const prompts: string[] = [], operations: string[] = [], errors: string[] = [], portErrors: string[] = [];
   let release!: () => void, didEdit!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -33,6 +37,7 @@ function controlledMuse(index: number): { adapter: MuseSdkAdapter; peer: NativeP
   let agreedProposalDigest: string | undefined, agreedProposalNoteId: string | undefined;
   let appliedDigest: string | undefined;
   let observedOutcome: unknown;
+  let committedHead: string | undefined;
   const op = (kind: string, fields: Record<string, unknown> = {}) => {
     operations.push(kind);
     return message({ kind: "peer_operation", operation: { schema_version: 1,
@@ -64,7 +69,7 @@ function controlledMuse(index: number): { adapter: MuseSdkAdapter; peer: NativeP
     delete (next as { resolution_digest?: string }).resolution_digest;
     return op(action, { proposal: next });
   };
-  const choose = (): string => {
+  const choose = async (): Promise<string> => {
     assert.ok(current);
     if (current.application_outcome) {
       const outcome = current.application_outcome;
@@ -73,6 +78,18 @@ function controlledMuse(index: number): { adapter: MuseSdkAdapter; peer: NativeP
       assert.equal(outcome.proposal_note_id, agreedProposalNoteId);
       if (index === 1) assert.equal(outcome.application_digest, appliedDigest);
       observedOutcome = outcome;
+      if (commitApplied && index === 1) {
+        // The applying SDK worker performs the ordinary check and Git operations after its port reply.
+        await git(workspace, ["diff", "--check"]);
+        const checked = await execFileAsync(process.execPath, ["--input-type=module", "-e",
+          'import { readFile } from "node:fs/promises"; const source = await readFile("source.ts", "utf8");' +
+          'const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);' +
+          'if (module.run() !== 3) process.exit(1);'], { cwd: workspace });
+        assert.equal(checked.stderr, "");
+        await git(workspace, ["add", "--", "source.ts"]);
+        await git(workspace, ["commit", "-m", "test: apply agreed peer result"]);
+        committedHead = (await git(workspace, ["rev-parse", "HEAD"])).trim();
+      }
       return final("Observed the durable combined peer resolution after consent");
     }
     const p = current.proposal;
@@ -91,7 +108,7 @@ function controlledMuse(index: number): { adapter: MuseSdkAdapter; peer: NativeP
     }
     return wait();
   };
-  const nextMessage = (prompt: string, displayText: string): string => {
+  const nextMessage = async (prompt: string, displayText: string): Promise<string> => {
     if (!selfTask) {
       const match = /^Passeur task ([a-f0-9-]{36})$/.exec(displayText);
       assert.ok(match, "native task identity must arrive through the normal turn");
@@ -152,7 +169,7 @@ function controlledMuse(index: number): { adapter: MuseSdkAdapter; peer: NativeP
           didEdit();
         }
         let reply: string;
-        try { reply = nextMessage(prompt, displayText); }
+        try { reply = await nextMessage(prompt, displayText); }
         catch (error) { errors.push(String(error)); throw error; }
         return { turnId: randomUUID(), completed: (async () => {
           if (prompts.length === 1) await gate;
@@ -163,10 +180,11 @@ function controlledMuse(index: number): { adapter: MuseSdkAdapter; peer: NativeP
       close: async () => {} };
   });
   return { adapter, peer: { prompts, operations, errors, portErrors, release, edited,
-    proposalNote: () => agreedProposalNoteId, observedOutcome: () => observedOutcome } };
+    proposalNote: () => agreedProposalNoteId, observedOutcome: () => observedOutcome,
+    committedHead: () => committedHead } };
 }
 
-async function composeControlledPeers(sameParent: boolean, probeIdentity = false): Promise<void> {
+async function composeControlledPeers(sameParent: boolean, probeIdentity = false, commitApplied = false): Promise<void> {
   const fromBuild = (name: string) => import(pathToFileURL(join(process.cwd(), "dist/src", name)).href);
   const [{ RepositoryRuntime, resolveRepositoryBinding }, { TaskStore }, { operatorToken }] = await Promise.all([
     fromBuild("core/repository-runtime.js"), fromBuild("store/task-store.js"), fromBuild("service/operator-token.js"),
@@ -174,6 +192,17 @@ async function composeControlledPeers(sameParent: boolean, probeIdentity = false
   const fixture = await serviceFixture({ name: sameParent ? "sibling worker-only peer composition" : "worker-only peer composition",
     after: onTestFinished });
   await fixture.service.close();
+  const baseCommit = commitApplied
+    ? await fixture.commit(fixture.root, "README.md", "Unrelated baseline content survives peer resolution.\n")
+    : fixture.base;
+  let hookMarker: string | undefined;
+  if (commitApplied) {
+    const hook = (await git(fixture.root, ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit"])).trim();
+    hookMarker = `${hook}.ran`;
+    await mkdir(join(hook, ".."), { recursive: true });
+    await writeFile(hook, '#!/bin/sh\nprintf "ran\\n" > "$(dirname "$0")/pre-commit.ran"\n');
+    await chmod(hook, 0o755);
+  }
   const intent = { project: fixture.root, stateRoot: fixture.state,
     profilePath: join(fixture.temp, "missing-profile.json") };
   const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
@@ -184,7 +213,7 @@ async function composeControlledPeers(sameParent: boolean, probeIdentity = false
     { owner_id: sameParent ? digest(token) : "b".repeat(64), client_id: randomUUID() },
   ];
   const store = new TaskStore(binding.storeRoot);
-  const peers = [controlledMuse(0), controlledMuse(1)];
+  const peers = [controlledMuse(0), controlledMuse(1, commitApplied)];
   let taskIds: string[] = [];
   let impersonationProbe: { bound_task_id: string; claimed_task_id: string; invalid_rejected: boolean } | undefined;
   const runtime = new RepositoryRuntime(intent,
@@ -254,7 +283,7 @@ async function composeControlledPeers(sameParent: boolean, probeIdentity = false
     schema_version: 3, agent_id: `peer${index}`, request_key: randomUUID(), mode: "implement",
     objective: `Change source.ts for peer ${index}`, context: "Controlled overlapping managed edits",
     acceptance_criteria: ["Edit source.ts"], allowed_paths: ["source.ts"],
-    base_commit: fixture.base, target_ref: "refs/heads/main",
+    base_commit: baseCommit, target_ref: "refs/heads/main",
   } }, actors[index]!, fixture.root, new AbortController().signal);
   const tasks = await Promise.all([submit(0), submit(1)]);
   const ids = tasks.map(task => task.task_id);
@@ -344,6 +373,97 @@ async function composeControlledPeers(sameParent: boolean, probeIdentity = false
   const combined = await import(`data:text/javascript;base64,${Buffer.from(actual).toString("base64")}`);
   assert.equal(combined.run(), 3, "independent executable oracle checks the applied result");
   assert.equal(await readFile(join(fixture.root, "source.ts"), "utf8"), "export function run() {}\n");
+  if (commitApplied) {
+    const applying = 1, resource = resources[applying]!, result = results[applying]!, control = controls[applying]!;
+    const delivery = result.delivery;
+    assert.equal(await readFile(hookMarker!, "utf8"), "ran\n",
+      "the executable pre-commit hook must have run during the worker's ordinary commit");
+    assert.equal(delivery.status, "committed", "Coordinator must accept the worker-created commit");
+    assert.equal(delivery.head_commit, peers[applying]!.peer.committedHead());
+    assert.equal(delivery.base_commit, baseCommit);
+    assert.equal(delivery.branch_ref, resource.branch_ref);
+    assert.equal(delivery.worktree_path, resource.worktree_path);
+    assert.equal(control.native.run_id, result.native_evidence.run_id);
+    assert.equal((await store.durableRequest(ids[applying]!)).task_id, ids[applying]);
+    assert.equal((await git(resource.worktree_path!, ["rev-parse", "HEAD"])).trim(), delivery.head_commit);
+    assert.equal((await git(fixture.root, ["rev-parse", resource.branch_ref!])).trim(), delivery.head_commit);
+    assert.equal((await git(fixture.root, ["merge-base", baseCommit, delivery.head_commit!])).trim(), baseCommit);
+    assert.equal((await git(resource.worktree_path!, ["status", "--porcelain"])).trim(), "");
+    assert.equal((await git(fixture.root, ["rev-parse", `${delivery.head_commit}^{tree}`])).trim(), delivery.tree_oid);
+    assert.notEqual(delivery.head_commit, baseCommit, "verification must name the worker's new commit");
+    const verifyExactCommit = async (candidate: string) => {
+      assert.equal(candidate, delivery.head_commit, "the oracle is bound to the worker-delivered commit identity");
+      const treeSource = await git(fixture.root, ["show", `${candidate}:source.ts`]);
+      const treeReadme = await git(fixture.root, ["show", `${candidate}:README.md`]);
+      assert.equal(treeSource, source(3), "the immutable delivered commit must contain both compatible values");
+      assert.equal(treeReadme, "Unrelated baseline content survives peer resolution.\n");
+      const executed = await import(`data:text/javascript;base64,${Buffer.from(treeSource).toString("base64")}`);
+      assert.equal(executed.run(), 3, "the caller executes bytes from the delivered commit tree");
+    };
+    await verifyExactCommit(delivery.head_commit!);
+    const sameTreeOtherCommit = (await git(fixture.root, ["commit-tree", delivery.tree_oid!,
+      "-p", baseCommit, "-m", "test: alternate identity with same tree"])).trim();
+    assert.notEqual(sameTreeOtherCommit, delivery.head_commit);
+    await assert.rejects(verifyExactCommit(sameTreeOtherCommit), /worker-delivered commit identity/);
+    const appliedOutcome = outcomes[applying] as { application_note_id: string; status: string;
+      proposal_digest: string; application_digest: string };
+    const applyRecords = (await store.listPeerOperations(ids[applying]!))
+      .filter((record: StoredPeerOperation) => record.request.kind === "apply");
+    assert.equal(applyRecords.length, 1, "one applying worker operation must settle durably");
+    const settledApply = applyRecords[0]!;
+    assert.equal(settledApply.disposition, "settled");
+    assert.equal(settledApply.result?.kind, "application");
+    assert.equal(settledApply.result?.status, "applied");
+
+    const casePage = await coordinate({ schema_version: 1, kind: "read", selector: { kind: "case", id: caseId },
+      offset: 0, limit: 8192, expected_hash: null });
+    assert.equal(casePage.kind, "page");
+    const settledCase = JSON.parse(casePage.content);
+    const leadIndex = actors.findIndex(actor => actor.owner_id === settledCase.lead);
+    assert.ok(leadIndex >= 0);
+    await coordinate({ schema_version: 1, kind: "command", command: { kind: "release_case",
+      operation_key: randomUUID(), case_id: caseId, expected_revision: settledCase.revision,
+      generation: settledCase.generation } }, leadIndex);
+    for (let index = 0; index < 2; index++) {
+      const workPage = await coordinate({ schema_version: 1, kind: "read", selector: { kind: "work", id: ids[index] },
+        offset: 0, limit: 8192, expected_hash: null }, index);
+      assert.equal(workPage.kind, "page");
+      const work = JSON.parse(workPage.content);
+      await coordinate({ schema_version: 1, kind: "command", command: { kind: "close_work",
+        operation_key: randomUUID(), work_id: ids[index], expected_revision: work.revision } }, index);
+    }
+    const finalized = await runtime.finalize(ids.map((id, index) => ({ task_id: id, operation_key: randomUUID(),
+      disposition: "retained" as const, expected_head: results[index]!.delivery.head_commit!,
+      expected_branch_ref: resources[index]!.branch_ref!, owner: "controlled composition fixture",
+      reason: "preserve exact peer result and application evidence",
+      next_action: "qualified installed worker gate" })));
+    assert.ok(finalized.every((entry: { receipt?: { resource: { state: string } } }) =>
+      entry.receipt?.resource.state === "retained"), JSON.stringify(finalized));
+    const reopened = new TaskStore(binding.storeRoot);
+    assert.deepEqual(await reopened.readResult(ids[applying]!), result, "reopen must retain exact committed delivery");
+    assert.deepEqual(await reopened.readPeerOperation(ids[applying]!, settledApply.request.operation_key), settledApply,
+      "reopen must retain the exact settled applying operation");
+    assert.ok((await Promise.all(ids.map(id => reopened.readResource(id)))).every(item => item?.state === "retained"));
+    const reopenedCase = await coordinate({ schema_version: 1, kind: "read", selector: { kind: "case", id: caseId },
+      offset: 0, limit: 8192, expected_hash: null }, leadIndex);
+    assert.equal(reopenedCase.kind, "page");
+    assert.equal(JSON.parse(reopenedCase.content).state, "closed");
+    const applicationPage = await coordinate({ schema_version: 1, kind: "read", selector: {
+      kind: "note", id: appliedOutcome.application_note_id }, offset: 0, limit: 8192, expected_hash: null }, leadIndex);
+    assert.equal(applicationPage.kind, "page");
+    const application = JSON.parse(applicationPage.content).peer_resolution;
+    assert.equal(application.kind, "peer_resolution_application");
+    assert.equal(application.status, "applied");
+    assert.equal(application.proposal_digest, appliedOutcome.proposal_digest);
+    assert.equal(application.application_digest, appliedOutcome.application_digest);
+    for (let index = 0; index < 2; index++) {
+      const workPage = await coordinate({ schema_version: 1, kind: "read", selector: { kind: "work", id: ids[index] },
+        offset: 0, limit: 8192, expected_hash: null }, index);
+      assert.equal(workPage.kind, "page");
+      assert.equal(JSON.parse(workPage.content).state, "closed");
+    }
+    assert.deepEqual(peers[0]!.peer.observedOutcome(), peers[1]!.peer.observedOutcome());
+  }
   if (probeIdentity) assert.throws(() => parseWorkerMessage(message({ kind: "peer_operation", operation: {
       schema_version: 1, operation_key: "impersonate-sibling", case_id: caseId,
       kind: "inspect", task_id: ids[1],
@@ -363,3 +483,5 @@ test("same-parent sibling Muse peers independently consent and apply their overl
   composeControlledPeers(true), 120_000);
 test("task-bound peer port refuses a sibling identity claim", () =>
   composeControlledPeers(false, true), 120_000);
+test("applying controlled Muse peer commits the observed result and retains exact delivery", () =>
+  composeControlledPeers(false, false, true), 120_000);
