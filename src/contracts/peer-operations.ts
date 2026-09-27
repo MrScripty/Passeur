@@ -24,6 +24,10 @@ type RequestBase = PeerWorkerIdentity & Readonly<{
 
 export type PeerWorkerOperation =
   | (RequestBase & Readonly<{ kind: "inspect" }>)
+  | (RequestBase & Readonly<{ kind: "source_detail"; work_id: string; report_id: string;
+      side: "input" | "observed"; start_byte: number; end_byte: number }>)
+  | (RequestBase & Readonly<{ kind: "apply"; note_id: string; expected_case_revision: number;
+      expected_case_generation: number; proposal_digest: string }>)
   | (RequestBase & Readonly<{ kind: "propose" | "counter_propose"; proposal: PeerResolutionProposal }>)
   | (RequestBase & Readonly<{ kind: "acknowledge" | "withdraw"; note_id: string }>)
   | (RequestBase & Readonly<{ kind: "await_change"; after_case_revision: number; after_case_generation: number;
@@ -37,6 +41,10 @@ export type PeerWorkerOperationResult =
       case_revision: number; case_generation: number; evidence_id: string; evidence_revision: number;
       negotiation_cursor: string; proposal_note_id: string | null; proposal: PeerResolutionProposal | null;
       participant_task_ids: string[]; acknowledged_task_ids: string[] }>)
+  | (ResultBase & Readonly<{ kind: "detail"; operation: "source_detail"; work_id: string; report_id: string;
+      side: "input" | "observed"; start_byte: number; end_byte: number; content_sha256: string; text: string }>)
+  | (ResultBase & Readonly<{ kind: "application"; operation: "apply"; note_id: string;
+      status: "applied" | "rejected" | "effect_unknown"; application_digest: string | null; paths: string[] }>)
   | (ResultBase & Readonly<{ kind: "receipt"; operation: "propose" | "counter_propose" | "acknowledge" | "withdraw";
       receipt_revision: number; note_id: string }>)
   | (ResultBase & Readonly<{ kind: "pending"; operation: "await_change";
@@ -83,9 +91,21 @@ function digest(value: unknown): string {
   if (!/^[a-f0-9]{64}$/.test(result)) invalid("Peer operation evidence must be a SHA-256 identity");
   return result;
 }
+function effectPath(value: unknown): string {
+  const result = text(value, 4096);
+  if (result.startsWith("/") || result.includes("\\") ||
+      result.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) {
+    invalid("Peer application path is outside its scoped Git source");
+  }
+  return result;
+}
 
 function positive(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) invalid("Peer operation revision must be a positive safe integer");
+  return value;
+}
+function byteOffset(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) invalid("Peer detail offset is invalid");
   return value;
 }
 
@@ -159,6 +179,19 @@ export function decodePeerWorkerOperation(value: unknown): PeerWorkerOperation {
     case "inspect":
       exact(entry, baseFields);
       return Object.freeze({ ...common, kind: "inspect" });
+    case "source_detail": {
+      exact(entry, [...baseFields, "work_id", "report_id", "side", "start_byte", "end_byte"]);
+      const start_byte = byteOffset(entry.start_byte), end_byte = byteOffset(entry.end_byte);
+      if (end_byte < start_byte || end_byte - start_byte > 8192) invalid("Peer source detail exceeds its captured-byte bound");
+      if (entry.side !== "input" && entry.side !== "observed") invalid("Peer source detail side is invalid");
+      return Object.freeze({ ...common, kind: "source_detail", work_id: uuid(entry.work_id), report_id: digest(entry.report_id),
+        side: entry.side, start_byte, end_byte });
+    }
+    case "apply":
+      exact(entry, [...baseFields, "note_id", "expected_case_revision", "expected_case_generation", "proposal_digest"]);
+      return Object.freeze({ ...common, kind: "apply", note_id: uuid(entry.note_id),
+        expected_case_revision: positive(entry.expected_case_revision), expected_case_generation: positive(entry.expected_case_generation),
+        proposal_digest: digest(entry.proposal_digest) });
     case "propose": case "counter_propose":
       exact(entry, [...baseFields, "proposal"]);
       return Object.freeze({ ...common, kind: entry.kind, proposal: proposal(entry.proposal, entry.kind, common.case_id) });
@@ -170,8 +203,8 @@ export function decodePeerWorkerOperation(value: unknown): PeerWorkerOperation {
       return Object.freeze({ ...common, kind: "await_change", after_case_revision: positive(entry.after_case_revision),
         after_case_generation: positive(entry.after_case_generation),
         ...(Object.hasOwn(entry, "after_negotiation_cursor") ? { after_negotiation_cursor: digest(entry.after_negotiation_cursor) } : {}) });
-    case "apply": case "verify":
-      throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "Application and verification are not worker peer operations");
+    case "verify":
+      throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "Verification is not a worker peer operation");
     default:
       throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "Unsupported worker peer operation");
   }
@@ -194,6 +227,35 @@ export function decodePeerWorkerOperationResult(value: unknown): PeerWorkerOpera
         negotiation_cursor: digest(entry.negotiation_cursor), participant_task_ids, acknowledged_task_ids,
         proposal_note_id: entry.proposal_note_id === null ? null : uuid(entry.proposal_note_id),
         proposal: entry.proposal === null ? null : proposal(entry.proposal, object(entry.proposal).action === "counter_propose" ? "counter_propose" : "propose", common.case_id) });
+    }
+    case "detail": {
+      exact(entry, [...baseFields, "operation", "work_id", "report_id", "side", "start_byte", "end_byte", "content_sha256", "text"]);
+      if (entry.operation !== "source_detail" || entry.side !== "input" && entry.side !== "observed") invalid("Peer source detail result is invalid");
+      const start_byte = byteOffset(entry.start_byte), end_byte = byteOffset(entry.end_byte);
+      if (end_byte < start_byte || end_byte - start_byte > 8192) invalid("Peer source detail result exceeds its captured-byte bound");
+      const excerpt = typeof entry.text === "string" ? entry.text : invalid("Peer source detail text is invalid");
+      if (Buffer.byteLength(excerpt, "utf8") !== end_byte - start_byte ||
+          Buffer.from(excerpt, "utf8").toString("utf8") !== excerpt || /\u0000/.test(excerpt)) {
+        invalid("Peer source detail text does not match its exact captured-byte range");
+      }
+      return Object.freeze({ ...common, kind: "detail", operation: "source_detail", work_id: uuid(entry.work_id),
+        report_id: digest(entry.report_id), side: entry.side, start_byte, end_byte,
+        content_sha256: digest(entry.content_sha256), text: excerpt });
+    }
+    case "application": {
+      exact(entry, [...baseFields, "operation", "note_id", "status", "application_digest", "paths"]);
+      if (entry.operation !== "apply" || !["applied", "rejected", "effect_unknown"].includes(entry.status as string)) {
+        invalid("Peer application result is invalid");
+      }
+      if (!Array.isArray(entry.paths) || entry.paths.length > 32) invalid("Peer application paths are not bounded");
+      const paths = entry.paths.map(effectPath);
+      if (paths.some((path, index) => index > 0 && paths[index - 1]! >= path)) invalid("Peer application paths must be unique and sorted");
+      const application_digest = entry.application_digest === null ? null : digest(entry.application_digest);
+      if (entry.status === "applied" && application_digest === null) invalid("Applied peer result requires an effect digest");
+      if (entry.status !== "applied" && application_digest !== null) invalid("Unconfirmed peer effect cannot have an applied digest");
+      return Object.freeze({ ...common, kind: "application", operation: "apply", note_id: uuid(entry.note_id),
+        status: entry.status as "applied" | "rejected" | "effect_unknown", application_digest,
+        paths });
     }
     case "receipt":
       exact(entry, [...baseFields, "operation", "receipt_revision", "note_id"]);

@@ -5,11 +5,12 @@ import { BridgeError } from "../core/errors.js";
 import { CoordinationStore } from "../store/coordination-store.js";
 import { CoordinationControl, type CoordinationActor, type RetirementReservation, type WorkerPeerActor, type WorkerPeerAuthority } from "../coordination/control.js";
 import { RepositoryCoordination, type BindingLimits, type CoordinationConnection, type ExternalWorkspaceAuthority, type ManagedWorkspaceAuthority } from "../coordination/bound-control.js";
-import { decodeLimits, decodeAnnouncementInput, decodeSubmissionPreflightInput, decodeSubmissionBindInput,
+import { decodeLimits, decodeAnnouncementInput, decodeSubmissionPreflightInput, decodeSubmissionBindInput, decodeInternalRepositoryCommand,
   internalCoordinationOperationKey, publicCoordinationOperationKey, parentId, type Limits, type Receipt,
   type AnnouncementRecord, type SubmissionBinding, type Region } from "../contracts/coordination-control.js";
 import type { Work } from "../contracts/coordination-control.js";
 import type { PeerWorkerOperationResult } from "../contracts/peer-operations.js";
+import type { PeerResolutionProposal } from "../coordination/peer-resolution.js";
 import { COORDINATION_VIEW_BYTES, coordinationRequestLane, decodeCoordinationReply, decodeCoordinationRequest,
   type CoordinationReply, type CoordinationRequest, type CoordinationSelector } from "../contracts/coordination-service.js";
 
@@ -108,6 +109,18 @@ export class CoordinationService {
         { kind: "register_managed_work", operation_key: key, task_id: taskId });
     });
   }
+  /** Elected-runtime path for source-observed managed overlap. Git checks stay in RepositoryCoordination. */
+  executeObservedOverlapCommand(connection: CoordinationConnection, raw: unknown): Promise<Receipt> {
+    const command = decodeInternalRepositoryCommand(raw);
+    if (command.kind !== "share_work" && command.kind !== "claim_target" && command.kind !== "select_inputs") {
+      throw new BridgeError("COORDINATION_OPERATION_UNSUPPORTED", "Observed overlap cannot perform this metadata operation");
+    }
+    return this.#submission(connection, "ordinary", true, undefined, async control => {
+      const opened = this.#opened;
+      if (!opened || opened.control !== control) throw new BridgeError("COORDINATION_STATE_INVALID", "Metadata owner changed during overlap establishment");
+      return (await this.#source(opened, connection.source_view)).executeInternal(connection, command);
+    });
+  }
   submissionBinding(connection: CoordinationConnection, taskId: string, signal?: AbortSignal): Promise<SubmissionBinding> {
     return this.#submission(connection, "control", false, signal, (control, actor) => control.submissionBinding(actor, taskId));
   }
@@ -157,6 +170,25 @@ export class CoordinationService {
         throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker operation identity differs from its authenticated coordination connection");
       }
       return control.workerPeerCommittedReceipt(actor, raw);
+    });
+  }
+  workerCasePublication<T>(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown,
+    publish: () => Promise<T>): Promise<T> {
+    return this.#submission(connection, "control", false, undefined, (control, authenticated) => {
+      if (this.#taskTransitions.size || actor.owner_id !== authenticated.owner_id || actor.source_view !== connection.source_view) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Worker case publication authority changed");
+      }
+      return control.withWorkerCasePublication(actor, raw, publish);
+    });
+  }
+  workerApplication(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown,
+    effect: (proposal: PeerResolutionProposal) => Promise<PeerWorkerOperationResult>,
+    preflight?: (proposal: PeerResolutionProposal) => Promise<void>): Promise<PeerWorkerOperationResult> {
+    return this.#submission(connection, "control", false, undefined, (control, authenticated) => {
+      if (this.#taskTransitions.size || actor.owner_id !== authenticated.owner_id || actor.source_view !== connection.source_view) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Worker application authority changed");
+      }
+      return control.withWorkerApplication(actor, raw, effect, preflight);
     });
   }
   async withWorkerTaskTransition<T>(connection: CoordinationConnection, taskId: string, transition: () => Promise<T>): Promise<T> {

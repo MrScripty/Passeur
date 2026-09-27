@@ -19,7 +19,8 @@ async function qualificationCase(id, source, build) {
   await writeFile(join(apps, 'case', 'build.mjs'), source);
   await writeFile(join(oracles, `${id}.json`), JSON.stringify({ id,
     functional: [{ id: 'normal', argv: ['normal'], stdout: 'normal\n' }] }));
-  const row = { id, root: 'case', toolchain: 'Node.js 24.12.0', entrypoint: 'build.mjs',
+  const row = { id, root: 'case', toolchain: id === 'L02' ? 'TypeScript 5.9.3; Node.js 24.12.0' :
+    'Node.js 24.12.0', entrypoint: 'build.mjs',
     sources: [{ path: 'build.mjs',
     sha256: createHash('sha256').update(source).digest('hex') }], build,
     runs: [{ case_id: 'normal', argv: ['node', 'build.mjs', 'normal'], input_argv: ['normal'] }] };
@@ -174,16 +175,19 @@ test('sandbox binds only the copied cwd for writing and isolates networking', ()
   assert.equal(args.some((part, index) => part === '--ro-bind' && args[index + 1] === '/'), false);
   assert.ok(args.includes('/tmp/.dotnet'));
   assert.ok(args.includes('/usr'));
-  const copiedModules = args.findIndex((part, index) => part === '--ro-bind' &&
-    args[index + 2] === '/tmp/copy/node_modules');
-  assert.ok(copiedModules > args.indexOf('/tmp/copy'));
-  assert.ok(args[copiedModules + 1].endsWith('/node_modules'));
-  const writableViteCache = args.findIndex((part, index) => part === '--bind' &&
-    args[index + 2] === '/tmp/copy/node_modules/.vite-temp');
-  assert.ok(writableViteCache > copiedModules);
-  assert.equal(args[writableViteCache + 1], '/tmp/copy/.vite-temp');
+  assert.equal(args.some((part, index) => part === '--ro-bind' &&
+    args[index + 2] === '/tmp/copy/node_modules'), false);
   assert.deepEqual(args.slice(-7), ['--chdir', '/tmp/copy/work', '--die-with-parent',
     '--new-session', '--', 'node', 'build.mjs']);
+});
+
+test('native toolchain root is mounted read-only and must be disposable', async () => {
+  const args = sandboxArguments('/tmp/copy', '/tmp/copy', ['lua', 'test.lua'],
+    { nativeToolRoot: '/tmp/native-tools' });
+  assert.ok(args.some((part, index) => part === '--ro-bind' &&
+    args[index + 1] === '/tmp/native-tools' && args[index + 2] === '/tmp/native-tools'));
+  await assert.rejects(qualifyFixtureApps({ offlineNativeRoot: '/usr' }),
+    { code: 'TOOLCHAIN_ROOT' });
 });
 
 test('installed bare package and bin resolve from the copied app', async () => {
@@ -201,21 +205,54 @@ if (process.argv[2] === 'normal') console.log('normal');
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 
-test('Vite config cache is writable in the copy while installed packages stay read-only', async () => {
+test('offline compiler provisioning requires the fixture declared version', async () => {
+  const fixture = await qualificationCase('L02', 'console.log("normal");\n',
+    { argv: ['tsc', '--version'] });
+  try {
+    fixture.row.toolchain = 'TypeScript 0.0.0; Node.js 24.12.0';
+    await fixture.save();
+    const row = (await fixture.qualify()).rows.find(item => item.id === 'L02');
+    assert.equal(row.status, 'blocked');
+    assert.equal(row.reason, 'toolchain_unavailable');
+  } finally { await rm(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('offline frontend provisioning rejects a lock that differs from declared packages', async () => {
+  const fixture = await qualificationCase('L12', 'console.log("normal");\n',
+    { argv: ['node', 'build.mjs'] });
+  try {
+    const packageBytes = '{"dependencies":{"svelte":"5.19.8"}}\n';
+    await writeFile(join(fixture.apps, 'case', 'package.json'), packageBytes);
+    fixture.row.sources.push({ path: 'package.json',
+      sha256: createHash('sha256').update(packageBytes).digest('hex') });
+    await fixture.save();
+    const dependencyRoot = join(fixture.directory, 'dependencies');
+    await mkdir(join(dependencyRoot, 'svelte5'), { recursive: true });
+    await mkdir(join(dependencyRoot, 'npm-cache'));
+    await writeFile(join(dependencyRoot, 'svelte5', 'package-lock.json'),
+      JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: {} } } }));
+    await assert.rejects(qualifyFixtureApps({ manifestPath: fixture.manifestPath,
+      appRoot: fixture.apps, oracleRoot: fixture.oracles, offlineDependencyRoot: dependencyRoot }),
+    { code: 'DEPENDENCY_LOCK' });
+  } finally { await rm(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('copied TypeScript package and Vite cache are writable only in the disposable app', async () => {
   const source = `import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 const cache = join(process.cwd(), 'node_modules/.vite-temp/config.mjs');
 await writeFile(cache, 'copy-local');
 assert.equal(await readFile(cache, 'utf8'), 'copy-local');
-await assert.rejects(writeFile(join(process.cwd(), 'node_modules/typescript/package.json'), 'changed'),
-  { code: 'EROFS' });
+await writeFile(join(process.cwd(), 'node_modules/typescript/package.json'), 'copy-local');
 if (process.argv[2] === 'normal') console.log('normal');
 `;
   const fixture = await qualificationCase('L02', source, { argv: ['node', 'build.mjs'] });
   try {
+    const installed = await readFile(new URL('../../node_modules/typescript/package.json', import.meta.url), 'utf8');
     const row = (await fixture.qualify()).rows.find(item => item.id === 'L02');
     assert.equal(row.status, 'passed', JSON.stringify(row));
+    assert.equal(await readFile(new URL('../../node_modules/typescript/package.json', import.meta.url), 'utf8'), installed);
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 

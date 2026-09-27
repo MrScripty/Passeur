@@ -1,4 +1,4 @@
-import type { AttributedComparison, Extraction, SourceFile } from "./model.js";
+import type { AttributedComparison, Extraction, SourceFile, StructuralComparison } from "./model.js";
 import { compareExtractions } from "./match.js";
 import { renderComparison, renderInspection } from "./report.js";
 import { emptyNativeExtraction } from "./native-extraction.js";
@@ -9,6 +9,24 @@ export type CapturedWorkPair = Readonly<{
   work_id: string; parent_id: string; dialect: NativeDialect;
   input: SourceFile; observed: SourceFile;
 }>;
+
+/** A service-free source-domain result. Callers retain the capture identities and parser coverage. */
+export type SourceDomainComparison = Readonly<{
+  input: Extraction;
+  observed: Extraction;
+  comparison: StructuralComparison;
+}>;
+
+/** Analyze two supplied captures without task attribution, coordinator state, or rendered report text. */
+export async function compareCapturedSources(input: SourceFile, observed: SourceFile, dialect: NativeDialect,
+  helper: Pick<NativeAnalysisHelper, "extract">, signal?: AbortSignal): Promise<SourceDomainComparison> {
+  const extract = (file: SourceFile): Promise<Extraction> => file.status === "present"
+    ? helper.extract(file, dialect, signal)
+    : Promise.resolve(emptyNativeExtraction(file, dialect));
+  const [inputExtraction, observedExtraction] = await Promise.all([extract(input), extract(observed)]);
+  return Object.freeze({ input: inputExtraction, observed: observedExtraction,
+    comparison: compareExtractions(inputExtraction, observedExtraction) });
+}
 
 /** Inspect one already-captured source without assigning comparison or work attribution. */
 export async function inspectCapturedSource(file: SourceFile, dialect: NativeDialect, helper: NativeAnalysisHelper,

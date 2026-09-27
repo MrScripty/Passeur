@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { MuseSdkAdapter, type ClientStarter } from "../../src/muse/adapter.js";
 import type { WorkerInput, WorkerEvent, WorkerPeerOperationRequest } from "../../src/agents/types.js";
 import type { PeerDeliveryEnvelope } from "../../src/contracts/peer-delivery.js";
 import { parseWorkerMessage } from "../../src/agents/report.js";
+import { peerOperationResultPrompt } from "../../src/agents/report-format.js";
 import type { MuseOptions } from "../../src/muse/config.js";
 import { InputBroker } from "../../src/core/input-broker.js";
 import { correlateNativeTurn } from "../../src/core/coordinator.js";
 import { TaskControls, initialControl } from "../../src/core/task-control.js";
 import type { TaskControl } from "../../src/contracts/tasks.js";
+import { PEER_RESOLUTION_ACTIONS, peerResolutionDigest } from "../../src/coordination/peer-resolution.js";
 
 const options: MuseOptions = { muse_bin: "muse", model: "model",
   review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" },
@@ -71,12 +74,25 @@ describe("Muse peer delivery at settled turns", () => {
     const events: WorkerEvent[] = [], prompts: string[] = [], operations: string[] = [];
     let sends = 0;
     const operation: WorkerPeerOperationRequest = { schema_version: 1, operation_key: "inspect-1", case_id: envelope.case_id, kind: "inspect" };
+    const changes = [
+      { path: "src/binary.bin", before_sha256: null, after_base64: Buffer.from([0, 255]).toString("base64") },
+      { path: "src/combined.ts", before_sha256: "a".repeat(64), after_base64: Buffer.from("combined result\n").toString("base64") },
+      { path: "src/long.ts", before_sha256: "b".repeat(64), after_base64: Buffer.from("x".repeat(800)).toString("base64") },
+    ];
+    const summary = "Keep both workers' intended behavior";
+    const proposal = { schema_version: 2 as const, kind: "peer_resolution_proposal" as const,
+      case_id: envelope.case_id, case_revision: 1, case_generation: 1, proposal_revision: 1,
+      evidence_id: "e".repeat(64), evidence_revision: 1, participants: ["a".repeat(64)],
+      sources: [{ work_id: envelope.source_work_id, work_revision: 5, input_oid: "a".repeat(40), selected_commit_oid: "b".repeat(40) }],
+      scope: [{ kind: "subtree" as const, path: "src" }], action: "propose" as const,
+      resolution_digest: peerResolutionDigest(summary, changes), predecessor_digest: null,
+      permitted_actions: PEER_RESOLUTION_ACTIONS, summary, changes };
     const result = { schema_version: 1 as const, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
       control_generation: envelope.recipient_control_generation, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
       case_id: envelope.case_id, operation_key: operation.operation_key, kind: "current" as const, operation: "inspect" as const,
       case_revision: 1, case_generation: 1, evidence_id: "e".repeat(64), evidence_revision: 1,
-      negotiation_cursor: "f".repeat(64), participant_task_ids: [], acknowledged_task_ids: [],
-      proposal_note_id: null, proposal: null };
+      negotiation_cursor: "f".repeat(64), participant_task_ids: [envelope.recipient_task_id], acknowledged_task_ids: [],
+      proposal_note_id: "77777777-7777-4777-8777-777777777777", proposal };
     const native = session(async ({ input }) => {
       prompts.push(input[0]!.text); sends++;
       const text = sends === 1 ? `PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: "peer_operation", operation })}` : final();
@@ -93,6 +109,134 @@ describe("Muse peer delivery at settled turns", () => {
     const outcome = await run(adapter, peer, async event => { events.push(event); });
     expect(outcome).toMatchObject({ status: "completed", worker_stop: "confirmed" });
     expect(operations).toEqual(["inspect"]); expect(sends).toBe(2); expect(prompts[1]).toContain("Peer operation result");
+    expect(prompts[1]).toContain(`Peer proposal summary: "${summary}"`);
+    expect(prompts[1]).toContain('"path":"src/combined.ts"');
+    expect(prompts[1]).toContain('"effect":"replace"');
+    expect(prompts[1]).toContain('"after_utf8_excerpt":"combined result\\n"');
+    expect(prompts[1]).toContain('"after_sha256":"' + createHash("sha256").update("combined result\n").digest("hex") + '"');
+    expect(prompts[1]).toContain('"content_kind":"binary_or_non_utf8","needs_detail":true');
+    expect(prompts[1]).toContain('"after_utf8_excerpt":"' + "x".repeat(256) + '","truncated":true,"needs_detail":true');
+    expect(Buffer.byteLength(prompts[1]!, "utf8")).toBeLessThanOrEqual(24_576);
+  });
+
+  it("returns authorized source detail as readable untrusted text in the same session", async () => {
+    const operation: WorkerPeerOperationRequest = { schema_version: 1, operation_key: "detail-1", case_id: envelope.case_id,
+      kind: "source_detail", work_id: envelope.source_work_id, report_id: "6666666666666666666666666666666666666666666666666666666666666666",
+      side: "input", start_byte: 4, end_byte: 16 };
+    const prompts: string[] = [], events: WorkerEvent[] = [];
+    let sends = 0, sessions = 0;
+    const native = session(async ({ input }) => {
+      prompts.push(input[0]!.text);
+      return turn(++sends === 1 ? `PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: "peer_operation", operation })}` : final());
+    });
+    const adapter = new MuseSdkAdapter(options, () => ({ ready: Promise.resolve({
+      startSession: async () => { sessions++; return native; }, close: async () => {} } as never), close: async () => {} }));
+    const peer = { next: async () => undefined, delivered: async () => {}, observed: async () => {},
+      operation: async (request: WorkerPeerOperationRequest) => {
+        expect(request).toEqual(operation);
+        expect(events.at(-1)).toMatchObject({ kind: "turn_settled", terminal: "completed" });
+        return { schema_version: 1 as const, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
+          control_generation: 1, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
+          case_id: envelope.case_id, operation_key: operation.operation_key, kind: "detail" as const, operation: "source_detail" as const,
+          work_id: operation.work_id, report_id: operation.report_id, side: "input" as const,
+          start_byte: 4, end_byte: 16, content_sha256: "e".repeat(64), text: "chosen text\n" };
+      } };
+    const outcome = await run(adapter, peer, async event => { events.push(event); });
+    expect(outcome).toMatchObject({ status: "completed", worker_stop: "confirmed" });
+    expect(sessions).toBe(1);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("Peer source text (untrusted");
+    expect(prompts[1]).toContain("chosen text\n");
+    expect(prompts[1]).toContain('"content_sha256":"' + "e".repeat(64) + '"');
+    expect(prompts[1]).not.toContain("/source");
+  });
+
+  it("keeps large proposal previews within the native prompt and marks omitted detail", () => {
+    const request: WorkerPeerOperationRequest = { schema_version: 1, operation_key: "inspect-large", case_id: envelope.case_id, kind: "inspect" };
+    const changes = Array.from({ length: 24 }, (_, index) => ({ path: `src/f${String(index).padStart(2, "0")}.txt`,
+      before_sha256: "a".repeat(64), after_base64: Buffer.from("y".repeat(256)).toString("base64") }));
+    const summary = "Combine the selected worker changes";
+    const proposal = { schema_version: 2 as const, kind: "peer_resolution_proposal" as const,
+      case_id: envelope.case_id, case_revision: 1, case_generation: 1, proposal_revision: 1,
+      evidence_id: "e".repeat(64), evidence_revision: 1, participants: ["a".repeat(64)],
+      sources: [{ work_id: envelope.source_work_id, work_revision: 5, input_oid: "a".repeat(40), selected_commit_oid: "b".repeat(40) }],
+      scope: [{ kind: "subtree" as const, path: "src" }], action: "propose" as const,
+      resolution_digest: peerResolutionDigest(summary, changes), predecessor_digest: null,
+      permitted_actions: PEER_RESOLUTION_ACTIONS, summary, changes };
+    const result = { schema_version: 1 as const, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
+      control_generation: 1, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
+      case_id: envelope.case_id, operation_key: request.operation_key, kind: "current" as const, operation: "inspect" as const,
+      case_revision: 1, case_generation: 1, evidence_id: "e".repeat(64), evidence_revision: 1,
+      negotiation_cursor: "f".repeat(64), participant_task_ids: [envelope.recipient_task_id], acknowledged_task_ids: [],
+      proposal_note_id: "77777777-7777-4777-8777-777777777777", proposal };
+    const prompt = peerOperationResultPrompt(envelope.recipient_task_id, request, result);
+    expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(24_576);
+    expect(prompt).toContain("Further proposed content previews need detail");
+    expect(prompt).toContain('"after_base64"');
+  });
+
+  it("rejects a source detail result for a different captured byte range", () => {
+    const request: WorkerPeerOperationRequest = { schema_version: 1, operation_key: "detail-1", case_id: envelope.case_id,
+      kind: "source_detail", work_id: envelope.source_work_id, report_id: "6666666666666666666666666666666666666666666666666666666666666666",
+      side: "observed", start_byte: 0, end_byte: 12 };
+    const result = { schema_version: 1 as const, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
+      control_generation: 1, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
+      case_id: envelope.case_id, operation_key: request.operation_key, kind: "detail" as const, operation: "source_detail" as const,
+      work_id: request.work_id, report_id: request.report_id, side: "observed" as const,
+      start_byte: 1, end_byte: 12, content_sha256: "e".repeat(64), text: "other text\n" };
+    expect(() => peerOperationResultPrompt(envelope.recipient_task_id, request, result)).toThrow(/does not match/);
+  });
+
+  it("rejects source detail requests outside the captured-byte bound", () => {
+    for (const [start_byte, end_byte] of [[-1, 12], [12, 11], [0, 8193]]) {
+      expect(() => parseWorkerMessage(`PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: "peer_operation",
+        operation: { schema_version: 1, operation_key: "detail-1", case_id: envelope.case_id,
+          kind: "source_detail", work_id: envelope.source_work_id, report_id: "6666666666666666666666666666666666666666666666666666666666666666",
+          side: "observed", start_byte, end_byte } })}`)).toThrow();
+    }
+  });
+
+  it("presents a version-bound application result after settlement without retrying uncertain effects", async () => {
+    const operation: WorkerPeerOperationRequest = { schema_version: 1, operation_key: "apply-1", case_id: envelope.case_id,
+      kind: "apply", note_id: "77777777-7777-4777-8777-777777777777", expected_case_revision: 2,
+      expected_case_generation: 3, proposal_digest: "f".repeat(64) };
+    const prompts: string[] = [], received: WorkerPeerOperationRequest[] = [], events: WorkerEvent[] = [];
+    let sends = 0, sessions = 0;
+    const native = session(async ({ input }) => {
+      prompts.push(input[0]!.text);
+      return turn(++sends === 1 ? `PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: "peer_operation", operation })}`
+        : `PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: "blocked", reason: "Application effect unknown" })}`);
+    });
+    const adapter = new MuseSdkAdapter(options, () => ({ ready: Promise.resolve({
+      startSession: async () => { sessions++; return native; }, close: async () => {} } as never), close: async () => {} }));
+    const peer = { next: async () => undefined, delivered: async () => {}, observed: async () => {},
+      operation: async (request: WorkerPeerOperationRequest) => {
+        received.push(request);
+        expect(events.at(-1)).toMatchObject({ kind: "turn_settled", terminal: "completed" });
+        return { schema_version: 1 as const, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
+          control_generation: 1, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
+          case_id: envelope.case_id, operation_key: request.operation_key, kind: "application" as const, operation: "apply" as const,
+          note_id: operation.note_id, status: "effect_unknown" as const, application_digest: null, paths: ["src/combined.ts"] };
+      } };
+    const outcome = await run(adapter, peer, async event => { events.push(event); });
+    expect(outcome).toMatchObject({ status: "blocked", worker_stop: "confirmed" });
+    expect(received).toEqual([operation]);
+    expect(sessions).toBe(1);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('"status":"effect_unknown"');
+    expect(prompts[1]).toContain("Do not retry apply blindly");
+  });
+
+  it("rejects an application result for another proposal note", () => {
+    const request: WorkerPeerOperationRequest = { schema_version: 1, operation_key: "apply-1", case_id: envelope.case_id,
+      kind: "apply", note_id: "77777777-7777-4777-8777-777777777777", expected_case_revision: 2,
+      expected_case_generation: 3, proposal_digest: "f".repeat(64) };
+    const result = { schema_version: 1 as const, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
+      control_generation: 1, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
+      case_id: envelope.case_id, operation_key: request.operation_key, kind: "application" as const, operation: "apply" as const,
+      note_id: "88888888-8888-4888-8888-888888888888", status: "applied" as const,
+      application_digest: "a".repeat(64), paths: ["src/combined.ts"] };
+    expect(() => peerOperationResultPrompt(envelope.recipient_task_id, request, result)).toThrow(/does not match/);
   });
 
   it("forwards an exact negotiation cursor and continues a pending wait in the same session", async () => {

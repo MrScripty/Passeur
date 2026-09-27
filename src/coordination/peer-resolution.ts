@@ -1,8 +1,10 @@
 import { BridgeError } from "../core/errors.js";
+import { createHash } from "node:crypto";
 import type { ParentId, Region } from "../contracts/coordination-control.js";
 
 /** Versioned, content-addressed coordination payload carried by an existing note. */
 export const PEER_RESOLUTION_SCHEMA = 1 as const;
+export const PEER_RESOLUTION_SCHEMA_V2 = 2 as const;
 export const PEER_RESOLUTION_PREFIX = "passeur-peer-resolution-v1:";
 export const PEER_RESOLUTION_ACTIONS = ["inspect_evidence", "propose", "counter_propose", "acknowledge", "apply", "verify"] as const;
 export const PEER_RESOLUTION_MAX_BYTES = 15_000;
@@ -15,9 +17,15 @@ export type PeerResolutionSource = Readonly<{
   input_oid: string;
   selected_commit_oid: string;
 }>;
+export type PeerResolutionChange = Readonly<{ path: string; before_sha256: string | null; after_base64: string | null }>;
+
+/** The digest binds the human-readable intent and exact proposed file effects. */
+export function peerResolutionDigest(summary: string, changes: readonly PeerResolutionChange[]): string {
+  return createHash("sha256").update(JSON.stringify({ schema_version: 2, summary, changes }), "utf8").digest("hex");
+}
 
 export type PeerResolutionProposal = Readonly<{
-  schema_version: typeof PEER_RESOLUTION_SCHEMA;
+  schema_version: typeof PEER_RESOLUTION_SCHEMA | typeof PEER_RESOLUTION_SCHEMA_V2;
   kind: "peer_resolution_proposal";
   case_id: string;
   case_revision: number;
@@ -32,6 +40,8 @@ export type PeerResolutionProposal = Readonly<{
   resolution_digest: string;
   predecessor_digest: string | null;
   permitted_actions: readonly typeof PEER_RESOLUTION_ACTIONS[number][];
+  summary?: string;
+  changes?: readonly PeerResolutionChange[];
 }>;
 
 export type PeerResolutionApplication = Readonly<{
@@ -136,6 +146,14 @@ function path(value: unknown): string {
   }
   return result;
 }
+function effectPath(value: unknown): string {
+  const result = path(value);
+  if (result.includes("\\") || /[\u0000-\u001f\u007f]/.test(result) ||
+      result.split("/").some(part => part.toLowerCase() === ".git")) {
+    invalid("Peer-resolution effect path violates the application boundary");
+  }
+  return result;
+}
 
 function regions(value: unknown): Region[] {
   if (!Array.isArray(value) || value.length > MAX_SCOPE) invalid("Peer-resolution scope is not a bounded array");
@@ -175,8 +193,9 @@ function actions(value: unknown): Array<typeof PEER_RESOLUTION_ACTIONS[number]> 
   return result;
 }
 
-function baseFields(entry: Record<string, unknown>): { schema_version: 1; case_id: string; case_revision: number; case_generation: number; evidence_id: string; evidence_revision: number } {
-  const schema_version = entry.schema_version === PEER_RESOLUTION_SCHEMA ? PEER_RESOLUTION_SCHEMA : invalid("Unsupported peer-resolution schema");
+function baseFields(entry: Record<string, unknown>): { schema_version: 1 | 2; case_id: string; case_revision: number; case_generation: number; evidence_id: string; evidence_revision: number } {
+  const schema_version = entry.schema_version === PEER_RESOLUTION_SCHEMA || entry.schema_version === PEER_RESOLUTION_SCHEMA_V2
+    ? entry.schema_version : invalid("Unsupported peer-resolution schema");
   return { schema_version, case_id: uuid(entry.case_id), case_revision: integer(entry.case_revision), case_generation: integer(entry.case_generation),
     evidence_id: digest(entry.evidence_id), evidence_revision: integer(entry.evidence_revision) };
 }
@@ -184,23 +203,51 @@ function baseFields(entry: Record<string, unknown>): { schema_version: 1; case_i
 function decodeRecord(value: unknown): PeerResolutionRecord {
   const entry = record(value);
   if (entry.kind === "peer_resolution_proposal") {
-    exact(entry, ["schema_version", "kind", "case_id", "case_revision", "case_generation", "proposal_revision", "evidence_id", "evidence_revision", "participants", "sources", "scope", "action", "resolution_digest", "predecessor_digest", "permitted_actions"]);
+    const v2 = entry.schema_version === PEER_RESOLUTION_SCHEMA_V2;
+    exact(entry, ["schema_version", "kind", "case_id", "case_revision", "case_generation", "proposal_revision", "evidence_id", "evidence_revision", "participants", "sources", "scope", "action", "resolution_digest", "predecessor_digest", "permitted_actions", ...(v2 ? ["summary", "changes"] : [])]);
     const base = baseFields(entry);
     const action = entry.action === "propose" || entry.action === "counter_propose" ? entry.action : invalid("Unsupported peer-resolution proposal action");
     const predecessor_digest = entry.predecessor_digest === null ? null : digest(entry.predecessor_digest);
     if ((action === "counter_propose") !== (predecessor_digest !== null)) invalid("Counter-proposals require exactly one predecessor digest");
+    let extra: { summary: string; changes: PeerResolutionChange[] } | undefined;
+    if (v2) {
+      const summary = text(entry.summary, 1024);
+      if (!Array.isArray(entry.changes) || entry.changes.length < 1 || entry.changes.length > 32) invalid("Peer resolution changes must be bounded");
+      const changes = entry.changes.map(item => {
+        const change = record(item); exact(change, ["path", "before_sha256", "after_base64"]);
+        const before_sha256 = change.before_sha256 === null ? null : digest(change.before_sha256);
+        const after_base64 = change.after_base64 === null ? null : change.after_base64;
+        if (before_sha256 === null && after_base64 === null) invalid("Peer resolution change has no preimage or result");
+        if (after_base64 !== null) {
+          if (typeof after_base64 !== "string" || Buffer.byteLength(after_base64, "utf8") > 8192) invalid("Peer resolution result is not bounded base64");
+          const bytes = Buffer.from(after_base64, "base64");
+          if (bytes.toString("base64") !== after_base64 || bytes.length > 6144) invalid("Peer resolution result is not canonical bounded base64");
+        }
+        return { path: effectPath(change.path), before_sha256, after_base64 };
+      });
+      if (changes.some((change, index) => index > 0 && changes[index - 1]!.path >= change.path)) invalid("Peer resolution changes must be sorted with unique paths");
+      const scope = regions(entry.scope);
+      for (const region of scope) effectPath(region.path);
+      if (changes.some(change => !scope.some(region => region.path === change.path || region.kind === "subtree" && change.path.startsWith(`${region.path}/`)))) {
+        invalid("Peer resolution change exceeds its proposal scope");
+      }
+      if (peerResolutionDigest(summary, changes) !== entry.resolution_digest) invalid("Peer resolution digest does not bind readable changes");
+      extra = { summary, changes };
+    }
     return { ...base, kind: "peer_resolution_proposal", proposal_revision: integer(entry.proposal_revision, 1, 4096), participants: participants(entry.participants),
-      sources: sources(entry.sources), scope: regions(entry.scope), action, resolution_digest: digest(entry.resolution_digest), predecessor_digest, permitted_actions: actions(entry.permitted_actions) };
+      sources: sources(entry.sources), scope: regions(entry.scope), action, resolution_digest: digest(entry.resolution_digest), predecessor_digest, permitted_actions: actions(entry.permitted_actions), ...(extra ?? {}) };
   }
   if (entry.kind === "peer_resolution_application") {
     exact(entry, ["schema_version", "kind", "case_id", "case_revision", "case_generation", "evidence_id", "evidence_revision", "sources", "scope", "proposal_digest", "application_digest", "status"]);
     const base = baseFields(entry), status = ["pending", "applied", "effect_unknown", "rejected"].includes(entry.status as string) ? entry.status as PeerResolutionApplication["status"] : invalid("Unsupported peer-resolution application status");
-    return { ...base, kind: "peer_resolution_application", sources: sources(entry.sources), scope: regions(entry.scope), proposal_digest: digest(entry.proposal_digest), application_digest: digest(entry.application_digest), status };
+    if (base.schema_version !== 1) invalid("Application records require schema 1");
+    return { ...base, schema_version: 1, kind: "peer_resolution_application", sources: sources(entry.sources), scope: regions(entry.scope), proposal_digest: digest(entry.proposal_digest), application_digest: digest(entry.application_digest), status };
   }
   if (entry.kind === "peer_resolution_verification") {
     exact(entry, ["schema_version", "kind", "case_id", "case_revision", "case_generation", "evidence_id", "evidence_revision", "sources", "scope", "application_digest", "status"]);
     const base = baseFields(entry), status = ["not_run", "passed", "failed", "unavailable"].includes(entry.status as string) ? entry.status as PeerResolutionVerification["status"] : invalid("Unsupported peer-resolution verification status");
-    return { ...base, kind: "peer_resolution_verification", sources: sources(entry.sources), scope: regions(entry.scope), application_digest: digest(entry.application_digest), status };
+    if (base.schema_version !== 1) invalid("Verification records require schema 1");
+    return { ...base, schema_version: 1, kind: "peer_resolution_verification", sources: sources(entry.sources), scope: regions(entry.scope), application_digest: digest(entry.application_digest), status };
   }
   return invalid("Unsupported peer-resolution record kind");
 }

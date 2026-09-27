@@ -189,16 +189,63 @@ export async function extractJavaScriptReactSvelte(context: NativeFamilyContext)
     declarations.push(Object.freeze(declaration));
   };
 
+  const addBinding = (outer: Parser.SyntaxNode, node: Parser.SyntaxNode, declarator: Parser.SyntaxNode,
+    region: Region, enclosing: readonly string[], index: number, count: number): void => {
+    if (declarations.length >= MAX_DECLARATIONS) throw new BridgeError("STRUCTURAL_ANALYSIS_CAPACITY", "Native declaration inventory exceeds its bound");
+    const name = declarator.childForFieldName("name"), value = declarator.childForFieldName("value");
+    if (!name || !["identifier", "object_pattern", "array_pattern"].includes(name.type)) {
+      limitations.add("unmapped_binding_syntax"); return;
+    }
+    let unsupported = false;
+    const defaults: Span[] = [];
+    visit(name, child => {
+      if (child.type === "computed_property_name" || child.type === "ERROR") unsupported = true;
+      if (child.type === "assignment_pattern" || child.type === "object_assignment_pattern") {
+        const right = child.childForFieldName("right");
+        if (right) defaults.push({ start: right.startIndex, end: right.endIndex,
+          marker: "<default>", digest: hash(right.text) });
+      }
+    });
+    if (unsupported) { limitations.add("unmapped_binding_syntax"); return; }
+    if (value) defaults.push({ start: value.startIndex, end: value.endIndex,
+      marker: "<default>", digest: hash(value.text) });
+    if (value) visit(value, child => {
+      if (functions.has(child.type) || types.has(child.type)) limitations.add("nested_declaration_coverage_unavailable");
+    });
+    const start = count === 1 || index === 0 ? outer.startIndex : declarator.startIndex;
+    const end = count === 1 ? outer.endIndex : declarator.endIndex;
+    const spans = [...headerSpans(outer, null, end).filter(span => span.start >= start &&
+      !defaults.some(valueSpan => span.start >= valueSpan.start && span.end <= valueSpan.end)), ...defaults]
+      .sort((a, b) => a.start - b.start || b.end - a.end);
+    const headerComplete = !damaged(declarator, declarator.endIndex) && !damaged(outer, end);
+    if (!headerComplete) limitations.add("declaration_header_incomplete");
+    const first = node.namedChildren.find(child => child.type === "variable_declarator")!;
+    const prefix = index > 0 ? `${mask(region.text, node.startIndex, first.startIndex,
+      headerSpans(outer, null, first.startIndex))} ` : "";
+    const range = ranges.byteRange(region.base + start, region.base + end);
+    const type = declarator.childForFieldName("type");
+    const bindingName = mask(region.text, name.startIndex, name.endIndex, spans);
+    const declaration: Declaration = { key: `variable_declarator:${bindingName}:${range.start_byte}`,
+      kind: "variable_declarator", name: bindingName,
+      enclosing: [...enclosing], range,
+      signature: headerComplete ? `${prefix}${mask(region.text, start, end, spans)}` : "<header extraction incomplete>",
+      parameters: [], result: !headerComplete ? { state: "unavailable" } : type ?
+        { state: "declared", syntax: type.text } : { state: "not_declared" },
+      header_complete: headerComplete, body_digest: hash(""), default_digests: spans.map(span => span.digest) };
+    declarations.push(Object.freeze(declaration));
+  };
+
   const addTop = (outer: Parser.SyntaxNode, region: Region, enclosing: readonly string[]): void => {
     const node = unwrap(outer);
     if (functions.has(node.type) || types.has(node.type)) { add(outer, node, region, enclosing); return; }
     if (fields.has(node.type)) { addField(node, region, enclosing); return; }
     if (variables.has(node.type)) {
       let mapped = 0;
-      for (const declarator of node.namedChildren.filter(child => child.type === "variable_declarator")) {
+      const declarators = node.namedChildren.filter(child => child.type === "variable_declarator");
+      for (const [index, declarator] of declarators.entries()) {
         const value = declarator.childForFieldName("value"), name = declarator.childForFieldName("name");
         if (value && functions.has(value.type) && name?.type === "identifier") {
-          add(node.namedChildren.filter(child => child.type === "variable_declarator").length === 1 ? outer : declarator,
+          add(declarators.length === 1 ? outer : declarator,
             value, region, enclosing, name); mapped++;
         } else if (region.scope.some(part => part === "module script" || part.startsWith("instance script ")) && name &&
                    ((value?.type === "call_expression" && value.childForFieldName("function")?.text === "$props" &&
@@ -230,7 +277,11 @@ export async function extractJavaScriptReactSvelte(context: NativeFamilyContext)
             default_digests: [...spans.filter(span => span.marker !== "<initializer>").map(span => span.digest),
               ...(!rune && initialization ? [initialization.digest] : [])] };
           declarations.push(Object.freeze(declaration)); mapped++;
-        } else limitations.add("unmapped_binding_syntax");
+        } else {
+          const before = declarations.length;
+          addBinding(outer, node, declarator, region, enclosing, index, declarators.length);
+          if (declarations.length > before) mapped++;
+        }
       }
       if (mapped === 0) limitations.add("unmapped_binding_syntax");
       return;

@@ -8,7 +8,9 @@ import { decodePeerResolutionText, PEER_RESOLUTION_PREFIX, PEER_RESOLUTION_MAX_B
 const bounded = (n: number) => z.string().min(1).max(n);
 const uuid = z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
 const positive = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-const negotiationCursor = z.string().regex(/^[a-f0-9]{64}$/);
+const byteOffset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const negotiationCursor = digest;
 const operationKey = bounded(256).refine((value) => Buffer.byteLength(value, "utf8") <= 256 &&
   Buffer.from(value, "utf8").toString("utf8") === value && !/[\u0000-\u001f\u007f]/.test(value));
 const operationBase = { schema_version: z.literal(1), operation_key: operationKey, case_id: uuid };
@@ -25,10 +27,16 @@ const proposal = z.unknown().transform((value, context): PeerResolutionProposal 
 });
 const peerOperation = z.discriminatedUnion("kind", [
   z.object({ ...operationBase, kind: z.literal("inspect") }).strict(),
+  z.object({ ...operationBase, kind: z.literal("source_detail"), work_id: uuid, report_id: digest,
+    side: z.enum(["input", "observed"]), start_byte: byteOffset, end_byte: byteOffset }).strict()
+    .refine(value => value.end_byte >= value.start_byte && value.end_byte - value.start_byte <= 8192,
+      "Peer source detail exceeds its captured-byte bound"),
   z.object({ ...operationBase, kind: z.literal("propose"), proposal }).strict(),
   z.object({ ...operationBase, kind: z.literal("counter_propose"), proposal }).strict(),
   z.object({ ...operationBase, kind: z.literal("acknowledge"), note_id: uuid }).strict(),
   z.object({ ...operationBase, kind: z.literal("withdraw"), note_id: uuid }).strict(),
+  z.object({ ...operationBase, kind: z.literal("apply"), note_id: uuid,
+    expected_case_revision: positive, expected_case_generation: positive, proposal_digest: digest }).strict(),
   z.object({ ...operationBase, kind: z.literal("await_change"), after_case_revision: positive, after_case_generation: positive,
     after_negotiation_cursor: negotiationCursor.optional() }).strict().transform(({ after_negotiation_cursor, ...request }) => ({
       ...request, ...(after_negotiation_cursor === undefined ? {} : { after_negotiation_cursor }),

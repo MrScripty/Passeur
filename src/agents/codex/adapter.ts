@@ -47,7 +47,7 @@ function argumentsFor(options: CodexOptions): string[] {
   return [...overrides.flatMap((value) => ["-c", value]), "app-server"];
 }
 function peerPrompt(envelope: PeerDeliveryEnvelope): string {
-  const metadata = { source_work_id: envelope.source_work_id, case_id: envelope.case_id,
+  const metadata = { source_work_id: envelope.source_work_id, source_work_revision: envelope.source_work_revision, case_id: envelope.case_id,
     case_revision: envelope.case_revision, case_generation: envelope.case_generation,
     evidence_id: envelope.evidence_id, evidence_revision: envelope.evidence_revision,
     evidence_digest: envelope.evidence_digest, idempotency_key: envelope.idempotency_key };

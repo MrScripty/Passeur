@@ -21,7 +21,7 @@ const typeTypes = new Set(["struct_item", "trait_item", "impl_item", "foreign_mo
   "mod_item", "class_declaration", "interface_declaration", "type_alias_declaration", "enum_declaration",
   "internal_module", "module"]);
 const memberTypes = new Set([...functionTypes, "field_declaration", "public_field_definition", "property_signature",
-  "enum_variant", "enum_assignment", "property_identifier"]);
+  "enum_variant", "enum_assignment", "property_identifier", "const_item", "static_item"]);
 const rustLocalBindingTypes = new Set(["let_declaration", "const_item", "static_item", "for_expression",
   "let_condition", "while_let_expression", "match_expression", "match_arm", "closure_expression", "closure_parameters"]);
 const commentTypes = new Set(["comment", "line_comment", "block_comment"]);
@@ -192,7 +192,7 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
     const range = ranges.byteRange(start, outer.endIndex);
     let bodyDigest = digest("");
     const bodyMembers: { node: Parser.SyntaxNode; prefix: Parser.SyntaxNode[]; start: number }[] = [];
-    if (body && isType && node.type !== "internal_module" && node.type !== "module") {
+    if (body && isType && node.type !== "internal_module" && node.type !== "module" && node.type !== "mod_item") {
       let pending: Parser.SyntaxNode[] = [];
       for (const member of body.namedChildren) {
         if (member.type === "decorator" || member.type === "attribute_item" || (pending.length && commentTypes.has(member.type))) {
@@ -209,10 +209,11 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
       limitations.add("declaration_body_incomplete");
       bodyDigest = "";
     } else if (body && isType) {
-      const represented = (node.type === "internal_module" || node.type === "module")
+      const represented = (node.type === "internal_module" || node.type === "module" || node.type === "mod_item")
         ? body.namedChildren.filter(member => {
           const child = unwrapped(member);
           return functionTypes.has(child.type) || typeTypes.has(child.type) ||
+            (dialect === "rust" && (child.type === "const_item" || child.type === "static_item")) ||
             child.type === "lexical_declaration" || child.type === "variable_declaration";
         }).map(member => ({ node: member, start: member.startIndex }))
         : bodyMembers;
@@ -255,13 +256,15 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
         result.endIndex, result, null, null, []).signature } : { state: "not_declared" } : { state: "unavailable" },
       header_complete: validHeader, ...(bodyDigest ? { body_digest: bodyDigest } : {}), default_digests: defaults.digests };
     declarations.push(Object.freeze(declaration));
-    if (body && (node.type === "internal_module" || node.type === "module")) {
+    if (body && (node.type === "internal_module" || node.type === "module" || node.type === "mod_item")) {
       for (const member of body.namedChildren) {
         const child = unwrapped(member);
         if (functionTypes.has(child.type) || typeTypes.has(child.type)) add(member, child,
           [...enclosing, name ?? "<anonymous>"]);
         else if (child.type === "lexical_declaration" || child.type === "variable_declaration") addLexical(member, child,
           [...enclosing, name ?? "<anonymous>"]);
+        else if (dialect === "rust" && (child.type === "const_item" || child.type === "static_item"))
+          addRustValue(child, [...enclosing, name ?? "<anonymous>"]);
         else if (!commentTypes.has(child.type)) limitations.add("unmapped_member_syntax");
       }
     }
@@ -315,6 +318,22 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
     }
     if (items.length === 0) limitations.add("unmapped_top_level_syntax");
   };
+  const addRustValue = (node: Parser.SyntaxNode, enclosing: string[]): void => {
+    if (declarations.length >= 4096) throw new BridgeError("STRUCTURAL_ANALYSIS_CAPACITY", "Native declaration inventory exceeds its bound");
+    const name = node.childForFieldName("name"), type = node.childForFieldName("type");
+    const value = node.childForFieldName("value");
+    const validHeader = !!name && !!type && !!value && !syntaxDamage(node, node.startIndex, node.endIndex);
+    if (!validHeader) limitations.add("declaration_header_incomplete");
+    if (value && containsDeclarationLike(value)) limitations.add("nested_declaration_coverage_unavailable");
+    const masked = maskHeader(node.text, node.startIndex, node.endIndex, node, null, value, []);
+    const range = ranges.byteRange(node.startIndex, node.endIndex);
+    const declaration: Declaration = { key: `${node.type}:${name?.text ?? "<anonymous>"}:${range.start_byte}`,
+      kind: node.type, name: name?.text ?? null, enclosing, range,
+      signature: validHeader ? masked.signature : "<header extraction incomplete>", parameters: [],
+      result: validHeader ? { state: "declared", syntax: type.text } : { state: "unavailable" },
+      header_complete: validHeader, body_digest: digest(""), default_digests: masked.digests };
+    declarations.push(Object.freeze(declaration));
+  };
   let pendingAttributes: Parser.SyntaxNode[] = [];
   for (const outer of tree.rootNode.namedChildren) {
     if (outer.type === "attribute_item" || (pendingAttributes.length && commentTypes.has(outer.type))) {
@@ -325,6 +344,9 @@ export async function extractNativeFunctions(file: SourceFile, dialect: NativeDi
     else if (node.type === "lexical_declaration" || node.type === "variable_declaration") {
       if (pendingAttributes.length) limitations.add("unmapped_top_level_syntax");
       addLexical(outer, node, []);
+    } else if (dialect === "rust" && (node.type === "const_item" || node.type === "static_item")) {
+      if (pendingAttributes.length) limitations.add("unmapped_top_level_syntax");
+      addRustValue(node, []);
     } else if (!commentTypes.has(node.type) && !opaqueRegionTypes.has(node.type)) limitations.add("unmapped_top_level_syntax");
     pendingAttributes = [];
   }

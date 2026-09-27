@@ -42,6 +42,7 @@ export class CoordinationControl {
   readonly #peerRefreshes = new Set<Promise<void>>();
   readonly #transitionTasks = new Set<string>();
   readonly #transitionCases = new Set<string>();
+  readonly #applicationCases = new Set<string>();
   #transitionEpoch = 0;
   #close: Promise<void> | undefined;
   constructor(private readonly store: CoordinationStore, private readonly workerAuthority?: WorkerPeerAuthority,
@@ -307,6 +308,27 @@ export class CoordinationControl {
     const hash = canonicalHash({ owner, command });
       this.store.assertMutable();
       const current = await this.store.snapshot();
+      const selectedCase = "case_id" in command ? current.cases.find(item => item.id === command.case_id) : undefined;
+      if (selectedCase && this.#applicationCases.has(selectedCase.id)) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Selected case is reserved for task publication");
+      }
+      const pendingApplications = command.kind === "release_case" ? current.receipts.filter(receipt =>
+        receipt.key.startsWith(WORKER_PEER_KEY_PREFIX) && receipt.key.endsWith(":pending") &&
+        current.notes.some(note => note.id === receipt.item_id &&
+          note.subject.kind === "case" && note.subject.id === command.case_id)) : [];
+      if (pendingApplications.some(receipt => {
+        const outcome = current.receipts.find(candidate => candidate.owner === receipt.owner &&
+          candidate.key === `${receipt.key.slice(0, -":pending".length)}:outcome`);
+        const note = current.notes.find(candidate => candidate.id === outcome?.item_id);
+        const record = note && retainedPeerRecord(note.text);
+        return record?.kind !== "peer_resolution_application" || record.status !== "applied" && record.status !== "rejected";
+      })) {
+        throw new BridgeError("COORDINATION_EXTERNAL_EFFECT_UNRESOLVED", "A task application requires explicit operator reconciliation before ordinary release");
+      }
+      if ("work_id" in command && current.cases.some(item => this.#applicationCases.has(item.id)
+        && item.inputs.some(input => input.work_id === command.work_id))) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Selected source is reserved for task publication");
+      }
       if (consentGuard && (current.revision !== consentGuard.revision || this.#transitionEpoch !== consentGuard.epoch)) {
         throw new BridgeError("PEER_OPERATION_STALE", "Worker consent changed during authority validation");
       }
@@ -404,6 +426,7 @@ export class CoordinationControl {
     retries: number, deferDisclosure: boolean): Promise<PeerWorkerOperationResult> {
     if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
     const operation = decodePeerWorkerOperation(raw);
+    if (operation.kind === "source_detail" || operation.kind === "apply") throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Source detail and application are served by the runtime boundary");
     const owner = parentId(actor.owner_id);
     for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
       if (actor[field] !== operation[field]) throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker operation identity differs from authenticated task authority");
@@ -541,6 +564,8 @@ export class CoordinationControl {
     retainedExact: boolean): Promise<PeerWorkerOperationResult> {
     if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
     const operation = decodePeerWorkerOperation(raw), owner = parentId(actor.owner_id);
+    if (operation.kind === "source_detail" || operation.kind === "apply")
+      throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "This task operation is owned by the runtime boundary");
     for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
       if (actor[field] !== operation[field] || value[field] !== operation[field]) {
         throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Stored peer result identity differs from authenticated task authority");
@@ -561,9 +586,8 @@ export class CoordinationControl {
       if (retainedExact && value.kind === "current" && value.proposal) {
         for (const source of value.proposal.sources) {
           const work = state.works.find(candidate => candidate.id === source.work_id);
-          const grant = work?.source_grants?.find(candidate => candidate.recipient === owner && candidate.work_revision === work.revision);
-          if (!work || work.state !== "active" || work.revision !== source.work_revision ||
-            work.owner !== owner && (!grant || grant.scope !== "report" && grant.scope !== "detail")) {
+          if (!work?.managed || work.state !== "active" || work.revision !== source.work_revision ||
+            !item.inputs.some(input => input.work_id === work.id) || !canReadWork(owner, work)) {
             throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Retained peer source is no longer authorized");
           }
         }
@@ -597,7 +621,7 @@ export class CoordinationControl {
   async workerPeerCommittedReceipt(actor: WorkerPeerActor, raw: unknown): Promise<PeerWorkerOperationResult | undefined> {
     if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
     const operation = decodePeerWorkerOperation(raw), owner = parentId(actor.owner_id);
-    if (operation.kind === "inspect" || operation.kind === "await_change") return undefined;
+    if (operation.kind === "inspect" || operation.kind === "await_change" || operation.kind === "source_detail" || operation.kind === "apply") return undefined;
     for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
       if (actor[field] !== operation[field]) throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker receipt identity differs from authenticated task authority");
     }
@@ -623,13 +647,154 @@ export class CoordinationControl {
     });
   }
 
+  /** A logical case reservation fences final source disclosure and application effects without holding a mutex over I/O. */
+  async withWorkerCasePublication<T>(actor: WorkerPeerActor, raw: unknown, publish: () => Promise<T>): Promise<T> {
+    if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
+    const operation = decodePeerWorkerOperation(raw), owner = parentId(actor.owner_id);
+    if (operation.kind !== "source_detail" && operation.kind !== "apply")
+      throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "This operation has no runtime case publication");
+    for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
+      if (operation[field] !== actor[field]) throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker case publication identity differs from task authority");
+    }
+    const captured = await this.#ordering.run(async () => {
+      const state = immutableSnapshot(await this.store.snapshot()), item = workerPeerCase(state, owner, actor);
+      this.#assertWorkerTransition(actor, item, state);
+      return { state, item, epoch: this.#transitionEpoch };
+    });
+    await this.workerAuthority.assertCurrent(actor, captured.state, captured.item);
+    await this.#ordering.run(async () => {
+      const state = await this.store.snapshot(), item = workerPeerCase(state, owner, actor);
+      this.#assertWorkerTransition(actor, item, state);
+      if (state.revision !== captured.state.revision || this.#transitionEpoch !== captured.epoch)
+        throw new BridgeError("PEER_OPERATION_STALE", "Selected case changed before task publication");
+      this.#applicationCases.add(item.id);
+    });
+    try { return await publish(); }
+    finally { await this.#ordering.run(async () => { this.#applicationCases.delete(captured.item.id); }); }
+  }
+
+  /** Admits one exact acknowledged v2 worker proposal and reserves its case through the owned effect callback. */
+  async withWorkerApplication(actor: WorkerPeerActor, raw: unknown,
+    effect: (proposal: PeerResolutionProposal) => Promise<PeerWorkerOperationResult>,
+    preflight?: (proposal: PeerResolutionProposal) => Promise<void>): Promise<PeerWorkerOperationResult> {
+    if (!this.workerAuthority) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker task authority is unavailable");
+    const operation = decodePeerWorkerOperation(raw), owner = parentId(actor.owner_id);
+    if (operation.kind !== "apply") throw new BridgeError("PEER_OPERATION_UNSUPPORTED", "Application admission requires an apply operation");
+    for (const field of ["task_id", "run_id", "control_generation", "workspace_id", "source_view", "case_id"] as const) {
+      if (operation[field] !== actor[field]) throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Application identity differs from task authority");
+    }
+    const select = (state: ControlState) => {
+      const item = workerPeerCase(state, owner, actor);
+      this.#assertWorkerTransition(actor, item, state);
+      const note = state.notes.find(candidate => candidate.id === operation.note_id);
+      const proposal = note && retainedPeerRecord(note.text);
+      if (!note || proposal?.kind !== "peer_resolution_proposal" || proposal.schema_version !== 2 ||
+        !proposal.changes?.length || !proposal.summary || !peerRecordCurrent(state, note, proposal) ||
+        !acknowledged(state, item, note) || !sameSet(note.parties, workerPeerParties(state, item).map(party => party.principal)) ||
+        proposal.case_revision !== operation.expected_case_revision ||
+        proposal.case_generation !== operation.expected_case_generation ||
+        proposal.resolution_digest !== operation.proposal_digest ||
+        !state.receipts.some(receipt => receipt.action === "post_note" && receipt.item_id === note.id &&
+          receipt.owner === owner && receipt.key.startsWith(workerPeerTaskPrefix(actor)))) {
+        throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Application requires this task's current fully acknowledged v2 proposal");
+      }
+      return { item, note, proposal };
+    };
+    const captured = await this.#ordering.run(async () => {
+      const state = immutableSnapshot(await this.store.snapshot()), selected = select(state);
+      return { state, ...selected, epoch: this.#transitionEpoch };
+    });
+    await this.workerAuthority.assertCurrent(actor, captured.state, captured.item);
+    await this.workerAuthority.assertConsentCurrent(captured.state, captured.item, captured.note);
+    await this.workerAuthority.assertRetainedSources?.(actor, captured.state, captured.proposal.sources);
+    await preflight?.(captured.proposal);
+    await this.#ordering.run(async () => {
+      const state = await this.store.snapshot();
+      const selected = select(state);
+      if (state.revision !== captured.state.revision || this.#transitionEpoch !== captured.epoch ||
+        selected.proposal.resolution_digest !== captured.proposal.resolution_digest) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Application consent or source changed before effect admission");
+      }
+      const pendingKey = `${workerPeerKey(operation)}:pending`;
+      const applicationReceipts = state.receipts.filter(receipt => receipt.key.startsWith(WORKER_PEER_KEY_PREFIX)
+        && receipt.key.endsWith(":pending") &&
+        state.notes.some(note => note.id === receipt.item_id && note.subject.kind === "case" && note.subject.id === selected.item.id));
+      const unresolved = applicationReceipts.some(receipt => {
+        if (receipt.owner === owner && receipt.key === pendingKey) return false;
+        const outcomeReceipt = state.receipts.find(candidate => candidate.owner === receipt.owner &&
+          candidate.key === `${receipt.key.slice(0, -":pending".length)}:outcome`);
+        const outcomeNote = state.notes.find(note => note.id === outcomeReceipt?.item_id);
+        const outcome = outcomeNote && retainedPeerRecord(outcomeNote.text);
+        return outcome?.kind !== "peer_resolution_application" || outcome.status !== "rejected";
+      });
+      if (unresolved) {
+        throw new BridgeError("COORDINATION_EXTERNAL_EFFECT_UNRESOLVED", "This case already has a retained application effect; reconcile it before another key");
+      }
+      if (!applicationReceipts.some(receipt => receipt.owner === owner && receipt.key === pendingKey)) {
+        const pending: PeerResolutionApplication = { schema_version: 1, kind: "peer_resolution_application",
+          case_id: selected.item.id, case_revision: selected.item.revision, case_generation: selected.item.generation,
+          evidence_id: selected.proposal.evidence_id, evidence_revision: selected.proposal.evidence_revision,
+          sources: selected.proposal.sources, scope: selected.proposal.scope,
+          proposal_digest: selected.proposal.resolution_digest,
+          application_digest: canonicalHash({ task_id: actor.task_id, operation }), status: "pending" };
+        const next = structuredClone(state), noteId = randomUUID();
+        next.notes.push({ id: noteId, subject: { kind: "case", id: selected.item.id }, author: owner,
+          kind: "resolution_update", text: encodePeerResolutionRecord(pending),
+          work_refs: selected.item.inputs.map(input => input.work_id), parties: [],
+          acknowledged: [], withdrawn: false });
+        next.revision++;
+        next.receipts.push({ owner, key: pendingKey, request_hash: canonicalHash({ owner, operation, pending }),
+          revision: next.revision, action: "post_note", entity: { kind: "case", id: selected.item.id },
+          item_id: noteId, outcome: "recorded" });
+        checkCapacity(next);
+        await this.#publish(state, next);
+      }
+      this.#applicationCases.add(selected.item.id);
+    });
+    try {
+      const result = await effect(structuredClone(captured.proposal));
+      if (result.kind !== "application" || result.operation !== "apply" || result.note_id !== operation.note_id ||
+        result.case_id !== captured.item.id || result.operation_key !== operation.operation_key) {
+        throw new BridgeError("PEER_OPERATION_INVALID", "Application effect returned a different task operation");
+      }
+      await this.#ordering.run(async () => {
+        const state = await this.store.snapshot();
+        const prior = state.receipts.find(receipt => receipt.owner === owner && receipt.key === `${workerPeerKey(operation)}:outcome`);
+        if (prior) return;
+        const item = state.cases.find(candidate => candidate.id === captured.item.id);
+        if (!item || item.revision !== captured.item.revision || item.generation !== captured.item.generation ||
+          !state.receipts.some(receipt => receipt.owner === owner && receipt.key === `${workerPeerKey(operation)}:pending`)) {
+          throw new BridgeError("PEER_OPERATION_STALE", "Application case changed before outcome publication");
+        }
+        const record: PeerResolutionApplication = { schema_version: 1, kind: "peer_resolution_application",
+          case_id: item.id, case_revision: item.revision, case_generation: item.generation,
+          evidence_id: captured.proposal.evidence_id, evidence_revision: captured.proposal.evidence_revision,
+          sources: captured.proposal.sources, scope: captured.proposal.scope,
+          proposal_digest: captured.proposal.resolution_digest,
+          application_digest: result.application_digest ?? canonicalHash({ operation, result }), status: result.status };
+        const text = encodePeerResolutionRecord(record), noteId = randomUUID(), next = structuredClone(state);
+        next.notes.push({ id: noteId, subject: { kind: "case", id: item.id }, author: owner,
+          kind: "resolution_update", text, work_refs: item.inputs.map(input => input.work_id),
+          parties: [], acknowledged: [], withdrawn: false });
+        next.revision++;
+        next.receipts.push({ owner, key: `${workerPeerKey(operation)}:outcome`, request_hash: canonicalHash({ owner, operation, result }),
+          revision: next.revision, action: "post_note", entity: { kind: "case", id: item.id },
+          item_id: noteId, outcome: "recorded" });
+        checkCapacity(next);
+        await this.#publish(state, next);
+      });
+      return result;
+    }
+    finally { await this.#ordering.run(async () => { this.#applicationCases.delete(captured.item.id); }); }
+  }
+
   /** Serialize adoption with metadata publication and reject suspended old workers. */
   async withWorkerTaskTransition<T>(taskId: string, transition: () => Promise<T>): Promise<T> {
     const affected = await this.#ordering.run(async () => {
       const state = await this.store.snapshot();
       const affected = new Set(state.cases.filter(item => item.state === "active" && item.inputs.some(input =>
         state.works.find(work => work.id === input.work_id)?.managed?.task_id === taskId)).map(item => item.id));
-      if (this.#transitionTasks.has(taskId) || [...affected].some(id => this.#transitionCases.has(id))) {
+      if (this.#transitionTasks.has(taskId) || [...affected].some(id => this.#transitionCases.has(id) || this.#applicationCases.has(id))) {
         throw new BridgeError("PEER_OPERATION_STALE", "A selected task transition is already active");
       }
       this.#transitionTasks.add(taskId);
@@ -682,6 +847,7 @@ export class CoordinationControl {
     this.#assertCaseTransition(state, item);
   }
   #assertCaseTransition(state: ControlState, item: Case): void {
+    if (this.#applicationCases.has(item.id)) throw new BridgeError("PEER_OPERATION_STALE", "A selected application effect is in progress");
     if (this.#transitionCases.has(item.id) || item.inputs.some(input => {
       const taskId = state.works.find(work => work.id === input.work_id)?.managed?.task_id;
       return taskId !== undefined && (this.#transitionTasks.has(taskId) || this.serviceTransitions?.has(taskId));
@@ -733,6 +899,11 @@ export class CoordinationControl {
     return this.#ordering.run(async () => {
       this.store.assertMutable();
       const current = await this.store.snapshot();
+      if ("case_id" in recovery && this.#applicationCases.has(recovery.case_id) ||
+        "work_id" in recovery && current.cases.some(item => this.#applicationCases.has(item.id)
+          && item.inputs.some(selected => selected.work_id === recovery.work_id))) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Selected case is reserved for task publication");
+      }
       const prior = recoveryReceipts(current).find(r => r.operator === operator && r.command.operation_key === recovery.operation_key);
       if (prior) {
         if (prior.request_hash !== request_hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Recovery key already identifies different intent");
@@ -929,7 +1100,7 @@ function workerPeerTaskPrefix(actor: WorkerPeerActor): string {
 function workerPeerKey(operation: PeerWorkerOperation): string {
   return `${WORKER_PEER_KEY_PREFIX}${operation.task_id}:${operation.run_id}:${canonicalHash(operation.operation_key)}`;
 }
-function legacyWorkerPeerHash(owner: ParentId, operation: Exclude<PeerWorkerOperation, { kind: "inspect" | "await_change" }>, item: Case): string {
+function legacyWorkerPeerHash(owner: ParentId, operation: Exclude<PeerWorkerOperation, { kind: "inspect" | "await_change" | "source_detail" | "apply" }>, item: Case): string {
   const command: Command = "note_id" in operation
     ? { kind: operation.kind === "acknowledge" ? "ack_note" : "withdraw_note",
         operation_key: workerPeerKey(operation), note_id: operation.note_id }
@@ -959,7 +1130,7 @@ function workerPeerParties(state: ControlState, item: Case): Array<{ task_id: st
   }
   return parties;
 }
-function workerPeerReceipt(operation: Exclude<PeerWorkerOperation, { kind: "inspect" | "await_change" }>, receipt: Receipt): PeerWorkerOperationResult {
+function workerPeerReceipt(operation: Exclude<PeerWorkerOperation, { kind: "inspect" | "await_change" | "source_detail" | "apply" }>, receipt: Receipt): PeerWorkerOperationResult {
   return { schema_version: operation.schema_version, task_id: operation.task_id, run_id: operation.run_id,
     control_generation: operation.control_generation, workspace_id: operation.workspace_id, source_view: operation.source_view,
     case_id: operation.case_id, operation_key: operation.operation_key, kind: "receipt", operation: operation.kind,
@@ -981,10 +1152,9 @@ function workerPeerCase(state: ControlState, owner: ParentId, actor: WorkerPeerA
   }
   for (const input of item.inputs) {
     const selected = state.works.find(candidate => candidate.id === input.work_id);
-    if (!selected || selected.state !== "active" || selected.owner !== owner
-      && !selected.source_grants?.some(grant => grant.recipient === owner && grant.work_revision === selected.revision
-        && (grant.scope === "report" || grant.scope === "detail"))) {
-      throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker source grant is no longer current");
+    if (!selected?.managed || selected.state !== "active" || !item.members.includes(selected.owner)
+      || !canReadWork(owner, selected)) {
+      throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker selected source authority is no longer current");
     }
   }
   return item;

@@ -32,6 +32,7 @@
     "src/observation/report.ts",
     "src/coordination/notices.ts",
     "src/coordination/peer-resolution.ts",
+    "src/coordination/peer-application.ts",
     "src/contracts/observation.ts",
     "src/store/observation-store.ts",
     "src/coordination/control.ts",

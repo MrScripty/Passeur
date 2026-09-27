@@ -16,6 +16,8 @@ export type PeerOverlapSpan = Readonly<{
   side: PeerOverlapSide;
   range: Readonly<{ start_byte: number; end_byte: number }>;
   text: string;
+  omitted_before: boolean;
+  omitted_after: boolean;
   reason: "signature_changed" | "body_changed" | "default_changed" | "declaration_added" | "declaration_removed";
 }>;
 export type PeerOverlapChange = Readonly<{
@@ -25,6 +27,8 @@ export type PeerOverlapChange = Readonly<{
   body_changed: boolean;
   default_changed: boolean;
   observed_source: SourceReference;
+  input_declaration?: PeerOverlapEvidence["subject"];
+  observed_declaration?: PeerOverlapEvidence["subject"];
   reasons: readonly PeerOverlapSpan["reason"][];
   spans: readonly PeerOverlapSpan[];
 }>;
@@ -165,30 +169,40 @@ function selectedSpans(selection: PeerOverlapSelection, observation: PeerOverlap
   const inputDeclaration = observation.change.input ?? selection.declaration;
   const observedDeclaration = observation.change.observed;
   const spans: PeerOverlapSpan[] = [];
+  const add = (side: PeerOverlapSide, selected: Readonly<{ start_byte: number; end_byte: number }>,
+    whole: Readonly<{ start_byte: number; end_byte: number }>, file: SourceFile, reason: PeerOverlapSpan["reason"]): void => {
+    spans.push({ side, range: selected, text: sourceExcerpt(file, selected), reason,
+      omitted_before: selected.start_byte > whole.start_byte, omitted_after: selected.end_byte < whole.end_byte });
+  };
   const beforeRange = range(inputDeclaration.range, selection.input.status === "present" ? selection.input.byte_length : inputDeclaration.range.end_byte);
   const afterRange = observedDeclaration ? range(observedDeclaration.range, observation.observed.status === "present" ? observation.observed.byte_length : observedDeclaration.range.end_byte) : undefined;
-  if (selection.input.status !== "present" || observation.observed.status !== "present") return spans;
-  if (observation.change.kind === "modified" && !observedDeclaration) return spans;
   if (observation.change.kind === "added") {
-    if (afterRange) spans.push({ side: "observed", range: afterRange, text: sourceExcerpt(observation.observed, afterRange), reason: "declaration_added" });
+    if (afterRange && observation.observed.status === "present") add("observed", afterRange, afterRange, observation.observed, "declaration_added");
     return spans;
   }
   if (observation.change.kind === "removed") {
-    spans.push({ side: "input", range: beforeRange, text: sourceExcerpt(selection.input, beforeRange), reason: "declaration_removed" });
+    if (selection.input.status === "present") add("input", beforeRange, beforeRange, selection.input, "declaration_removed");
     return spans;
   }
+  if (selection.input.status !== "present" || observation.observed.status !== "present" || !observedDeclaration) return spans;
   if (observation.change.body_changed && afterRange) {
     const [left, right] = changedWindow(selection.input, observation.observed, beforeRange, afterRange);
-    spans.push({ side: "input", range: left, text: sourceExcerpt(selection.input, left), reason: "body_changed" });
-    spans.push({ side: "observed", range: right, text: sourceExcerpt(observation.observed, right), reason: "body_changed" });
+    add("input", left, beforeRange, selection.input, "body_changed");
+    add("observed", right, afterRange, observation.observed, "body_changed");
+    // A body window need not include a separately changed default or attribute in the header.
+    if (observation.change.default_changed && (left.start_byte !== beforeRange.start_byte || left.end_byte !== beforeRange.end_byte ||
+        right.start_byte !== afterRange.start_byte || right.end_byte !== afterRange.end_byte)) {
+      add("input", beforeRange, beforeRange, selection.input, "default_changed");
+      add("observed", afterRange, afterRange, observation.observed, "default_changed");
+    }
   } else if (afterRange) {
     for (const reason of reasons) {
       if (spans.length >= MAX_SPANS_PER_CHANGE) break;
-      spans.push({ side: "input", range: beforeRange, text: sourceExcerpt(selection.input, beforeRange), reason });
-      spans.push({ side: "observed", range: afterRange, text: sourceExcerpt(observation.observed, afterRange), reason });
+      add("input", beforeRange, beforeRange, selection.input, reason);
+      add("observed", afterRange, afterRange, observation.observed, reason);
     }
   } else {
-    spans.push({ side: "input", range: beforeRange, text: sourceExcerpt(selection.input, beforeRange), reason: reasons[0] ?? "signature_changed" });
+    add("input", beforeRange, beforeRange, selection.input, reasons[0] ?? "signature_changed");
   }
   return spans.slice(0, MAX_SPANS_PER_CHANGE);
 }
@@ -196,7 +210,8 @@ function selectedSpans(selection: PeerOverlapSelection, observation: PeerOverlap
 function build(selection: PeerOverlapSelection, budget: number): PeerOverlapEvidence {
   const subject = declarationSummary(selection.declaration);
   const limitations = new Set<string>();
-  if (selection.input.status !== "present") limitations.add("input_source_unavailable");
+  if (selection.input.status !== "present" && !(selection.input.status === "absent_in_commit" &&
+      selection.observations.every(observation => observation.change.kind === "added"))) limitations.add("input_source_unavailable");
   const changes = [...selection.observations].sort((a, b) => a.observation_id.localeCompare(b.observation_id)).map(observation => {
     const observationId = boundedText(observation.observation_id, "observation_id", 256);
     const reasons = observationReason(observation.change);
@@ -205,7 +220,10 @@ function build(selection: PeerOverlapSelection, budget: number): PeerOverlapEvid
     const spans = selectedSpans(selection, observation, reasons);
     return { observation_id: observationId, kind: observation.change.kind,
       declaration_changed: observation.change.declaration_changed, body_changed: observation.change.body_changed,
-      default_changed: observation.change.default_changed, observed_source: sourceReference(observation.observed), reasons, spans };
+      default_changed: observation.change.default_changed, observed_source: sourceReference(observation.observed),
+      ...(observation.change.input ? { input_declaration: declarationSummary(observation.change.input) } : {}),
+      ...(observation.change.observed ? { observed_declaration: declarationSummary(observation.change.observed) } : {}),
+      reasons, spans };
   });
   let coverage: PeerOverlapEvidence["coverage"] = limitations.has("input_source_unavailable") || limitations.has("observed_source_unavailable") ? "unavailable"
     : limitations.has("observed_declaration_unavailable") || (selection.limitations?.length ?? 0) > 0 ? "incomplete" : "complete";

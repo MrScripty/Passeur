@@ -28,6 +28,8 @@ import { CapturedPairCache } from "../observation/cache.js";
 import { ObservationMonitor, type ObservationJob, type ObservationWorkspace } from "../observation/monitor.js";
 import { ObservationStore } from "../store/observation-store.js";
 import { CorrespondenceIndex, type CorrespondencePair, type CorrespondenceUpdate } from "../observation/correspondence.js";
+import { selectPeerOverlapEvidence, type PeerOverlapEvidence } from "../observation/overlap.js";
+import { applyPeerResolutionChanges } from "../coordination/peer-application.js";
 import type { AttributedComparison, SourceFile } from "../observation/model.js";
 import type { ObservationGeneration, ObservationPull } from "../contracts/observation.js";
 import { peerDeliveryContentDigest, type PeerDeliveryEnvelope, type PeerDeliverySource } from "../contracts/peer-delivery.js";
@@ -66,7 +68,7 @@ function changedStructuralEvidence(report: AttributedComparison): boolean {
 }
 /** Compact correspondence is evidence of overlap, not changed source detail or authorship. */
 export function peerDeliveryCandidate(pair: CorrespondencePair, peerCase: Case, source: Work,
-  target: Work, recipientTaskId: string, artifactId: string): PeerDeliverySource | undefined {
+  target: Work, recipientTaskId: string, artifactId: string, selectedEvidence?: PeerOverlapEvidence): PeerDeliverySource | undefined {
   if (peerCase.state !== "active" || source.id === target.id ||
     !peerCase.inputs.some(input => input.work_id === source.id) ||
     !peerCase.inputs.some(input => input.work_id === target.id) ||
@@ -76,7 +78,7 @@ export function peerDeliveryCandidate(pair: CorrespondencePair, peerCase: Case, 
   const sourceChange = source.id === pair.current_work_id ? pair.current_change : pair.other_change;
   const otherChange = source.id === pair.current_work_id ? pair.other_change : pair.current_change;
   const evidence_id = canonicalHash([artifactId, pair.pair_id, sourceChange.evidence_id, otherChange.evidence_id]);
-  const content = JSON.stringify({ schema_version: 1, kind: "peer_overlap_evidence",
+  const content = JSON.stringify({ schema_version: selectedEvidence ? 2 : 1, kind: "peer_overlap_evidence",
     source_work_id: source.id, source_work_revision: source.revision, source_artifact_id: artifactId,
     case_id: peerCase.id, case_revision: peerCase.revision, case_generation: peerCase.generation,
     input: { repository_id: pair.input.repository_id, object_format: pair.input.object_format,
@@ -84,7 +86,9 @@ export function peerDeliveryCandidate(pair: CorrespondencePair, peerCase: Case, 
       path_sha256: createHash("sha256").update(pair.input.path).digest("hex"), range: pair.input_range },
     subject_id: pair.subject_id, pair_id: pair.pair_id,
     source_change: sourceChange, recipient_change: otherChange,
-    limitations: ["compact_correspondence_only", "changed_source_detail_unavailable", "authorship_unproven"] });
+    ...(selectedEvidence ? { selected_evidence: selectedEvidence,
+      limitations: [...selectedEvidence.limitations, "authorship_unproven"] }
+      : { limitations: ["compact_correspondence_only", "changed_source_detail_unavailable", "authorship_unproven"] }) });
   return { source_work_id: source.id, source_work_revision: source.revision,
     case_id: peerCase.id, case_revision: peerCase.revision, case_generation: peerCase.generation,
     evidence_id, evidence_revision: source.revision, content, evidence_digest: peerDeliveryContentDigest(content),
@@ -177,6 +181,7 @@ export class RepositoryRuntime {
   readonly #correspondence = new CorrespondenceIndex();
   readonly #currentOverlapPairs = new Map<string, CorrespondencePair>();
   readonly #publishedArtifactIds = new Map<string, Readonly<{ id: string; owner: string }>>();
+  readonly #publishedComparisons = new Map<string, AttributedComparison>();
   readonly #pendingCorrespondenceNotices = new Map<string, PendingCorrespondenceNotice>();
   readonly #observationFailures = new Map<string, string>();
   readonly #observationAttached = new Map<string, string>();
@@ -192,6 +197,7 @@ export class RepositoryRuntime {
   // queue, but waiting callers must not each retain captured source buffers.
   #structuralReportActive = false;
   readonly #taskAssociations = new Set<string>();
+  readonly #taskAssociationWaiters = new Map<string, Set<() => void>>();
   #coordinationOrdinary = 0;
   #coordinationControls = 0;
   readonly #coordinatedAdmission = new Mutex();
@@ -419,34 +425,46 @@ export class RepositoryRuntime {
         publish: async (job, pairs, isCurrent) => {
           await this.#drainCorrespondenceNotices();
           for (const pair of pairs) {
-            if (!isCurrent()) return;
-            const work = await this.#currentSourceWork(pair.report.parent_id, job.workspace.work_id, "report");
-            if (!isCurrent() || work.revision !== job.workspace.work_revision ||
-              (work.managed && (await this.#store!.readControl(work.managed.task_id)).control_generation !== job.workspace.control_generation)) return;
-            const path = pair.report.comparison.input.source.path;
-            const recipients = changedStructuralEvidence(pair.report)
-              ? (work.source_watches ?? []).filter(watch => watch.work_revision === work.revision &&
-                regionIncludesPath(watch.regions, path) && (watch.recipient === work.owner ||
-                  work.source_grants?.some(grant => grant.work_revision === work.revision && grant.recipient === watch.recipient)))
-                .map(watch => watch.recipient) : [];
-            const artifact = await this.#observationStore!.publish({ ...pair, work_revision: work.revision,
-              workspace_generation: job.workspace.workspace_generation,
-              control_generation: work.managed ? job.workspace.control_generation : null,
-              recipients: [...new Set(recipients)] });
-            const artifactKey = JSON.stringify([work.id, path]);
-            this.#publishedArtifactIds.set(artifactKey, { id: artifact.id, owner: work.owner });
-            if (this.#publishedArtifactIds.size > 512) this.#publishedArtifactIds.delete(this.#publishedArtifactIds.keys().next().value!);
-            const correspondence = this.#correspondence.upsert(pair.report);
-            this.#retainCorrespondence(correspondence);
-            for (const [state, events] of [["overlap", correspondence.pairs], ["resolved", correspondence.resolved]] as const) {
-              for (const event of events) {
-                this.#queueCorrespondenceNotice({ artifactId: artifact.id, recipient: work.owner, workId: work.id,
-                  subjectId: event.subject_id, state });
-                const other = this.#publishedArtifactIds.get(JSON.stringify([event.other_work_id, path]));
-                if (other) this.#queueCorrespondenceNotice({ artifactId: other.id, recipient: other.owner,
-                  workId: event.other_work_id, subjectId: event.subject_id, state });
+            const publish = async () => {
+              if (!isCurrent()) return null;
+              const work = await this.#currentSourceWork(pair.report.parent_id, job.workspace.work_id, "report");
+              if (!isCurrent() || work.revision !== job.workspace.work_revision ||
+                (work.managed && (await this.#store!.readControl(work.managed.task_id)).control_generation !== job.workspace.control_generation)) return null;
+              const path = pair.report.comparison.input.source.path;
+              const recipients = changedStructuralEvidence(pair.report)
+                ? (work.source_watches ?? []).filter(watch => watch.work_revision === work.revision &&
+                  regionIncludesPath(watch.regions, path) && (watch.recipient === work.owner ||
+                    work.source_grants?.some(grant => grant.work_revision === work.revision && grant.recipient === watch.recipient)))
+                  .map(watch => watch.recipient) : [];
+              const artifact = await this.#observationStore!.publish({ ...pair, work_revision: work.revision,
+                workspace_generation: job.workspace.workspace_generation,
+                control_generation: work.managed ? job.workspace.control_generation : null,
+                recipients: [...new Set(recipients)] });
+              const artifactKey = JSON.stringify([work.id, path]);
+              this.#publishedArtifactIds.set(artifactKey, { id: artifact.id, owner: work.owner });
+              this.#publishedComparisons.set(artifactKey, pair.report);
+              if (this.#publishedArtifactIds.size > 512) this.#publishedArtifactIds.delete(this.#publishedArtifactIds.keys().next().value!);
+              if (this.#publishedComparisons.size > 512) this.#publishedComparisons.delete(this.#publishedComparisons.keys().next().value!);
+              const correspondence = this.#correspondence.upsert(pair.report);
+              this.#retainCorrespondence(correspondence);
+              for (const [state, events] of [["overlap", correspondence.pairs], ["resolved", correspondence.resolved]] as const) {
+                for (const event of events) {
+                  this.#queueCorrespondenceNotice({ artifactId: artifact.id, recipient: work.owner, workId: work.id,
+                    subjectId: event.subject_id, state });
+                  const other = this.#publishedArtifactIds.get(JSON.stringify([event.other_work_id, path]));
+                  if (other) this.#queueCorrespondenceNotice({ artifactId: other.id, recipient: other.owner,
+                    workId: event.other_work_id, subjectId: event.subject_id, state });
+                }
               }
-            }
+              return correspondence;
+            };
+            const managedTaskId = job.workspace.control_generation ?
+              (await (await this.#coordinationSession(this.#binding!).observationStore()).snapshot()).works
+                .find(work => work.id === job.workspace.work_id)?.managed?.task_id : undefined;
+            const correspondence = managedTaskId
+              ? await (await this.#taskControls()).withTaskPublication([managedTaskId], publish)
+              : await publish();
+            if (!correspondence) return;
             for (const event of correspondence.pairs) await this.#queuePeerOverlap(event);
             await this.#drainCorrespondenceNotices();
           }
@@ -499,9 +517,6 @@ export class RepositoryRuntime {
     if (!peerCase.members.includes(control.owner_id)) return "revoked";
     const source = snapshot.works.find(item => item.id === envelope.source_work_id);
     if (!source || source.state !== "active" || source.revision !== envelope.source_work_revision) return "stale";
-    const grant = source.source_grants?.some(item => item.recipient === control.owner_id &&
-      item.work_revision === source.revision && (item.scope === "report" || item.scope === "detail"));
-    if (source.owner !== control.owner_id && !grant) return "revoked";
     // An envelope is usable only while its exact compact pair and retained source artifact remain current.
     let content: { pair_id?: unknown; source_artifact_id?: unknown };
     try { content = JSON.parse(envelope.content) as typeof content; } catch { return "stale"; }
@@ -511,8 +526,9 @@ export class RepositoryRuntime {
       ![pair.current_work_id, pair.other_work_id].includes(recipientWork.id)) return "stale";
     const artifact = this.#publishedArtifactIds.get(JSON.stringify([source.id, pair.input.path]));
     if (!artifact || artifact.id !== content.source_artifact_id || artifact.owner !== source.owner || !this.#observationStore) return "stale";
+    const evidence = await this.#selectedOverlapEvidence(pair, peerCase, envelope.recipient_task_id);
     const currentCandidate = peerDeliveryCandidate(pair, peerCase, source, recipientWork,
-      envelope.recipient_task_id, artifact.id);
+      envelope.recipient_task_id, artifact.id, evidence);
     if (!currentCandidate || canonicalHash(currentCandidate) !== canonicalHash({
       source_work_id: envelope.source_work_id, source_work_revision: envelope.source_work_revision,
       case_id: envelope.case_id, case_revision: envelope.case_revision, case_generation: envelope.case_generation,
@@ -521,7 +537,8 @@ export class RepositoryRuntime {
     })) return "stale";
     try {
       const retained = await this.#observationStore.readRetainedPair(artifact.id, control.owner_id,
-        (recipient, workId, revision, generation) => this.#authorizeObservation(recipient, workId, revision, generation, "report"));
+        (_recipient, workId, revision, generation) => this.#authorizePeerCaseSource(peerCase.id,
+          envelope.recipient_task_id, workId, revision, generation, "report"));
       if (retained.work_id !== source.id || retained.work_revision !== source.revision ||
         retained.path !== pair.input.path || retained.input.source.kind !== "commit" ||
         retained.input.source.commit_oid !== pair.input.commit_oid ||
@@ -532,7 +549,9 @@ export class RepositoryRuntime {
       if (code === "STRUCTURAL_DETAIL_UNAVAILABLE") return "stale";
       throw error;
     }
-    try { await metadata.authorizeSourceRead(control.owner_id, source.id, "report"); }
+    try { await this.#authorizePeerCaseSource(peerCase.id, envelope.recipient_task_id, source.id,
+      source.revision, { control_generation: source.managed?.control_generation ?? null,
+        workspace_generation: source.managed?.control_generation ?? Math.max(1, source.revision) }, "report"); }
     catch (error) {
       if (errorInfo(error).code === "STRUCTURAL_SOURCE_FORBIDDEN") {
         const current = await (await metadata.observationStore()).snapshot();
@@ -584,6 +603,51 @@ export class RepositoryRuntime {
     } else if (generation.control_generation !== null || generation.workspace_generation !== Math.max(1, work.revision)) {
       throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "External source workspace generation changed");
     }
+  }
+  /** Internal peer read binds source bytes to selected managed tasks, never to a parent-wide source grant. */
+  async #authorizePeerCaseSource(caseId: string, recipientTaskId: string, workId: string,
+    workRevision: number, generation: ObservationGeneration, scope: "report" | "detail"): Promise<void> {
+    const binding = this.#binding, store = this.#store;
+    if (!binding || !store) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Peer source authority is unavailable");
+    const snapshot = await (await this.#coordinationSession(binding).observationStore()).snapshot();
+    const item = snapshot.cases.find(candidate => candidate.id === caseId && candidate.state === "active");
+    const source = snapshot.works.find(candidate => candidate.id === workId && candidate.state === "active");
+    const recipient = snapshot.works.find(candidate => candidate.managed?.task_id === recipientTaskId && candidate.state === "active");
+    if (!item || !source?.managed || !recipient?.managed || source.revision !== workRevision ||
+      !item.inputs.some(input => input.work_id === source.id) ||
+      !item.inputs.some(input => input.work_id === recipient.id) ||
+      source.owner !== recipient.owner && !source.readers.includes(recipient.owner) ||
+      !item.members.includes(source.owner) || !item.members.includes(recipient.owner)) {
+      throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Captured source is outside the current selected managed case");
+    }
+    const [sourceControl, recipientControl, sourceResource, recipientResource] = await Promise.all([
+      store.readControl(source.managed.task_id), store.readControl(recipientTaskId),
+      store.readResource(source.managed.task_id), store.readResource(recipientTaskId),
+    ]);
+    if (sourceControl.owner_id !== source.owner || sourceControl.control_generation !== source.managed.control_generation ||
+      sourceControl.phase !== "active" || sourceControl.cancel || sourceResource?.state !== "pending" ||
+      recipientControl.owner_id !== recipient.owner || recipientControl.control_generation !== recipient.managed.control_generation ||
+      recipientControl.phase !== "active" || recipientControl.cancel || recipientResource?.state !== "pending") {
+      throw new BridgeError("PEER_OPERATION_STALE", "Selected task source authority changed");
+    }
+    const [sourceTask, recipientTask] = await Promise.all([
+      managedTaskSource(store, binding.repositoryId, source.managed.task_id),
+      managedTaskSource(store, binding.repositoryId, recipientTaskId),
+    ]);
+    if (sourceTask.root !== sourceResource.worktree_path || recipientTask.root !== recipientResource.worktree_path ||
+      sourceTask.input_oid !== source.input_oid || recipientTask.input_oid !== recipient.input_oid) {
+      throw new BridgeError("PEER_OPERATION_STALE", "Selected task workspace identity changed");
+    }
+    const { CoordinationRepository } = await import("../coordination/repository.js");
+    const repository = await CoordinationRepository.open(binding.project, binding.repositoryId, coordinationLimits.max_worktrees);
+    const [sourceWorkspace, recipientWorkspace] = await Promise.all([
+      repository.inspect(sourceTask.root), repository.inspect(recipientTask.root),
+    ]);
+    if (sourceWorkspace.workspace_id !== source.workspace_id || recipientWorkspace.workspace_id !== recipient.workspace_id ||
+      sourceWorkspace.repository_id !== binding.repositoryId || recipientWorkspace.repository_id !== binding.repositoryId) {
+      throw new BridgeError("PEER_OPERATION_STALE", "Selected task physical workspace changed");
+    }
+    await this.#authorizeObservation(source.owner, source.id, workRevision, generation, scope);
   }
   async #observationWorkspace(work: Work): Promise<ObservationWorkspace> {
     const { CoordinationRepository } = await import("../coordination/repository.js");
@@ -690,6 +754,7 @@ export class RepositoryRuntime {
           const compared = await compareCapturedWork({ work_id: work.id, parent_id: work.owner, dialect,
             input: retained.input, observed: retained.observed }, this.#nativeAnalysis, this.#lifetime.signal);
           const update = this.#correspondence.upsert(compared.report);
+          this.#publishedComparisons.set(JSON.stringify([work.id, item.path]), compared.report);
           this.#retainCorrespondence(update);
           for (const event of update.pairs) {
             this.#queueCorrespondenceNotice({ artifactId: item.id, recipient: work.owner, workId: work.id,
@@ -809,10 +874,21 @@ export class RepositoryRuntime {
       if (pair.current_work_id === workId || pair.other_work_id === workId) this.#currentOverlapPairs.delete(key);
     }
     for (const key of this.#publishedArtifactIds.keys()) if (JSON.parse(key)[0] === workId) this.#publishedArtifactIds.delete(key);
+    for (const key of this.#publishedComparisons.keys()) if (JSON.parse(key)[0] === workId) this.#publishedComparisons.delete(key);
     for (const [key, notice] of this.#pendingCorrespondenceNotices) if (notice.workId === workId) this.#pendingCorrespondenceNotices.delete(key);
     this.#observationFailures.delete(workId);
     this.#observationRehydrationGaps.delete(workId);
     if (attached || attaching || workspaceId) this.#fillObservationSlots();
+  }
+  async #forgetObservationSafely(workId: string, workspaceId?: string): Promise<void> {
+    const binding = this.#binding;
+    const taskId = binding && (await (await this.#coordinationSession(binding).observationStore()).snapshot())
+      .works.find(work => work.id === workId)?.managed?.task_id;
+    if (taskId) {
+      await (await this.#taskControls()).withTaskPublication([taskId], async () => {
+        this.#forgetObservation(workId, workspaceId);
+      });
+    } else this.#forgetObservation(workId, workspaceId);
   }
   #retainCorrespondence(update: CorrespondenceUpdate): void {
     for (const resolved of update.resolved) this.#currentOverlapPairs.delete(resolved.pair_id);
@@ -830,6 +906,44 @@ export class RepositoryRuntime {
         code: code.slice(0, 128) });
       if (!retained) await this.#controls?.change(taskId, state => { state.telemetry_omitted = true; });
     } catch (error) { this.#failure ??= diagnosticInfo(error); }
+  }
+  async #selectedOverlapEvidence(pair: CorrespondencePair, peerCase: Case,
+    recipientTaskId: string): Promise<PeerOverlapEvidence> {
+    const path = pair.input.path;
+    const reports = [pair.current_work_id, pair.other_work_id].map(id => this.#publishedComparisons.get(JSON.stringify([id, path])));
+    const artifacts = [pair.current_work_id, pair.other_work_id].map(id => this.#publishedArtifactIds.get(JSON.stringify([id, path])));
+    if (reports.some(report => !report) || artifacts.some(artifact => !artifact) || !this.#observationStore) {
+      throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Current compared source evidence is unavailable");
+    }
+    const observations = [];
+    let input: SourceFile | undefined;
+    let declaration;
+    for (let index = 0; index < 2; index++) {
+      const workId = index === 0 ? pair.current_work_id : pair.other_work_id;
+      const report = reports[index]!;
+      const change = report.comparison.changes.find(candidate => candidate.input &&
+        candidate.input.range.start_byte === pair.input_range.start_byte &&
+        candidate.input.range.end_byte === pair.input_range.end_byte &&
+        (candidate.kind === "modified" || candidate.kind === "removed"));
+      if (!change?.input) throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Current overlap declaration is unavailable");
+      const retained = await this.#observationStore.readRetainedPair(artifacts[index]!.id, "0".repeat(64),
+        (_recipient, id, revision, generation) => this.#authorizePeerCaseSource(peerCase.id,
+          recipientTaskId, id, revision, generation, "report"));
+      if (retained.work_id !== workId || retained.path !== path || retained.input.source.kind !== "commit" ||
+        retained.input.source.commit_oid !== pair.input.commit_oid) {
+        throw new BridgeError("PEER_DELIVERY_STALE", "Selected overlap source capture changed");
+      }
+      input ??= retained.input;
+      declaration ??= change.input;
+      observations.push({ observation_id: workId, observed: retained.observed, change: {
+        kind: change.kind as "modified" | "removed", declaration_changed: change.declaration_changed,
+        body_changed: change.body_changed, default_changed: change.default_changed,
+        input: change.input, ...(change.observed ? { observed: change.observed } : {}) } });
+    }
+    return selectPeerOverlapEvidence({ subject_id: pair.subject_id, dialect: reports[0]!.comparison.dialect,
+      parser_identity: reports[0]!.comparison.parser_identity,
+      extractor_identity: reports[0]!.comparison.extractor_identity,
+      input: input!, declaration: declaration!, observations });
   }
   #queueCorrespondenceNotice(notice: PendingCorrespondenceNotice): void {
     const key = JSON.stringify([notice.artifactId, notice.recipient, notice.subjectId, notice.state]);
@@ -852,6 +966,88 @@ export class RepositoryRuntime {
       }
     }
   }
+  /** A compact source correspondence may establish authority only for two current managed tasks. */
+  async #establishObservedCase(pair: CorrespondencePair): Promise<void> {
+    const binding = this.#binding, store = this.#store;
+    if (!binding || !store) return;
+    const metadata = this.#coordinationSession(binding);
+    const ids = [pair.current_work_id, pair.other_work_id].sort();
+    const initial = await (await metadata.observationStore()).snapshot();
+    const works = ids.map(id => initial.works.find(work => work.id === id));
+    if (works.some(work => !work?.managed || work.state !== "active")) return;
+    const [left, right] = works as [Work, Work];
+    if (left.input_oid !== right.input_oid ||
+      pair.input.commit_oid !== left.input_oid) return;
+    const resources = await Promise.all(works.map(async work => {
+      const taskId = work!.managed!.task_id;
+      const [control, resource, source] = await Promise.all([
+        store.readControl(taskId), store.readResource(taskId), managedTaskSource(store, binding.repositoryId, taskId),
+      ]);
+      if (control.owner_id !== work!.owner || control.control_generation !== work!.managed!.control_generation ||
+        control.phase !== "active" || control.cancel || resource?.state !== "pending" ||
+        resource.worktree_path !== source.root || source.input_oid !== work!.input_oid) {
+        throw new BridgeError("PEER_DELIVERY_STALE", "Observed managed task authority changed");
+      }
+      return { target: resource.target_ref, source_view: source.root };
+    }));
+    const assertCurrent = async () => {
+      for (const [index, work] of works.entries()) {
+        const taskId = work!.managed!.task_id;
+        const [control, resource, source] = await Promise.all([
+          store.readControl(taskId), store.readResource(taskId), managedTaskSource(store, binding.repositoryId, taskId),
+        ]);
+        if (control.owner_id !== work!.owner || control.control_generation !== work!.managed!.control_generation ||
+          control.phase !== "active" || control.cancel || resource?.state !== "pending" ||
+          resource.target_ref !== resources[index]!.target || resource.worktree_path !== source.root ||
+          source.root !== resources[index]!.source_view || source.input_oid !== work!.input_oid) {
+          throw new BridgeError("PEER_OPERATION_STALE", "Observed task or source authority changed during case establishment");
+        }
+      }
+    };
+    if (resources[0]!.target !== resources[1]!.target) return;
+    const { CoordinationRepository } = await import("../coordination/repository.js");
+    const repository = await CoordinationRepository.open(binding.project, binding.repositoryId, coordinationLimits.max_worktrees);
+    const targetOid = await repository.target(resources[0]!.target);
+    const key = `passeur-internal:observed-overlap:${canonicalHash([binding.repositoryId, resources[0]!.target, ids])}`;
+    const current = async () => (await metadata.observationStore()).snapshot();
+    const publish = async (owner: string, sourceView: string, command: unknown) =>
+      (await this.#taskControls()).withTaskPublication(works.map(work => work!.managed!.task_id), async () => {
+        await assertCurrent();
+        const receipt = await metadata.executeObservedOverlapCommand({ owner_id: owner, source_view: sourceView }, command);
+        await assertCurrent();
+        return receipt;
+      });
+    for (const [index, work] of works.entries()) {
+      const peer = works[1 - index]!;
+      if (work!.owner === peer.owner) continue;
+      let latest = (await current()).works.find(item => item.id === work!.id)!;
+      if (!latest.readers.includes(peer.owner)) {
+        await publish(latest.owner, resources[index]!.source_view,
+          { kind: "share_work", operation_key: `${key}:share:${latest.id}`, work_id: latest.id,
+            expected_revision: latest.revision, readers: [...latest.readers, peer.owner] });
+      }
+    }
+    let state = await current();
+    let item = state.cases.find(candidate => candidate.target === resources[0]!.target && candidate.state === "active");
+    if (!item) {
+      const receipt = await publish(left.owner, resources[0]!.source_view,
+        { kind: "claim_target", operation_key: `${key}:claim`, target: resources[0]!.target, members: [right.owner] });
+      state = await current(); item = state.cases.find(candidate => candidate.id === receipt.item_id);
+    }
+    if (!item || !item.members.includes(left.owner) || !item.members.includes(right.owner)) return;
+    if (!ids.every(id => item!.inputs.some(input => input.work_id === id))) {
+      if (item.inputs.length || item.lead !== left.owner) return;
+      await publish(left.owner, resources[0]!.source_view,
+        { kind: "select_inputs", operation_key: `${key}:select`, case_id: item.id, expected_revision: item.revision,
+          generation: item.generation, target_oid: targetOid,
+          inputs: ids.map(id => ({ work_id: id, commit_oid: state.works.find(work => work.id === id)!.input_oid })) });
+    }
+    await assertCurrent();
+    await (await this.#taskControls()).withTaskPublication(works.map(work => work!.managed!.task_id), async () => {
+      await assertCurrent();
+      for (const id of ids) { this.#forgetObservation(id); this.#scheduleObservation(id); }
+    });
+  }
   /** Observation publication owns this attempt; delivery admission and dispatch remain Coordinator owned. */
   async #queuePeerOverlap(pair: CorrespondencePair): Promise<void> {
     const coordinator = this.#coordinator, binding = this.#binding, store = this.#store;
@@ -867,6 +1063,15 @@ export class RepositoryRuntime {
         this.#observationFailures.set(id, limitation);
       }
       return;
+    }
+    if (!snapshot.cases.some(item => item.state === "active" && workIds.every(id => item.inputs.some(input => input.work_id === id)))) {
+      try {
+        await this.#establishObservedCase(pair);
+        snapshot = await (await this.#coordinationSession(binding).observationStore()).snapshot();
+      } catch (error) {
+        for (const id of workIds) this.#observationFailures.set(id, `case_establishment_unavailable:${errorInfo(error).code}`.slice(0, 256));
+        return;
+      }
     }
     for (const targetId of workIds) {
       const target = snapshot.works.find(work => work.id === targetId);
@@ -890,14 +1095,10 @@ export class RepositoryRuntime {
           await this.#recordPeerDeliveryFailure(taskId, pair.pair_id, "PEER_DELIVERY_UNAVAILABLE");
           continue;
         }
-        // The compact pair is source-derived. Reauthorize before including any of it in a candidate.
-        const authorized = await this.#currentSourceWork(control.owner_id, source.id, "report");
-        if (authorized.revision !== source.revision || authorized.workspace_id !== source.workspace_id) {
-          await this.#recordPeerDeliveryFailure(taskId, pair.pair_id, "PEER_DELIVERY_STALE");
-          continue;
-        }
+        const selectedCase = peerCases[0]!;
         const retained = await this.#observationStore!.readRetainedPair(artifact.id, control.owner_id,
-          (recipient, workId, revision, generation) => this.#authorizeObservation(recipient, workId, revision, generation, "report"));
+          (_recipient, workId, revision, generation) => this.#authorizePeerCaseSource(selectedCase.id,
+            taskId, workId, revision, generation, "report"));
         if (retained.work_id !== source.id || retained.work_revision !== source.revision ||
           retained.path !== pair.input.path || retained.input.source.kind !== "commit" ||
           retained.input.source.commit_oid !== pair.input.commit_oid ||
@@ -906,7 +1107,8 @@ export class RepositoryRuntime {
           continue;
         }
         for (const peerCase of peerCases) {
-          const candidate = peerDeliveryCandidate(pair, peerCase, source, target, taskId, artifact.id);
+          const evidence = await this.#selectedOverlapEvidence(pair, peerCase, taskId);
+          const candidate = peerDeliveryCandidate(pair, peerCase, source, target, taskId, artifact.id, evidence);
           if (candidate) await coordinator.queuePeerDelivery(taskId, candidate);
         }
       } catch (error) {
@@ -929,6 +1131,7 @@ export class RepositoryRuntime {
   async #workerPeerOperation(taskId: string, request: WorkerPeerOperationRequest, signal: AbortSignal): Promise<PeerWorkerOperationResult> {
     const store = this.#store, binding = this.#binding;
     if (!store || !binding) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Worker operation authority is not prepared");
+    if (this.#observationResume) await this.#observationResume;
     const snapshot = await (await this.#coordinationSession(binding).observationStore()).snapshot();
     const item = snapshot.cases.find(candidate => candidate.id === request.case_id && candidate.state === "active");
     if (!item) throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker operation does not target an active case");
@@ -982,13 +1185,208 @@ export class RepositoryRuntime {
       currentTasks.some(id => !selectedTasks.includes(id!))) {
       throw new BridgeError("PEER_OPERATION_STALE", "Selected task authority changed before the peer operation lease");
     }
-    // Metadata membership is not source authority. Recheck the current report grant for every
-    // selected work before exposing or recording a worker operation, including exact retries.
-    for (const input of peerCase.inputs) await this.#currentSourceWork(state.owner_id, input.work_id, "report");
+    // Case membership alone cannot disclose source. Bind every selected source to this task principal.
+    for (const input of peerCase.inputs) {
+      const selected = snapshot.works.find(candidate => candidate.id === input.work_id)!;
+      await this.#authorizePeerCaseSource(peerCase.id, taskId, selected.id, selected.revision,
+        { control_generation: selected.managed!.control_generation,
+          workspace_generation: selected.managed!.control_generation }, "report");
+    }
     const actor = { owner_id: state.owner_id, task_id: taskId, run_id: state.native.run_id,
       control_generation: state.control_generation, workspace_id: work.workspace_id, source_view: admission.source_view, case_id: request.case_id };
     const operation = decodePeerWorkerOperation({ ...request, task_id: actor.task_id, run_id: actor.run_id,
       control_generation: actor.control_generation, workspace_id: actor.workspace_id, source_view: actor.source_view, case_id: actor.case_id });
+    if (operation.kind === "apply") {
+      const prior = await store.readPeerOperation(taskId, operation.operation_key);
+      if (prior) {
+        if (prior.request_hash !== canonicalHash(operation))
+          throw new BridgeError("OPERATION_KEY_CONFLICT", "Application key belongs to a different task request");
+        if (prior.disposition !== "settled")
+          throw new BridgeError("PEER_OPERATION_RECOVERY_REQUIRED", "An application effect is pending or uncertain; inspect its workspace before another attempt");
+        // A crash can settle the task result before the case outcome note. Re-enter
+        // exact application admission with the retained result to finish that note;
+        // this callback has no filesystem effect.
+        return this.#coordinationSession(binding).workerApplication(
+          { owner_id: state.owner_id, source_view: admission.source_view }, actor, operation,
+          async () => prior.result!);
+      }
+      let selectedCaptureIdentity: string | undefined;
+      const assertEffectScope = () => {
+        const paths = proposalPaths();
+        for (const path of paths) {
+          if (!admission.request.allowed_paths?.some(allowed =>
+            allowed.endsWith("/") ? path.startsWith(allowed) : path === allowed || path.startsWith(`${allowed}/`)) ||
+            !peerCase.inputs.every(input => {
+              const selected = snapshot.works.find(candidate => candidate.id === input.work_id);
+              return selected?.areas.some(area => regionIncludesPath([area], path));
+            }) || ![...this.#currentOverlapPairs.values()].some(pair => pair.input.path === path &&
+              peerCase.inputs.some(input => input.work_id === pair.current_work_id) &&
+              peerCase.inputs.some(input => input.work_id === pair.other_work_id))) {
+            throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Application path is outside task and observed overlap scope");
+          }
+        }
+      };
+      let admittedProposal: import("../coordination/peer-resolution.js").PeerResolutionProposal | undefined;
+      const proposalPaths = () => admittedProposal?.changes?.map(change => change.path) ?? [];
+      const captureIdentity = () => canonicalHash(proposalPaths().map(path => {
+        const artifacts = peerCase.inputs.map(input => ({ work_id: input.work_id,
+          report_id: this.#publishedArtifactIds.get(JSON.stringify([input.work_id, path]))?.id }));
+        if (artifacts.some(artifact => !artifact.report_id))
+          throw new BridgeError("PEER_OPERATION_STALE", "Selected overlap has no current captured source report");
+        return { path,
+          pairs: [...this.#currentOverlapPairs.values()].filter(pair => pair.input.path === path &&
+            peerCase.inputs.some(input => input.work_id === pair.current_work_id) &&
+            peerCase.inputs.some(input => input.work_id === pair.other_work_id)).map(pair => pair.pair_id).sort(),
+          artifacts };
+      }));
+      return this.#coordinationSession(binding).workerApplication(
+        { owner_id: state.owner_id, source_view: admission.source_view }, actor, operation, async proposal => {
+          admittedProposal = proposal;
+          const intent = await store.startPeerOperation(taskId, operation);
+          if (!intent.created) {
+            if (intent.record.disposition === "settled") return intent.record.result!;
+            throw new BridgeError("PEER_OPERATION_RECOVERY_REQUIRED", "An application effect is pending or uncertain; inspect its workspace before another attempt");
+          }
+          const sourcesCurrent = async () => {
+            assertEffectScope();
+            if (selectedCaptureIdentity === undefined || captureIdentity() !== selectedCaptureIdentity)
+              throw new BridgeError("PEER_OPERATION_STALE", "Selected captured overlap changed before file effect");
+            const latest = await metadata.snapshot();
+            const currentCase = latest.cases.find(candidate => candidate.id === peerCase.id && candidate.state === "active");
+            if (!currentCase || currentCase.revision !== proposal.case_revision ||
+              currentCase.generation !== proposal.case_generation ||
+              proposal.sources.length !== currentCase.inputs.length) {
+              throw new BridgeError("PEER_OPERATION_STALE", "Application case changed before file effect");
+            }
+            for (const source of proposal.sources) {
+              const selected = currentCase.inputs.find(input => input.work_id === source.work_id);
+              const selectedWork = latest.works.find(candidate => candidate.id === source.work_id);
+              if (!selected || selected.commit_oid !== source.selected_commit_oid || !selectedWork?.managed ||
+                selectedWork.revision !== source.work_revision || selectedWork.input_oid !== source.input_oid) {
+                throw new BridgeError("PEER_OPERATION_STALE", "Application selected source changed");
+              }
+              const sourceControl = await store.readControl(selectedWork.managed.task_id);
+              if (sourceControl.owner_id !== selectedWork.owner ||
+                sourceControl.control_generation !== selectedWork.managed.control_generation ||
+                sourceControl.phase !== "active" || sourceControl.cancel ||
+                sourceControl.native.state !== "observed_live" ||
+                sourceControl.native.coverage !== "turn_scoped" || sourceControl.native.obligations.length) {
+                throw new BridgeError("PEER_OPERATION_STALE", "Application selected source native turn changed");
+              }
+              await this.#authorizePeerCaseSource(currentCase.id, taskId, selectedWork.id, selectedWork.revision,
+                { control_generation: selectedWork.managed.control_generation,
+                  workspace_generation: selectedWork.managed.control_generation }, "detail");
+            }
+            const applyingControl = await store.readControl(taskId), applyingResource = await store.readResource(taskId);
+            if (applyingControl.owner_id !== actor.owner_id || applyingControl.control_generation !== actor.control_generation ||
+              applyingControl.native.run_id !== actor.run_id || applyingControl.phase !== "active" || applyingControl.cancel ||
+              applyingResource?.state !== "pending" || applyingResource.worktree_path !== managed.root) {
+              throw new BridgeError("PEER_OPERATION_STALE", "Applying task workspace authority changed");
+            }
+            const latestWorkspace = await repository.inspect(managed.root, signal);
+            if (latestWorkspace.workspace_id !== actor.workspace_id) {
+              throw new BridgeError("PEER_OPERATION_STALE", "Applying workspace identity changed");
+            }
+          };
+          const applied = await applyPeerResolutionChanges({ workspaceRoot: managed.root,
+            scope: proposal.scope, sources: proposal.sources, changes: proposal.changes!,
+            withCurrentSources: async (_sources, effect) => (await this.#taskControls()).withTaskPublication(selectedTasks, async () => {
+              await sourcesCurrent();
+              return effect();
+            }) });
+          const verifiedAfter = applied.verified_after;
+          const verified = applied.status === "applied" && verifiedAfter?.length === proposal.changes!.length &&
+            verifiedAfter.every((item, index) => item.path === proposal.changes![index]!.path &&
+              item.after_sha256 === (proposal.changes![index]!.after_base64 === null ? null :
+                createHash("sha256").update(Buffer.from(proposal.changes![index]!.after_base64!, "base64")).digest("hex")));
+          const applicationDigest = verified
+            ? canonicalHash({ case_id: peerCase.id, note_id: operation.note_id,
+              proposal_digest: proposal.resolution_digest, workspace_id: actor.workspace_id,
+              paths: applied.paths, after: verifiedAfter }) : null;
+          const status = applied.status === "applied" && applicationDigest === null ? "effect_unknown" : applied.status;
+          const result: PeerWorkerOperationResult = { schema_version: 1, task_id: actor.task_id, run_id: actor.run_id,
+            control_generation: actor.control_generation, workspace_id: actor.workspace_id, source_view: actor.source_view,
+            case_id: actor.case_id, operation_key: operation.operation_key, kind: "application", operation: "apply",
+            note_id: operation.note_id, status, application_digest: applicationDigest, paths: [...applied.paths] };
+          const settled = await store.settlePeerOperationOutcome(taskId, operation.operation_key, result);
+          return settled.record.result!;
+        }, async proposal => (await this.#taskControls()).withTaskPublication(selectedTasks, async () => {
+          admittedProposal = proposal;
+          assertEffectScope();
+          selectedCaptureIdentity = captureIdentity();
+        }));
+    }
+    if (operation.kind === "source_detail") {
+      const source = snapshot.works.find(candidate => candidate.id === operation.work_id);
+      if (!source?.managed || !peerCase.inputs.some(input => input.work_id === source.id))
+        throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Requested captured detail is outside the selected case");
+      const observation = await this.#observation();
+      const authorize = (_recipient: string, workId: string, revision: number, generation: ObservationGeneration) =>
+        this.#authorizePeerCaseSource(peerCase.id, taskId, workId, revision, generation, "detail");
+      const retained = await observation.store.readRetainedPair(operation.report_id, state.owner_id, authorize);
+      const selectedOverlap = [...this.#currentOverlapPairs.values()].some(pair =>
+        pair.input.path === retained.path && [pair.current_work_id, pair.other_work_id].includes(source.id) &&
+        [pair.current_work_id, pair.other_work_id].includes(work.id) &&
+        peerCase.inputs.some(input => input.work_id === pair.current_work_id) &&
+        peerCase.inputs.some(input => input.work_id === pair.other_work_id));
+      if (retained.work_id !== source.id || retained.work_revision !== source.revision ||
+        !selectedOverlap ||
+        this.#publishedArtifactIds.get(JSON.stringify([source.id, retained.path]))?.id !== retained.id) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Requested capture is not the current selected source report");
+      }
+      const disclose = async (value: PeerWorkerOperationResult): Promise<PeerWorkerOperationResult> =>
+        (await this.#taskControls()).withTaskPublication(selectedTasks, async () => {
+          const latest = await metadata.snapshot();
+          const selectedCase = latest.cases.find(candidate => candidate.id === peerCase.id && candidate.state === "active");
+          if (!selectedCase || selectedCase.revision !== peerCase.revision || selectedCase.generation !== peerCase.generation ||
+            !selectedCase.inputs.some(input => input.work_id === source.id) ||
+            !selectedCase.inputs.some(input => input.work_id === work.id)) {
+            throw new BridgeError("PEER_OPERATION_STALE", "Selected case changed before source disclosure");
+          }
+          if (this.#publishedArtifactIds.get(JSON.stringify([source.id, retained.path]))?.id !== retained.id ||
+            ![...this.#currentOverlapPairs.values()].some(pair => pair.input.path === retained.path &&
+              [pair.current_work_id, pair.other_work_id].includes(source.id) &&
+              [pair.current_work_id, pair.other_work_id].includes(work.id) &&
+              selectedCase.inputs.some(input => input.work_id === pair.current_work_id) &&
+              selectedCase.inputs.some(input => input.work_id === pair.other_work_id))) {
+            throw new BridgeError("PEER_OPERATION_STALE", "Captured overlap changed before source disclosure");
+          }
+          for (const id of selectedTasks) {
+            const current = await store.readControl(id);
+            const selectedWork = latest.works.find(candidate => candidate.managed?.task_id === id);
+            if (!selectedWork?.managed || current.owner_id !== selectedWork.owner ||
+              current.control_generation !== selectedWork.managed.control_generation || current.phase !== "active" || current.cancel ||
+              id === taskId && (current.native.run_id !== actor.run_id || current.native.state !== "observed_live" ||
+                current.native.coverage !== "turn_scoped" || current.native.obligations.length)) {
+              throw new BridgeError("PEER_OPERATION_STALE", "Selected task changed before source disclosure");
+            }
+          }
+          await authorize(state.owner_id, source.id, source.revision,
+            { control_generation: source.managed!.control_generation,
+              workspace_generation: source.managed!.control_generation });
+          return value;
+        });
+      const intent = await store.startPeerOperation(taskId, operation);
+      if (!intent.created && intent.record.disposition === "settled") return this.#coordinationSession(binding).workerCasePublication(
+        { owner_id: state.owner_id, source_view: admission.source_view }, actor, operation,
+        () => disclose(intent.record.result!));
+      if (!intent.created && intent.record.disposition === "unavailable")
+        throw new BridgeError("PEER_OPERATION_RECOVERY_REQUIRED", "Source detail was unavailable during restart recovery");
+      const detail = await observation.store.readDetail(operation.report_id, state.owner_id, operation.side,
+        operation.start_byte, operation.end_byte, authorize);
+      const selectedFile = retained[operation.side];
+      if (selectedFile.status !== "present") throw new BridgeError("STRUCTURAL_DETAIL_UNAVAILABLE", "Selected source side has no captured bytes");
+      const result: PeerWorkerOperationResult = { schema_version: 1, task_id: actor.task_id, run_id: actor.run_id,
+        control_generation: actor.control_generation, workspace_id: actor.workspace_id,
+        source_view: actor.source_view, case_id: actor.case_id, operation_key: operation.operation_key,
+        kind: "detail", operation: "source_detail", work_id: source.id, report_id: retained.id,
+        side: operation.side, start_byte: operation.start_byte, end_byte: operation.end_byte,
+        content_sha256: selectedFile.content_sha256, text: detail.text };
+      const settled = await store.settlePeerOperationOutcome(taskId, operation.operation_key, result);
+      return this.#coordinationSession(binding).workerCasePublication(
+        { owner_id: state.owner_id, source_view: admission.source_view }, actor, operation,
+        () => disclose(settled.record.result!));
+    }
     const intent = await store.startPeerOperation(taskId, operation);
     if (!intent.created) {
       if (intent.record.disposition === "settled") return this.#coordinationSession(binding).workerPeerRetainedResult(
@@ -1382,7 +1780,7 @@ export class RepositoryRuntime {
       }
       if (reply.kind === "receipt" && (reply.receipt.action === "grant_source" ||
         reply.receipt.action === "watch_source" || reply.receipt.action === "share_work")) {
-        this.#forgetObservation(reply.receipt.item_id);
+        await this.#forgetObservationSafely(reply.receipt.item_id);
       }
       if (reply.kind === "receipt" && (reply.receipt.action === "register_work" ||
         reply.receipt.action === "register_task_work" || reply.receipt.action === "grant_source" ||
@@ -1392,15 +1790,15 @@ export class RepositoryRuntime {
       if (reply.kind === "receipt" && reply.receipt.action === "close_work") {
         const metadata = await this.#coordinationSession(binding).observationStore();
         const work = (await metadata.snapshot()).works.find(item => item.id === reply.receipt.item_id);
-        if (work) this.#forgetObservation(work.id, work.workspace_id);
+        if (work) await this.#forgetObservationSafely(work.id, work.workspace_id);
       }
       if (reply.kind === "recovery_receipt") {
         const command = reply.receipt.command;
-        if (command.kind === "adopt_work") { this.#forgetObservation(command.work_id); this.#scheduleObservation(command.work_id); }
+        if (command.kind === "adopt_work") { await this.#forgetObservationSafely(command.work_id); this.#scheduleObservation(command.work_id); }
         if (command.kind === "close_work") {
           const metadata = await this.#coordinationSession(binding).observationStore();
           const work = (await metadata.snapshot()).works.find(item => item.id === command.work_id);
-          if (work) this.#forgetObservation(work.id, work.workspace_id);
+          if (work) await this.#forgetObservationSafely(work.id, work.workspace_id);
         }
       }
       return reply;
@@ -1742,10 +2140,10 @@ export class RepositoryRuntime {
                 work.input_oid !== source.input_oid) {
                 throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Retained peer source work changed");
               }
-              const grant = work.source_grants?.find(candidate => candidate.recipient === actor.owner_id
-                && candidate.work_revision === work.revision);
-              if (work.owner !== actor.owner_id && (!grant || grant.scope !== "report" && grant.scope !== "detail")) {
-                throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Retained peer source grant was revoked");
+              const selectedCase = snapshot.cases.find(candidate => candidate.id === actor.case_id && candidate.state === "active");
+              if (!selectedCase || !selectedCase.members.includes(actor.owner_id) ||
+                !selectedCase.inputs.some(input => input.work_id === work.id)) {
+                throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Retained peer source is outside the selected case");
               }
               if (!work.managed) continue;
               const control = await store.readControl(work.managed.task_id);
@@ -1835,7 +2233,25 @@ export class RepositoryRuntime {
     if (this.#taskAssociations.has(id)) throw new BridgeError("COORDINATION_TASK_BUSY", "Task enrollment, adoption or disposition is already in progress; retry after that operation settles");
     this.#taskAssociations.add(id);
     let released = false;
-    return () => { if (!released) { released = true; this.#taskAssociations.delete(id); } };
+    return () => {
+      if (released) return;
+      released = true;
+      this.#taskAssociations.delete(id);
+      const waiters = this.#taskAssociationWaiters.get(id);
+      this.#taskAssociationWaiters.delete(id);
+      for (const wake of waiters ?? []) wake();
+    };
+  }
+  async #reserveTaskAssociationAfterCurrent(id: string): Promise<() => void> {
+    for (;;) {
+      this.#assertOpen(); this.#assertAuthority();
+      if (!this.#taskAssociations.has(id)) return this.#reserveTaskAssociation(id);
+      await new Promise<void>(resolve => {
+        const waiters = this.#taskAssociationWaiters.get(id) ?? new Set<() => void>();
+        waiters.add(resolve);
+        this.#taskAssociationWaiters.set(id, waiters);
+      });
+    }
   }
   async #managedEnrollment(actor: CoordinationActor, taskId: string): Promise<ManagedEnrollment> {
     if (!this.#store || !this.#binding) throw new BridgeError("COORDINATION_TASK_AUTHORITY_UNAVAILABLE", "The task store is not prepared");
@@ -1911,7 +2327,7 @@ export class RepositoryRuntime {
             { owner_id: actor.owner_id, source_view: this.#binding.project }, id,
             () => controls.adopt(id, actor, operation))
           : await controls.adopt(id, actor, operation);
-        this.#forgetObservation(id);
+        await controls.withTaskPublication([id], async () => { this.#forgetObservation(id); });
         return { receipt, task: await controls.read(id, actor) };
       } finally { release(); }
     });
@@ -1919,7 +2335,7 @@ export class RepositoryRuntime {
   async cancelTask(id: string, actor: ClientActor, generation: number, operation: string, reason: string) {
     return this.#track(async () => {
       const controls = await this.#taskControls();
-      const release = this.#reserveTaskAssociation(id);
+      const release = await this.#reserveTaskAssociationAfterCurrent(id);
       try {
       // This durable receipt is the sole caller authorization. Later effects read
       // the retained stop and can be retried after a collision or generation change.

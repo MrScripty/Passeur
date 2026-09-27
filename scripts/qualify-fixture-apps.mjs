@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
-import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { access, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { constants, existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
@@ -19,6 +19,7 @@ const RESOURCE_SAMPLE_MS = 5;
 const SANDBOX_PROGRAM = '/usr/bin/bwrap';
 const SANDBOX_CHECK = '/usr/bin/true';
 const NODE_MODULES_ROOT = join(projectRoot, 'node_modules');
+const DEPENDENCY_LOCK_ROOT = join(projectRoot, 'tests/fixture-dependency-locks');
 
 export class QualificationError extends Error {
   constructor(code, message) { super(message); this.name = 'QualificationError'; this.code = code; }
@@ -134,13 +135,13 @@ function validateCommand(command, { build = false, rowId } = {}) {
 const validInputArgv = value => Array.isArray(value) && value.length > 0 && value.length <= 24 &&
   value.every(arg => typeof arg === 'string' && arg.length > 0 && arg.length <= 512 && !arg.includes('\0'));
 
-export function sandboxArguments(copy, cwd, argv, { rustToolchain } = {}) {
+export function sandboxArguments(copy, cwd, argv, { rustToolchain, nativeToolRoot } = {}) {
   const nodeInstall = dirname(dirname(process.execPath));
   const mounts = [];
   if (!nodeInstall.startsWith('/usr/')) mounts.push(nodeInstall);
   if (rustToolchain && !rustToolchain.startsWith('/usr/')) mounts.push(rustToolchain);
   const directories = new Set(['/etc', '/tmp', '/usr', '/usr/local']);
-  for (const target of [...mounts, copy, join(copy, '.dotnet-runtime'), '/etc/ssl/certs']) {
+  for (const target of [...mounts, nativeToolRoot, copy, join(copy, '.dotnet-runtime'), '/etc/ssl/certs'].filter(Boolean)) {
     for (let parent = dirname(target); parent !== '/'; parent = dirname(parent)) {
       if (parent === '/usr' || parent.startsWith('/usr/')) break;
       directories.add(parent);
@@ -161,9 +162,10 @@ export function sandboxArguments(copy, cwd, argv, { rustToolchain } = {}) {
     '--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs',
     '--ro-bind', '/etc/ssl/openssl.cnf', '/etc/ssl/openssl.cnf');
   for (const mount of mounts) args.push('--ro-bind', mount, mount);
+  if (nativeToolRoot) args.push('--ro-bind', nativeToolRoot, nativeToolRoot);
+  if (nativeToolRoot && existsSync('/etc/java-17-openjdk'))
+    args.push('--ro-bind', '/etc/java-17-openjdk', '/etc/java-17-openjdk');
   return [...args, '--proc', '/proc', '--dev', '/dev', '--bind', copy, copy,
-    ...(existsSync(NODE_MODULES_ROOT) ? ['--ro-bind', NODE_MODULES_ROOT, join(copy, 'node_modules'),
-      '--bind', join(copy, '.vite-temp'), join(copy, 'node_modules/.vite-temp')] : []),
     '--bind', join(copy, '.dotnet-runtime'), '/tmp/.dotnet',
     '--chdir', cwd, '--die-with-parent', '--new-session', '--', ...argv];
 }
@@ -176,10 +178,16 @@ export function classifySandboxSetup(result) {
     { status: 'blocked', reason: 'sandbox_setup_unavailable', actual: result } : { status: 'passed' };
 }
 
-function controlledEnvironment(copy) {
+function controlledEnvironment(copy, nativeToolRoot) {
   const nodeBin = dirname(process.execPath);
+  let javaHome;
+  if (nativeToolRoot) {
+    try { javaHome = dirname(dirname(realpathSync('/usr/bin/java'))); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
   const env = {
-    PATH: [join(copy, 'node_modules/.bin'), nodeBin, '/usr/local/bin', '/usr/bin', '/bin'].join(delimiter),
+    PATH: [join(copy, 'node_modules/.bin'), ...(nativeToolRoot ? [join(nativeToolRoot, 'bin')] : []),
+      ...(javaHome ? [join(javaHome, 'bin')] : []), nodeBin, '/usr/local/bin', '/usr/bin', '/bin'].join(delimiter),
     HOME: copy, TMPDIR: copy, XDG_CACHE_HOME: join(copy, '.cache'),
     CARGO_NET_OFFLINE: 'true', CARGO_INCREMENTAL: '0', npm_config_offline: 'true',
     PIP_NO_INDEX: '1', PYTHONDONTWRITEBYTECODE: '1',
@@ -189,8 +197,10 @@ function controlledEnvironment(copy) {
     DOTNET_BUNDLE_EXTRACT_BASE_DIR: join(copy, '.dotnet-bundle'),
     DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: 'true', DOTNET_SDK_VULNERABILITY_CHECK_DISABLE: 'true',
     DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER: '1', DOTNET_CLI_USE_MSBUILD_SERVER: '0',
-    MSBUILDDISABLENODEREUSE: '1', UseSharedCompilation: 'false'
+    MSBUILDDISABLENODEREUSE: '1', UseSharedCompilation: 'false',
+    ZIG_GLOBAL_CACHE_DIR: join(copy, '.zig-global-cache')
   };
+  if (javaHome) env.JAVA_HOME = javaHome;
   return env;
 }
 
@@ -444,11 +454,7 @@ async function programAvailable(program, cwd, env) {
   for (const candidate of candidates) {
     try {
       if (program.startsWith('./') && !inside(cwd, relative(cwd, await realpath(candidate)))) continue;
-      // The dependency tree is mounted over an empty copy-local directory only
-      // after bwrap starts. Preflight the source corresponding to that mount.
-      const installed = candidate === join(env.HOME, 'node_modules/.bin', program) ?
-        join(NODE_MODULES_ROOT, '.bin', program) : candidate;
-      if ((await stat(installed)).isFile()) { await access(installed, constants.X_OK); return true; }
+      if ((await stat(candidate)).isFile()) { await access(candidate, constants.X_OK); return true; }
     } catch (error) {
       if (error.code !== 'ENOENT' && error.code !== 'EACCES') throw error;
     }
@@ -456,11 +462,68 @@ async function programAvailable(program, cwd, env) {
   return false;
 }
 
-async function execute(command, copy, env, rustToolchain) {
+// The TypeScript compiler has no runtime package dependencies. Copy the exact
+// installed version into the disposable app so neither resolution nor writes
+// can reach the repository's shared node_modules tree during qualification.
+async function provisionOfflineCompiler(copy, row) {
+  if (row.id !== 'L02') return;
+  const requiredVersion = /^TypeScript ([0-9]+\.[0-9]+\.[0-9]+);/.exec(row.toolchain)?.[1];
+  if (!requiredVersion) return;
+  const packageRoot = join(NODE_MODULES_ROOT, 'typescript');
+  let metadata;
+  try { metadata = await loadJson(join(packageRoot, 'package.json')); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  if (metadata.version !== requiredVersion) return;
+  const modules = join(copy, 'node_modules');
+  await mkdir(join(modules, '.bin'), { recursive: true });
+  await mkdir(join(modules, '.vite-temp'));
+  await cp(packageRoot, join(modules, 'typescript'), { recursive: true, force: false, errorOnExist: true });
+  await symlink('../typescript/bin/tsc', join(modules, '.bin', 'tsc'));
+}
+
+async function provisionLockedDependencies(copy, row, root, env) {
+  if (!root || row.id !== 'L12' && row.id !== 'L13') return null;
+  const source = await realpath(root);
+  const temporaryRoot = await realpath(tmpdir());
+  if (source === temporaryRoot || !source.startsWith(`${temporaryRoot}${sep}`))
+    throw new QualificationError('DEPENDENCY_ROOT', 'Offline dependency root must be a disposable directory under the system temporary root');
+  const fixtureName = row.id === 'L12' ? 'svelte5' : 'react';
+  const lockPath = await realpath(join(source, fixtureName, 'package-lock.json'));
+  const cachePath = await realpath(join(source, 'npm-cache'));
+  if (!lockPath.startsWith(`${source}${sep}`) || !cachePath.startsWith(`${source}${sep}`))
+    throw new QualificationError('DEPENDENCY_ROOT', 'Offline lock and cache must remain in the disposable root');
+  const pinnedLockPath = join(DEPENDENCY_LOCK_ROOT, fixtureName, 'package-lock.json');
+  const pinnedLockBytes = await readFile(pinnedLockPath);
+  if (sha256(await readFile(lockPath)) !== sha256(pinnedLockBytes))
+    throw new QualificationError('DEPENDENCY_LOCK', `${row.id} disposable lock differs from the repository-pinned lock`);
+  const lock = JSON.parse(pinnedLockBytes.toString('utf8'));
+  const declared = await loadJson(join(copy, 'package.json'));
+  const locked = lock?.packages?.[''];
+  const sameDependencies = (left, right) => JSON.stringify(Object.entries(left ?? {}).sort()) ===
+    JSON.stringify(Object.entries(right ?? {}).sort());
+  if (lock.lockfileVersion !== 3 || !locked ||
+      !sameDependencies(locked.dependencies, declared.dependencies) ||
+      !sameDependencies(locked.devDependencies, declared.devDependencies) ||
+      Object.entries(lock.packages).some(([path, packageEntry]) => path &&
+        (!packageEntry.resolved || !packageEntry.integrity)))
+    throw new QualificationError('DEPENDENCY_LOCK', `${row.id} offline lock does not cover exact declared dependencies with integrity`);
+  await cp(cachePath, join(copy, '.npm-cache'), { recursive: true });
+  await cp(pinnedLockPath, join(copy, 'package-lock.json'));
+  await writeFile(join(copy, '.npmrc-user'), '');
+  await writeFile(join(copy, '.npmrc-global'), '');
+  const argv = ['npm', 'ci', '--offline', '--ignore-scripts', '--no-audit', '--no-fund',
+    '--cache', join(copy, '.npm-cache'), '--userconfig', join(copy, '.npmrc-user'),
+    '--globalconfig', join(copy, '.npmrc-global')];
+  const result = await runBoundedProcess(SANDBOX_PROGRAM, sandboxArguments(copy, copy, argv),
+    { cwd: copy, env, timeout_ms: MAX_COMMAND_MS });
+  return { ...result, argv, cwd: copy };
+}
+
+async function execute(command, copy, env, rustToolchain, nativeToolRoot) {
   const cwd = await commandCwd(copy, command);
   const available = await programAvailable(command.argv[0], cwd, env);
   if (!available) return { error: 'ENOENT', argv: command.argv, cwd };
-  return { ...await runBoundedProcess(SANDBOX_PROGRAM, sandboxArguments(copy, cwd, command.argv, { rustToolchain }),
+  return { ...await runBoundedProcess(SANDBOX_PROGRAM, sandboxArguments(copy, cwd, command.argv, { rustToolchain, nativeToolRoot }),
     { cwd, env, timeout_ms: command.timeout_ms ?? MAX_COMMAND_MS }), argv: command.argv, cwd };
 }
 
@@ -478,12 +541,19 @@ export function classifyCommand(result, expected) {
 
 export async function qualifyFixtureApps({ manifestPath = join(projectRoot, 'tests/fixture-apps/manifest.json'),
   oracleRoot = join(projectRoot, 'tests/oracles/fixture-apps'), appRoot = join(projectRoot, 'tests/fixture-apps'),
-  runPreflight = runBoundedProcess } = {}) {
+  runPreflight = runBoundedProcess, offlineDependencyRoot, offlineNativeRoot } = {}) {
   const protectedRoots = { apps: appRoot, oracles: oracleRoot };
   const before = await snapshotProtected(protectedRoots);
   const results = [];
   let temporary;
   try {
+    let nativeToolRoot;
+    if (offlineNativeRoot) {
+      nativeToolRoot = await realpath(offlineNativeRoot);
+      const temporaryRoot = await realpath(tmpdir());
+      if (nativeToolRoot === temporaryRoot || !nativeToolRoot.startsWith(`${temporaryRoot}${sep}`))
+        throw new QualificationError('TOOLCHAIN_ROOT', 'Offline native toolchain root must be a disposable directory under the system temporary root');
+    }
     let manifest;
     try { manifest = await loadManifest(manifestPath); }
     catch (error) {
@@ -530,10 +600,9 @@ export async function qualifyFixtureApps({ manifestPath = join(projectRoot, 'tes
       }
       const copy = join(temporary, `${id}-${basename(source)}`);
       await cp(source, copy, { recursive: true, force: false, errorOnExist: true });
-      if (existsSync(NODE_MODULES_ROOT)) await mkdir(join(copy, 'node_modules'));
-      if (existsSync(NODE_MODULES_ROOT)) await mkdir(join(copy, '.vite-temp'));
+      await provisionOfflineCompiler(copy, row);
       await mkdir(join(copy, '.dotnet-runtime', 'shm'), { recursive: true });
-      const env = controlledEnvironment(copy);
+      const env = controlledEnvironment(copy, nativeToolRoot);
       let rustToolchain;
       if (row.build.argv[0] === 'cargo' || row.build.argv[0] === 'rustc') {
         const rust = await installedRustEnvironment(copy);
@@ -555,10 +624,16 @@ export async function qualifyFixtureApps({ manifestPath = join(projectRoot, 'tes
         results.push({ id, status: 'blocked', reason: 'toolchain_unavailable', command: row.build.argv }); continue;
       }
       const sandbox = await runPreflight(SANDBOX_PROGRAM,
-        sandboxArguments(copy, buildCwd, [SANDBOX_CHECK], { rustToolchain }), { cwd: buildCwd, env, timeout_ms: 5_000 });
+        sandboxArguments(copy, buildCwd, [SANDBOX_CHECK], { rustToolchain, nativeToolRoot }), { cwd: buildCwd, env, timeout_ms: 5_000 });
       const setup = classifySandboxSetup(sandbox);
       if (setup.status !== 'passed') { results.push({ id, ...setup }); continue; }
-      const built = await execute(row.build, copy, env, rustToolchain);
+      const provisioned = await provisionLockedDependencies(copy, row, offlineDependencyRoot, env);
+      if (provisioned && (provisioned.code !== 0 || provisioned.error || provisioned.signal ||
+          provisioned.timed_out || provisioned.overflow || provisioned.resource_exceeded ||
+          provisioned.resource_accounting_error)) {
+        results.push({ id, status: 'failed', reason: 'offline_dependency_provision_failed', actual: provisioned }); continue;
+      }
+      const built = await execute(row.build, copy, env, rustToolchain, nativeToolRoot);
       if (built.error) {
         results.push({ id, status: 'failed', reason: 'build_spawn_error', actual: built }); continue;
       }
@@ -575,7 +650,7 @@ export async function qualifyFixtureApps({ manifestPath = join(projectRoot, 'tes
       for (const run of row.runs) {
         const expected = cases.get(run.case_id);
         try {
-          runs.push({ case_id: run.case_id, ...classifyCommand(await execute(run, copy, env, rustToolchain), expected) });
+          runs.push({ case_id: run.case_id, ...classifyCommand(await execute(run, copy, env, rustToolchain, nativeToolRoot), expected) });
         } catch (error) {
           if (error.code !== 'COMMAND_CWD') throw error;
           runs.push({ case_id: run.case_id, status: 'failed', reason: 'run_cwd_missing',
@@ -597,7 +672,16 @@ export async function qualifyFixtureApps({ manifestPath = join(projectRoot, 'tes
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const result = await qualifyFixtureApps();
+    const options = {};
+    for (let index = 2; index < process.argv.length; index += 2) {
+      if (index + 1 >= process.argv.length ||
+          !['--offline-dependency-root', '--offline-native-root'].includes(process.argv[index]))
+        throw new QualificationError('CLI_ARGUMENT', 'Expected --offline-dependency-root or --offline-native-root followed by a disposable directory');
+      const key = process.argv[index] === '--offline-dependency-root' ? 'offlineDependencyRoot' : 'offlineNativeRoot';
+      if (options[key]) throw new QualificationError('CLI_ARGUMENT', `Duplicate ${process.argv[index]}`);
+      options[key] = process.argv[index + 1];
+    }
+    const result = await qualifyFixtureApps(options);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     process.exitCode = result.status === 'passed' ? 0 : result.status === 'blocked' ? 2 : 1;
   } catch (error) {

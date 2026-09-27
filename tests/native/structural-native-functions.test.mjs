@@ -226,13 +226,13 @@ test('local ordinary variables remain outside the admitted inventory with explic
 
 test('qualified multilingual limits do not masquerade as complete declarations', async () => {
   const rust = await extractNativeFunctions(captured('const LIMIT: usize = 3;\n', 'limits.rs'), 'rust');
-  assert.equal(rust.coverage, 'incomplete');
-  assert.deepEqual(rust.declarations, []);
-  assert.ok(rust.limitations.includes('unmapped_top_level_syntax'));
+  assert.equal(rust.coverage, 'complete');
+  assert.deepEqual(rust.declarations.map(d => d.name), ['LIMIT']);
+  assert.ok(!rust.declarations[0].signature.includes('3'));
   const javascript = await extractNativeFunctions(captured('const ordinary = 3;\n', 'ordinary.mjs'), 'javascript');
-  assert.equal(javascript.coverage, 'incomplete');
-  assert.deepEqual(javascript.declarations, []);
-  assert.ok(javascript.limitations.includes('unmapped_binding_syntax'));
+  assert.equal(javascript.coverage, 'complete');
+  assert.deepEqual(javascript.declarations.map(d => d.name), ['ordinary']);
+  assert.ok(!javascript.declarations[0].signature.includes('3'));
   const rustLocal = await extractNativeFunctions(captured(
     'fn run(value: Option<i32>) { const LOCAL: i32 = 1; match value { Some(captured) => captured, _ => 0 }; let closure = |arg: i32| arg; }\n',
     'local.rs'), 'rust');

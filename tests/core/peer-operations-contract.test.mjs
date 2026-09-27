@@ -53,7 +53,7 @@ test('a typed current-result producer must supply every field required by persis
   }
 });
 
-test('worker operations retain a task-bound identity and reject effect authority', () => {
+test('worker operations retain a task-bound identity and require exact effect authority', () => {
   const cases = [
     { kind: 'inspect' },
     { kind: 'propose', proposal: proposal() },
@@ -61,12 +61,14 @@ test('worker operations retain a task-bound identity and reject effect authority
     { kind: 'acknowledge', note_id: '55555555-5555-4555-8555-555555555555' },
     { kind: 'withdraw', note_id: '55555555-5555-4555-8555-555555555555' },
     { kind: 'await_change', after_case_revision: 4, after_case_generation: 2 },
+    { kind: 'apply', note_id: '55555555-5555-4555-8555-555555555555', expected_case_revision: 4,
+      expected_case_generation: 2, proposal_digest: 'f'.repeat(64) },
   ];
   for (const [index, operation] of cases.entries()) {
     const decoded = decodePeerWorkerOperation({ schema_version: 1, ...identity, operation_key: `worker-${index}`, ...operation });
     assert.equal(decoded.task_id, identity.task_id); assert.equal(decoded.case_id, identity.case_id);
   }
-  assert.throws(() => decodePeerWorkerOperation({ schema_version: 1, ...identity, operation_key: 'bad', kind: 'apply', application: {} }), { code: 'PEER_OPERATION_UNSUPPORTED' });
+  assert.throws(() => decodePeerWorkerOperation({ schema_version: 1, ...identity, operation_key: 'bad', kind: 'apply', application: {} }), { code: 'PEER_OPERATION_INVALID' });
   assert.throws(() => decodePeerWorkerOperation({ schema_version: 1, ...identity, operation_key: 'bad', kind: 'inspect', extra: true }), { code: 'PEER_OPERATION_INVALID' });
   assert.throws(() => decodePeerWorkerOperation({ schema_version: 1, ...identity, operation_key: 'bad', kind: 'propose', proposal: proposal('counter_propose') }), { code: 'PEER_OPERATION_INVALID' });
 });
@@ -91,6 +93,19 @@ test('worker operation results and native dispositions preserve exact operation 
   assert.equal(message.kind, 'peer_operation'); assert.equal(message.operation.kind, 'inspect');
   assert.throws(() => parseWorkerMessage(`PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: 'peer_operation', operation: { schema_version: 1,
     operation_key: 'effect', case_id: identity.case_id, kind: 'apply' } })}`), { code: 'WORKER_MESSAGE_INVALID' });
+});
+
+test('application results distinguish applied bytes from rejected or uncertain effects', () => {
+  const request = decodePeerWorkerOperation({ schema_version: 1, ...identity, operation_key: 'apply-1', kind: 'apply',
+    note_id: '55555555-5555-4555-8555-555555555555', expected_case_revision: 4,
+    expected_case_generation: 2, proposal_digest: 'f'.repeat(64) });
+  const applied = { schema_version: 1, ...identity, operation_key: request.operation_key,
+    kind: 'application', operation: 'apply', note_id: request.note_id, status: 'applied',
+    application_digest: 'a'.repeat(64), paths: ['src/a.ts'] };
+  assert.equal(decodePeerWorkerOperationResult(applied).status, 'applied');
+  assert.throws(() => decodePeerWorkerOperationResult({ ...applied, status: 'effect_unknown' }), { code: 'PEER_OPERATION_INVALID' });
+  assert.throws(() => decodePeerWorkerOperationResult({ ...applied, paths: ['../secret'] }), { code: 'PEER_OPERATION_INVALID' });
+  assert.equal(decodePeerWorkerOperationResult({ ...applied, status: 'effect_unknown', application_digest: null }).status, 'effect_unknown');
 });
 
 test('public parent coordination remains unable to submit worker operations', () => {

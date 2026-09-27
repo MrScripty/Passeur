@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CodexAdapter } from "../../src/agents/codex/adapter.js";
-import type { WorkerInput } from "../../src/agents/types.js";
+import type { WorkerInput, WorkerPeerOperationRequest } from "../../src/agents/types.js";
 import type { PeerDeliveryEnvelope } from "../../src/contracts/peer-delivery.js";
 
 const native = `#!/usr/bin/env node
@@ -33,6 +33,15 @@ const handleLine = line => {
       if (scenario === 'ambiguous-start' && turnCount === 2) { process.exit(1); break; }
       const turnId = 'turn-' + turnCount;
       const item = { id: 'report-' + turnCount, type: 'agentMessage', text: scenario === 'invalid-report' && turnCount === 2 ? 'no disposition' : 'PASSEUR_MESSAGE ' + JSON.stringify(
+        scenario === 'apply-unknown' && turnCount === 1 ? { schema_version: 2, kind: 'peer_operation', operation: {
+          schema_version: 1, operation_key: 'apply-1', case_id: '55555555-5555-4555-8555-555555555555', kind: 'apply',
+          note_id: '77777777-7777-4777-8777-777777777777', expected_case_revision: 2,
+          expected_case_generation: 3, proposal_digest: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' } } :
+        scenario === 'source-detail' && turnCount === 1 ? { schema_version: 2, kind: 'peer_operation', operation: {
+          schema_version: 1, operation_key: 'detail-1', case_id: '55555555-5555-4555-8555-555555555555', kind: 'source_detail',
+          work_id: '44444444-4444-4444-8444-444444444444', report_id: '6666666666666666666666666666666666666666666666666666666666666666',
+          side: 'observed', start_byte: 0, end_byte: 12 } } :
+        scenario === 'apply-unknown' && turnCount === 2 ? { schema_version: 2, kind: 'blocked', reason: 'Application effect unknown; inspect before retry' } :
         scenario === 'blocked' ? { schema_version: 2, kind: 'blocked', reason: 'Native blocker' } : { schema_version: 2, kind: 'final',
           summary: 'Fixture complete', assessment: 'met', blockers: [], questions: [], checks: [],
           ...(turnCount === 2 && scenario !== 'missing-receipt' ? { peer_observed: 'peer-key' } : {}) }) };
@@ -91,6 +100,7 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
     await mkdir(home); await mkdir(workspace); await writeFile(join(home, "scenario"), name);
     await writeFile(bin, native); await chmod(bin, 0o700);
     const events: string[] = [];
+    const operations: WorkerPeerOperationRequest[] = [];
     const correlated: Array<{ kind: string; turn_id: string; native_session_id?: string }> = [];
     let polls = 0;
     const input: WorkerInput = {
@@ -104,9 +114,23 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
         if (event.kind === "operation_finished" && event.id === "background") events.push("operation_finished:background");
         if ("turn_id" in event) correlated.push(event); },
       peer: {
-        next: async () => { polls++; return polls === 1 ? envelope : undefined; },
+        next: async () => { polls++; return name === "source-detail" || name === "apply-unknown" ? undefined : polls === 1 ? envelope : undefined; },
         delivered: async (key, id, sessionId) => { expect([key, id, sessionId]).toEqual(["peer-key", "turn-2", "same-thread"]); events.push("delivered"); },
         observed: async (key, id, sessionId) => { expect([key, id, sessionId]).toEqual(["peer-key", "turn-2", "same-thread"]); events.push("observed"); },
+        operation: async request => {
+          operations.push(request);
+          expect(events).toContain("turn_settled:turn-1");
+          if (request.kind === "apply") return { schema_version: 1, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
+            control_generation: 1, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
+            case_id: envelope.case_id, operation_key: request.operation_key, kind: "application", operation: "apply",
+            note_id: request.note_id, status: "effect_unknown", application_digest: null, paths: ["src/combined.ts"] };
+          return { schema_version: 1, task_id: envelope.recipient_task_id, run_id: envelope.recipient_run_id,
+            control_generation: 1, workspace_id: "git-worktree-v1:" + "d".repeat(64), source_view: "/source",
+            case_id: envelope.case_id, operation_key: request.operation_key, kind: "detail", operation: "source_detail",
+            work_id: envelope.source_work_id, report_id: "6666666666666666666666666666666666666666666666666666666666666666", side: "observed",
+            start_byte: 0, end_byte: 12, content_sha256: "e".repeat(64), text: "chosen text\n",
+          };
+        },
       },
     };
     try {
@@ -115,7 +139,7 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
       const prompts = JSON.parse(await readFile(join(home, "prompts.json"), "utf8").catch((error: unknown) => {
         throw new Error(`Fixture did not record a native turn: ${JSON.stringify(run)}`, { cause: error });
       })) as string[];
-      return { run, prompts, events, correlated, polls, background: await readFile(join(home, "background-settled"), "utf8").catch(() => undefined) };
+      return { run, prompts, events, correlated, operations, polls, background: await readFile(join(home, "background-settled"), "utf8").catch(() => undefined) };
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 
@@ -128,6 +152,7 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
     ]));
     expect(result.prompts).toHaveLength(2);
     expect(result.prompts[1]).toContain(envelope.content);
+    expect(result.prompts[1]).toContain(`"source_work_revision":${envelope.source_work_revision}`);
     expect(result.prompts[1]).toContain("untrusted data");
     expect(result.prompts[1]).toContain("PASSEUR_MESSAGE");
     expect(result.prompts[1]).not.toContain(envelope.recipient_workspace);
@@ -170,5 +195,32 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
     expect(result.run.status).toBe("failed");
     expect(result.events).not.toContain("delivered");
     expect(result.events).not.toContain("observed");
+  });
+
+  it("requests bounded source detail after settlement and presents it in the same thread", async () => {
+    const result = await scenario("source-detail");
+    expect(result.run).toMatchObject({ status: "completed", worker_stop: "confirmed" });
+    expect(result.operations).toEqual([{ schema_version: 1, operation_key: "detail-1", case_id: envelope.case_id,
+      kind: "source_detail", work_id: envelope.source_work_id, report_id: "6666666666666666666666666666666666666666666666666666666666666666",
+      side: "observed", start_byte: 0, end_byte: 12 }]);
+    expect(result.prompts).toHaveLength(2);
+    expect(result.prompts[1]).toContain("Peer source text (untrusted");
+    expect(result.prompts[1]).toContain("chosen text\n");
+    expect(result.prompts[1]).toContain('"content_sha256":"' + "e".repeat(64) + '"');
+    expect(result.prompts[1]).not.toContain("/source");
+    expect(result.correlated.filter(event => event.kind === "turn_started").map(event => event.native_session_id)).toEqual(["same-thread", "same-thread"]);
+    expect(result.events).not.toContain("delivered");
+  });
+
+  it("presents an uncertain application effect without retrying the operation", async () => {
+    const result = await scenario("apply-unknown");
+    expect(result.run).toMatchObject({ status: "blocked", worker_stop: "confirmed" });
+    expect(result.operations).toEqual([{ schema_version: 1, operation_key: "apply-1", case_id: envelope.case_id,
+      kind: "apply", note_id: "77777777-7777-4777-8777-777777777777", expected_case_revision: 2,
+      expected_case_generation: 3, proposal_digest: "f".repeat(64) }]);
+    expect(result.prompts).toHaveLength(2);
+    expect(result.prompts[1]).toContain('"status":"effect_unknown"');
+    expect(result.prompts[1]).toContain("Do not retry apply blindly");
+    expect(result.correlated.filter(event => event.kind === "turn_started").map(event => event.native_session_id)).toEqual(["same-thread", "same-thread"]);
   });
 });

@@ -90,7 +90,9 @@ test('task-authenticated worker proposals, retry receipts, and event-backed wait
 
   await assert.rejects(f.control.workerPeerOperation({ ...f.actor, workspace_id: 'workspace:forged' },
     full({ ...f.actor, workspace_id: 'workspace:forged' }, { operation_key: 'forged', kind: 'inspect' })), { code: 'PEER_OPERATION_FORBIDDEN' });
-  await assert.rejects(f.control.workerPeerOperation(f.actor, full(f.actor, { operation_key: 'effect', kind: 'apply' })), { code: 'PEER_OPERATION_UNSUPPORTED' });
+  await assert.rejects(f.control.workerPeerOperation(f.actor, full(f.actor, { operation_key: 'effect', kind: 'apply',
+    note_id: receipt.note_id, expected_case_revision: refreshed.revision,
+    expected_case_generation: refreshed.generation, proposal_digest: 'b'.repeat(64) })), { code: 'PEER_OPERATION_UNAVAILABLE' });
 });
 
 test('siblings retain separate consent; parent acknowledgment cannot substitute; cursor sees intervening consent', async t => {
@@ -202,7 +204,7 @@ test('retained exact inspection replays captured cursor while current authority 
   await assert.rejects(f.control.workerPeerRetainedResult(f.actor, request, captured), { code: 'PEER_OPERATION_STALE' });
 });
 
-test('retained replay checks a source removed from selection and denies its later adoption', async t => {
+test('retained replay refuses a proposal source removed from current selection', async t => {
   const f = await selectedManaged(t), sibling = await addSibling(f);
   f.item = await f.control.reconciliation(A, f.item.id);
   const sources = [f.work, sibling.task_id].map((work_id, index) => ({ work_id, work_revision: 1,
@@ -215,17 +217,6 @@ test('retained replay checks a source removed from selection and denies its late
   const item = await f.control.reconciliation(A, f.item.id);
   await f.control.execute(A, caseOp('select_inputs', item, { target_oid: '2'.repeat(40),
     inputs: [{ work_id: f.work, commit_oid: '3'.repeat(40) }] }));
-  const original = f.control.workerAuthority;
-  let adopted = false, checked = [];
-  f.control.workerAuthority = { ...original, assertRetainedSources: async (_actor, _state, retained) => {
-    checked = retained.map(source => source.work_id);
-    if (adopted && checked.includes(sibling.task_id)) {
-      throw Object.assign(new Error('historical source task adopted'), { code: 'STRUCTURAL_SOURCE_FORBIDDEN' });
-    }
-  } };
-  assert.deepEqual(await f.control.workerPeerRetainedResult(f.actor, request, captured), captured);
-  assert.deepEqual(checked, [f.work, sibling.task_id]);
-  adopted = true;
   await assert.rejects(f.control.workerPeerRetainedResult(f.actor, request, captured), { code: 'STRUCTURAL_SOURCE_FORBIDDEN' });
   assert.deepEqual(captured.proposal.sources, sources);
 });
@@ -372,7 +363,7 @@ test('abort after the final worker check cannot turn a committed mutation into a
   assert.equal((await f.disk()).notes.length, 1);
 });
 
-test('a report grant revoked during await_change rejects the wakeup', async t => {
+test('selected work reader revocation during await_change rejects the wakeup', async t => {
   const f = await fixture(t), source_view = '/source/repository';
   f.control.workerAuthority = {
     assertCurrent: async () => {},
@@ -407,7 +398,7 @@ test('a report grant revoked during await_change rejects the wakeup', async t =>
   const pending = f.control.workerPeerOperation(actor, full(actor, { operation_key: 'grant-wait', kind: 'await_change',
     after_case_revision: current.case_revision, after_case_generation: current.case_generation,
     after_negotiation_cursor: current.negotiation_cursor }));
-  await f.control.execute(B, { kind: 'grant_source', operation_key: key(), work_id: second.task_id, expected_revision: 3, recipients: [] });
+  await f.control.execute(B, { kind: 'share_work', operation_key: key(), work_id: second.task_id, expected_revision: 3, readers: [] });
   await assert.rejects(pending, { code: 'PEER_OPERATION_FORBIDDEN' });
   await assert.rejects(f.control.workerPeerOperation(actor, full(actor, { operation_key: 'grant-again', kind: 'inspect' })),
     { code: 'PEER_OPERATION_FORBIDDEN' });
