@@ -107,14 +107,18 @@ export class TaskStore {
   async assertPrivatePublicationAuthority(request: PrivatePublicationRequest): Promise<void> {
     const admission = await this.durableRequest(request.task_id);
     const control = await this.readControl(request.task_id);
-    const resource = await this.readResource(request.task_id);
+      const resource = await this.readResource(request.task_id);
     if (admission.request.mode !== "implement" || admission.request.request_key !== request.request_key ||
         admission.source_view !== request.source_view || admission.request.base_commit !== request.workspace.base_commit ||
         request.workspace.branch !== `refs/heads/muse-bridge/${request.task_id}` ||
         control.native.run_id !== request.run_id || control.control_generation !== request.control_generation ||
-        !resource || resource.project_id !== admission.project_id ||
+        !resource || resource.schema_version !== 2 || resource.project_id !== admission.project_id ||
         resource.worktree_path !== request.workspace.path || resource.branch_ref !== request.workspace.branch ||
-        resource.base_commit !== request.workspace.base_commit || !["pending", "retained"].includes(resource.state)) {
+        resource.base_commit !== request.workspace.base_commit || !["pending", "retained"].includes(resource.state) ||
+        resource.private_git.run_id !== request.run_id || resource.private_git.control_generation !== request.control_generation ||
+        resource.private_git.quarantine_path !== request.publication.quarantine_path ||
+        !resource.private_git.view || canonicalHash(resource.private_git.view) !== canonicalHash(request.view) ||
+        resource.private_git.state === "reserved") {
       throw new BridgeError("PRIVATE_PUBLICATION_IDENTITY", "Publication differs from admitted task, stopped run, or owned workspace");
     }
     if (control.native.state !== "stopped" || control.native.coverage !== "turn_scoped" || control.native.obligations.length) {
@@ -322,6 +326,7 @@ export class TaskStore {
       const control = await this.readControl(id);
       if (result.native_evidence.run_id !== control.native.run_id || control.settled_outcome && result.execution_status !== control.settled_outcome) throw new BridgeError("STORE_CORRUPT", "Result contradicts its native run or accepted settlement");
     }
+    await this.assertPrivateResultBinding(id, result);
     await this.#writes.run(id, async () => {
       const existing = await this.readResult(id);
       if (existing) {
@@ -331,9 +336,64 @@ export class TaskStore {
       await this.#write(join(this.taskDir(id), "result.json"), result);
     });
   }
+  /** Success is the exact retained candidate, not an equivalent tree or a later descendant. */
+  async assertPrivateResultBinding(id: string, result: StoredResult): Promise<void> {
+    const resource = await this.readResource(id);
+    if (resource?.schema_version !== 2) return;
+    const reported = result.schema_version === 4 &&
+      (result.delivery.status === "committed" || result.delivery.status === "no_changes_needed");
+    if (!reported && result.execution_status !== "completed") return;
+    const publication = await this.readPrivatePublication(id), control = await this.readControl(id);
+    const request = publication?.request;
+    if (result.schema_version !== 4 || !reported || publication?.state !== "published" ||
+        resource.private_git.state !== "published" || !request || result.worker_stop !== "confirmed" ||
+        result.native_evidence.state !== "stopped" || result.native_evidence.run_id !== request.run_id ||
+        control.native.run_id !== request.run_id || control.control_generation !== request.control_generation ||
+        control.native.state !== "stopped" || resource.private_git.run_id !== request.run_id ||
+        resource.private_git.control_generation !== request.control_generation ||
+        resource.private_git.private_common_dir !== request.view.private_common_dir ||
+        resource.worktree_path !== request.workspace.path || resource.branch_ref !== request.workspace.branch ||
+        resource.base_commit !== request.workspace.base_commit ||
+        result.workspace.worktree_path !== request.workspace.path ||
+        result.workspace.base_commit !== request.workspace.base_commit ||
+        result.delivery.worktree_path !== request.workspace.path ||
+        result.delivery.branch_ref !== request.workspace.branch ||
+        result.delivery.base_commit !== request.workspace.base_commit ||
+        result.delivery.head_commit !== request.publication.new_head ||
+        result.delivery.tree_oid !== request.publication.tree_oid ||
+        (result.delivery.status === "committed") !==
+          (request.publication.new_head !== request.publication.old_head)) {
+      throw new BridgeError("PRIVATE_PUBLICATION_RESULT_CONFLICT", "Result differs from exact retained private publication or stopped run");
+    }
+  }
   async writeResource(id: string, resource: ResourceRecord): Promise<void> {
     decodeResource(resource, id);
-    await this.#writes.run(id, () => this.#write(join(this.taskDir(id), "resource.json"), resource));
+    await this.#writes.run(id, async () => {
+      const prior = await this.readResource(id);
+      if (prior?.schema_version === 2) {
+        const stages = ["reserved", "prepared", "publication_intent", "published"];
+        if (resource.schema_version !== 2 || prior.private_git.private_common_dir !== resource.private_git.private_common_dir ||
+            prior.private_git.quarantine_path !== resource.private_git.quarantine_path ||
+            prior.private_git.run_id !== resource.private_git.run_id ||
+            prior.private_git.control_generation !== resource.private_git.control_generation ||
+            prior.private_git.view && canonicalHash(prior.private_git.view) !== canonicalHash(resource.private_git.view) ||
+            stages.indexOf(resource.private_git.state) < stages.indexOf(prior.private_git.state) ||
+            stages.indexOf(resource.private_git.state) > stages.indexOf(prior.private_git.state) + 1 ||
+            resource.state === "retired") {
+          throw new BridgeError("PRIVATE_RESOURCE_CONFLICT", "Private Git resource identity or lifecycle regressed");
+        }
+        if (resource.private_git.state === "publication_intent" || resource.private_git.state === "published") {
+          const publication = await this.readPrivatePublication(id);
+          if (!publication || resource.private_git.state === "published" && publication.state !== "published")
+            throw new BridgeError("PRIVATE_RESOURCE_CONFLICT", "Private Git marker cannot advance beyond durable publication evidence");
+        }
+      } else if (resource.schema_version === 2 && (prior?.state !== "pending" || resource.private_git.state !== "reserved" ||
+          prior.worktree_path !== resource.worktree_path || prior.branch_ref !== resource.branch_ref ||
+          prior.base_commit !== resource.base_commit)) {
+        throw new BridgeError("PRIVATE_RESOURCE_CONFLICT", "Private Git resource must upgrade its owned pending workspace before storage creation");
+      }
+      await this.#write(join(this.taskDir(id), "resource.json"), resource);
+    });
   }
   async readResource(id: string): Promise<ResourceRecord | undefined> {
     const value = await this.#json(join(this.taskDir(id), "resource.json"));

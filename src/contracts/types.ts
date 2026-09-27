@@ -84,8 +84,16 @@ export type FinalizeOperation = {
   archive_authorized?: boolean | undefined;
   cleanup_authorized?: boolean | undefined;
 };
-export type ResourceRecord = {
+export type PrivateGitResource = {
   schema_version: 1;
+  state: "reserved" | "prepared" | "publication_intent" | "published";
+  private_common_dir: string;
+  quarantine_path: string;
+  run_id: string;
+  control_generation: number;
+  view?: import("./private-git-publication.js").PrivatePublicationRequest["view"];
+};
+export type ResourceRecord = {
   task_id: string;
   project_id: string;
   state: "creating" | "pending" | "retained" | "cleanup_pending" | "retired" | "not_applicable" | "legacy_unclassified";
@@ -104,7 +112,7 @@ export type ResourceRecord = {
   updated_at: string;
   artifacts_collected_at?: string;
   stop_reconciled?: { at: string; owner: string; reason: string };
-};
+} & ({ schema_version: 1; private_git?: never } | { schema_version: 2; private_git: PrivateGitResource });
 export type FinalizeReceipt = {
   operation: FinalizeOperation;
   request_hash: string;

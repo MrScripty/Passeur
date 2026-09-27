@@ -20,8 +20,13 @@ export async function privatePublicationFixture(t) {
   const control = f.initial(taskId);
   control.native = { ...control.native, state: 'stopped', coverage: 'turn_scoped', obligations: [] };
   await f.store.create(f.admission(request, taskId), control);
-  await f.store.writeResource(taskId, { schema_version: 1, task_id: taskId, project_id: 'project', state: 'retained',
-    worktree_path: workspace.path, branch_ref: workspace.branch, base_commit: workspace.base_commit, updated_at: new Date().toISOString() });
+  const resource = { schema_version: 1, task_id: taskId, project_id: 'project', state: 'pending',
+    worktree_path: workspace.path, branch_ref: workspace.branch, base_commit: workspace.base_commit, updated_at: new Date().toISOString() };
+  await f.store.writeResource(taskId, resource);
+  const privateGit = { schema_version: 1, state: 'reserved', private_common_dir: view.private_common_dir,
+    quarantine_path: publication.quarantine_path, run_id: control.native.run_id, control_generation: control.control_generation };
+  await f.store.writeResource(taskId, { ...resource, schema_version: 2, private_git: privateGit });
+  await f.store.writeResource(taskId, { ...resource, schema_version: 2, private_git: { ...privateGit, state: 'prepared', view } });
   const intent = { schema_version: 1, operation_key: 'publish-1', task_id: taskId, request_key: request.request_key,
     run_id: control.native.run_id, control_generation: control.control_generation, source_view: f.root,
     workspace: { path: workspace.path, branch: workspace.branch, base_commit: workspace.base_commit }, view, publication };

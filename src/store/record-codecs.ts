@@ -2,6 +2,7 @@ import { DurableRequestSchema, CoordinatedDurableRequestSchema, CoordinatedSubmi
 import { AssignmentSchema, ExecutionSnapshotSchema, ExecutionIdentitySchema } from "../contracts/agents.js";
 import { canonicalHash, stableHash } from "../core/async.js";
 import { z } from "zod";
+import { isAbsolute } from "node:path";
 import { immutablePeerEnvelope } from "../contracts/peer-delivery.js";
 import { decodePeerWorkerOperation, decodePeerWorkerOperationResult, type PeerWorkerOperation, type PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 import { DelegateRequestSchema, FinalizeOperationSchema } from "../contracts/index.js";
@@ -93,8 +94,8 @@ export const storedResult = z.discriminatedUnion("schema_version", [
     if (r.delivery.status === "committed" && (r.worker_stop !== "confirmed" || !r.delivery.base_commit || !r.delivery.head_commit || !r.delivery.tree_oid || !r.delivery.branch_ref || !r.delivery.target_ref || !r.delivery.worktree_path || !r.delivery.commits?.length || r.delivery.commits.at(-1) !== r.delivery.head_commit)) c.addIssue({ code: "custom", message: "incomplete committed delivery" });
   }),
 ]);
-const resourceRecord = z.object({
-  schema_version: z.literal(1), task_id: uuid, project_id: nonempty,
+const resourceFields = {
+  task_id: uuid, project_id: nonempty,
   state: z.enum(["creating", "pending", "retained", "cleanup_pending", "retired", "not_applicable", "legacy_unclassified"]),
   worktree_path: text.optional(), branch_ref: text.optional(), base_commit: oid.optional(), target_ref: text.optional(),
   head_commit: oid.optional(), owner: text.optional(), reason: text.optional(), next_action: text.optional(),
@@ -102,7 +103,25 @@ const resourceRecord = z.object({
   disposition: z.enum(["integrated", "retained", "archived"]).optional(), operation_key: text.optional(),
   updated_at: instant, artifacts_collected_at: instant.optional(),
   stop_reconciled: z.object({ at: instant, owner: nonempty, reason: nonempty }).strict().optional(),
-}).strict();
+};
+const privatePath = z.string().min(1).max(4096).refine(value => isAbsolute(value) && !value.includes("\0"));
+const privateGitResource = z.object({
+  schema_version: z.literal(1), state: z.enum(["reserved", "prepared", "publication_intent", "published"]),
+  private_common_dir: privatePath, quarantine_path: privatePath, run_id: uuid,
+  control_generation: z.number().int().positive(),
+  view: z.object({ private_common_dir: privatePath, canonical_common_dir: privatePath,
+    admin_relative: z.string().regex(/^worktrees\/[A-Za-z0-9][A-Za-z0-9._-]*$/), baseline_index_sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
+}).strict().superRefine((value, context) => {
+  if ((value.state === "reserved") === (value.view !== undefined) ||
+      value.view && value.view.private_common_dir !== value.private_common_dir ||
+      value.private_common_dir === value.quarantine_path) {
+    context.addIssue({ code: "custom", message: "Private Git resource marker is inconsistent" });
+  }
+});
+const resourceRecord = z.discriminatedUnion("schema_version", [
+  z.object({ ...resourceFields, schema_version: z.literal(1) }).strict(),
+  z.object({ ...resourceFields, schema_version: z.literal(2), private_git: privateGitResource }).strict(),
+]);
 const finalizeReceipt = z.object({
   operation: FinalizeOperationSchema, request_hash: nonempty,
   state: z.enum(["intent", "cleanup_pending", "done"]), resource: resourceRecord,
@@ -203,14 +222,14 @@ export function decodeResult(value: unknown, id: string): StoredResult {
   return result as StoredResult;
 }
 export function decodeResource(value: unknown, id: string): ResourceRecord {
-  version(value, [1], "store.resource");
+  version(value, [1, 2], "store.resource");
   const result = parse(resourceRecord, value, "store.resource");
   identity(result.task_id, id, "store.resource");
   return result as ResourceRecord;
 }
 export function decodeReceipt(value: unknown, id: string, key?: string): FinalizeReceipt {
   version(value, [], "store.receipt");
-  if (recordObject(value)) version(value.resource, [1], "store.receipt.resource");
+  if (recordObject(value)) version(value.resource, [1, 2], "store.receipt.resource");
   const result = parse(finalizeReceipt, value, "store.receipt");
   identity(result.operation.task_id, id, "store.receipt.task");
   if (key !== undefined) identity(result.operation.operation_key, key, "store.receipt.key");

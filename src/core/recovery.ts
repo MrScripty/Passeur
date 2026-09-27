@@ -13,6 +13,32 @@ export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
     if ("schema_version" in record && (record.schema_version === 4 || record.schema_version === 5)) {
       const control = await store.readControl(record.task_id);
       const resource = await store.readResource(record.task_id);
+      if (resource?.schema_version === 2) {
+        const publication = await store.readPrivatePublication(record.task_id);
+        let resultBound = false;
+        if (saved) {
+          try { await store.assertPrivateResultBinding(record.task_id, saved); resultBound = true; }
+          catch (error) { if (!(error instanceof BridgeError) || error.code !== "PRIVATE_PUBLICATION_RESULT_CONFLICT") throw error; }
+        }
+        const settled = resource.private_git.state === "published" && publication?.state === "published" &&
+          publication.request.run_id === resource.private_git.run_id &&
+          publication.request.control_generation === resource.private_git.control_generation &&
+          publication.request.view.private_common_dir === resource.private_git.private_common_dir &&
+          control.native.run_id === resource.private_git.run_id &&
+          control.control_generation === resource.private_git.control_generation &&
+          control.native.state === "stopped" && control.native.coverage === "turn_scoped" &&
+          control.native.obligations.length === 0;
+        if (!settled || !resultBound || !saved || control.phase !== "terminal" ||
+            saved.schema_version !== 4 || saved.worker_stop !== "confirmed" ||
+            saved.native_evidence?.state !== "stopped" || saved.delivery.status === "incomplete") {
+          control.phase = "needs_attention";
+          delete control.outcome;
+          control.attention = "Private Git preparation, publication, or result settlement is unresolved; retain exact resources and do not infer replay.";
+          control.revision++; control.updated_at = now(); await store.writeControl(record.task_id, control);
+          await store.freeze(`Task ${record.task_id} requires private Git publication reconciliation`);
+          continue;
+        }
+      }
       const peerOperations = store instanceof TaskStore ? await store.listPeerOperations(record.task_id) : [];
       for (const operation of peerOperations) {
         if (operation.disposition === "started") await store.unavailablePeerOperation(record.task_id, operation.request.operation_key);
@@ -109,6 +135,8 @@ export async function acknowledgeStoppedTask(store: TaskStore, taskId: string, o
   if (!owner.trim() || !reason.trim()) throw new BridgeError("RECONCILIATION_AUTHORITY_REQUIRED", "Supply the responsible owner and reconciliation evidence");
   let result = await store.readResult(taskId);
   let resource = await store.readResource(taskId);
+  if (resource?.schema_version === 2) throw new BridgeError("PRIVATE_PUBLICATION_RECONCILIATION_REQUIRED",
+    "A stop-only assertion cannot settle or release a private Git resource");
   const request = await store.find({ task_id: taskId });
   if (request && "schema_version" in request) {
     const control = await store.readControl(taskId);

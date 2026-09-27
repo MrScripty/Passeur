@@ -27,6 +27,13 @@ export class DispositionManager {
       const state = await this.store.readState(operation.task_id);
       let resource = await this.store.readResource(operation.task_id);
       if (!request || request.project_id !== this.projectId || !result || state.phase !== "terminal") throw new BridgeError("RESULT_NOT_READY", "The task needs a durable terminal result owned by this repository");
+      if (resource?.schema_version === 2) {
+        const publication = await this.store.readPrivatePublication(operation.task_id);
+        if (resource.private_git.state !== "published" || publication?.state !== "published")
+          throw new BridgeError("PRIVATE_PUBLICATION_RECONCILIATION_REQUIRED", "Private Git publication is unresolved; retain its task resources");
+        if (operation.disposition !== "retained")
+          throw new BridgeError("PRIVATE_RESOURCE_RETIREMENT_UNAVAILABLE", "Exact private-resource cleanup is not implemented; retain the task resources");
+      }
       if (request.request.schema_version === 1 || !resource || resource.state === "legacy_unclassified") throw new BridgeError("LEGACY_UNCLASSIFIED", "Historical tasks require explicit resource classification; no ownership is inferred");
       if (result.worker_stop === "unconfirmed" && !resource.stop_reconciled) throw new BridgeError("RECONCILIATION_REQUIRED", "Worker shutdown is unconfirmed");
       if (resource.project_id !== this.projectId || resource.task_id !== operation.task_id || !resource.worktree_path || resource.branch_ref !== operation.expected_branch_ref) throw new BridgeError("RESOURCE_OWNERSHIP_INVALID", "Expected branch/path does not match the recorded task resource");

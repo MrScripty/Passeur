@@ -18,7 +18,8 @@ import { Mutex, canonicalHash } from "./async.js";
 import { baseResult } from "./result.js";
 import { workerMessageInstructions } from "../agents/report-format.js";
 import { TaskStore } from "../store/task-store.js";
-import { collectChanges, createDiff, createManifest, observeDelivery, prepareWorkspace, type Workspace } from "../workspace/worktree.js";
+import { collectChanges, createDiff, createManifest, observeDelivery, prepareWorkspace,
+  preparePrivateGitView, preparePrivatePublication, replayPrivatePublication, type PrivateGitView, type Workspace } from "../workspace/worktree.js";
 import { currentRevision, digestFiles, sourceStatus } from "../workspace/project.js";
 
 type Entry = { selected: SelectedAgent; record: CurrentDurableRequest; controller: AbortController;
@@ -109,7 +110,8 @@ export class Coordinator {
   /** The runtime supplies task-bound identity; adapters may submit only decoded operation intent. */
   onWorkerPeerOperation?: (taskId: string, request: WorkerPeerOperationRequest, signal: AbortSignal) => Promise<PeerWorkerOperationResult>;
   constructor(readonly project: string, readonly projectId: string, readonly policy: LifecyclePolicy,
-    readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority: () => void = () => {}, controls?: TaskControls) {
+    readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority: () => void = () => {}, controls?: TaskControls,
+    readonly privateGitMode: "disabled" | "controlled" = "disabled") {
     this.policy = structuredClone(policy); Object.freeze(this.policy.implementation); Object.freeze(this.policy);
     this.controls = controls ?? new TaskControls(store, policy.max_waiters, policy.max_control_receipts);
     this.inputs = new InputBroker(this.controls, policy.max_pending_inputs);
@@ -697,11 +699,17 @@ export class Coordinator {
   async #execute(entry: Entry): Promise<void> {
     const { record, controller } = entry, id = record.task_id, request = record.request;
     let workspace: Workspace | undefined;
+    let privateView: PrivateGitView | undefined;
     let result = baseResult(id, request, record.execution), workerSettled = false;
     const phase = async (next: "starting" | "active" | "finalizing") => this.controls.change(id, (s) => { if (!s.cancel) s.phase = next; });
     try {
       controller.signal.throwIfAborted(); this.assertAuthority(); await phase("starting");
       if ((await this.store.readControl(id)).cancel) throw new BridgeError("TASK_CANCELLED", "Task was cancelled before preparation");
+      if (this.privateGitMode === "controlled" && (request.mode !== "implement" ||
+          entry.selected.worker.private_git?.schema_version !== 1 ||
+          entry.selected.worker.private_git.mount_kind !== "canonical_common_dir")) {
+        throw new BridgeError("PRIVATE_GIT_ADAPTER_UNSUPPORTED", "Selected worker cannot mount the exact private Git common directory");
+      }
       // Active-task ownership protects this unique workspace; hooks run outside repository administration.
       workspace = await prepareWorkspace(record.source_view, request, this.policy, this.projectId, id, {
         signal: controller.signal, assertAuthority: this.assertAuthority,
@@ -716,6 +724,21 @@ export class Coordinator {
       await this.store.writeResource(id, resource ? { ...resource, state: "pending", updated_at: now() }
         : { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
       entry.workspace = workspace.path;
+      if (this.privateGitMode === "controlled") {
+        if (workspace.kind !== "task_worktree" || !resource?.worktree_path || !resource.branch_ref || !resource.base_commit)
+          throw new BridgeError("PRIVATE_GIT_UNAVAILABLE", "Private Git requires the owned task worktree");
+        const control = await this.store.readControl(id);
+        const privateCommonDir = join(this.store.taskDir(id), "private-git");
+        const quarantinePath = join(this.store.taskDir(id), "private-quarantine");
+        const reserved = { ...resource, schema_version: 2 as const, state: "pending" as const, updated_at: now(),
+          private_git: { schema_version: 1 as const, state: "reserved" as const, private_common_dir: privateCommonDir,
+            quarantine_path: quarantinePath, run_id: control.native.run_id, control_generation: control.control_generation } };
+        // This ordinary task resource is durable before either private directory is created.
+        await this.store.writeResource(id, reserved);
+        privateView = await preparePrivateGitView(record.source_view, workspace, privateCommonDir, this.assertAuthority);
+        await this.store.writeResource(id, { ...reserved, updated_at: now(), private_git: {
+          ...reserved.private_git, state: "prepared", view: privateView } });
+      }
       if (record.schema_version === 5 && workspace.kind === "task_worktree") {
         if (!this.onCoordinatedWorkspacePrepared) throw new BridgeError("COORDINATION_ATTACHMENT_UNAVAILABLE", "Coordinated task has no prepared-workspace attachment owner");
         await this.onCoordinatedWorkspacePrepared(record, workspace);
@@ -733,6 +756,7 @@ export class Coordinator {
       result.worker_stop = "unconfirmed";
       const run = await entry.selected.worker.run({ request, task_id: id, workspace: workspace.path, policy: this.policy,
         prompt: assignmentPrompt(request, id, workspace), signal: controller.signal,
+        ...(privateView ? { private_git: { schema_version: 1 as const, mount_kind: "canonical_common_dir" as const, view: privateView } } : {}),
         onEvent: (event) => this.#event(id, event),
         approve: async (approval, signal) => ({ choice_id: await this.inputs.request(id, { kind: "permission", approval: { ...approval, task_id: id, workspace: workspace!.path } }, approval.id, signal) }),
         input: (question, attention = false, nativeId, choices, inputSignal) => this.inputs.request(id, { kind: "clarification", question, attention, ...(choices ? { choices: [...choices] } : {}) }, nativeId ?? `clarification:${randomUUID()}`, inputSignal ? AbortSignal.any([controller.signal, inputSignal]) : controller.signal),
@@ -757,12 +781,68 @@ export class Coordinator {
         if (result.execution_status === "completed") result.execution_status = "interrupted";
         await this.#freeze(`Task ${id} has unconfirmed native shutdown`);
       } else {
+        if (privateView) {
+          if (run.worker_stop !== "confirmed" || state.native.coverage !== "turn_scoped" || state.native.obligations.length ||
+              state.inputs.some((i) => i.state === "pending" || i.state === "answer_intent" || i.state === "delivery_unknown") ||
+              state.native.run_id !== (await this.store.readResource(id))?.private_git?.run_id ||
+              state.control_generation !== (await this.store.readResource(id))?.private_git?.control_generation) {
+            throw new BridgeError("PRIVATE_GIT_STOP_UNCONFIRMED", "Exact private worker run has no complete confirmed descendant-stop evidence");
+          }
+          await this.controls.change(id, (s) => {
+            if (s.native.run_id !== state.native.run_id || s.control_generation !== state.control_generation || s.cancel ||
+                s.native.coverage !== "turn_scoped" || s.native.obligations.length)
+              throw new BridgeError("PRIVATE_GIT_STOP_UNCONFIRMED", "Private worker evidence changed before stop settlement");
+            s.native.state = "stopped";
+          });
+          await this.administration.run(() => this.controls.withTaskPublication([id], async () => {
+            const current = await this.store.readControl(id), owned = await this.store.readResource(id);
+            if (current.cancel || current.native.run_id !== state.native.run_id ||
+                current.control_generation !== state.control_generation || current.native.state !== "stopped" ||
+                current.native.coverage !== "turn_scoped" || current.native.obligations.length ||
+                current.inputs.some(input => input.state === "pending" || input.state === "answer_intent" || input.state === "delivery_unknown") ||
+                !owned || owned.schema_version !== 2 || owned.private_git.state !== "prepared" ||
+                owned.private_git.run_id !== current.native.run_id ||
+                owned.private_git.control_generation !== current.control_generation ||
+                owned.worktree_path !== workspace!.path || owned.branch_ref !== workspace!.branch ||
+                owned.base_commit !== workspace!.base_commit) {
+              throw new BridgeError("PRIVATE_PUBLICATION_IDENTITY", "Private task or resource changed before publication reservation");
+            }
+            const publication = await preparePrivatePublication(record.source_view, workspace!, privateView!,
+              owned.private_git.quarantine_path, run.worker_stop, this.assertAuthority);
+            const intent = await this.store.beginPrivatePublication({ schema_version: 1, operation_key: "private-publication",
+              task_id: id, request_key: request.request_key, run_id: owned.private_git.run_id,
+              control_generation: owned.private_git.control_generation, source_view: record.source_view,
+              workspace: { path: workspace!.path, branch: workspace!.branch!, base_commit: workspace!.base_commit! },
+              view: privateView!, publication });
+            await this.store.writeResource(id, { ...owned, updated_at: now(), private_git: {
+              ...owned.private_git, state: "publication_intent" } });
+            await replayPrivatePublication(this.store, record.source_view, {
+              task_id: id, operation_key: intent.request.operation_key, run_id: intent.request.run_id,
+              control_generation: intent.request.control_generation }, run.worker_stop, this.assertAuthority);
+            const after = await this.store.readResource(id);
+            if (!after || after.schema_version !== 2) throw new BridgeError("PRIVATE_RESOURCE_CONFLICT", "Private publication resource disappeared");
+            await this.store.writeResource(id, { ...after, updated_at: now(), private_git: {
+              ...after.private_git, state: "published" } });
+          }));
+        }
         await phase("finalizing");
         // Accounted-for native stop permits collection independent of execution cancellation.
         const collection = { ...workspace };
         delete collection.signal;
         this.assertAuthority();
         result.delivery = await observeDelivery(collection, run.no_changes_reason);
+        if (privateView) {
+          const retained = await this.store.readPrivatePublication(id);
+          if (retained?.state !== "published" ||
+              result.delivery.head_commit !== retained.request.publication.new_head ||
+              result.delivery.tree_oid !== retained.request.publication.tree_oid ||
+              result.delivery.base_commit !== retained.request.workspace.base_commit ||
+              result.delivery.branch_ref !== retained.request.workspace.branch ||
+              result.delivery.worktree_path !== retained.request.workspace.path ||
+              !["committed", "no_changes_needed"].includes(result.delivery.status)) {
+            throw new BridgeError("PRIVATE_PUBLICATION_RESULT_CONFLICT", "Observed delivery differs from the exact private publication");
+          }
+        }
         result.workspace.stale = request.mode === "review" && (JSON.stringify(before) !== JSON.stringify(await digestFiles(workspace.path, request.context_files ?? [], true))
           || JSON.stringify(beforeStatus) !== JSON.stringify(await sourceStatus(workspace.path)) || revision !== await currentRevision(workspace.path));
         const changes = await collectChanges(collection); result.changed_files = changes.map((c) => c.path).sort();
@@ -778,9 +858,18 @@ export class Coordinator {
       if (detail.code === "GIT_STOP_UNCONFIRMED") result.worker_stop = "unconfirmed";
       result.error = workerSettled ? { code: "FINALIZATION_FAILED", message: detail.message } : detail; result.summary = detail.message;
       result.execution_status = controller.signal.aborted ? "cancelled" : "failed";
+      if (privateView) result.delivery = { status: "incomplete", reason: "Private Git publication or delivery failed" };
       if (workerSettled) result.blockers.push("Delivery collection failed; preserve the worktree and evidence");
     }
     if (!await this.store.readResource(id)) await this.store.writeResource(id, { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
+    const privateResource = await this.store.readResource(id);
+    const privateUnresolved = privateResource?.schema_version === 2 &&
+      (privateResource.private_git.state !== "published" || (await this.store.readPrivatePublication(id))?.state !== "published");
+    if (privateUnresolved && result.execution_status === "completed") result.execution_status = "interrupted";
+    if (privateUnresolved) {
+      result.delivery = { status: "incomplete", reason: "Private Git preparation or publication requires exact offline disposition" };
+      result.blockers.push("Private Git resource and publication evidence are retained for exact reconciliation");
+    }
     if (result.worker_stop === "unconfirmed" && result.execution_status === "completed") result.execution_status = "interrupted";
     // Serialize cancellation versus successful settlement at the same state owner. No provider callback runs here.
     await this.controls.change(id, (s) => {
@@ -799,7 +888,10 @@ export class Coordinator {
     });
     let state = await this.store.readControl(id);
     result.native_evidence = structuredClone(state.native);
-    result.native_evidence.state = result.worker_stop === "confirmed" ? "stopped" : result.worker_stop === "not_started" ? "not_started" : "unknown";
+    result.native_evidence.state = privateResource?.schema_version === 2
+      ? state.native.state === "stopped" && result.worker_stop === "confirmed" ? "stopped"
+        : state.native.state === "not_started" && result.worker_stop === "not_started" ? "not_started" : "unknown"
+      : result.worker_stop === "confirmed" ? "stopped" : result.worker_stop === "not_started" ? "not_started" : "unknown";
     await this.store.writeResult(id, result);
     await this.controls.change(id, (s) => {
       s.native = result.native_evidence;
@@ -808,10 +900,13 @@ export class Coordinator {
         if (input.state === "pending") input.state = "withdrawn";
         if (input.state === "answer_intent") input.state = "delivery_unknown";
       }
-      if (result.worker_stop === "unconfirmed" || s.inputs.some((i) => i.state === "delivery_unknown")) { s.phase = "needs_attention"; s.attention = "Native shutdown or input delivery remains unconfirmed; explicit reconciliation is required"; }
+      if (privateUnresolved || result.worker_stop === "unconfirmed" || s.inputs.some((i) => i.state === "delivery_unknown")) { s.phase = "needs_attention"; s.attention = privateUnresolved
+        ? "Private Git preparation or publication remains unresolved; retain all task resources"
+        : "Native shutdown or input delivery remains unconfirmed; explicit reconciliation is required"; }
       else { s.phase = "terminal"; s.outcome = result.execution_status; }
     });
-    if (result.worker_stop === "unconfirmed" || (await this.store.readControl(id)).inputs.some((i) => i.state === "delivery_unknown")) await this.#freeze(`Task ${id} has unconfirmed shutdown or input delivery`);
+    if (privateUnresolved || result.worker_stop === "unconfirmed" || (await this.store.readControl(id)).inputs.some((i) => i.state === "delivery_unknown"))
+      await this.#freeze(privateUnresolved ? `Task ${id} has unresolved private Git publication` : `Task ${id} has unconfirmed shutdown or input delivery`);
   }
   async #artifacts(id: string, workspace: Workspace, result: LifecycleResult, changes: Awaited<ReturnType<typeof collectChanges>>): Promise<void> {
     const dir = join(this.store.taskDir(id), "artifacts"); this.assertAuthority?.(); await mkdir(dir, { recursive: true, mode: 0o700 });

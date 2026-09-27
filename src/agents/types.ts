@@ -4,6 +4,7 @@ import type { Assignment, SafeConfiguration } from "../contracts/agents.js";
 import type { PeerDeliveryEnvelope, PeerDeliveryReceiptStatus } from "../contracts/peer-delivery.js";
 import type { PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 import type { PeerResolutionProposal } from "../coordination/peer-resolution.js";
+import type { PrivateGitView } from "../workspace/worktree.js";
 /** The coordinator supplies task, run, control generation, workspace and source identity. */
 export type WorkerPeerOperationRequest = Readonly<{ schema_version: 1; operation_key: string; case_id: string }> & (
   | Readonly<{ kind: "inspect" }>
@@ -53,9 +54,15 @@ export type WorkerInput = {
   task_id: string; approve: ApprovalHandler; onEvent: (event: WorkerEvent) => Promise<void>;
   input: (question: string, attention?: boolean, native_id?: string, choices?: readonly string[], signal?: AbortSignal) => Promise<string>;
   peer?: WorkerPeerPort;
+  /** A controlled worker must mount this private directory at the exact canonical common-dir path. */
+  private_git?: Readonly<{ schema_version: 1; mount_kind: "canonical_common_dir"; view: PrivateGitView }>;
 };
 /** run owns startup, child work, callbacks and bounded shutdown through terminal observation. */
-export interface WorkerAdapter { run(input: WorkerInput): Promise<WorkerRun>; }
+export interface WorkerAdapter {
+  /** Absent from installed adapters; only an explicitly qualified exact-mount worker may receive a private view. */
+  private_git?: Readonly<{ schema_version: 1; mount_kind: "canonical_common_dir" }>;
+  run(input: WorkerInput): Promise<WorkerRun>;
+}
 export type ConfiguredAdapter = {
   worker: WorkerAdapter; modes: readonly Assignment["mode"][]; contract: string;
   configuration: SafeConfiguration; requested_model?: string;
