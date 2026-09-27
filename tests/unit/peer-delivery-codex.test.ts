@@ -7,16 +7,14 @@ import type { WorkerInput } from "../../src/agents/types.js";
 import type { PeerDeliveryEnvelope } from "../../src/contracts/peer-delivery.js";
 
 const native = `#!/usr/bin/env node
-import { createInterface } from 'node:readline';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { read, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 const home = process.env.CODEX_HOME;
 const scenario = readFileSync(join(home, 'scenario'), 'utf8');
-const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+const send = value => writeSync(1, JSON.stringify(value) + '\\n');
 let turnCount = 0;
 const prompts = [];
-const lines = createInterface({ input: process.stdin });
-lines.on('line', line => {
+const handleLine = line => {
   const message = JSON.parse(line);
   if (message.id === undefined) return;
   const reply = result => send({ id: message.id, result });
@@ -53,8 +51,28 @@ lines.on('line', line => {
     case 'turn/interrupt': reply({}); break;
     default: send({ id: message.id, error: { code: -32601, message: 'unknown operation' } });
   }
+};
+const chunk = Buffer.alloc(16 * 1024);
+let pending = Buffer.alloc(0);
+const maxFrameBytes = 1024 * 1024;
+const pump = () => read(0, chunk, 0, chunk.length, null, (error, bytesRead) => {
+  if (error) throw error;
+  if (bytesRead === 0) {
+    if (pending.length) throw Error('Incomplete native request frame');
+    process.exit(0);
+  }
+  pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
+  let end;
+  while ((end = pending.indexOf(10)) >= 0) {
+    if (end >= maxFrameBytes) throw Error('Oversized native request frame');
+    const line = pending.subarray(0, end).toString('utf8');
+    pending = pending.subarray(end + 1);
+    handleLine(line);
+  }
+  if (pending.length > maxFrameBytes) throw Error('Oversized native request frame');
+  pump();
 });
-lines.on('close', () => process.exit(0));
+pump();
 `;
 
 const envelope: PeerDeliveryEnvelope = {
@@ -83,6 +101,7 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
         max_pending_inputs: 16, max_control_receipts: 512, stop_grace_ms: 1_000 },
       approve: async () => { throw Error("Unexpected approval"); }, input: async () => { throw Error("Unexpected input"); },
       onEvent: async event => { events.push(event.kind + ("turn_id" in event ? ":" + event.turn_id : ""));
+        if (event.kind === "operation_finished" && event.id === "background") events.push("operation_finished:background");
         if ("turn_id" in event) correlated.push(event); },
       peer: {
         next: async () => { polls++; return polls === 1 ? envelope : undefined; },
@@ -113,6 +132,10 @@ describe.runIf(process.platform === "linux")("Codex peer continuation", () => {
     expect(result.prompts[1]).toContain("PASSEUR_MESSAGE");
     expect(result.prompts[1]).not.toContain(envelope.recipient_workspace);
     expect(result.events.indexOf("delivered")).toBeGreaterThan(result.events.indexOf("turn_started:turn-2"));
+    expect(result.events).toContain("operation_finished:background");
+    expect(result.events.indexOf("operation_finished:background")).toBeGreaterThan(result.events.indexOf("delivered"));
+    expect(result.events.indexOf("operation_finished:background")).toBeLessThan(result.events.indexOf("turn_settled:turn-2"));
+    expect(result.events.indexOf("operation_finished:background")).toBeLessThan(result.events.indexOf("observed"));
     expect(result.events.indexOf("turn_settled:turn-2")).toBeGreaterThan(result.events.indexOf("delivered"));
     expect(result.events.indexOf("observed")).toBeGreaterThan(result.events.indexOf("turn_settled:turn-2"));
     expect(result.background).toBe("yes");
