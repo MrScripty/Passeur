@@ -620,16 +620,17 @@ export function assertControlTransition(before: ControlState, next: ControlState
     if (!grantReceipt && !watchReceipt && !same(old.source_watches ?? [], item.source_watches ?? [])
       && !(b === a + 1 && (item.source_watches?.length ?? 0) === 0)) invalid("Unrelated work changed its source watches");
   }
+  const appendedReceipt = next.receipts.length === before.receipts.length + 1 ? next.receipts.at(-1) : undefined;
   for (const old of before.cases) {
     const item = next.cases.find(c => c.id === old.id); if (!item) invalid("Retained cases cannot disappear during a control update");
     if (recovered && "case_id" in recovered.command && recovered.command.case_id === old.id) continue;
-    const extension = next.receipts.at(-1)?.action === "extend_observed_case" && next.receipts.at(-1)?.item_id === old.id;
-    const observation = next.receipts.at(-1)?.action === "observe_case_delivery" && next.receipts.at(-1)?.item_id === old.id;
+    const extension = appendedReceipt?.action === "extend_observed_case" && appendedReceipt.item_id === old.id;
+    const observation = appendedReceipt?.action === "observe_case_delivery" && appendedReceipt.item_id === old.id;
     if (old.target !== item.target || !extension && !same(old.members, item.members) || item.revision < old.revision || item.revision > old.revision + 1
       || item.generation < old.generation || item.generation > old.generation + 1 || old.lead !== item.lead && item.generation !== old.generation + 1
       || old.state === "closed" && !same(old, item) || old.revision === item.revision && !observation && !same(old, item)) invalid("Case identity, generation or closure was rewritten");
     if (extension) {
-      const receipt = next.receipts.at(-1)!;
+      const receipt = appendedReceipt!;
       const newInput = item.inputs.at(-1), newWork = next.works.find(work => work.id === newInput?.work_id);
       if (!newInput || !newWork) invalid("Observed extension has no added managed work");
       const expectedMembers = [...new Set([...old.members, newWork.owner])];
@@ -651,7 +652,7 @@ export function assertControlTransition(before: ControlState, next: ControlState
         || !same(before.works, next.works) || !same(before.notes, next.notes)) invalid("Observed extension changed unrelated or unsupported authority");
     }
     if (observation) {
-      const receipt = next.receipts.at(-1)!, appended = item.delivery_observed?.at(-1);
+      const receipt = appendedReceipt!, appended = item.delivery_observed?.at(-1);
       const command = { kind: "observe_case_delivery", operation_key: receipt.key, case_id: old.id,
         case_revision: old.revision, generation: old.generation, recipient_work_id: appended?.work_id,
         observation_digest: appended?.observation_digest };

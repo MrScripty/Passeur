@@ -232,6 +232,9 @@ export type RuntimeDependencies = {
   onCapturePublicationAttemptForTest?: (workId: string, path: string) => void;
   /** Signals a controlled capture publication after its reservation releases. */
   onCapturePublicationCompletedForTest?: (workId: string, path: string, artifactId: string) => void;
+  /** Lowers only the in-memory artifact index limit for a controlled race fixture. */
+  artifactIndexLimitForTest?: number;
+  onArtifactIndexEvictedForTest?: (workId: string, path: string, artifactId: string) => void;
   /** Signals an actual capture-index removal before and after its protected mutation. */
   onCaptureRemovalAttemptForTest?: (workId: string) => void;
   onCaptureRemovalCompletedForTest?: (workId: string) => void;
@@ -302,6 +305,7 @@ export class RepositoryRuntime {
   #observationResuming = false;
   #observationStartupFailure: string | undefined;
   readonly #monitorEnabled: boolean;
+  readonly #artifactIndexLimit: number;
   readonly #captureIndex = new Mutex();
   readonly #correspondence = new CorrespondenceIndex();
   readonly #currentOverlapPairs = new Map<string, CorrespondencePair>();
@@ -340,6 +344,9 @@ export class RepositoryRuntime {
     this.#identity = { ...identity };
     this.#deps = dependencies;
     this.#monitorEnabled = environment.PASSEUR_OBSERVATION_MONITOR !== "off";
+    this.#artifactIndexLimit = dependencies.artifactIndexLimitForTest ?? 512;
+    if (!Number.isSafeInteger(this.#artifactIndexLimit) || this.#artifactIndexLimit < 1 || this.#artifactIndexLimit > 512)
+      throw new BridgeError("STRUCTURAL_MONITOR_CONFIGURATION_INVALID", "Invalid controlled artifact index limit");
     this.#environment = { HOME: environment.HOME, XDG_STATE_HOME: environment.XDG_STATE_HOME, XDG_CONFIG_HOME: environment.XDG_CONFIG_HOME };
   }
   get configuredProfile() { return this.#profile; }
@@ -580,8 +587,16 @@ export class RepositoryRuntime {
                 observedSourceIdentity(previous.comparison.observed) !== observedSourceIdentity(pair.report.comparison.observed);
               this.#publishedArtifactIds.set(artifactKey, { id: artifact.id, owner: work.owner });
               this.#publishedComparisons.set(artifactKey, pair.report);
-              if (this.#publishedArtifactIds.size > 512) this.#publishedArtifactIds.delete(this.#publishedArtifactIds.keys().next().value!);
-              if (this.#publishedComparisons.size > 512) this.#publishedComparisons.delete(this.#publishedComparisons.keys().next().value!);
+              let evictedArtifact: { workId: string; path: string; artifactId: string } | undefined;
+              if (this.#publishedArtifactIds.size > this.#artifactIndexLimit) {
+                const key = this.#publishedArtifactIds.keys().next().value!;
+                const previousArtifact = this.#publishedArtifactIds.get(key)!;
+                const [evictedWorkId, evictedPath] = JSON.parse(key) as [string, string];
+                evictedArtifact = { workId: evictedWorkId, path: evictedPath, artifactId: previousArtifact.id };
+                this.#publishedArtifactIds.delete(key);
+              }
+              if (this.#publishedComparisons.size > this.#artifactIndexLimit)
+                this.#publishedComparisons.delete(this.#publishedComparisons.keys().next().value!);
               const correspondence = this.#correspondence.upsert(pair.report);
               this.#retainCorrespondence(correspondence);
               for (const [state, events] of [["overlap", correspondence.pairs], ["resolved", correspondence.resolved]] as const) {
@@ -593,7 +608,7 @@ export class RepositoryRuntime {
                     workId: event.other_work_id, subjectId: event.subject_id, state });
                 }
               }
-              return { correspondence, sourceChanged, workId: work.id, path, artifactId: artifact.id };
+              return { correspondence, sourceChanged, workId: work.id, path, artifactId: artifact.id, evictedArtifact };
             };
             const managedTaskId = job.workspace.control_generation ?
               (await (await this.#coordinationSession(this.#binding!).observationStore()).snapshot()).works
@@ -605,6 +620,8 @@ export class RepositoryRuntime {
               : await publishProtected();
             if (!published) return;
             this.#deps.onCapturePublicationCompletedForTest?.(published.workId, published.path, published.artifactId);
+            if (published.evictedArtifact) this.#deps.onArtifactIndexEvictedForTest?.(
+              published.evictedArtifact.workId, published.evictedArtifact.path, published.evictedArtifact.artifactId);
             if (published.sourceChanged) await this.#coordinationSession(this.#binding!).notifyPeerObservation(published.workId, published.path);
             for (const event of published.correspondence.pairs) await this.#queuePeerOverlap(event);
             await this.#drainCorrespondenceNotices();

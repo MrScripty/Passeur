@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, A, B, C, key, claim, caseOp, post } from '../fixtures/structural/coordination-fixture.mjs';
-import { decodeCommand, decodeControl } from '../../.passeur-core/src/contracts/coordination-control.js';
+import { assertControlTransition, decodeCommand, decodeControl } from '../../.passeur-core/src/contracts/coordination-control.js';
 import { CoordinationControl } from '../../.passeur-core/src/coordination/control.js';
 import { CoordinationStore } from '../../.passeur-core/src/store/coordination-store.js';
 import { encodePeerResolutionRecord } from '../../.passeur-core/src/coordination/peer-resolution.js';
@@ -112,6 +112,31 @@ test('partial adapter observation clears only one recipient without changing cas
   const disk = await f.disk();
   assert.equal(decodeControl(disk, 'coordination-fixture').cases[0].delivery_pending.length, 2);
 });
+
+for (const observed of [false, true]) {
+  test(`submission binding preserves an observed case after ${observed ? 'delivery observation' : 'extension'}`, async t => {
+    const f = await observedPair(t);
+    await f.control.extendObservedCase(A, extension(f.item, f.ids[2]));
+    if (observed) {
+      const item = await f.control.reconciliation(A, f.item.id);
+      const snapshot = await f.store.snapshot();
+      await f.control.observeCaseDelivery(A, { operation_key: key(), case_id: item.id,
+        case_revision: item.revision, generation: item.generation, recipient_work_id: f.ids[0],
+        observation_digest: 'd'.repeat(64) }, { epoch: snapshot.epoch, revision: snapshot.revision });
+    }
+    const before = await f.disk();
+    const binding = await f.control.bindSubmission(A, { operation_key: `passeur-internal:${key()}`,
+      task_id: key(), request_key: key(), source_view: '/source/repository', input_oid: base,
+      intent_hash: 'e'.repeat(64), areas: [{ kind: 'file', path: 'helper.ts' }] });
+    const after = await f.disk();
+    assert.deepEqual(after.cases, before.cases);
+    assert.deepEqual(after.receipts, before.receipts);
+    assert.equal(after.bindings.at(-1).task_id, binding.task_id);
+    const forged = structuredClone(after);
+    forged.cases[0].members.push('d'.repeat(64));
+    assert.throws(() => assertControlTransition(before, forged), { code: 'COORDINATION_INVALID' });
+  });
+}
 
 test('metadata publication between evidence check and settlement leaves delivery pending', async t => {
   const f = await observedPair(t);

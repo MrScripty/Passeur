@@ -345,7 +345,7 @@ test('current capture replacement preserves exact native receipt without changin
 test('older retained comparison cannot overwrite a newer same-live capture', t =>
   currentCaptureReplacementScenario(t, true));
 
-async function pendingObservedCaseScenario(t, captureRace = false, removalRace = false) {
+async function pendingObservedCaseScenario(t, captureRace = false, removalRace = false, artifactEviction = false) {
   const fixture = await serviceFixture(t);
   await fixture.service.close();
   const intent = { project: fixture.root, stateRoot: fixture.state,
@@ -355,16 +355,18 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
   const actor = { owner_id: createHash('sha256').update(token).digest('hex'), client_id: randomUUID() };
   const pause = () => { let release; const promise = new Promise(resolve => { release = resolve; });
     return { promise, release }; };
-  const nativeHolds = [pause(), pause(), pause()], obsoleteTurn = pause(), continuePeer = pause();
+  const nativeHolds = [pause(), pause(), pause(), pause()], obsoleteTurn = pause(), continuePeer = pause();
   const captureOrder = [];
   let captureRaceWorkId, captureRaceArmed = false;
   const removalOrder = [];
   let removalWorkId, removalArmed = false;
+  const artifactEvictions = [];
   const workspaces = [], received = [], statuses = [], settlementAttempts = [];
   let otherRevised, obsoleteRevised, obsoleteObserved, settlementRelease, stop = false;
-  const workers = [0, 1, 2].map(index => ({ async run(input) {
+  const workers = Array.from({ length: artifactEviction ? 4 : 3 }, (_, index) => ({ async run(input) {
     workspaces[index] = input.workspace;
-    await writeFile(join(input.workspace, 'source.ts'), `export function run() { return ${index + 1}; }\n`);
+    const path = index === 3 ? 'helper.ts' : 'source.ts';
+    await writeFile(join(input.workspace, path), `export function run() { return ${index + 1}; }\n`);
     await input.onEvent({ kind: 'turn_started', turn_id: `initial-${index}`, native_session_id: `session-${index}` });
     await input.onEvent({ kind: 'turn_settled', turn_id: `initial-${index}`, native_session_id: `session-${index}`, terminal: 'completed' });
     if (index !== 0) await nativeHolds[index].promise;
@@ -396,6 +398,9 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
     mode: 'development', node_version: process.version, node_executable: process.execPath,
     pid: process.pid, started_at: new Date().toISOString() }, {
     enableObservedCaseExtensionForTest: true,
+    ...(artifactEviction ? { artifactIndexLimitForTest: 3,
+      onArtifactIndexEvictedForTest: (workId, path, artifactId) =>
+        artifactEvictions.push({ workId, path, artifactId }) } : {}),
     store: () => store,
     onObservedCaseSettlement: attempt => settlementAttempts.push(attempt),
     ...(captureRace ? {
@@ -419,7 +424,8 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
       },
     } : {}),
     profile: async () => ({ schema_version: 3, execution: {
-      stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
+      stop_grace_ms: 1000, max_workers: artifactEviction ? 4 : 3,
+      max_queued_tasks: artifactEviction ? 4 : 3, max_clients: 32,
       max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
       implementation: { enabled: true, worktree_root: join(fixture.temp, 'managed-worktrees') },
     }, agents: workers.map((_, index) => ({ agent_id: `peer${index}`, adapter_id: `peer${index}`,
@@ -434,8 +440,9 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
   await runtime.coordinate({ schema_version: 1, kind: 'initialize', limits: fixture.limits }, actor, fixture.root);
   const submit = index => runtime.submitCoordinated({ schema_version: 2, kind: 'inline',
     assignment: { schema_version: 3, agent_id: `peer${index}`, request_key: randomUUID(),
-      mode: 'implement', objective: `Change source.ts for peer ${index}`, context: '',
-      acceptance_criteria: ['Edit source.ts'], allowed_paths: ['source.ts'],
+      mode: 'implement', objective: `Change ${index === 3 ? 'helper.ts' : 'source.ts'} for peer ${index}`, context: '',
+      acceptance_criteria: [`Edit ${index === 3 ? 'helper.ts' : 'source.ts'}`],
+      allowed_paths: [index === 3 ? 'helper.ts' : 'source.ts'],
       base_commit: fixture.base, target_ref: 'refs/heads/main' },
   }, actor, fixture.root, new AbortController().signal);
   const ids = (await Promise.all([submit(0), submit(1)])).map(item => item.task_id);
@@ -507,6 +514,43 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
       record.envelope.delivery_id === obsoleteRevised.delivery_id));
     assert.ok((await reopenedMetadata.snapshot()).cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]));
   } finally { await reopenedMetadata.close(); }
+  if (artifactEviction) {
+    artifactEvictions.length = 0;
+    const fourth = await submit(3); ids.push(fourth.task_id);
+    await waitFor('unrelated fourth native task', () => store.readControl(fourth.task_id),
+      item => item.native.state === 'observed_live' && item.native.coverage === 'turn_scoped');
+    const unrelated = (await state()).works.find(work => work.managed?.task_id === fourth.task_id);
+    assert.ok(unrelated && !joined.inputs.some(input => input.work_id === unrelated.id));
+    await refresh(3);
+    const evicted = await waitFor('unrelated helper capture evicted a selected artifact', async () =>
+      artifactEvictions.find(item => item.path === 'source.ts' && workIds.includes(item.workId)), Boolean);
+    assert.ok(evicted.artifactId, 'selected artifact identity was captured before eviction');
+    assert.notEqual(evicted.workId, workIds[0], 'the unrelated capture evicted required peer source evidence');
+    assert.equal((await state()).cases.find(item => item.id === joined.id).revision, joined.revision);
+    const attemptStart = settlementAttempts.length;
+    continuePeer.release();
+    const replacement = await waitFor('post-eviction native receipt', async () =>
+      received.find(envelope => envelope.case_revision === joined.revision &&
+        envelope.source_work_id === obsoleteRevised.source_work_id && envelope.delivery_id !== obsoleteRevised.delivery_id), Boolean, 400);
+    const deliveries = await store.readPeerDeliveries(ids[0]);
+    const evictedReceipt = deliveries.find(record => record.state === 'observed' &&
+      record.envelope.case_id === joined.id && record.envelope.case_revision === joined.revision &&
+      record.envelope.source_work_id === evicted.workId &&
+      JSON.parse(record.envelope.content).source_artifact_id === evicted.artifactId);
+    assert.ok(evictedReceipt, 'the exact evicted source artifact retains its observed native receipt');
+    assert.ok(deliveries.some(record => record.state === 'observed' &&
+      record.envelope.delivery_id === replacement.delivery_id), 'replacement native receipt also remains retained');
+    const rejected = await waitFor('evicted source evidence reconciliation rejected', async () =>
+      settlementAttempts.slice(attemptStart).find(attempt => attempt.recipient_work_id === workIds[0] &&
+        attempt.observed_delivery_ids.includes(evictedReceipt.envelope.delivery_id)), Boolean, 400);
+    assert.equal(rejected.outcome, 'rejected');
+    const afterEviction = await state(), caseAfter = afterEviction.cases.find(item => item.id === joined.id);
+    assert.ok(caseAfter.delivery_pending.includes(workIds[0]));
+    assert.equal(caseAfter.delivery_observed.filter(item => item.work_id === workIds[0]).length, 0);
+    assert.ok((await store.readPeerDeliveries(ids[0])).some(record => record.state === 'observed' &&
+      record.envelope.delivery_id === obsoleteRevised.delivery_id), 'historical native receipt remains retained');
+    return;
+  }
   const settlementEntered = pause(), firstGuardFinished = pause(); settlementRelease = pause();
   const observeDelivery = CoordinationControl.prototype.observeCaseDelivery;
   let guarded = false, guardRejected = false, pendingAtGuardRejection = false;
@@ -630,6 +674,8 @@ test('selected capture replacement follows a guarded exact receipt settlement', 
   pendingObservedCaseScenario(t, true));
 test('selected capture removal follows closed-work authority and cannot settle an old receipt', t =>
   pendingObservedCaseScenario(t, false, true));
+test('unrelated genuine capture eviction leaves a selected observed case pending', t =>
+  pendingObservedCaseScenario(t, false, false, true));
 
 async function observedExtensionScenario(t, enable, replaceRun = false, partialQueue = false) {
   const fixture = await serviceFixture(t);
