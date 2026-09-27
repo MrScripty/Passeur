@@ -229,7 +229,7 @@ test('real incomplete parser coverage reaches the queued peer delivery', async t
     (value.includes('syntax') || value.includes('parse'))), JSON.stringify(content.selected_evidence.limitations));
 });
 
-test('current capture replacement preserves exact native receipt without changing case or work revision', async t => {
+async function currentCaptureReplacementScenario(t, retainedRestoreRace = false) {
   const fixture = await serviceFixture(t);
   await fixture.service.close();
   const intent = { project: fixture.root, stateRoot: fixture.state,
@@ -239,6 +239,10 @@ test('current capture replacement preserves exact native receipt without changin
   const actors = [{ owner_id: createHash('sha256').update(token).digest('hex'), client_id: randomUUID() },
     { owner_id: 'b'.repeat(64), client_id: randomUUID() }];
   let releaseNative, releasePeer, captured = false, deliveredStatus, observedStatus;
+  let restoreRetained, releaseRestore, reachedRestore;
+  const restorePaused = new Promise(resolve => { reachedRestore = resolve; });
+  const restoreHold = new Promise(resolve => { releaseRestore = resolve; });
+  let restoreWorkId, oldRetainedId;
   const nativeHold = new Promise(resolve => { releaseNative = resolve; });
   const peerHold = new Promise(resolve => { releasePeer = resolve; });
   const workspaces = [];
@@ -268,6 +272,15 @@ test('current capture replacement preserves exact native receipt without changin
   const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
     mode: 'development', node_version: process.version, node_executable: process.execPath,
     pid: process.pid, started_at: new Date().toISOString() }, {
+    ...(retainedRestoreRace ? {
+      onRetainedCaptureRestoreForTest: restore => { restoreRetained = restore; },
+      beforeRetainedCaptureInstallForTest: async (workId, artifactId) => {
+        if (workId !== restoreWorkId) return;
+        oldRetainedId = artifactId;
+        reachedRestore();
+        await restoreHold;
+      },
+    } : {}),
     store: () => store,
     profile: async () => ({ schema_version: 3, execution: {
       stop_grace_ms: 1000, max_workers: 2, max_queued_tasks: 2, max_clients: 32,
@@ -280,7 +293,7 @@ test('current capture replacement preserves exact native receipt without changin
         worker: { run: input => worker.run(input) } }),
     }])),
   });
-  fixture.sessions.push({ close: async () => { releasePeer(); releaseNative(); await runtime.shutdown(); } });
+  fixture.sessions.push({ close: async () => { releaseRestore(); releasePeer(); releaseNative(); await runtime.shutdown(); } });
   await runtime.coordinate({ schema_version: 1, kind: 'initialize', limits: fixture.limits }, actors[0], fixture.root);
   const submissions = await Promise.all(workers.map((_, index) => runtime.submitCoordinated({
     schema_version: 2, kind: 'inline', assignment: { schema_version: 3,
@@ -298,8 +311,23 @@ test('current capture replacement preserves exact native receipt without changin
   }
   assert.ok(captured, 'a real observed pair must reach a native peer turn');
   const before = JSON.parse(await readFile(join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
+  let restoration;
+  if (retainedRestoreRace) {
+    restoreWorkId = before.works.find(work => work.managed?.task_id === ids[1])?.id;
+    assert.ok(restoreWorkId && restoreRetained);
+    restoration = restoreRetained(restoreWorkId);
+    await restorePaused;
+    assert.ok(oldRetainedId, 'the paused comparison used a genuine retained source capture');
+  }
   await writeFile(join(workspaces[1], 'source.ts'), 'export function run() { return 3; }\n');
   await runtime.structuralRefresh(ids[1], actors[1]);
+  if (retainedRestoreRace) {
+    const current = (await runtime.structuralCurrent(actors[1])).reports
+      .find(report => report.work_id === restoreWorkId && report.path === 'source.ts');
+    assert.ok(current && current.id !== oldRetainedId, 'newer captured source replaced the retained artifact');
+    releaseRestore();
+    assert.equal(await restoration, false, 'older retained comparison cannot overwrite newer index state');
+  }
   const after = JSON.parse(await readFile(join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
   assert.equal(after.cases[0].revision, before.cases[0].revision);
   assert.deepEqual(after.works.map(work => work.revision), before.works.map(work => work.revision));
@@ -310,7 +338,12 @@ test('current capture replacement preserves exact native receipt without changin
   assert.equal(observedStatus, 'superseded');
   const records = await store.readPeerDeliveries(ids[0]);
   assert.ok(records.some(record => record.state === 'observed' && record.native_turn_id === 'peer-native'));
-});
+}
+
+test('current capture replacement preserves exact native receipt without changing case or work revision', t =>
+  currentCaptureReplacementScenario(t));
+test('older retained comparison cannot overwrite a newer same-live capture', t =>
+  currentCaptureReplacementScenario(t, true));
 
 async function pendingObservedCaseScenario(t, captureRace = false, removalRace = false) {
   const fixture = await serviceFixture(t);

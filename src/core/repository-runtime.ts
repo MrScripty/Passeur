@@ -235,6 +235,10 @@ export type RuntimeDependencies = {
   /** Signals an actual capture-index removal before and after its protected mutation. */
   onCaptureRemovalAttemptForTest?: (workId: string) => void;
   onCaptureRemovalCompletedForTest?: (workId: string) => void;
+  /** Same-live retained comparison race seam; never reattaches a native task. */
+  onRetainedCaptureRestoreForTest?: (restore: (workId: string) => Promise<boolean>) => void;
+  /** Pauses after genuine retained comparison, before its protected index install. */
+  beforeRetainedCaptureInstallForTest?: (workId: string, artifactId: string) => Promise<void>;
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
@@ -541,6 +545,15 @@ export class RepositoryRuntime {
     if (!this.#observationPreparing) this.#observationPreparing = (async () => {
       const metadata = await this.#coordinationSession(this.#binding!).observationStore();
       this.#observationStore = await ObservationStore.initialize(metadata, () => this.#assertAuthority());
+      this.#deps.onRetainedCaptureRestoreForTest?.(async workId => {
+        const snapshot = await metadata.snapshot();
+        const work = snapshot.works.find(item => item.id === workId && item.state === "active");
+        if (!work) return false;
+        const current = await this.#observationStore!.listCurrent(work.owner, (recipient, id, revision, generation) =>
+          this.#authorizeObservation(recipient, id, revision, generation, "report"));
+        const item = current.reports.find(report => report.work_id === work.id && report.work_revision === work.revision);
+        return item ? this.#restoreRetainedComparison(work, item, this.#observationStore!) : false;
+      });
       this.#observationMonitor = new ObservationMonitor<readonly MonitoredPair[]>({
         analyze: job => this.#analyzeObservation(job),
         publish: async (job, pairs, isCurrent) => {
@@ -875,42 +888,12 @@ export class RepositoryRuntime {
         else await restore();
       } catch (error) { this.#observationFailures.set(work.id, errorInfo(error).code); }
     }
-    const { compareCapturedWork } = await import("../observation/comparison.js");
-    const { sourceDialectForPath } = await import("../observation/language-routing.js");
-    const { NativeAnalysisHelper } = await import("../observation/helper.js");
-    this.#nativeAnalysis ??= new NativeAnalysisHelper(this.#identity.mode === "installed" ? this.#identity.build_id : undefined);
     for (const work of selected) {
       const current = owners.get(work.owner);
       if (!current) continue;
       for (const item of current.reports.filter(item => item.work_id === work.id && item.work_revision === work.revision)) {
         try {
-          const retained = await store.readRetainedPair(item.id, work.owner, (recipient, workId, revision, generation) =>
-            this.#authorizeObservation(recipient, workId, revision, generation, "report"));
-          const override = work.source_watches?.flatMap(watch => watch.dialect_overrides ?? []).find(route => route.path === item.path)?.dialect;
-          const dialect = sourceDialectForPath(item.path, override);
-          if (!dialect) continue;
-          const compared = await compareCapturedWork({ work_id: work.id, parent_id: work.owner, dialect,
-            input: retained.input, observed: retained.observed }, this.#nativeAnalysis, this.#lifetime.signal);
-          const restore = () => this.#captureIndex.run(() => {
-            if (this.#publishedArtifactIds.get(JSON.stringify([work.id, item.path]))?.id !== item.id) return undefined;
-            const update = this.#correspondence.upsert(compared.report);
-            this.#publishedComparisons.set(JSON.stringify([work.id, item.path]), compared.report);
-            this.#retainCorrespondence(update);
-            for (const event of update.pairs) {
-              this.#queueCorrespondenceNotice({ artifactId: item.id, recipient: work.owner, workId: work.id,
-                subjectId: event.subject_id, state: "overlap" });
-              const peer = this.#publishedArtifactIds.get(JSON.stringify([event.other_work_id, item.path]));
-              if (peer) this.#queueCorrespondenceNotice({ artifactId: peer.id, recipient: peer.owner,
-                workId: event.other_work_id, subjectId: event.subject_id, state: "overlap" });
-            }
-            return update;
-          });
-          const update = work.managed
-            ? await (await this.#taskControls()).withTaskPublication([work.managed.task_id], restore)
-            : await restore();
-          if (!update) continue;
-          for (const event of update.pairs) await this.#queuePeerOverlap(event);
-          await this.#drainCorrespondenceNotices();
+          await this.#restoreRetainedComparison(work, item, store);
         } catch (error) {
           this.#observationRehydrationGaps.add(work.id);
           this.#observationFailures.set(work.id, errorInfo(error).code);
@@ -949,6 +932,42 @@ export class RepositoryRuntime {
     await Promise.all(attachments);
     for (const item of snapshot.cases.filter(candidate => candidate.delivery_pending?.length))
       await this.#settleObservedCaseDeliveries(item.id);
+  }
+  async #restoreRetainedComparison(work: Work,
+    item: Awaited<ReturnType<ObservationStore["listCurrent"]>>["reports"][number], store: ObservationStore): Promise<boolean> {
+    const retained = await store.readRetainedPair(item.id, work.owner, (recipient, workId, revision, generation) =>
+      this.#authorizeObservation(recipient, workId, revision, generation, "report"));
+    const { sourceDialectForPath } = await import("../observation/language-routing.js");
+    const override = work.source_watches?.flatMap(watch => watch.dialect_overrides ?? []).find(route => route.path === item.path)?.dialect;
+    const dialect = sourceDialectForPath(item.path, override);
+    if (!dialect) return false;
+    const { compareCapturedWork } = await import("../observation/comparison.js");
+    const { NativeAnalysisHelper } = await import("../observation/helper.js");
+    this.#nativeAnalysis ??= new NativeAnalysisHelper(this.#identity.mode === "installed" ? this.#identity.build_id : undefined);
+    const compared = await compareCapturedWork({ work_id: work.id, parent_id: work.owner, dialect,
+      input: retained.input, observed: retained.observed }, this.#nativeAnalysis, this.#lifetime.signal);
+    await this.#deps.beforeRetainedCaptureInstallForTest?.(work.id, item.id);
+    const restore = () => this.#captureIndex.run(() => {
+      if (this.#publishedArtifactIds.get(JSON.stringify([work.id, item.path]))?.id !== item.id) return undefined;
+      const update = this.#correspondence.upsert(compared.report);
+      this.#publishedComparisons.set(JSON.stringify([work.id, item.path]), compared.report);
+      this.#retainCorrespondence(update);
+      for (const event of update.pairs) {
+        this.#queueCorrespondenceNotice({ artifactId: item.id, recipient: work.owner, workId: work.id,
+          subjectId: event.subject_id, state: "overlap" });
+        const peer = this.#publishedArtifactIds.get(JSON.stringify([event.other_work_id, item.path]));
+        if (peer) this.#queueCorrespondenceNotice({ artifactId: peer.id, recipient: peer.owner,
+          workId: event.other_work_id, subjectId: event.subject_id, state: "overlap" });
+      }
+      return update;
+    });
+    const update = work.managed
+      ? await (await this.#taskControls()).withTaskPublication([work.managed.task_id], restore)
+      : await restore();
+    if (!update) return false;
+    for (const event of update.pairs) await this.#queuePeerOverlap(event);
+    await this.#drainCorrespondenceNotices();
+    return true;
   }
   #scheduleObservation(workId: string): void {
     if (!this.#monitorEnabled) return;
