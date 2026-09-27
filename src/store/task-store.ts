@@ -10,8 +10,9 @@ import { AnnouncementPayloadSchema, AnnouncementControlSchema, CoordinatedLinkSe
 import type { PeerDeliveryRecord } from "../contracts/peer-delivery.js";
 import type { PeerWorkerOperation, PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 import type { TaskState } from "../core/state.js";
+import { PrivatePublicationRequestSchema, type PrivatePublicationRequest, type PrivatePublicationRecord } from "../contracts/private-git-publication.js";
 import { decodeRequest, decodeState, decodeResult, decodeResource, decodeReceipt, decodeSafety, decodeStoredPeerOperation,
-  type StoredPeerOperation, assertResultAdmission } from "./record-codecs.js";
+  decodePrivatePublication, type StoredPeerOperation, assertResultAdmission } from "./record-codecs.js";
 
 export type LegacyStoredRequest = {
   task_id: string; project_id: string; canonical_hash: string;
@@ -97,6 +98,59 @@ export class TaskStore {
     const record = await this.find({ task_id: id });
     if (!record || !("schema_version" in record) || record.schema_version !== 4 && record.schema_version !== 5) throw new BridgeError("TASK_API_UPGRADE_REQUIRED", "Use historical result access for this record");
     return record;
+  }
+  async readPrivatePublication(id: string): Promise<PrivatePublicationRecord | undefined> {
+    const value = await this.#json(join(this.taskDir(id), "private-publication.json"));
+    return value === undefined ? undefined : decodePrivatePublication(value, id);
+  }
+  /** Recheck live ownership immediately before an offline publisher takes canonical Git effects. */
+  async assertPrivatePublicationAuthority(request: PrivatePublicationRequest): Promise<void> {
+    const admission = await this.durableRequest(request.task_id);
+    const control = await this.readControl(request.task_id);
+    const resource = await this.readResource(request.task_id);
+    if (admission.request.mode !== "implement" || admission.request.request_key !== request.request_key ||
+        admission.source_view !== request.source_view || admission.request.base_commit !== request.workspace.base_commit ||
+        request.workspace.branch !== `refs/heads/muse-bridge/${request.task_id}` ||
+        control.native.run_id !== request.run_id || control.control_generation !== request.control_generation ||
+        !resource || resource.project_id !== admission.project_id ||
+        resource.worktree_path !== request.workspace.path || resource.branch_ref !== request.workspace.branch ||
+        resource.base_commit !== request.workspace.base_commit || !["pending", "retained"].includes(resource.state)) {
+      throw new BridgeError("PRIVATE_PUBLICATION_IDENTITY", "Publication differs from admitted task, stopped run, or owned workspace");
+    }
+    if (control.native.state !== "stopped" || control.native.coverage !== "turn_scoped" || control.native.obligations.length) {
+      throw new BridgeError("PRIVATE_GIT_STOP_UNCONFIRMED", "Retained task control lacks exact stopped-run evidence");
+    }
+  }
+  /** Persist the one immutable task publication before any canonical Git effect. */
+  async beginPrivatePublication(input: PrivatePublicationRequest): Promise<PrivatePublicationRecord> {
+    const decoded = PrivatePublicationRequestSchema.safeParse(input);
+    if (!decoded.success) throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Publication intent has invalid or contradictory fields");
+    const request = decoded.data;
+    return this.#writes.run(request.task_id, async () => {
+      const old = await this.readPrivatePublication(request.task_id);
+      const hash = canonicalHash(request);
+      if (old) {
+        if (old.request_hash !== hash) throw new BridgeError("PRIVATE_PUBLICATION_CONFLICT", "Task already owns another publication intent");
+        return old;
+      }
+      await this.assertPrivatePublicationAuthority(request);
+      const record: PrivatePublicationRecord = { schema_version: 1, request, request_hash: hash, state: "intent", created_at: new Date().toISOString() };
+      decodePrivatePublication(record, request.task_id);
+      await this.#write(join(this.taskDir(request.task_id), "private-publication.json"), record);
+      return record;
+    });
+  }
+  async settlePrivatePublication(id: string, operationKey: string, requestHash: string): Promise<PrivatePublicationRecord> {
+    return this.#writes.run(id, async () => {
+      const old = await this.readPrivatePublication(id);
+      if (!old || old.request.operation_key !== operationKey || old.request_hash !== requestHash) {
+        throw new BridgeError("PRIVATE_PUBLICATION_IDENTITY", "Publication settlement does not name the retained intent");
+      }
+      if (old.state === "published") return old;
+      const record: PrivatePublicationRecord = { ...old, state: "published", settled_at: new Date().toISOString() };
+      await this.#write(join(this.taskDir(id), "private-publication.json"), record);
+      return record;
+    });
   }
   async readCoordinatedLink(id: string): Promise<CoordinatedLinkSettlement | undefined> {
     const record = await this.durableRequest(id);
@@ -404,6 +458,7 @@ export class TaskStore {
         async () => { if (!await this.find({ task_id: entry.name })) throw new BridgeError("STORE_INCOMPLETE", "Task disappeared before recovery"); },
         () => this.readState(entry.name), () => this.readResult(entry.name), () => this.readResource(entry.name),
         () => this.#checkOperations(entry.name), () => this.listPeerOperations(entry.name),
+        () => this.readPrivatePublication(entry.name),
       ];
       for (const check of checks) {
         this.authority?.();
@@ -443,6 +498,8 @@ export class TaskStore {
       if (result !== undefined) decodeResult(result, entry.name);
       const resource = await this.#json(join(from, "resource.json"));
       if (resource !== undefined) decodeResource(resource, entry.name);
+      const publication = await this.#json(join(from, "private-publication.json"));
+      if (publication !== undefined) decodePrivatePublication(publication, entry.name);
       await historical.#checkOperations(entry.name);
       try { await stat(this.taskDir(entry.name)); }
       catch (error) { if (absent(error)) continue; throw filesystemFailure(error, "store.import.destination", this.taskDir(entry.name)); }

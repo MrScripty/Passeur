@@ -1,11 +1,14 @@
 import type { LifecyclePolicy } from "../contracts/tasks.js";
-import { copyFile, lstat, mkdir, readFile, readlink, readdir, realpath, rename, open, unlink } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readlink, readdir, realpath, rename, open, unlink, link } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Delivery, WorkerStop } from "../contracts/types.js";
 import type { Assignment } from "../contracts/agents.js";
 import { BridgeError } from "../core/errors.js";
+import type { TaskStore } from "../store/task-store.js";
+import { atomicJson } from "../store/atomic-json.js";
+import type { PrivatePublicationRequest, PrivatePublicationRecord } from "../contracts/private-git-publication.js";
 import { throwIfAborted } from "../core/async.js";
 import { exactCommit, git, gitSterile, isAncestor, isWithin, refHead, sourceStatus, validateBranchRef, validateOid } from "./project.js";
 export type Workspace = { kind: "source_read_only" | "task_worktree"; path: string; base_commit?: string; branch?: string; target_ref?: string; signal?: AbortSignal };
@@ -41,8 +44,7 @@ export async function prepareWorkspace(root: string, request: Assignment, profil
 }
 
 /** A private common directory is presented at canonical_common_dir only inside the worker namespace. */
-export type PrivateGitView = Readonly<{ private_common_dir: string; canonical_common_dir: string; admin_relative: string;
-  baseline_index_sha256: string }>;
+export type PrivateGitView = Readonly<PrivatePublicationRequest["view"]>;
 async function isolatedStoragePath(input: string, excluded: string[]): Promise<string> {
   const path = resolve(input), parent = dirname(path);
   if (await realpath(parent) !== parent || excluded.some((root) => isWithin(root, path) || isWithin(path, root))) {
@@ -111,9 +113,29 @@ export async function preparePrivateGitView(root: string, workspace: Workspace, 
     baseline_index_sha256: baselineIndex };
 }
 
-export type PrivatePublication = Readonly<{ old_head: string; new_head: string; tree_oid: string;
-  old_index_sha256: string; new_index_sha256: string; quarantine_path: string; canonical_admin_path: string }>;
+export type PrivatePublication = Readonly<PrivatePublicationRequest["publication"]>;
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+type IndexLockOwner = { head: string; index: string; dev?: number; ino?: number };
+async function removePreparedIndex(prepared: string, ownerPath: string, publication: PrivatePublication): Promise<void> {
+  let owner: IndexLockOwner;
+  try { owner = JSON.parse(await readFile(ownerPath, "utf8")) as IndexLockOwner; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained index lock ownership is invalid"); }
+  if (owner.head !== publication.new_head || owner.index !== publication.new_index_sha256) {
+    throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained index lock ownership differs from publication");
+  }
+  const entry = await lstat(prepared).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!entry) return;
+  if (!entry.isFile() || owner.dev === undefined || owner.ino === undefined ||
+      entry.dev !== owner.dev || entry.ino !== owner.ino ||
+      sha256(await readFile(prepared)) !== publication.new_index_sha256) {
+    throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Prepared index differs from retained lock ownership");
+  }
+  await unlink(prepared);
+}
 const objectFile = /^(?:[0-9a-f]{2}\/[0-9a-f]{38,62}|pack\/pack-[0-9a-f]{40,64}\.(?:pack|idx))$/;
 async function copyObjectStore(source: string, destination: string, assertAuthority: () => void): Promise<void> {
   if (!(await lstat(source)).isDirectory() || await realpath(source) !== resolve(source)) {
@@ -187,7 +209,42 @@ export async function preparePrivatePublication(root: string, workspace: Workspa
   if (oldIndex !== view.baseline_index_sha256) throw new BridgeError("HOST_INDEX_CHANGED", "Canonical task index changed after private-view preparation");
   const newIndex = sha256(await readFile(join(quarantine, "index")));
   return { old_head: old, new_head: head, tree_oid: tree, old_index_sha256: oldIndex,
-    new_index_sha256: newIndex, quarantine_path: quarantine, canonical_admin_path: canonicalAdmin };
+    new_index_sha256: newIndex, quarantine_config_sha256: sha256(await readFile(join(quarantine, "config"))),
+    quarantine_exclude_sha256: sha256(await readFile(join(quarantine, "info", "exclude"))),
+    quarantine_path: quarantine, canonical_admin_path: canonicalAdmin };
+}
+
+async function assertRetainedQuarantine(publication: PrivatePublication): Promise<void> {
+  const quarantine = publication.quarantine_path, config = join(quarantine, "config");
+  try {
+    if (await realpath(quarantine) !== quarantine || !(await lstat(config)).isFile() ||
+        await realpath(config) !== config || sha256(await readFile(config)) !== publication.quarantine_config_sha256 ||
+        await realpath(join(quarantine, "objects")) !== join(quarantine, "objects")) {
+      throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained quarantine configuration or path changed");
+    }
+    for (const name of [".git", "commondir", "gitdir", "config.worktree"]) {
+      const redirect = await lstat(join(quarantine, name)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (redirect) throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained bare quarantine gained a Git redirect");
+    }
+    const rootInfo = join(quarantine, "info"), exclude = join(rootInfo, "exclude");
+    if (!(await lstat(rootInfo)).isDirectory() || await realpath(rootInfo) !== rootInfo ||
+        (await readdir(rootInfo)).sort().join(",") !== "exclude" ||
+        !(await lstat(exclude)).isFile() || await realpath(exclude) !== exclude ||
+        sha256(await readFile(exclude)) !== publication.quarantine_exclude_sha256) {
+      throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained quarantine root info changed");
+    }
+    const objectInfo = join(quarantine, "objects", "info");
+    if (!(await lstat(objectInfo)).isDirectory() || await realpath(objectInfo) !== objectInfo ||
+        (await readdir(objectInfo)).length) {
+      throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained quarantine gained object metadata");
+    }
+  } catch (error) {
+    if (error instanceof BridgeError) throw error;
+    throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained quarantine is unavailable or unsafe", { cause: error });
+  }
 }
 
 /** Requires a previously durable task-owned intent and confirmed native descendant stop. */
@@ -203,34 +260,95 @@ export async function publishPrivateCommit(root: string, workspace: Workspace, p
   const indexPath = join(publication.canonical_admin_path, "index");
   const currentHead = await refHead(root, workspace.branch);
   const currentIndex = sha256(await readFile(indexPath));
-  if (currentHead === publication.new_head && currentIndex === publication.new_index_sha256) return;
-  if (!((currentHead === publication.old_head && currentIndex === publication.old_index_sha256) ||
+  const complete = currentHead === publication.new_head && currentIndex === publication.new_index_sha256;
+  if (!complete && !((currentHead === publication.old_head && currentIndex === publication.old_index_sha256) ||
       (currentHead === publication.new_head && currentIndex === publication.old_index_sha256))) {
     throw new BridgeError("PRIVATE_PUBLICATION_CONFLICT", "Canonical branch/index diverged from the retained publication states");
   }
   const quarantine = publication.quarantine_path;
-  if ((await gitSterile(quarantine, ["rev-parse", "--verify", `${publication.new_head}^{commit}`])).trim() !== publication.new_head ||
-      (await gitSterile(quarantine, ["rev-parse", `${publication.new_head}^{tree}`])).trim() !== publication.tree_oid ||
+  await assertRetainedQuarantine(publication);
+  if ((await gitSterile(quarantine, [`--git-dir=${quarantine}`, "rev-parse", "--verify", `${publication.new_head}^{commit}`])).trim() !== publication.new_head ||
+      (await gitSterile(quarantine, [`--git-dir=${quarantine}`, "rev-parse", `${publication.new_head}^{tree}`])).trim() !== publication.tree_oid ||
       sha256(await readFile(join(quarantine, "index"))) !== publication.new_index_sha256) {
     throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained quarantined commit or index changed");
   }
+  const workspaceStatus = await gitSterile(quarantine, [`--git-dir=${quarantine}`, "--no-optional-locks", "-c", "core.bare=false",
+    `--work-tree=${workspace.path}`, "status", "--porcelain=v1", "--untracked-files=all"]);
+  if (workspaceStatus) throw new BridgeError("PRIVATE_WORKTREE_DIRTY", "Workspace bytes differ from the retained publication");
+  if (currentHead === publication.new_head && await exactCommit(root, publication.new_head) !== publication.new_head) {
+    throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Canonical commit closure disappeared after ref publication");
+  }
+  const prepared = `${indexPath}.passeur-${sha256(Buffer.from(`${publication.new_head}:${publication.new_index_sha256}`))}`;
+  const ownershipPath = join(quarantine, "index-lock-owner.json");
+  if (complete) { await removePreparedIndex(prepared, ownershipPath, publication); return; }
   if (currentHead === publication.old_head) {
     assertAuthority();
     await gitSterile(root, ["-c", "protocol.file.allow=always", "fetch", "--no-tags", "--no-write-fetch-head", quarantine, publication.new_head]);
     if (await exactCommit(root, publication.new_head) !== publication.new_head) throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Exact worker commit was not imported");
   }
   const lock = `${indexPath}.lock`;
-  assertAuthority();
-  let handle;
-  try { handle = await open(lock, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0), 0o600); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new BridgeError("PRIVATE_PUBLICATION_LOCKED", "Canonical index lock already exists; its owner is unknown");
-    throw error;
-  }
-  const ownedLock = await handle.stat();
+  let owner: IndexLockOwner;
   try {
-    await handle.writeFile(await readFile(join(quarantine, "index")));
-    await handle.sync();
+    const saved = JSON.parse(await readFile(ownershipPath, "utf8")) as IndexLockOwner;
+    if (saved.head !== publication.new_head || saved.index !== publication.new_index_sha256) throw new Error("wrong lock owner");
+    owner = saved;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Retained index lock ownership is invalid");
+    const existing = await lstat(prepared).catch((failure: NodeJS.ErrnoException) => {
+      if (failure.code === "ENOENT") return undefined;
+      throw failure;
+    });
+    if (existing) throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Prepared index exists without retained ownership");
+    owner = { head: publication.new_head, index: publication.new_index_sha256 };
+    await atomicJson(ownershipPath, owner, assertAuthority);
+  }
+  if (owner.dev === undefined || owner.ino === undefined) {
+    const pending = await lstat(prepared).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    let usable = false;
+    if (pending) {
+      if (!pending.isFile() || pending.nlink !== 1) throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Prepared index has unknown ownership");
+      usable = sha256(await readFile(prepared)) === publication.new_index_sha256;
+      if (!usable) {
+        const currentLock = await lstat(lock).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        });
+        if (currentLock?.dev === pending.dev && currentLock.ino === pending.ino) {
+          throw new BridgeError("PRIVATE_PUBLICATION_LOCKED", "Incomplete prepared index is linked to the canonical lock");
+        }
+        assertAuthority();
+        await unlink(prepared);
+      }
+    }
+    if (!usable) {
+      assertAuthority();
+      const handle = await open(prepared, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
+      try { await handle.writeFile(await readFile(join(quarantine, "index"))); await handle.sync(); }
+      finally { await handle.close(); }
+    }
+    const entry = await lstat(prepared);
+    if (!entry.isFile() || sha256(await readFile(prepared)) !== publication.new_index_sha256) {
+      throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Prepared index is incomplete or changed");
+    }
+    owner = { ...owner, dev: entry.dev, ino: entry.ino };
+    await atomicJson(ownershipPath, owner, assertAuthority);
+  }
+  const preparedStat = await lstat(prepared);
+  if (!preparedStat.isFile() || preparedStat.dev !== owner.dev || preparedStat.ino !== owner.ino ||
+      sha256(await readFile(prepared)) !== publication.new_index_sha256) {
+    throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Prepared index differs from retained lock ownership");
+  }
+  assertAuthority();
+  try { await link(prepared, lock); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  const ownedLock = await lstat(lock);
+  if (!ownedLock.isFile() || ownedLock.dev !== owner.dev || ownedLock.ino !== owner.ino) {
+    throw new BridgeError("PRIVATE_PUBLICATION_LOCKED", "Canonical index lock belongs to an unknown writer");
+  }
+  try {
     if (sha256(await readFile(indexPath)) !== publication.old_index_sha256 ||
         await refHead(root, workspace.branch) !== currentHead) {
       throw new BridgeError("PRIVATE_PUBLICATION_CONFLICT", "Canonical branch/index changed before index installation");
@@ -239,14 +357,40 @@ export async function publishPrivateCommit(root: string, workspace: Workspace, p
       assertAuthority();
       await gitSterile(root, ["update-ref", workspace.branch, publication.new_head, publication.old_head]);
     }
-    assertAuthority(); await handle.close();
+    assertAuthority();
     await rename(lock, indexPath);
   } catch (error) {
     const currentLock = await lstat(lock).catch(() => undefined);
     if (currentLock?.dev === ownedLock.dev && currentLock.ino === ownedLock.ino) await unlink(lock).catch(() => undefined);
     throw error;
-  } finally { await handle.close().catch(() => undefined); }
+  }
   if (sha256(await readFile(indexPath)) !== publication.new_index_sha256) throw new BridgeError("PRIVATE_PUBLICATION_INVALID", "Installed canonical index differs from the retained intent");
+  await removePreparedIndex(prepared, ownershipPath, publication);
+}
+
+/** Offline replay of an already durable intent. The caller owns task/admin reservation and stop evidence. */
+export async function replayPrivatePublication(store: TaskStore, root: string,
+  identity: Pick<PrivatePublicationRequest, "task_id" | "operation_key" | "run_id" | "control_generation">,
+  workerStop: WorkerStop, assertAuthority: () => void = () => {}): Promise<PrivatePublicationRecord> {
+  if (workerStop !== "confirmed") throw new BridgeError("PRIVATE_GIT_STOP_UNCONFIRMED", "Private publication replay requires confirmed native descendant stop");
+  const record = await store.readPrivatePublication(identity.task_id);
+  if (!record || record.request.operation_key !== identity.operation_key || record.request.run_id !== identity.run_id ||
+      record.request.control_generation !== identity.control_generation) {
+    throw new BridgeError("PRIVATE_PUBLICATION_IDENTITY", "Replay does not name the retained task publication");
+  }
+  const request = record.request;
+  if (root !== request.source_view) throw new BridgeError("PRIVATE_PUBLICATION_IDENTITY", "Replay repository differs from the admitted source view");
+  await store.assertPrivatePublicationAuthority(request);
+  const workspace: Workspace = { kind: "task_worktree", path: request.workspace.path,
+    branch: request.workspace.branch, base_commit: request.workspace.base_commit };
+  try { await publishPrivateCommit(root, workspace, request.publication, workerStop, assertAuthority); }
+  catch (error) {
+    if (error instanceof BridgeError && error.code === "PRIVATE_PUBLICATION_CONFLICT") {
+      await store.freeze(`Private publication ${identity.task_id} has divergent canonical Git state`);
+    }
+    throw error;
+  }
+  return store.settlePrivatePublication(identity.task_id, identity.operation_key, record.request_hash);
 }
 
 export async function observeDelivery(workspace: Workspace, noChangesReason?: string): Promise<Delivery> {

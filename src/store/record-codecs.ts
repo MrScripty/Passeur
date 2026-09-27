@@ -9,6 +9,7 @@ import type { FinalizeReceipt, ResourceRecord, StoredResult } from "../contracts
 import type { TaskState } from "../core/state.js";
 import { BridgeError } from "../core/errors.js";
 import type { StoredRequest } from "./task-store.js";
+import { PrivatePublicationRecordSchema, type PrivatePublicationRecord } from "../contracts/private-git-publication.js";
 
 const text = z.string();
 const nonempty = z.string().min(1);
@@ -218,6 +219,13 @@ export function decodeReceipt(value: unknown, id: string, key?: string): Finaliz
 export function decodeSafety(value: unknown): { reason: string; at: string } {
   version(value, [], "store.safety");
   return parse(safetyRecord, value, "store.safety");
+}
+
+export function decodePrivatePublication(value: unknown, id: string): PrivatePublicationRecord {
+  version(value, [1], "store.private_publication");
+  const record = parse(PrivatePublicationRecordSchema, value, "store.private_publication");
+  identity(record.request.task_id, id, "store.private_publication.task");
+  return record;
 }
 
 /** Cross-file identity proof. Readable records alone do not prove they describe the same task. */

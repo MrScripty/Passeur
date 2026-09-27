@@ -87,8 +87,10 @@ export async function gitWithoutLazyFetch(root: string, args: string[], signal?:
 /** Use only with a service-created repository whose local config is inert. Worker Git metadata is never a safe root here. */
 export async function gitSterile(root: string, args: string[], signal?: AbortSignal, input?: string): Promise<string> {
   const environment = { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
-    GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0" };
-  return runGit(root, ["-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never", ...args], signal, input, environment, true);
+    GIT_ATTR_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0" };
+  return runGit(root, ["-c", "core.hooksPath=/dev/null", "-c", `core.attributesFile=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+    "-c", `core.excludesFile=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+    "-c", "protocol.file.allow=never", ...args], signal, input, environment, true);
 }
 export function validateOid(value: string): void {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value)) throw new BridgeError("INVALID_COMMIT", "Expected a full Git object ID");
