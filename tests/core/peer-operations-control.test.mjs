@@ -57,6 +57,23 @@ async function addSibling(f) {
   return { ...f.actor, task_id: bound.task_id, run_id: randomUUID(), workspace_id };
 }
 
+async function addThirdSibling(f, sibling) {
+  const bound = await f.control.bindSubmission(A, { operation_key: `passeur-internal:${key()}`, task_id: randomUUID(), request_key: key(),
+    source_view: f.actor.source_view, input_oid: '1'.repeat(40), intent_hash: '2'.repeat(64), areas: [{ kind: 'subtree', path: 'src' }] });
+  await f.control.settleSubmission(A, { operation_key: `passeur-internal:${key()}`, task_id: bound.task_id,
+    request_key: bound.request_key, link_hash: bound.link_hash });
+  const workspace_id = `workspace:${key()}`;
+  await f.control.execute(A, { kind: 'register_task_work', operation_key: key(), workspace_id,
+    input_oid: '1'.repeat(40), object_format: 'sha1', intent: 'third peer work', areas: [{ kind: 'subtree', path: 'src' }],
+    managed: { task_id: bound.task_id, control_generation: 1, intent_truncated: false, areas_source: 'allowed_paths' } });
+  const item = await f.control.reconciliation(A, f.item.id);
+  await f.control.execute(A, caseOp('select_inputs', item, { target_oid: '2'.repeat(40), inputs: [
+    { work_id: f.work, commit_oid: '3'.repeat(40) },
+    { work_id: sibling.task_id, commit_oid: '4'.repeat(40) },
+    { work_id: bound.task_id, commit_oid: '5'.repeat(40) }] }));
+  return { ...f.actor, task_id: bound.task_id, run_id: randomUUID(), workspace_id };
+}
+
 function proposalFor(f, sources) {
   return { schema_version: 1, kind: 'peer_resolution_proposal', case_id: f.item.id, case_revision: f.item.revision,
     case_generation: f.item.generation, proposal_revision: 1, evidence_id: 'a'.repeat(64), evidence_revision: 1,
@@ -124,6 +141,85 @@ test('siblings retain separate consent; parent acknowledgment cannot substitute;
   assert.deepEqual((await pending).acknowledged_task_ids, [f.actor.task_id, sibling.task_id]);
   const agreed = await f.control.workerPeerOperation(f.actor, full(f.actor, { operation_key: 'agreed-inspect', kind: 'inspect' }));
   assert.deepEqual(agreed.acknowledged_task_ids, [f.actor.task_id, sibling.task_id]);
+});
+
+test('three task principals recapture revision-only ACK drift and settle one exact consent each', async t => {
+  const f = await selectedManaged(t), second = await addSibling(f), third = await addThirdSibling(f, second);
+  f.item = await f.control.reconciliation(A, f.item.id);
+  const actors = [f.actor, second, third];
+  const sources = [f.work, second.task_id, third.task_id].map((work_id, index) => ({ work_id, work_revision: 1,
+    input_oid: '1'.repeat(40), selected_commit_oid: String(index + 3).repeat(40) }));
+  const proposed = await f.control.workerPeerOperation(f.actor, full(f.actor, {
+    operation_key: 'three-ack-proposal', kind: 'propose', proposal: proposalFor(f, sources) }));
+  const gates = actors.map(deferred);
+  let entered = 0, allEntered;
+  const all = new Promise(resolve => { allEntered = resolve; });
+  const calls = new Map(actors.map(actor => [actor.task_id, 0]));
+  f.control.workerAuthority.withPublication = async (_state, _item, actor, _sources, publish) => {
+    if (!actor) return publish();
+    calls.set(actor.task_id, calls.get(actor.task_id) + 1);
+    if (++entered === 3) allEntered();
+    if (entered <= 3) await gates[actors.findIndex(candidate => candidate.task_id === actor.task_id)].blocked;
+    return publish();
+  };
+  const requests = actors.map((actor, index) => full(actor, {
+    operation_key: `three-ack-${index}`, kind: 'acknowledge', note_id: proposed.note_id }));
+  const pending = actors.map((actor, index) => f.control.workerPeerOperation(actor, requests[index]));
+  await within(all, 'three ACK prepublication barrier');
+  gates[0].release();
+  const first = await within(pending[0], 'first ACK publication');
+  gates[1].release(); gates[2].release();
+  const results = [first, ...(await Promise.all(pending.slice(1)))];
+  assert.ok(results.every(result => result.kind === 'receipt' && result.operation === 'acknowledge' &&
+    result.note_id === proposed.note_id));
+  assert.equal(new Set(results.map(result => result.receipt_revision)).size, 3);
+  assert.ok(calls.get(second.task_id) > 1 && calls.get(third.task_id) > 1,
+    'both stale snapshots must recapture under their original keys');
+  for (const [index, actor] of actors.entries())
+    assert.deepEqual(await f.control.workerPeerOperation(actor, requests[index]), results[index]);
+  const current = await f.control.workerPeerOperation(f.actor, full(f.actor, { operation_key: key(), kind: 'inspect' }));
+  assert.deepEqual(new Set(current.acknowledged_task_ids), new Set(actors.map(actor => actor.task_id)));
+  assert.equal((await f.disk()).notes.find(note => note.id === proposed.note_id).acknowledged.length, 3);
+});
+
+test('ACK recapture rejects changed selected case and has a bounded retry limit', async t => {
+  const f = await selectedManaged(t);
+  const sources = [{ work_id: f.work, work_revision: 1,
+    input_oid: '1'.repeat(40), selected_commit_oid: '3'.repeat(40) }];
+  const proposed = await f.control.workerPeerOperation(f.actor, full(f.actor, {
+    operation_key: key(), kind: 'propose', proposal: proposalFor(f, sources) }));
+  const gate = deferred();
+  let first = true, calls = 0;
+  f.control.workerAuthority.withPublication = async (_state, _item, _actor, _sources, publish) => {
+    calls++;
+    if (first) { first = false; gate.enter(); await gate.blocked; }
+    return publish();
+  };
+  const stale = f.control.workerPeerOperation(f.actor, full(f.actor, {
+    operation_key: 'changed-case-ack', kind: 'acknowledge', note_id: proposed.note_id }));
+  await gate.reached;
+  const item = await f.control.reconciliation(A, f.item.id);
+  await f.control.execute(A, caseOp('select_inputs', item, { target_oid: '4'.repeat(40), inputs: [
+    { work_id: f.work, commit_oid: '3'.repeat(40) }] }));
+  gate.release();
+  await assert.rejects(stale, { code: 'PEER_OPERATION_STALE' });
+  assert.equal(calls, 1, 'case version drift must not retry an ACK');
+  assert.equal((await f.disk()).notes.find(note => note.id === proposed.note_id).acknowledged.length, 0);
+
+  const current = await f.control.reconciliation(A, f.item.id);
+  const replacement = { ...proposalFor({ ...f, item: current }, sources), resolution_digest: 'c'.repeat(64) };
+  const next = await f.control.workerPeerOperation(f.actor, full(f.actor, {
+    operation_key: key(), kind: 'propose', proposal: replacement }));
+  calls = 0;
+  f.control.workerAuthority.withPublication = async (_state, _item, _actor, _sources, publish) => {
+    calls++;
+    await f.control.execute(A, post({ kind: 'case', id: f.item.id }));
+    return publish();
+  };
+  await assert.rejects(f.control.workerPeerOperation(f.actor, full(f.actor, {
+    operation_key: 'bounded-drift-ack', kind: 'acknowledge', note_id: next.note_id })), { code: 'PEER_OPERATION_STALE' });
+  assert.equal(calls, 4, 'bounded recapture must stop after three retries');
+  assert.equal((await f.disk()).notes.find(note => note.id === next.note_id).acknowledged.length, 0);
 });
 
 test('cursorless await_change waits for case versions while a cursor observes note changes', async t => {

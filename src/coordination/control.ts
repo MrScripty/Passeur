@@ -571,10 +571,19 @@ export class CoordinationControl {
       const state = await this.store.snapshot();
       const item = workerPeerCase(state, owner, actor);
       this.#assertWorkerTransition(actor, item, state);
-      if (state.revision !== captured.state.revision || this.#transitionEpoch !== captured.epoch ||
-        (operation.kind === "inspect" || operation.kind === "await_change") &&
-          (this.#observationGenerations.get(item.id) ?? 0) !== captured.observationGeneration) {
+      const revisionDrift = state.revision !== captured.state.revision;
+      const transitionDrift = this.#transitionEpoch !== captured.epoch;
+      const observationDrift = (this.#observationGenerations.get(item.id) ?? 0) !== captured.observationGeneration;
+      if (revisionDrift || transitionDrift ||
+        (operation.kind === "inspect" || operation.kind === "await_change") && observationDrift) {
         if (operation.kind === "inspect" || operation.kind === "await_change") return { retry: true };
+        if (operation.kind === "acknowledge" && revisionDrift && !transitionDrift && !observationDrift &&
+          item.revision === captured.item.revision && item.generation === captured.item.generation &&
+          item.inputs.length === captured.item.inputs.length && item.inputs.every((input, index) =>
+            input.work_id === captured.item.inputs[index]?.work_id &&
+            input.commit_oid === captured.item.inputs[index]?.commit_oid &&
+            state.works.find(work => work.id === input.work_id)?.revision ===
+              captured.state.works.find(work => work.id === input.work_id)?.revision)) return { retry: true };
         throw new BridgeError("PEER_OPERATION_STALE", "Peer metadata changed during authority validation");
       }
       if (operation.kind === "inspect") return { value: currentValue! };
