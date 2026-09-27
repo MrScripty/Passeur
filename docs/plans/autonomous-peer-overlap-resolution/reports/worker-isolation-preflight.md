@@ -1,4 +1,14 @@
-# G2 worker isolation preflight — offline only
+# G2 worker isolation preflight
+
+## Installed guest-local transport checkpoint — 2026-09-27
+
+The opt-in `scripts/qualify-muse-sandbox-transport.mjs` stages a digest-pinned Muse 1.4.0-R4302.1 executable, local SDK 1.3.0 and pinned Node 24.12.0 into a private read-only runtime mount. A fresh disposable HOME is the only added writable mount. The current Bubblewrap wrapper preserves the workspace path and unshares networking. The guest creates a fake provider on its own loopback, prepares an empty mode-0700 sessions directory, and asks the installed native host for one persistent session and a metadata-only read; no turn or approval is submitted.
+
+The first fresh run stopped before Muse because the guest already had loopback `UP` and lacked permission to run the unnecessary `ip link set lo up`. The second reached native catalog GET, then the SDK's file-ESM `getRandomValues` call failed under guest `/usr/bin/node` 18.19.1. Both roots remain retained. After read-only loopback checking and exact staged Node 24.12.0, the third fresh run passed: host `net:[4026531833]`, guest/native `net:[4026533700]`; native host made `GET /muse-code/models` to the guest provider; `session/start` and `session/read` returned idle session `01a0e4d4-1251-76a0-a318-8cd37a70fdba`, zero turns, no pending input, excluded history and a 6891-byte durable log under `/tmp/passeur-muse-sandbox-transport-Krfg5b/home`. The outer host reached a loopback sentinel before/after; the guest got `ECONNREFUSED` to that port and `ENETUNREACH` to a numeric external address. Direct, symlink and `/proc` protected canaries were absent. A separate direct guest HTTP client made the sole `/responses` POST; it is transport evidence, not native model inference. Focused tests passed 12/12 and the independent reviewer cleared P1/P2. Roots `/tmp/passeur-muse-sandbox-transport-WyIU9h`, `/tmp/passeur-muse-sandbox-transport-GxvjOp` and the passing root are retained because arbitrary descendant stop remains unverified.
+
+The installed observation establishes guest-local fake-provider transport and sampled outer network/path separation for an idle host. It does not establish real credential protection, native file/shell-tool denial, approval behavior, protected private-Git commits, fresh-host resume, exact descendant stop, a Passeur service task or real worker inference. Those remain G2 requirements.
+
+To reproduce this no-account diagnostic from the repository root, use `node scripts/qualify-muse-sandbox-transport.mjs` with the pinned Muse binary at `/home/jeremy/.local/bin/muse-bin-1.4.0-R4302.1`, local SDK 1.3.0, Node 24.12.0 and Bubblewrap available. The managed shell may reject Bubblewrap namespace creation with `EPERM`; that is a preflight failure, not a Muse result. A `transport_error` includes a typed guest stage/code and process exit facts when available. `transport_observed` requires the native catalog GET, idle durable read, distinct namespaces and sampled network/path denials. The command retains every fixture root after an attempted host start and never treats SDK close as descendant-stop proof. Inspect the exact root before any later cleanup; do not reuse it for a second writer while stop remains unverified.
 
 ## Same-host persistent read checkpoint — 2026-09-27
 
@@ -6,7 +16,7 @@ The isolated no-account `muse serve` diagnostic now has an opt-in `raw-precreate
 
 Read-only follow-up found that the existing Bubblewrap worker has an unshared network namespace, so its loopback cannot reach the current fake provider on host loopback. A confined no-account transport candidate would start the fake listener and installed host in the same guest network namespace, then verify guest-positive fake catalog/Responses traffic and guest-negative external reachability. Do not infer credential isolation from a same-UID native shell sharing its mount view; real credential protection requires separate native evidence.
 
-**Plan and operation:** `docs/plans/autonomous-peer-overlap-resolution/plan.md`, `continue`. This is independent G2 preparation; it does not promote G1 or admit an installed/live run.
+**Plan and operation:** `docs/plans/autonomous-peer-overlap-resolution/plan.md`, `continue`. The earlier offline preparation below does not promote G1. The installed no-account checkpoint above remains narrower than protected or live worker admission.
 
 ## Boundary recipe
 
