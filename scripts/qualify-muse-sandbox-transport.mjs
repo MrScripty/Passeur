@@ -23,6 +23,11 @@ const LIMIT = 65_536;
 const DEADLINE_MS = 25_000;
 const GUEST_RUNTIME = '/mounts/runtime';
 const GUEST_HOME = '/mounts/home';
+const SHELL_MODEL = 'fixture-native-shell';
+const SHELL_RESPONSE = 'resp_native_shell_1';
+const SHELL_TEXT_RESPONSE = 'resp_native_shell_2';
+const SHELL_ITEM = 'fc_native_shell_1';
+const SHELL_CALL = 'call_native_shell_1';
 
 function fault(code, message) { return Object.assign(new Error(message), { code }); }
 function pause(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -143,6 +148,253 @@ export async function startGuestProvider(forbiddenPort) {
   try { assertPortSeparation(forbiddenPort, port); }
   catch (error) { await close(server); throw error; }
   return { port, requests, close: () => close(server) };
+}
+
+function shellQuote(value) { return `'${value.replaceAll("'", "'\\''")}'`; }
+
+export function shellProbeCommand(workspace, protectedRoot, token) {
+  const direct = join(protectedRoot, token);
+  const linked = join(workspace, 'protected-link', token);
+  const proc = `/proc/1/root${direct}`;
+  return [
+    `cd ${shellQuote(workspace)}`,
+    "printf native-write > shell-canary",
+    "if [ \"$(cat shell-canary)\" = native-write ]; then printf 'workspace=ok\\n'; else printf 'workspace=failed\\n'; fi",
+    ...[['direct', direct], ['symlink', linked], ['proc', proc]].map(([label, path]) =>
+      `if [ -e ${shellQuote(path)} ] || (printf forbidden > ${shellQuote(path)} 2>/dev/null); then printf '${label}=visible\\n'; else printf '${label}=denied\\n'; fi`),
+    `if [ -r ${shellQuote(`${GUEST_HOME}/.config/muse/auth.json`)} ]; then printf 'dummy-auth=visible\\n'; else printf 'dummy-auth=absent\\n'; fi`,
+  ].join('; ');
+}
+
+export function advertisedBash(body) {
+  if (body?.model !== SHELL_MODEL || !Array.isArray(body.tools) || body.tools.length > 64) {
+    throw fault('NATIVE_TOOL_SCHEMA_INVALID', 'native Responses model or tools invalid');
+  }
+  const bash = body.tools.filter(tool => (tool?.name ?? tool?.function?.name) === 'bash');
+  if (bash.length !== 1) throw fault('NATIVE_TOOL_SCHEMA_INVALID', 'exactly one advertised bash tool required');
+  const tool = bash[0];
+  const parameters = tool.parameters ?? tool.function?.parameters;
+  const supportedString = schema => schema?.type === 'string' &&
+    Object.keys(schema).every(key => ['type', 'description', 'title'].includes(key));
+  if (tool.type !== 'function' || parameters?.type !== 'object' ||
+      Object.keys(parameters).some(key => !['type', 'properties', 'required', 'additionalProperties',
+        'description', 'title'].includes(key)) ||
+      !parameters.properties || Object.keys(parameters.properties).some(key =>
+        !['command', 'description'].includes(key)) ||
+      (parameters.additionalProperties !== undefined && typeof parameters.additionalProperties !== 'boolean') ||
+      !supportedString(parameters.properties?.command) ||
+      !Array.isArray(parameters.required) || !parameters.required.includes('command') ||
+      parameters.required.some(name => !['command', 'description'].includes(name)) ||
+      (parameters.properties?.description && !supportedString(parameters.properties.description)) ||
+      (parameters.required.includes('description') && !supportedString(parameters.properties?.description))) {
+    throw fault('NATIVE_TOOL_SCHEMA_INVALID', 'advertised bash arguments are not the reviewed command shape');
+  }
+  return { name: 'bash', arguments: { command: body.fixtureCommand,
+    ...(parameters.required.includes('description') ? { description: 'Disposable native shell qualification' } : {}) } };
+}
+
+// Rejection evidence describes structure only. Values such as prompts, descriptions,
+// tool arguments and credentials must never enter retained provider summaries.
+export function rejectedToolSchemaShape(body) {
+  const primitive = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  const known = new Set(['type', 'name', 'function', 'parameters', 'properties', 'required',
+    'additionalProperties', 'description', 'title', 'strict', 'command', 'not', 'allOf',
+    'anyOf', 'oneOf', 'enum', 'const', 'items', 'minLength', 'maxLength', 'pattern',
+    'minProperties', 'maxProperties', 'default', 'format', 'schema', 'input_schema',
+    'inputSchema', 'arguments', 'args', 'options', 'capabilities', 'aliases',
+    'examples', 'input_examples', 'inputExamples', 'variants', 'functions',
+    'tools', 'subtools', 'commands', 'actions', 'methods', 'operations', 'members']);
+  const shellNames = new Set(['bash', 'tool.bash', 'functions.bash', 'shell', 'tool.shell',
+    'functions.shell', 'terminal', 'exec_command', 'run_shell_command', 'muse']);
+  const toolTypes = new Set(['function', 'custom', 'shell', 'bash', 'muse', 'group', 'namespace']);
+  const safeKey = key => known.has(key) ? key : '[other]';
+  const fields = value => value && typeof value === 'object' && !Array.isArray(value) ?
+    Object.entries(value).slice(0, 24).map(([key, item]) => [safeKey(key), primitive(item)]) : [];
+  const nameShape = name => ({ nameClass: shellNames.has(name) ? name : 'other',
+    nameLength: typeof name === 'string' ? Buffer.byteLength(name) : null,
+    nameSha256: typeof name === 'string' && !shellNames.has(name) ?
+      createHash('sha256').update(name).digest('hex') : null });
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  const shape = { toolCount: tools.length, omitted: { tools: Math.max(0, tools.length - 8),
+    properties: 0, fields: 0, required: 0, arrays: 0, arrayEntries: 0 }, tools: [] };
+  shape.tools = tools.slice(0, 8).map((tool, index) => {
+    const name = tool?.name ?? tool?.function?.name;
+    const classifiedName = nameShape(name);
+    const parameters = tool?.parameters ?? tool?.function?.parameters;
+    const properties = parameters?.properties;
+    const entries = properties && typeof properties === 'object' && !Array.isArray(properties) ?
+      Object.entries(properties) : [];
+    const arrayFields = tool && typeof tool === 'object' && !Array.isArray(tool) ?
+      Object.entries(tool).filter(([, value]) => Array.isArray(value)) : [];
+    shape.omitted.arrays += Math.max(0, arrayFields.length - 2);
+    shape.omitted.arrayEntries += arrayFields.slice(0, 2).reduce((count, [, value]) =>
+      count + Math.max(0, value.length - 4), 0);
+    shape.omitted.fields += arrayFields.slice(0, 2).reduce((count, [, value]) => count +
+      value.slice(0, 4).reduce((entryCount, entry) => entryCount +
+        Math.max(0, Object.keys(entry ?? {}).length - 12), 0), 0);
+    shape.omitted.properties += Math.max(0, entries.length - 16);
+    shape.omitted.fields += Math.max(0, Object.keys(tool ?? {}).length - 24) +
+      Math.max(0, Object.keys(parameters ?? {}).length - 24) +
+      entries.slice(0, 16).reduce((count, [, value]) => count +
+        Math.max(0, Object.keys(value ?? {}).length - 24), 0);
+    shape.omitted.required += Math.max(0, (parameters?.required?.length ?? 0) - 16);
+    return { index, bashName: name === 'bash',
+      toolNameClass: classifiedName.nameClass,
+      toolNameLength: classifiedName.nameLength,
+      toolNameSha256: classifiedName.nameSha256,
+      toolTypeClass: toolTypes.has(tool?.type) ? tool.type : 'other',
+      toolFields: fields(tool), parameterFields: fields(parameters),
+      arrayFields: arrayFields.slice(0, 2).map(([key, value]) => ({ key: safeKey(key), count: value.length,
+        entries: value.slice(0, 4).map(entry => {
+          const nestedParameters = entry?.parameters ?? entry?.function?.parameters;
+          const nestedProperties = nestedParameters?.properties;
+          const nestedEntries = nestedProperties && typeof nestedProperties === 'object' &&
+            !Array.isArray(nestedProperties) ? Object.entries(nestedProperties) : [];
+          shape.omitted.properties += Math.max(0, nestedEntries.length - 8);
+          shape.omitted.required += Math.max(0, (nestedParameters?.required?.length ?? 0) - 8);
+          shape.omitted.fields += Math.max(0, Object.keys(nestedParameters ?? {}).length - 12) +
+            nestedEntries.slice(0, 8).reduce((count, [, property]) => count +
+              Math.max(0, Object.keys(property ?? {}).length - 8), 0);
+          return { ...nameShape(entry?.name ?? entry?.function?.name),
+            typeClass: toolTypes.has(entry?.type) ? entry.type : 'other',
+            fields: fields(entry).slice(0, 12), parameterFields: fields(nestedParameters).slice(0, 12),
+            propertyCount: nestedEntries.length,
+            properties: nestedEntries.slice(0, 8).map(([name, property]) =>
+              ({ name: safeKey(name), fields: fields(property).slice(0, 8) })),
+            required: Array.isArray(nestedParameters?.required) ?
+              nestedParameters.required.slice(0, 8).map(value =>
+                typeof value === 'string' ? safeKey(value) : primitive(value)) : null };
+        }) })),
+      propertyCount: entries.length,
+      properties: entries.slice(0, 16).map(([key, value]) =>
+        ({ name: safeKey(key), fields: fields(value) })),
+      required: Array.isArray(parameters?.required) ?
+        parameters.required.slice(0, 16).map(value => typeof value === 'string' ? safeKey(value) : primitive(value)) : null };
+  });
+  // Reserve most of the line budget for readiness, completion and the guest envelope.
+  while (Buffer.byteLength(JSON.stringify(shape)) > 4_096) {
+    const tool = shape.tools.at(-1);
+    if (!tool) break;
+    const array = tool.arrayFields.at(-1);
+    const entry = array?.entries.at(-1);
+    if (entry?.properties.length) { entry.properties.pop(); shape.omitted.properties++; }
+    else if (entry?.required?.length) { entry.required.pop(); shape.omitted.required++; }
+    else if (entry?.parameterFields.length) { entry.parameterFields.pop(); shape.omitted.fields++; }
+    else if (entry?.fields.length) { entry.fields.pop(); shape.omitted.fields++; }
+    else if (array?.entries.length) { array.entries.pop(); shape.omitted.arrayEntries++; }
+    else if (tool.arrayFields.length) { tool.arrayFields.pop(); shape.omitted.arrays++; }
+    else if (tool.properties.length) { tool.properties.pop(); shape.omitted.properties++; }
+    else if (tool.required?.length) { tool.required.pop(); shape.omitted.required++; }
+    else if (tool.parameterFields.length) { tool.parameterFields.pop(); shape.omitted.fields++; }
+    else if (tool.toolFields.length) { tool.toolFields.pop(); shape.omitted.fields++; }
+    else { shape.tools.pop(); shape.omitted.tools++; }
+  }
+  return shape;
+}
+
+export function summarizedShellModel(value) { return value === SHELL_MODEL ? SHELL_MODEL : 'invalid'; }
+
+export function shellOutputMarkers(output) {
+  if (typeof output !== 'string' || Buffer.byteLength(output) > LIMIT) return null;
+  const lines = output.endsWith('\n') ? output.slice(0, -1).split('\n') : output.split('\n');
+  if (lines.length !== 5 || !/^workspace=(ok|failed)$/.test(lines[0]) ||
+      lines[1] !== 'direct=denied' || lines[2] !== 'symlink=denied' ||
+      lines[3] !== 'proc=denied' || !/^dummy-auth=(visible|absent)$/.test(lines[4])) return null;
+  return { workspaceWritten: lines[0] === 'workspace=ok', dummyAuthVisible: lines[4] === 'dummy-auth=visible' };
+}
+
+export function matchingShellResult(body) {
+  if (!Array.isArray(body?.input)) return false;
+  if (body.input.length !== 1 || body.input[0]?.type !== 'function_call_output' ||
+      body.input[0].call_id !== SHELL_CALL) return false;
+  const output = body.input[0].output;
+  return shellOutputMarkers(output) !== null;
+}
+
+export async function startShellProvider(forbiddenPort, command) {
+  const requests = [];
+  let calls = 0;
+  let reportRejection;
+  const rejection = new Promise(resolve => { reportRejection = resolve; });
+  const server = createServer(async (request, response) => {
+    let body = '';
+    try {
+      for await (const chunk of request) {
+        body += chunk;
+        if (Buffer.byteLength(body) > LIMIT) throw fault('REQUEST_TOO_LARGE', 'native provider request too large');
+      }
+    } catch { response.writeHead(413).end(); return; }
+    let parsed;
+    try { parsed = body ? JSON.parse(body) : null; }
+    catch { response.writeHead(400).end(); return; }
+    const summary = { method: ['GET', 'POST'].includes(request.method) ? request.method : 'invalid',
+      path: ['/muse-code/models', '/responses'].includes(request.url) ? request.url : 'invalid',
+      bytes: Buffer.byteLength(body),
+      model: summarizedShellModel(parsed?.model), responseIndex: calls + 1 };
+    requests.push(summary);
+    if (request.method === 'GET' && request.url === '/muse-code/models') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ object: 'list', data: [{ id: SHELL_MODEL, object: 'model', metadata: {
+        'muse-code': { release_date: '2026-01-01', is_hidden: false,
+          limit: { context: 1_000_000, output: 1024 } },
+      } }] }));
+      return;
+    }
+    if (request.method !== 'POST' || request.url !== '/responses' || calls >= 2) {
+      response.writeHead(501).end(); return;
+    }
+    calls++;
+    const sse = event => `data: ${JSON.stringify(event)}\n\n`;
+    let events;
+    if (calls === 1) {
+      try {
+        const selected = advertisedBash({ ...parsed, fixtureCommand: command });
+        summary.advertisedBash = true;
+        summary.argumentKeys = Object.keys(selected.arguments);
+        if (!JSON.stringify(parsed.input).includes('NATIVE_SHELL_PROBE') || matchingShellResult(parsed)) {
+          throw fault('NATIVE_RESPONSE_SEQUENCE_INVALID', 'first native request did not contain the probe prompt');
+        }
+      } catch (error) { summary.rejection = error.code ?? error.name;
+        summary.schemaShape = rejectedToolSchemaShape(parsed);
+        reportRejection({ kind: 'provider_rejected', code: summary.rejection });
+        response.writeHead(422).end(); return; }
+      summary.kind = 'native_tool_call';
+      summary.responseId = SHELL_RESPONSE;
+      summary.itemId = SHELL_ITEM;
+      summary.callId = SHELL_CALL;
+      summary.commandSha256 = createHash('sha256').update(command).digest('hex');
+      const frame = status => ({ id: SHELL_RESPONSE, object: 'response', model: SHELL_MODEL, status, output: [] });
+      events = [
+        { type: 'response.created', sequence_number: 1, response: frame('in_progress') },
+        { type: 'response.function_call_arguments.done', sequence_number: 2, output_index: 0,
+          item_id: SHELL_ITEM, name: 'bash', call_id: SHELL_CALL,
+          arguments: JSON.stringify(advertisedBash({ ...parsed, fixtureCommand: command }).arguments) },
+        { type: 'response.completed', sequence_number: 3, response: {
+          ...frame('completed'), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ];
+    } else {
+      if (!matchingShellResult(parsed)) {
+        summary.rejection = 'NATIVE_TOOL_RESULT_INVALID'; response.writeHead(422).end(); return;
+      }
+      summary.kind = 'matching_tool_result';
+      summary.responseId = SHELL_TEXT_RESPONSE;
+      summary.forCallId = SHELL_CALL;
+      const frame = status => ({ id: SHELL_TEXT_RESPONSE, object: 'response', model: SHELL_MODEL, status, output: [] });
+      events = [
+        { type: 'response.created', sequence_number: 1, response: frame('in_progress') },
+        { type: 'response.output_text.delta', sequence_number: 2, output_index: 0,
+          item_id: 'msg_native_shell_2', content_index: 0, delta: 'Fixture shell result observed.' },
+        { type: 'response.completed', sequence_number: 3, response: {
+          ...frame('completed'), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ];
+    }
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end(events.map(sse).join(''));
+  });
+  const port = await listen(server);
+  try { assertPortSeparation(forbiddenPort, port); }
+  catch (error) { await close(server); throw error; }
+  return { port, requests, rejection, close: () => close(server) };
 }
 
 export async function tcpProbe(address, port, ms = 700) {
@@ -371,6 +623,165 @@ export async function guestRun(config) {
   }
 }
 
+function approvalSummary(value, command) {
+  if (typeof value?.approvalId !== 'string' || typeof value?.sessionId !== 'string' ||
+      typeof value?.turnId !== 'string' || typeof value?.toolCallId !== 'string' ||
+      value.toolName !== 'bash' || !Array.isArray(value.availableChoices) ||
+      value.availableChoices.length < 1 || value.availableChoices.length > 16 ||
+      value.availableChoices.some(choice => !choice || ['choiceId', 'decision', 'scope', 'label']
+        .some(key => typeof choice[key] !== 'string' || !choice[key] || choice[key].length > 200)) ||
+      value.currentRequirementId?.approvalId !== value.approvalId ||
+      !Number.isSafeInteger(value.currentRequirementId?.sourceIndex)) {
+    throw fault('NATIVE_APPROVAL_INVALID', 'native approval identity or choices invalid');
+  }
+  let commandMatch = false;
+  try { commandMatch = JSON.parse(value.rawArgs)?.command === command; } catch { /* rejected below */ }
+  if (!commandMatch) throw fault('NATIVE_APPROVAL_INVALID', 'approval command differs from reviewed shell call');
+  return { approvalId: value.approvalId, sessionId: value.sessionId, turnId: value.turnId,
+    toolCallId: value.toolCallId, toolName: value.toolName, commandMatch,
+    requirementId: { approvalId: value.currentRequirementId.approvalId,
+      sourceIndex: value.currentRequirementId.sourceIndex },
+    choices: value.availableChoices.map(choice => ({ choiceId: choice.choiceId,
+      decision: choice.decision, scope: choice.scope, label: choice.label })) };
+}
+
+export async function guestShellRun(config) {
+  const { spawnMspConnection } = await import(pathToFileURL(`${GUEST_RUNTIME}/sdk/dist/src/index.js`).href);
+  const workspace = config.workspace;
+  const native = `${GUEST_RUNTIME}/muse-bin-${VERSION}`;
+  const namespace = await readlink('/proc/self/ns/net');
+  let provider;
+  let host;
+  let stage = 'network';
+  const commands = [];
+  const observations = { approvals: [], items: [], protocolErrors: [] };
+  try {
+    const loopback = spawnSync('/usr/sbin/ip', ['-o', 'link', 'show', 'lo'], { encoding: 'utf8', timeout: 2_000 });
+    if (!loopbackReady(loopback)) throw fault('GUEST_LOOPBACK_UNAVAILABLE', 'guest loopback unavailable');
+    const command = shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
+    provider = await startShellProvider(config.hostPort, command);
+    const sentinel = await tcpProbe('127.0.0.1', config.hostPort);
+    const external = await tcpProbe('203.0.113.1', 443);
+    if (sentinel.kind === 'connected' || !classifyNoRoute(external)) {
+      throw fault('NETWORK_BOUNDARY_UNVERIFIED', 'guest network separation unavailable');
+    }
+    const canaries = await canaryChecks(config.protectedRoot, workspace, config.canaryToken);
+    if (Object.values(canaries).some(value => value !== true)) throw fault('PROTECTED_CANARY_VISIBLE', 'protected canary visible');
+    stage = 'sessions';
+    const sessionDirectories = await prepareSessions(GUEST_HOME);
+    const settings = join(GUEST_HOME, '.config', 'muse');
+    await mkdir(settings, { recursive: true, mode: 0o700 });
+    await writeFile(join(settings, 'settings.json'), `${JSON.stringify({ schema_version: 1,
+      endpoint_transport: { base_url: `http://127.0.0.1:${provider.port}`, auth: 'bearer' } })}\n`, { mode: 0o600 });
+    await writeFile(join(settings, 'auth.json'), `${JSON.stringify({ schema_version: 1,
+      providers: { meta: { api_key: 'passeur-disposable-dummy-key' } } })}\n`, { mode: 0o600 });
+    stage = 'host_initialize';
+    host = spawnMspConnection({ command: `${GUEST_RUNTIME}/native-host-wrapper`, args: ['serve'],
+      cwd: workspace, env: guestEnvironment(), shutdownTimeoutMs: 2_000, onStderr: () => undefined });
+    let resolveObserved;
+    const observed = new Promise(resolve => { resolveObserved = resolve; });
+    host.onServerRequest(async request => {
+      if (request.method !== 'approval/request') throw fault('NATIVE_REQUEST_UNEXPECTED', 'unexpected native request');
+      const approval = approvalSummary(request.params, command);
+      observations.approvals.push(approval);
+      resolveObserved({ kind: 'approval', approval });
+      return {}; // Presentation receipt only. No approval/decide is sent.
+    });
+    host.onNotification(notification => {
+      const params = notification.params;
+      if (notification.method === 'item/completed' && params?.item?.kind === 'toolCall') {
+        const item = params.item;
+        observations.items.push({ itemId: item.itemId, turnId: item.turnId, callId: item.callId,
+          tool: item.tool, status: item.status, commandMatch: (() => {
+            try { return JSON.parse(item.args)?.command === command; } catch { return false; }
+          })(), outputMarkers: shellOutputMarkers(item.visibleOutput) !== null,
+          workspaceReportedWritten: shellOutputMarkers(item.visibleOutput)?.workspaceWritten ?? null,
+          dummyAuthVisible: shellOutputMarkers(item.visibleOutput)?.dummyAuthVisible ?? null });
+      }
+      if (notification.method === 'turn/completed') {
+        resolveObserved({ kind: 'turn_completed', terminal: params?.terminal,
+          turnId: params?.turnId, sessionId: params?.sessionId,
+          errorKind: params?.error?.kind ?? null });
+      }
+    });
+    host.onProtocolError(error => { observations.protocolErrors.push(String(error.message).slice(0, 200)); });
+    const initialized = await timeout('initialize', host.initialize({ clientInfo: {
+      name: 'passeur_guest_native_shell_probe', version: '0.1.0',
+    } }));
+    const nativeIdentity = await verifiedNativeNamespace(GUEST_HOME, native, namespace);
+    stage = 'session_start';
+    commands.push('session/start');
+    const started = await timeout('session/start', initialized.connection.command('session/start',
+      { workspaceRoot: workspace, modelId: SHELL_MODEL, providerId: 'meta', approvalMode: 'onRequest' },
+      { maxAttempts: 1 }));
+    commands.push('session/read');
+    const read = await timeout('session/read', initialized.connection.command('session/read',
+      { sessionId: started?.session?.sessionId, excludeItems: true }, { maxAttempts: 1 }));
+    const metadata = validateIdleRead(started, read, workspace, GUEST_HOME);
+    if (started.session?.approvalMode?.mode !== 'onRequest' || read.session?.approvalMode?.mode !== 'onRequest' ||
+        started.session?.modelId !== SHELL_MODEL || read.session?.modelId !== SHELL_MODEL ||
+        started.session?.providerId !== 'meta' || read.session?.providerId !== 'meta') {
+      throw fault('NATIVE_SHELL_POSTURE_INVALID', 'native session did not retain requested model, provider and approval mode');
+    }
+    if (!provider.requests.some(request => request.method === 'GET' && request.path === '/muse-code/models')) {
+      throw fault('NATIVE_CATALOG_MISSING', 'native host did not request guest catalog');
+    }
+    const ready = { kind: 'guest_shell_ready', nativeIdentity, guestNamespace: namespace,
+      nativeNamespace: nativeIdentity.namespace, hostPort: config.hostPort, guestPort: provider.port,
+      commandSha256: createHash('sha256').update(command).digest('hex'),
+      sentinel, external, canaries, sessionDirectories, metadata, commands: [...commands],
+      posture: { approvalMode: 'onRequest', modelId: SHELL_MODEL, providerId: 'meta',
+        sandbox: 'native_default_no_override' },
+      providerRequests: [...provider.requests] };
+    process.stdout.write(`${JSON.stringify({ kind: 'guest_ready', result: ready })}\n`);
+    if (await timeout('turn release', config.release()) !== 'turn') {
+      throw fault('HOST_RELEASE_INVALID', 'native turn was not released by host');
+    }
+    stage = 'native_turn';
+    commands.push('turn/start');
+    const ack = await timeout('turn/start', initialized.connection.command('turn/start', {
+      sessionId: metadata.sessionId,
+      input: [{ type: 'text', text: 'NATIVE_SHELL_PROBE: Use the advertised bash tool once to run the disposable command. Report its result.' }],
+    }, { maxAttempts: 1 }));
+    if (ack.status !== 'accepted' || ack.disposition !== 'started' || ack.startedNewTurn !== true ||
+        typeof ack.turnId !== 'string') {
+      throw fault('NATIVE_TURN_ACK_INVALID', 'native turn was not admitted as one fresh turn');
+    }
+    const event = await timeout('native turn or approval', Promise.race([observed, provider.rejection]), 15_000);
+    if (event.kind === 'provider_rejected') {
+      throw fault(event.code, 'guest provider rejected the native Responses request');
+    }
+    let pending = null;
+    if (event.kind === 'approval') {
+      pending = await timeout('approval/listPending', initialized.connection.request('approval/listPending',
+        { sessionId: metadata.sessionId }));
+      if (!Array.isArray(pending?.approvals) || !Array.isArray(pending?.userInputs) ||
+          pending.userInputs.length !== 0 || pending.approvals.length !== 1 ||
+          pending.approvals[0].approvalId !== event.approval.approvalId) {
+        throw fault('NATIVE_APPROVAL_INVALID', 'read-only pending list differs from observed approval');
+      }
+    }
+    const result = { kind: event.kind === 'approval' ? 'native_shell_approval_pending' : 'guest_shell_outcome',
+      stage, sessionId: metadata.sessionId, turnId: ack.turnId, turnAck: { status: ack.status,
+        disposition: ack.disposition, startedNewTurn: ack.startedNewTurn }, event,
+      pending: pending ? { approvals: pending.approvals.map(approval => approvalSummary(approval, command)),
+        userInputs: [] } : null,
+      observations, providerRequests: [...provider.requests], commands: [...commands] };
+    process.stdout.write(`${JSON.stringify({ kind: 'guest_outcome', result })}\n`);
+    if (await timeout('shutdown release', config.release()) !== 'shutdown') {
+      throw fault('HOST_RELEASE_INVALID', 'native shutdown was not released by host');
+    }
+    return result;
+  } catch (error) {
+    return { kind: 'guest_transport_error', stage, code: error.code ?? error.name,
+      message: String(error.message).slice(0, 400), guestNamespace: namespace,
+      commands, providerRequests: provider?.requests ?? [], observations };
+  } finally {
+    try { if (host) await timeout('host close', host.close(), 5_000); } catch { /* stop is verified outside */ }
+    try { if (provider) await provider.close(); } catch { /* retain fixture */ }
+  }
+}
+
 async function runCaptured(command, args, { input = '', budgetMs = DEADLINE_MS } = {}) {
   return new Promise(resolveResult => {
     const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'], env: {} });
@@ -570,7 +981,7 @@ export async function verifyHostStop(capture, status, exit, {
   return { kind: 'confirmed', boot, pidns: capture.pidns, observed: capture.members.length + 1 };
 }
 
-function runStatusPhase(prepared, config) {
+export function runStatusPhase(prepared, config) {
   const separator = prepared.args.indexOf('--');
   if (separator < 0) throw fault('BWRAP_STATUS_INVALID', 'prepared sandbox lacks command delimiter');
   const args = [...prepared.args.slice(0, separator), '--json-status-fd', '3', ...prepared.args.slice(separator)];
@@ -583,13 +994,18 @@ function runStatusPhase(prepared, config) {
   let timedOut = false;
   let readyResolve;
   let readyReject;
+  let outcomeResolve;
+  let outcomeReject;
   let statusResolve;
   let statusReject;
   let released = false;
+  let shutdownReleased = false;
   const ready = new Promise((resolveReady, rejectReady) => { readyResolve = resolveReady; readyReject = rejectReady; });
+  const outcome = new Promise((resolveValue, rejectValue) => { outcomeResolve = resolveValue; outcomeReject = rejectValue; });
   const liveStatus = new Promise((resolveStatus, rejectStatus) => { statusResolve = resolveStatus; statusReject = rejectStatus; });
   // Both promises have consumers from construction, including on early spawn failure.
   ready.catch(() => undefined);
+  outcome.catch(() => undefined);
   liveStatus.catch(() => undefined);
   const append = (array, line) => {
     array.push(line);
@@ -604,15 +1020,26 @@ function runStatusPhase(prepared, config) {
   }
   createInterface({ input: child.stdout }).on('line', line => {
     append(output, line);
-    if (['first', 'resume'].includes(config.phase) && output.length === 1) {
+    if (['first', 'resume', 'shell'].includes(config.phase) && output.length === 1) {
       try {
         const parsed = JSON.parse(line);
         if (parsed.kind !== 'guest_ready' || parsed.result?.kind !==
-            (config.phase === 'first' ? 'guest_transport_observed' : 'guest_resume_observed')) {
+            (config.phase === 'first' ? 'guest_transport_observed' :
+              config.phase === 'resume' ? 'guest_resume_observed' : 'guest_shell_ready')) {
           throw fault('GUEST_OUTPUT_INVALID', 'first phase readiness was invalid');
         }
         readyResolve(parsed.result);
       } catch (error) { readyReject(error); }
+    }
+    if (config.phase === 'shell' && output.length === 2) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.kind !== 'guest_outcome' ||
+            !['guest_shell_outcome', 'native_shell_approval_pending'].includes(parsed.result?.kind)) {
+          throw fault('GUEST_OUTPUT_INVALID', 'shell outcome framing invalid');
+        }
+        outcomeResolve(parsed.result);
+      } catch (error) { outcomeReject(error); }
     }
   });
   createInterface({ input: child.stdio[3] }).on('line', line => {
@@ -633,6 +1060,7 @@ function runStatusPhase(prepared, config) {
     child.once('error', error => {
       clearTimeout(timer);
       readyReject(error);
+      outcomeReject(error);
       statusReject(error);
       resolveResult({ code: null, signal: null, error: error.code ?? error.name, timedOut, overflow,
         output, stderr, statusLines, statusClosed });
@@ -640,14 +1068,23 @@ function runStatusPhase(prepared, config) {
     child.once('close', (code, signal) => {
       clearTimeout(timer);
       if (output.length === 0) readyReject(fault('GUEST_OUTPUT_INVALID', 'phase exited before readiness'));
+      if (config.phase === 'shell' && output.length < 2) outcomeReject(fault('GUEST_OUTPUT_INVALID', 'shell exited before outcome'));
       if (statusLines.length === 0) statusReject(fault('BWRAP_STATUS_INVALID', 'Bubblewrap exited without status'));
       resolveResult({ code, signal, timedOut, overflow, output, stderr, statusLines, statusClosed });
     });
   });
+  const boundedOutcome = config.phase === 'shell' ? timeout('shell outcome', outcome) : undefined;
+  boundedOutcome?.catch(() => undefined);
   return { pid: child.pid, ready: timeout('host readiness', ready),
+    outcome: boundedOutcome,
     liveStatus: timeout('live Bubblewrap status', liveStatus),
     statusLines: () => [...statusLines],
-    release: () => { if (!released) { released = true; child.stdin.end('release\n'); } }, finished };
+    release: () => { if (!released) { released = true; child.stdin.end('release\n'); } },
+    releaseTurn: () => { if (config.phase === 'shell' && !released) { released = true; child.stdin.write('turn\n'); } },
+    releaseShutdown: () => { if (config.phase === 'shell' && released && !shutdownReleased) {
+      shutdownReleased = true; child.stdin.end('shutdown\n');
+    } },
+    abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } }, finished };
 }
 
 function validatePhaseOutcome(phase, guest) {
@@ -871,6 +1308,221 @@ export async function qualifyFreshHostResume({ muse = '/home/jeremy/.local/bin/m
   return outcome;
 }
 
+export function validateShellReady(ready, workspace, sentinelPort) {
+  if (ready?.kind !== 'guest_shell_ready' || ready.hostPort !== sentinelPort ||
+      !Number.isSafeInteger(ready.guestPort) || ready.guestPort === sentinelPort ||
+      ready.guestNamespace !== ready.nativeNamespace ||
+      !/^net:\[\d+\]$/.test(ready.guestNamespace ?? '') ||
+      !/^[0-9a-f]{64}$/.test(ready.commandSha256 ?? '') ||
+      ready.sentinel?.kind !== 'error' ||
+      !['ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH'].includes(ready.sentinel.code) ||
+      !classifyNoRoute(ready.external) ||
+      Object.keys(ready.canaries ?? {}).sort().join(',') !== 'directAbsent,procAbsent,symlinkAbsent' ||
+      Object.values(ready.canaries).some(value => value !== true) ||
+      ready.metadata?.workspaceRoot !== workspace || ready.metadata?.status !== 'idle' ||
+      ready.metadata?.turnCount !== 0 || ready.metadata?.activeTurnId !== null ||
+      ready.metadata?.pendingCount !== 0 || ready.metadata?.history !== 'none' ||
+      ready.posture?.approvalMode !== 'onRequest' || ready.posture?.modelId !== SHELL_MODEL ||
+      ready.posture?.providerId !== 'meta' || ready.posture?.sandbox !== 'native_default_no_override' ||
+      typeof ready.metadata?.viewCursor !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ready.metadata?.sessionId ?? '') ||
+      !Array.isArray(ready.commands) || ready.commands.join(',') !== 'session/start,session/read' ||
+      !Array.isArray(ready.providerRequests) || !ready.providerRequests.some(request =>
+        request.method === 'GET' && request.path === '/muse-code/models') ||
+      ready.providerRequests.some(request => request.path === '/responses')) {
+    throw fault('NATIVE_SHELL_READY_INVALID', 'shell host readiness is not an idle isolated native session');
+  }
+  return ready;
+}
+
+export function validateShellOutcome(ready, outcome) {
+  if (!['guest_shell_outcome', 'native_shell_approval_pending'].includes(outcome?.kind) ||
+      outcome.sessionId !== ready.metadata.sessionId ||
+      typeof outcome.turnId !== 'string' || !outcome.turnId ||
+      outcome.turnAck?.status !== 'accepted' || outcome.turnAck?.disposition !== 'started' ||
+      outcome.turnAck?.startedNewTurn !== true ||
+      outcome.commands?.join(',') !== 'session/start,session/read,turn/start' ||
+      !Array.isArray(outcome.providerRequests) ||
+      outcome.providerRequests.filter(request => request.method === 'POST' && request.path === '/responses').length !==
+        (outcome.kind === 'native_shell_approval_pending' ? 1 : 2) ||
+      outcome.providerRequests.some(request => !(
+        request.method === 'GET' && request.path === '/muse-code/models' ||
+        request.method === 'POST' && request.path === '/responses')) ||
+      outcome.observations?.protocolErrors?.length !== 0) {
+    throw fault('NATIVE_SHELL_OUTCOME_INVALID', 'native turn or provider sequence was invalid');
+  }
+  const responses = outcome.providerRequests.filter(request => request.path === '/responses');
+  if (responses[0]?.kind !== 'native_tool_call' || responses[0]?.model !== SHELL_MODEL ||
+      responses[0]?.responseId !== SHELL_RESPONSE || responses[0]?.itemId !== SHELL_ITEM ||
+      responses[0]?.callId !== SHELL_CALL || responses[0]?.commandSha256 !== ready.commandSha256) {
+    throw fault('NATIVE_SHELL_OUTCOME_INVALID', 'first native response was not the reviewed tool call');
+  }
+  if (outcome.kind === 'native_shell_approval_pending') {
+    const approval = outcome.event?.approval;
+    if (outcome.event?.kind !== 'approval' || approval?.sessionId !== ready.metadata.sessionId ||
+        approval.turnId !== outcome.turnId || approval.toolCallId !== SHELL_CALL ||
+        outcome.pending?.approvals?.length !== 1 || outcome.pending.approvals[0].approvalId !== approval.approvalId ||
+        outcome.pending.userInputs?.length !== 0 || !approval.choices?.length ||
+        approval.commandMatch !== true ||
+        JSON.stringify(outcome.pending.approvals[0]) !== JSON.stringify(approval) ||
+        outcome.observations.approvals?.length !== 1 ||
+        JSON.stringify(outcome.observations.approvals[0]) !== JSON.stringify(approval) ||
+        outcome.observations.items?.length !== 0) {
+      throw fault('NATIVE_APPROVAL_INVALID', 'unanswered approval was not bound to the native turn');
+    }
+    return { kind: 'native_shell_approval_pending', approval };
+  }
+  const tool = outcome.observations?.items;
+  if (outcome.event?.kind !== 'turn_completed' || outcome.event.terminal !== 'completed' ||
+      outcome.event.turnId !== outcome.turnId || outcome.event.sessionId !== ready.metadata.sessionId ||
+      responses[1]?.kind !== 'matching_tool_result' || responses[1]?.model !== SHELL_MODEL ||
+      responses[1]?.responseId !== SHELL_TEXT_RESPONSE || responses[1]?.forCallId !== SHELL_CALL ||
+      tool?.length !== 1 ||
+      tool[0].turnId !== outcome.turnId || tool[0].callId !== SHELL_CALL ||
+      tool[0].tool !== 'bash' || tool[0].status !== 'completed' ||
+      tool[0].commandMatch !== true || tool[0].outputMarkers !== true ||
+      typeof tool[0].workspaceReportedWritten !== 'boolean' ||
+      typeof tool[0].dummyAuthVisible !== 'boolean') {
+    throw fault('NATIVE_SHELL_OUTCOME_INVALID', 'native tool result or turn completion was not correlated');
+  }
+  return { kind: tool[0].workspaceReportedWritten ? 'native_shell_effect_observed' :
+    'native_shell_denial_observed', turnId: outcome.turnId,
+    toolItemId: tool[0].itemId, dummyAuthVisible: tool[0].dummyAuthVisible };
+}
+
+async function shellEffects(workspace, protectedRoot, token) {
+  let shell = null;
+  try { shell = await readFile(join(workspace, 'shell-canary'), 'utf8'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const protectedBytes = await readFile(join(protectedRoot, token), 'utf8');
+  const protectedNames = await readdir(protectedRoot);
+  const link = await lstat(join(workspace, 'protected-link'));
+  return { shellWritten: shell === 'native-write', shellAbsent: shell === null,
+    protectedIntact: protectedBytes === 'host-only' && protectedNames.length === 1 &&
+      protectedNames[0] === token && link.isSymbolicLink() };
+}
+
+export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse',
+  checkBubblewrap = probeBubblewrap, stage = stageRuntime, startSentinel = startHostSentinel,
+  probe = tcpProbe, launch = runStatusPhase, capture = captureHostIdentities,
+  stop = verifyHostStop } = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-muse-native-shell-sandbox-'));
+  let sentinel;
+  let host;
+  let captured;
+  let stopAttempted = false;
+  let stageName = 'stage';
+  let outcome;
+  const evidence = {};
+  try {
+    const workspace = join(root, 'workspace');
+    const home = join(root, 'home');
+    const protectedRoot = join(root, 'protected');
+    const token = 'protected-canary';
+    await Promise.all([mkdir(workspace), mkdir(home), mkdir(protectedRoot)]);
+    await writeFile(join(protectedRoot, token), 'host-only');
+    await symlink(protectedRoot, join(workspace, 'protected-link'));
+    const runtime = await stage(root, muse);
+    sentinel = await startSentinel();
+    if ((await probe('127.0.0.1', sentinel.port)).kind !== 'connected') {
+      throw fault('HOST_SENTINEL_UNAVAILABLE', 'host sentinel unavailable before shell host');
+    }
+    const prepared = prepareSandbox(sandboxConfig({ workspace, runtime, home, protectedRoot }), guestCommand());
+    checkBubblewrap();
+    stageName = 'shell_host';
+    host = launch(prepared, { phase: 'shell', workspace, hostPort: sentinel.port,
+      protectedRoot, canaryToken: token });
+    const [ready, liveStatus] = await Promise.all([host.ready, host.liveStatus]);
+    evidence.ready = ready;
+    evidence.liveStatus = liveStatus;
+    validateShellReady(ready, workspace, sentinel.port);
+    if (ready.commandSha256 !== createHash('sha256').update(shellProbeCommand(workspace, protectedRoot, token)).digest('hex')) {
+      throw fault('NATIVE_SHELL_READY_INVALID', 'guest shell command differs from host fixture command');
+    }
+    if (!liveStatus.child || liveStatus.exit !== null) throw fault('BWRAP_STATUS_INVALID', 'live shell status missing child');
+    captured = await capture(host.pid, liveStatus.child, ready.nativeIdentity.start,
+      `${GUEST_RUNTIME}/muse-bin-${VERSION}`, `${GUEST_RUNTIME}/node`);
+    evidence.capture = { boot: captured.boot, pidns: captured.pidns, wrapper: captured.wrapper,
+      statusChild: captured.statusChild, init: captured.init, supervisor: captured.supervisor,
+      native: captured.native, memberCount: captured.members?.length };
+    if (captured.native.nspid.at(-1) !== ready.nativeIdentity.pid ||
+        captured.native.netns !== ready.nativeNamespace ||
+        captured.supervisor.netns !== ready.guestNamespace) {
+      throw fault('STOP_ASSOCIATION_INVALID', 'native shell host marker differs from observed process tree');
+    }
+    stageName = 'native_turn';
+    host.releaseTurn();
+    let guestOutcome;
+    let outcomeError;
+    try { guestOutcome = await host.outcome; evidence.guestOutcome = guestOutcome; }
+    catch (error) { outcomeError = error; evidence.outcomeError = { code: error.code ?? error.name,
+      message: String(error.message).slice(0, 300) }; }
+    host.releaseShutdown();
+    const done = await timeout('shell host exit', host.finished, DEADLINE_MS + 3_000);
+    evidence.completion = { code: done.code, signal: done.signal, timedOut: done.timedOut,
+      overflow: done.overflow, statusClosed: done.statusClosed, statusLines: done.statusLines,
+      output: done.output, stderr: done.stderr };
+    const terminal = parseBubblewrapStatus(done.statusLines);
+    evidence.terminal = terminal;
+    stopAttempted = true;
+    const stopped = await timeout('shell host stop scan', stop(captured, terminal, done));
+    evidence.stop = stopped;
+    await captured.fd.close(); captured = undefined;
+    if (stopped.kind !== 'confirmed') throw fault('STOP_UNCONFIRMED', 'shell namespace stop was not confirmed');
+    if (outcomeError) throw outcomeError;
+    if (done.code !== 0 || done.output.length !== 3 || done.timedOut || done.overflow ||
+        JSON.stringify(JSON.parse(done.output[2])) !== JSON.stringify(guestOutcome)) {
+      throw fault('GUEST_OUTPUT_INVALID', 'shell terminal output differed from held outcome');
+    }
+    const classified = validateShellOutcome(ready, guestOutcome);
+    const effects = await shellEffects(workspace, protectedRoot, token);
+    if (!effects.protectedIntact || classified.kind === 'native_shell_effect_observed' && !effects.shellWritten ||
+        classified.kind === 'native_shell_denial_observed' && !effects.shellAbsent ||
+        classified.kind === 'native_shell_approval_pending' && !effects.shellAbsent) {
+      throw fault('NATIVE_SHELL_EFFECT_INVALID', 'workspace or protected canary contradicted native outcome');
+    }
+    if (classified.dummyAuthVisible === true) {
+      throw fault('NATIVE_SHELL_AUTH_VISIBLE', 'native shell could read the disposable dummy auth file');
+    }
+    if ((await probe('127.0.0.1', sentinel.port)).kind !== 'connected') {
+      throw fault('HOST_SENTINEL_UNAVAILABLE', 'host sentinel unavailable after shell host');
+    }
+    outcome = { kind: classified.kind, classified, effects, evidence };
+  } catch (error) {
+    outcome = { kind: 'native_shell_error', stage: stageName, code: error.code ?? error.name,
+      message: String(error.message).slice(0, 400), stopProof: evidence.stop?.kind ?? 'unconfirmed', evidence };
+  } finally {
+    if (host) {
+      host.abort();
+      try {
+        const done = await timeout('shell shutdown', host.finished, DEADLINE_MS + 3_000);
+        evidence.completion ??= { code: done.code, signal: done.signal, timedOut: done.timedOut,
+          overflow: done.overflow, statusClosed: done.statusClosed, statusLines: done.statusLines,
+          output: done.output, stderr: done.stderr };
+        if (captured && !stopAttempted) {
+          try {
+            const terminal = parseBubblewrapStatus(done.statusLines);
+            evidence.terminal ??= terminal;
+            stopAttempted = true;
+            evidence.stop = await timeout('shell final stop scan', stop(captured, terminal, done));
+          } catch (error) { evidence.stopError = { code: error.code ?? error.name,
+            message: String(error.message).slice(0, 300) }; }
+        }
+      } catch { /* retained root and unconfirmed stop */ }
+    }
+    if (captured) try { await captured.fd.close(); } catch { /* retained root */ }
+    if (sentinel) try { await sentinel.close(); } catch { /* retained root */ }
+  }
+  outcome.retainedFixtures = [root];
+  return outcome;
+}
+
+export function diagnosticMode(args) {
+  if (args.length === 0) return 'idle-resume';
+  if (args.length === 1 && args[0] === '--native-shell') return 'native-shell';
+  throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments or exactly --native-shell');
+}
+
 export async function qualify({ muse = '/home/jeremy/.local/bin/muse',
   checkBubblewrap = probeBubblewrap, run = runCaptured, stage = stageRuntime,
   startSentinel = startHostSentinel, probe = tcpProbe } = {}) {
@@ -952,15 +1604,24 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       if (first.done || Buffer.byteLength(first.value) > LIMIT) throw fault('GUEST_INPUT_TOO_LARGE', 'guest input missing or exceeds limit');
       const config = JSON.parse(first.value);
       config.release = async () => (await lines.next()).value;
-      const result = await guestRun(config);
+      const result = config.phase === 'shell' ? await guestShellRun(config) : await guestRun(config);
       process.stdout.write(`${JSON.stringify(result)}\n`);
-      process.exitCode = ['guest_transport_observed', 'guest_resume_observed'].includes(result.kind) ? 0 : 1;
+      process.exitCode = ['guest_transport_observed', 'guest_resume_observed',
+        'guest_shell_outcome', 'native_shell_approval_pending'].includes(result.kind) ? 0 : 1;
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ kind: 'guest_transport_error', code: error.code ?? error.name,
         message: String(error.message).slice(0, 500) })}\n`);
       process.exitCode = 1;
     }
   } else {
-    process.stdout.write(`${JSON.stringify(await qualifyFreshHostResume())}\n`);
+    try {
+      const mode = diagnosticMode(process.argv.slice(2));
+      const result = mode === 'native-shell' ? await qualifyNativeShell() : await qualifyFreshHostResume();
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } catch (error) {
+      process.stdout.write(`${JSON.stringify({ kind: 'diagnostic_error', code: error.code ?? error.name,
+        message: String(error.message).slice(0, 200) })}\n`);
+      process.exitCode = 2;
+    }
   }
 }

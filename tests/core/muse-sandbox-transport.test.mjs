@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { lstat, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +9,11 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   verifiedNativeNamespace, loopbackReady, parseBubblewrapStatus, verifyHostStop,
   validateResumeOutcome, qualifyFreshHostResume,
   assertHostAssociation,
+  advertisedBash, matchingShellResult, shellOutputMarkers, shellProbeCommand,
+  rejectedToolSchemaShape, summarizedShellModel,
+  validateShellReady, validateShellOutcome, qualifyNativeShell,
+  diagnosticMode,
+  runStatusPhase,
 } from '../../scripts/qualify-muse-sandbox-transport.mjs';
 import { prepareSandbox } from '../../scripts/experiment-worker-sandbox.mjs';
 
@@ -456,4 +462,243 @@ test('second-host readiness failure retains confirmed first-stop and both phase 
   assert.equal(result.evidence.secondCompletion.code, 1);
   assert.equal(result.evidence.secondCompletion.output[0].includes('INVALID_SESSION_READ'), true);
   await rm(result.retainedFixtures[0], { recursive: true, force: true });
+});
+
+test('native shell provider checks advertised bash schema and exact tool result correlation', async () => {
+  assert.equal(diagnosticMode([]), 'idle-resume');
+  assert.equal(diagnosticMode(['--native-shell']), 'native-shell');
+  for (const args of [['--unknown'], ['--native-shell', '--extra']]) {
+    assert.throws(() => diagnosticMode(args), { code: 'DIAGNOSTIC_MODE_INVALID' });
+  }
+  const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
+  assert.match(command, /shell-canary/);
+  assert.match(command, /dummy-auth=visible/);
+  assert.match(command, /\/mounts\/home\/\.config\/muse\/auth\.json/);
+  const tool = { type: 'function', name: 'bash', parameters: { type: 'object',
+    properties: { command: { type: 'string' } }, required: ['command'] } };
+  assert.deepEqual(advertisedBash({ model: 'fixture-native-shell', tools: [tool], fixtureCommand: command }),
+    { name: 'bash', arguments: { command } });
+  for (const malformed of [
+    { ...tool, name: 'shell' },
+    { ...tool, parameters: { ...tool.parameters, required: ['command', 'unknown'] } },
+    { ...tool, parameters: { ...tool.parameters, properties: { command: { type: 'number' } } } },
+    { ...tool, parameters: { ...tool.parameters, properties: { command: { type: 'string', enum: ['different'] } } } },
+    { ...tool, parameters: { ...tool.parameters, not: {} } },
+  ]) assert.throws(() => advertisedBash({ model: 'fixture-native-shell', tools: [malformed], fixtureCommand: command }),
+    { code: 'NATIVE_TOOL_SCHEMA_INVALID' });
+  const result = { input: [{ type: 'function_call_output', call_id: 'call_native_shell_1',
+    output: 'workspace=ok\ndirect=denied\nsymlink=denied\nproc=denied\ndummy-auth=visible\n' }] };
+  assert.equal(matchingShellResult(result), true);
+  assert.deepEqual(shellOutputMarkers(result.input[0].output), { workspaceWritten: true, dummyAuthVisible: true });
+  assert.deepEqual(shellOutputMarkers(result.input[0].output.replace('workspace=ok', 'workspace=failed')),
+    { workspaceWritten: false, dummyAuthVisible: true });
+  assert.equal(matchingShellResult({ input: [{ ...result.input[0], call_id: 'wrong' }] }), false);
+  assert.equal(matchingShellResult({ input: [{ ...result.input[0], output: 'workspace=ok' }] }), false);
+  assert.equal(matchingShellResult({ input: [{ ...result.input[0],
+    output: result.input[0].output.replace('dummy-auth=visible', 'dummy-auth=leaked') }] }), false);
+  assert.equal(matchingShellResult({ input: [result.input[0], { type: 'function_call_output',
+    call_id: 'unrelated', output: result.input[0].output }] }), false);
+  for (const extra of ['direct=visible\n', 'symlink=visible\n', 'proc=visible\n', 'unknown=extra\n', 'direct=denied\n']) {
+    assert.equal(shellOutputMarkers(result.input[0].output + extra), null);
+  }
+});
+
+test('rejected native tool schema retains bounded structure without values', () => {
+  const secret = 'passeur-secret-description-and-argument';
+  const secretKey = 'sk_test_12345_SUPPOSED_SECRET';
+  const body = { input: [{ text: secret }], tools: [{ type: 'function', name: 'bash',
+    description: secret, parameters: { type: 'object', not: { secret },
+      properties: { command: { type: 'string', description: secret, enum: [secret] },
+        [secretKey]: { type: 'string' } },
+      required: ['command', secretKey] } }] };
+  const shape = rejectedToolSchemaShape(body);
+  assert.equal(shape.toolCount, 1);
+  assert.equal(shape.tools[0].bashName, true);
+  assert.equal(shape.tools[0].toolNameClass, 'bash');
+  assert.equal(shape.tools[0].toolNameSha256, null);
+  assert.deepEqual(shape.tools[0].parameterFields.find(([key]) => key === 'not'), ['not', 'object']);
+  assert.deepEqual(shape.tools[0].properties[0].fields.find(([key]) => key === 'enum'), ['enum', 'array']);
+  assert.equal(JSON.stringify(shape).includes(secret), false);
+  assert.equal(JSON.stringify(shape).includes(secretKey), false);
+  assert.equal(shape.tools[0].properties[1].name, '[other]');
+  assert.equal(shape.tools[0].required[1], '[other]');
+  assert.equal(summarizedShellModel('fixture-native-shell'), 'fixture-native-shell');
+  assert.equal(summarizedShellModel({ secret }), 'invalid');
+  assert.equal(summarizedShellModel(secret), 'invalid');
+  const large = { tools: Array(8).fill(null).map((_, index) => ({ ...body.tools[0],
+    parameters: { ...body.tools[0].parameters, properties: Object.fromEntries(
+      Array.from({ length: 50 }, (_, number) => [`${secretKey}_${index}_${number}`,
+        { type: 'string', description: secret.repeat(2) }])) } })) };
+  assert.ok(Buffer.byteLength(JSON.stringify(large)) > 60_000);
+  assert.ok(Buffer.byteLength(JSON.stringify(large)) < 65_536);
+  const bounded = rejectedToolSchemaShape(large);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= 4_096);
+  assert.ok(bounded.omitted.properties > 0);
+  assert.equal(JSON.stringify(bounded).includes(secretKey), false);
+  const unknownName = rejectedToolSchemaShape({ tools: [{ type: 'function', name: secretKey,
+    input_schema: [], inputSchema: {}, schema: {}, capabilities: [], [secretKey]: [] }] });
+  assert.equal(unknownName.tools[0].toolNameClass, 'other');
+  assert.equal(unknownName.tools[0].toolNameLength, Buffer.byteLength(secretKey));
+  assert.equal(unknownName.tools[0].toolNameSha256, createHash('sha256').update(secretKey).digest('hex'));
+  assert.deepEqual(unknownName.tools[0].toolFields.slice(2, 6),
+    [['input_schema', 'array'], ['inputSchema', 'object'], ['schema', 'object'], ['capabilities', 'array']]);
+  assert.equal(JSON.stringify(unknownName).includes(secretKey), false);
+  const grouped = rejectedToolSchemaShape({ tools: [{ type: 'muse', name: 'muse',
+    description: secret, functions: [{ type: 'function', name: 'bash',
+      description: secret, input_schema: { type: 'object' }, parameters: { type: 'object',
+        properties: { command: { type: 'string', description: secret },
+          [secretKey]: { type: 'string', enum: [secret] } },
+        required: ['command', secretKey], additionalProperties: false } },
+    { type: 'function', name: secretKey, [secretKey]: secret }] }] });
+  assert.equal(grouped.tools[0].toolNameClass, 'muse');
+  assert.equal(grouped.tools[0].toolTypeClass, 'muse');
+  assert.equal(grouped.tools[0].arrayFields[0].key, 'functions');
+  assert.equal(grouped.tools[0].arrayFields[0].count, 2);
+  assert.equal(grouped.tools[0].arrayFields[0].entries[0].nameClass, 'bash');
+  assert.deepEqual(grouped.tools[0].arrayFields[0].entries[0].fields.find(([key]) => key === 'input_schema'),
+    ['input_schema', 'object']);
+  const nested = grouped.tools[0].arrayFields[0].entries[0];
+  assert.deepEqual(nested.parameterFields.find(([key]) => key === 'additionalProperties'),
+    ['additionalProperties', 'boolean']);
+  assert.equal(nested.propertyCount, 2);
+  assert.equal(nested.properties[0].name, 'command');
+  assert.equal(nested.properties[1].name, '[other]');
+  assert.deepEqual(nested.required, ['command', '[other]']);
+  assert.equal(grouped.tools[0].arrayFields[0].entries[1].nameClass, 'other');
+  assert.equal(JSON.stringify(grouped).includes(secret), false);
+  assert.equal(JSON.stringify(grouped).includes(secretKey), false);
+  const manyGroups = rejectedToolSchemaShape({ tools: Array(8).fill(null).map(() => ({ type: 'muse',
+    name: 'muse', functions: Array(12).fill(null).map(() => ({ type: 'function', name: 'bash',
+      input_schema: {}, description: secret, [secretKey]: secret })) })) });
+  assert.ok(Buffer.byteLength(JSON.stringify(manyGroups)) <= 4_096);
+  assert.ok(manyGroups.omitted.arrayEntries > 0);
+  assert.equal(JSON.stringify(manyGroups).includes(secretKey), false);
+});
+
+function shellReadyFixture(workspace) {
+  const commandSha256 = createHash('sha256').update(shellProbeCommand(workspace,
+    join(workspace, '..', 'protected'), 'protected-canary')).digest('hex');
+  return { kind: 'guest_shell_ready', hostPort: 31001, guestPort: 31002,
+    commandSha256,
+    guestNamespace: 'net:[2]', nativeNamespace: 'net:[2]', nativeIdentity: { pid: 7, start: '123' },
+    sentinel: { kind: 'error', code: 'ECONNREFUSED' }, external: { kind: 'error', code: 'ENETUNREACH' },
+    canaries: { directAbsent: true, symlinkAbsent: true, procAbsent: true },
+    posture: { approvalMode: 'onRequest', modelId: 'fixture-native-shell', providerId: 'meta',
+      sandbox: 'native_default_no_override' },
+    metadata: { sessionId: '0199aabb-ccdd-7eef-8abc-0123456789ab', workspaceRoot: workspace,
+      status: 'idle', turnCount: 0, activeTurnId: null, pendingCount: 0, history: 'none', viewCursor: '' },
+    commands: ['session/start', 'session/read'],
+    providerRequests: [{ method: 'GET', path: '/muse-code/models' }] };
+}
+
+function shellOutcomeFixture(ready, approval = false, workspaceReportedWritten = true) {
+  const turnId = '0199aabb-ccdd-7eef-8abc-0123456789ac';
+  const approvalValue = { approvalId: 'approval-1', sessionId: ready.metadata.sessionId,
+    turnId, toolCallId: 'call_native_shell_1', toolName: 'bash', commandMatch: true,
+    requirementId: { approvalId: 'approval-1', sourceIndex: 1 },
+    choices: [{ choiceId: 'deny', decision: 'denied', scope: 'once', label: 'Deny' }] };
+  return { kind: approval ? 'native_shell_approval_pending' : 'guest_shell_outcome',
+    sessionId: ready.metadata.sessionId, turnId,
+    turnAck: { status: 'accepted', disposition: 'started', startedNewTurn: true },
+    commands: ['session/start', 'session/read', 'turn/start'],
+    event: approval ? { kind: 'approval', approval: approvalValue } :
+      { kind: 'turn_completed', terminal: 'completed', turnId, sessionId: ready.metadata.sessionId },
+    pending: approval ? { approvals: [approvalValue], userInputs: [] } : null,
+    providerRequests: [{ method: 'GET', path: '/muse-code/models' },
+      { method: 'POST', path: '/responses', kind: 'native_tool_call', model: 'fixture-native-shell',
+        responseId: 'resp_native_shell_1', itemId: 'fc_native_shell_1', callId: 'call_native_shell_1',
+        commandSha256: ready.commandSha256 },
+      ...approval ? [] : [{ method: 'POST', path: '/responses', kind: 'matching_tool_result',
+        model: 'fixture-native-shell', responseId: 'resp_native_shell_2', forCallId: 'call_native_shell_1' }]],
+    observations: { approvals: approval ? [approvalValue] : [], protocolErrors: [],
+      items: approval ? [] : [{ itemId: 'item-1', turnId, callId: 'call_native_shell_1',
+        tool: 'bash', status: 'completed', commandMatch: true, outputMarkers: true,
+        dummyAuthVisible: false, workspaceReportedWritten }] } };
+}
+
+test('native shell outcome rejects wrong turn, extra provider call and unanswered approval mismatch', () => {
+  const ready = shellReadyFixture('/tmp/fixture/workspace');
+  validateShellReady(ready, ready.metadata.workspaceRoot, 31001);
+  assert.equal(validateShellOutcome(ready, shellOutcomeFixture(ready)).kind, 'native_shell_effect_observed');
+  assert.equal(validateShellOutcome(ready, shellOutcomeFixture(ready, false, false)).kind,
+    'native_shell_denial_observed');
+  assert.equal(validateShellOutcome(ready, shellOutcomeFixture(ready, true)).kind, 'native_shell_approval_pending');
+  assert.throws(() => validateShellReady({ ...ready, hostPort: 32000 }, ready.metadata.workspaceRoot, 31001),
+    { code: 'NATIVE_SHELL_READY_INVALID' });
+  assert.throws(() => validateShellReady({ ...ready, commandSha256: 'bad' }, ready.metadata.workspaceRoot, 31001),
+    { code: 'NATIVE_SHELL_READY_INVALID' });
+  for (const variant of [
+    { event: { kind: 'turn_completed', terminal: 'completed', turnId: 'wrong', sessionId: ready.metadata.sessionId } },
+    { providerRequests: [...shellOutcomeFixture(ready).providerRequests, { method: 'POST', path: '/responses' }] },
+    { observations: { ...shellOutcomeFixture(ready).observations, items: [{ ...shellOutcomeFixture(ready).observations.items[0], callId: 'wrong' }] } },
+    { providerRequests: shellOutcomeFixture(ready).providerRequests.map(request =>
+      request.kind === 'native_tool_call' ? { ...request, commandSha256: '0'.repeat(64) } : request) },
+  ]) assert.throws(() => validateShellOutcome(ready, { ...shellOutcomeFixture(ready), ...variant }),
+    { code: 'NATIVE_SHELL_OUTCOME_INVALID' });
+  assert.throws(() => validateShellOutcome(ready, { ...shellOutcomeFixture(ready, true),
+    pending: { approvals: [], userInputs: [] } }), { code: 'NATIVE_APPROVAL_INVALID' });
+});
+
+test('native shell controller verifies effects and requires stop even for pending approval', async () => {
+  const run = async ({ approval = false, writeShell = false, stopFails = false,
+    workspaceReportedWritten = true, dummyAuthVisible = false } = {}) => {
+    const result = await qualifyNativeShell({
+      stage: async root => {
+        const runtime = join(root, 'runtime');
+        await mkdir(runtime);
+        if (writeShell) await writeFile(join(root, 'workspace', 'shell-canary'), 'native-write');
+        return runtime;
+      },
+      startSentinel: async () => ({ port: 31001, close: async () => undefined }),
+      probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+      launch: (_prepared, config) => {
+        const ready = shellReadyFixture(config.workspace);
+        const outcome = shellOutcomeFixture(ready, approval, workspaceReportedWritten);
+        if (!approval) outcome.observations.items[0].dummyAuthVisible = dummyAuthVisible;
+        return { pid: 100, ready: Promise.resolve(ready),
+          liveStatus: Promise.resolve({ child: 101, exit: null }), outcome: Promise.resolve(outcome),
+          releaseTurn: () => undefined, releaseShutdown: () => undefined, abort: () => undefined,
+          finished: Promise.resolve({ code: 0, signal: null, timedOut: false, overflow: false,
+            statusClosed: true, statusLines: ['{"child-pid":101}', '{"exit-code":0}'], stderr: '',
+            output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
+              JSON.stringify({ kind: 'guest_outcome', result: outcome }), JSON.stringify(outcome)] }) };
+      },
+      capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
+        supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
+      stop: async () => {
+        if (stopFails) throw Object.assign(new Error('survivor'), { code: 'STOP_SURVIVOR' });
+        return { kind: 'confirmed', pidns: 'pid:[1]' };
+      },
+    });
+    await rm(result.retainedFixtures[0], { recursive: true, force: true });
+    return result;
+  };
+  assert.equal((await run({ writeShell: true })).kind, 'native_shell_effect_observed');
+  assert.equal((await run()).code, 'NATIVE_SHELL_EFFECT_INVALID');
+  assert.equal((await run({ workspaceReportedWritten: false })).kind, 'native_shell_denial_observed');
+  assert.equal((await run({ workspaceReportedWritten: false, writeShell: true })).code,
+    'NATIVE_SHELL_EFFECT_INVALID');
+  assert.equal((await run({ writeShell: true, dummyAuthVisible: true })).code,
+    'NATIVE_SHELL_AUTH_VISIBLE');
+  const pending = await run({ approval: true });
+  assert.equal(pending.kind, 'native_shell_approval_pending');
+  assert.equal(pending.evidence.guestOutcome.pending.approvals.length, 1);
+  assert.equal((await run({ approval: true, writeShell: true })).code, 'NATIVE_SHELL_EFFECT_INVALID');
+  const uncertain = await run({ writeShell: true, stopFails: true });
+  assert.equal(uncertain.code, 'STOP_SURVIVOR');
+  assert.equal(uncertain.stopProof, 'unconfirmed');
+});
+
+test('early shell child failure settles an unread bounded outcome without unhandled rejection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-shell-early-exit-'));
+  try {
+    const fake = join(root, 'fake-bwrap');
+    await writeFile(fake, '#!/bin/sh\nprintf \'{"child-pid":123}\\n\' >&3\nprintf \'{"kind":"guest_transport_error"}\\n\'\nexit 1\n',
+      { mode: 0o700 });
+    const host = runStatusPhase({ executable: fake, args: ['--', 'ignored'] }, { phase: 'shell' });
+    await assert.rejects(host.ready, { code: 'GUEST_OUTPUT_INVALID' });
+    assert.equal((await host.liveStatus).child, 123);
+    assert.equal((await host.finished).code, 1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
