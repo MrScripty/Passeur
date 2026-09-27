@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createFixtureDirs, observedHostTree, observedHostQuiet, parseHostMarker, quickstartEnvironment,
   retainFixtureRoots, selectChoice, serveArgs, startRawSession, qualify, within, traceArgs,
   startNativeTrace, stopNativeTrace, failedTraceLeads } from '../../scripts/qualify-muse-serve-boundary.mjs';
+import { daemonTraceArgs, discoverDaemonTrace, waitForDaemonTrace, stopDaemonTrace,
+  pinnedNativeExecutable } from '../../scripts/qualify-muse-serve-boundary.mjs';
 
 function procStat(pid, { state = 'S', parent = 1, group = pid, session = pid, start = '100' } = {}) {
   const fields = Array(20).fill('0');
@@ -97,6 +99,203 @@ test('native trace uses only timestamped file/process metadata and separately ob
   assert.deepEqual(args, ['-f', '-ttt', '-s', '128', '-e', 'trace=%file,%process', '-o', '/tmp/trace', '-p', '123']);
   assert.equal(trace.attached, true);
   assert.deepEqual(await stopNativeTrace(trace), { state: 'observed', code: 0, signal: null });
+});
+
+test('daemon wrapper arguments preserve native serve and metadata-only trace', () => {
+  assert.deepEqual(daemonTraceArgs('/tmp/trace', '/opt/muse', serveArgs('raw-trace-daemon')),
+    ['-D', '-I', '2', '-f', '-ttt', '-s', '128', '-e', 'trace=%file,%process',
+      '-o', '/tmp/trace', '/opt/muse', 'serve']);
+});
+
+test('pinned native executable is adjacent to launcher with exact version, canonical path and digest', async () => {
+  const holder = await mkdtemp(join(tmpdir(), 'passeur-native-identity-test-'));
+  const launcher = join(holder, 'muse');
+  const native = join(holder, 'muse-bin-1.4.0-R4302.1');
+  const pinnedDigest = 'ad21c22965f8600b4473b4ab8354ff7cc483d4cb681b46f2952561d855c8ed86';
+  try {
+    await writeFile(launcher, '#!/bin/sh\n');
+    await writeFile(native, 'fixture binary');
+    assert.equal(await pinnedNativeExecutable(launcher, { digest: async path => {
+      assert.equal(path, native);
+      return pinnedDigest;
+    } }), native);
+    await assert.rejects(pinnedNativeExecutable(launcher), { code: 'DAEMON_TRACE_UNAVAILABLE' });
+    await assert.rejects(pinnedNativeExecutable(launcher, { digest: async () => '0'.repeat(64) }),
+      { code: 'DAEMON_TRACE_UNAVAILABLE' });
+    await rm(native);
+    const wrong = join(holder, 'muse-bin-1.4.0-R9999');
+    await writeFile(wrong, 'other version');
+    await assert.rejects(pinnedNativeExecutable(launcher, { digest: async () => pinnedDigest }),
+      { code: 'DAEMON_TRACE_UNAVAILABLE' });
+    await symlink(wrong, native);
+    await assert.rejects(pinnedNativeExecutable(launcher, { digest: async () => pinnedDigest }),
+      { code: 'DAEMON_TRACE_UNAVAILABLE' });
+  } finally { await rm(holder, { recursive: true, force: true }); }
+});
+
+function daemonPeers({ hostStart = '100', tracerStart = '200', tracerPid = 234,
+  hostExecutable = '/opt/muse', tracerExecutable = '/usr/bin/strace', status = `TracerPid:\t${tracerPid}\n` } = {}) {
+  const marker = procStat(123, { parent: 50, start: '100' });
+  const readStat = async pid => pid === 123
+    ? procStat(123, { parent: 50, start: hostStart })
+    : procStat(234, { parent: 1, group: 234, session: 234, start: tracerStart });
+  const readStatus = async () => status;
+  const readExecutable = async pid => pid === 123 ? hostExecutable : tracerExecutable;
+  return { marker, readStat, readStatus, readExecutable };
+}
+
+test('daemon discovery verifies host birth, executable, and attached tracer identity', async () => {
+  const peer = daemonPeers();
+  const identity = await discoverDaemonTrace(peer.marker, '/opt/muse', peer);
+  assert.deepEqual(identity.tracer, { pid: 234, start: '200', executable: '/usr/bin/strace' });
+  assert.equal(identity.host.parent, 50);
+  for (const changed of [
+    daemonPeers({ hostStart: '101' }), daemonPeers({ hostExecutable: '/opt/other' }),
+    daemonPeers({ tracerExecutable: '/usr/bin/other' }), daemonPeers({ tracerPid: 0 }),
+  ]) await assert.rejects(discoverDaemonTrace(changed.marker, '/opt/muse', changed));
+});
+
+test('daemon discovery retries a missing marker', async () => {
+  let attempts = 0;
+  const identity = await waitForDaemonTrace('/tmp/marker', '/opt/muse', {
+    readMarker: async () => { if (attempts++ === 0) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return 'marker'; },
+    discover: async marker => { assert.equal(marker, 'marker'); return { tracer: { pid: 234 } }; },
+    wait: async () => undefined,
+    budgetMs: 50,
+  });
+  assert.equal(identity.tracer.pid, 234);
+  assert.equal(attempts, 2);
+  await assert.rejects(waitForDaemonTrace('/tmp/marker', '/opt/muse', {
+    readMarker: async () => { throw Object.assign(new Error('unreadable'), { code: 'EACCES' }); },
+    wait: async () => undefined,
+    budgetMs: 1,
+  }), { code: 'DAEMON_TRACE_UNAVAILABLE' });
+});
+
+test('same host birth may move from launcher interpreter to pinned native executable', async () => {
+  const peer = daemonPeers();
+  let hostExecutableReads = 0;
+  const identity = await waitForDaemonTrace('/tmp/marker', '/opt/muse', {
+    readMarker: async () => peer.marker,
+    discover: (marker, native) => discoverDaemonTrace(marker, native, { ...peer,
+      readExecutable: async pid => pid === 123 && hostExecutableReads++ === 0
+        ? '/usr/bin/bash' : peer.readExecutable(pid),
+    }),
+    wait: async () => undefined,
+    budgetMs: 50,
+  });
+  assert.equal(hostExecutableReads, 2);
+  assert.equal(identity.host.pid, 123);
+  assert.equal(identity.host.start, '100');
+  assert.equal(identity.tracer.pid, 234);
+});
+
+test('daemon stop signals only the verified tracer and observes detach plus terminal', async () => {
+  const peer = daemonPeers();
+  const identity = await discoverDaemonTrace(peer.marker, '/opt/muse', peer);
+  let stopped = false;
+  const signals = [];
+  const result = await stopDaemonTrace(identity, { ...peer,
+    readStat: async pid => pid === 234 && stopped
+      ? procStat(234, { state: 'Z', start: '200' }) : peer.readStat(pid),
+    readStatus: async () => stopped ? 'TracerPid:\t0\n' : 'TracerPid:\t234\n',
+    signal: (pid, name) => { signals.push([pid, name]); stopped = true; },
+  });
+  assert.deepEqual(signals, [[234, 'SIGINT']]);
+  assert.deepEqual(result, { state: 'observed', detached: true });
+});
+
+test('daemon stop refuses reused tracer, denied signal, unreadable proc and timeout', async () => {
+  const peer = daemonPeers();
+  const identity = await discoverDaemonTrace(peer.marker, '/opt/muse', peer);
+  const reused = await stopDaemonTrace(identity, { ...peer,
+    readStat: async pid => pid === 234 ? procStat(234, { start: '201' }) : peer.readStat(pid),
+    signal: () => assert.fail('reused tracer was signaled'),
+  });
+  assert.deepEqual(reused, { state: 'uncertain', reason: 'identity_changed' });
+  assert.deepEqual(await stopDaemonTrace(identity, { ...peer,
+    signal: () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); },
+  }), { state: 'uncertain', reason: 'EPERM' });
+  assert.deepEqual(await stopDaemonTrace(identity, { ...peer,
+    readStatus: async () => { throw Object.assign(new Error('unreadable'), { code: 'EACCES' }); },
+  }), { state: 'uncertain', reason: 'EACCES' });
+  assert.deepEqual(await stopDaemonTrace(identity, { ...peer,
+    readStat: async pid => pid === 234 ? procStat(234, { state: 'Z', start: '200' }) : peer.readStat(pid),
+    readStatus: async () => 'TracerPid:\t0\n',
+    signal: () => assert.fail('terminal tracer was signaled'),
+  }), { state: 'observed', detached: true });
+  let signaled = false;
+  assert.deepEqual(await stopDaemonTrace(identity, { ...peer,
+    readStat: async pid => pid === 234 && signaled
+      ? procStat(234, { state: 'Z', start: '201' }) : peer.readStat(pid),
+    readStatus: async () => signaled ? 'TracerPid:\t0\n' : 'TracerPid:\t234\n',
+    signal: () => { signaled = true; },
+  }), { state: 'uncertain', reason: 'tracer_reused' });
+  assert.deepEqual(await stopDaemonTrace(identity, { ...peer, signal: () => undefined,
+    wait: async () => undefined, budgetMs: 1,
+  }), { state: 'uncertain', reason: 'stop_timeout' });
+  assert.deepEqual(await stopDaemonTrace(undefined), { state: 'uncertain', reason: 'identity_unavailable' });
+});
+
+test('initialize failure still owns daemon discovery and stop before SDK close', async () => {
+  const holder = await mkdtemp(join(tmpdir(), 'passeur-daemon-initialize-test-'));
+  const muse = join(holder, 'muse');
+  await writeFile(muse, '#!/bin/sh\nprintf "muse 1.4.0-R4302.1\\n"\n', { mode: 0o755 });
+  const events = [];
+  const identity = { host: { pid: 123, start: '100' },
+    tracer: { pid: 234, start: '200', executable: '/usr/bin/strace' } };
+  let resolveDiscovery;
+  let result;
+  try {
+    result = await qualify({ muse, sessionStart: 'raw-trace-daemon',
+      startLoopbackFixture: async () => ({ url: 'http://127.0.0.1:1', requests: [], close: async () => undefined }),
+      resolveNativeExecutable: async launcher => {
+        assert.equal(launcher, muse);
+        events.push('native_attested');
+        return '/opt/pinned-native';
+      },
+      spawnConnection: ({ command, args }) => {
+        events.push('spawn');
+        assert.deepEqual(args, ['serve']);
+        return {
+          initialize: async () => {
+            const wrapper = await readFile(command, 'utf8');
+            assert.match(wrapper, /exec strace '-D' '-I' '2'/);
+            assert.match(wrapper, new RegExp(`'${muse}'`));
+            assert.doesNotMatch(wrapper, /pinned-native/);
+            events.push('initialize_failed');
+            setTimeout(() => { events.push('discovered'); resolveDiscovery(identity); }, 5);
+            throw new Error('injected initialize failure');
+          },
+          connection: { command: () => assert.fail('session/start was sent') },
+          close: async () => { events.push('close'); },
+        };
+      },
+      startDaemonDiscovery: (_marker, native) => {
+        assert.equal(native, '/opt/pinned-native');
+        events.push('discover_started');
+        return new Promise(resolve => { resolveDiscovery = resolve; });
+      },
+      stopDaemon: async candidate => {
+        assert.deepEqual(candidate, identity);
+        events.push('stop');
+        return { state: 'observed', detached: true };
+      },
+    });
+    assert.equal(result.kind, 'qualification_error');
+    assert.equal(result.stage, 'host_initialize');
+    assert.deepEqual(events, ['native_attested', 'spawn', 'discover_started',
+      'initialize_failed', 'discovered', 'stop', 'close']);
+    assert.deepEqual(result.requests, []);
+    assert.deepEqual(result.trace.stop, { state: 'observed', detached: true });
+    assert.equal((await stat(result.retainedFixtures[0])).isDirectory(), true);
+    assert.equal(result.stopProof, 'descendants_unverified');
+  } finally {
+    if (result?.retainedFixtures) for (const root of result.retainedFixtures) {
+      await rm(root, { recursive: true, force: true });
+    }
+    await rm(holder, { recursive: true, force: true });
+  }
 });
 
 test('failed tracer attachment remains unavailable and its exit is observed', async () => {

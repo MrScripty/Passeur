@@ -2,13 +2,16 @@
 // Offline installed-host experiment. Every file and credential here is disposable.
 import { MuseClient, readSessionDurability, spawnMspConnection } from '@muse-code/sdk';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, chmod, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { mkdtemp, mkdir, chmod, readFile, readlink, realpath, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFixture, runManagedProcess } from './qualify-muse-native-shell.mjs';
 
 const EXPECTED = '1.4.0-R4302.1';
+const PINNED_NATIVE_SHA256 = 'ad21c22965f8600b4473b4ab8354ff7cc483d4cb681b46f2952561d855c8ed86';
 const DUMMY = 'passeur-disposable-dummy-key';
 const MODEL = 'fixture-native-shell';
 const TURN_MS = 20_000;
@@ -121,6 +124,136 @@ export function traceArgs(pid, output) {
   return ['-f', '-ttt', '-s', '128', '-e', 'trace=%file,%process', '-o', output, '-p', String(pid)];
 }
 
+export function daemonTraceArgs(output, muse, hostArgs) {
+  return ['-D', '-I', '2', '-f', '-ttt', '-s', '128', '-e', 'trace=%file,%process',
+    '-o', output, muse, ...hostArgs];
+}
+
+function unavailableTrace(message) {
+  return Object.assign(new Error(message), { code: 'DAEMON_TRACE_UNAVAILABLE' });
+}
+
+async function sha256File(path) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+export async function pinnedNativeExecutable(muse, {
+  canonicalize = realpath, digest = sha256File,
+} = {}) {
+  try {
+    const launcher = await canonicalize(muse);
+    const expectedPath = join(dirname(launcher), `muse-bin-${EXPECTED}`);
+    const native = await canonicalize(expectedPath);
+    if (native !== expectedPath || await digest(native) !== PINNED_NATIVE_SHA256) {
+      throw unavailableTrace('installed Muse native binary path or digest differs from the pinned version');
+    }
+    return native;
+  } catch (error) {
+    if (error.code === 'DAEMON_TRACE_UNAVAILABLE') throw error;
+    throw unavailableTrace(`installed Muse native binary identity unavailable: ${error.code ?? 'unknown'}`);
+  }
+}
+
+export async function discoverDaemonTrace(marker, nativeExecutable, {
+  readStat = pid => readFile(`/proc/${pid}/stat`, 'utf8'),
+  readStatus = pid => readFile(`/proc/${pid}/status`, 'utf8'),
+  readExecutable = pid => readlink(`/proc/${pid}/exe`),
+} = {}) {
+  const birth = parseHostMarker(marker);
+  const host = parseProcStat(birth.pid, await readStat(birth.pid));
+  if (!live(host) || host.start !== birth.start || host.parent !== birth.parent ||
+    host.group !== birth.group || host.session !== birth.session ||
+    host.group !== host.pid || host.session !== host.pid ||
+    await readExecutable(host.pid) !== nativeExecutable) {
+    throw unavailableTrace('daemon trace host identity was not verified');
+  }
+  const pid = tracerPid(await readStatus(host.pid));
+  if (!Number.isSafeInteger(pid) || pid < 1 || pid === host.pid) {
+    throw unavailableTrace('daemon tracer attachment was not verified');
+  }
+  const tracer = parseProcStat(pid, await readStat(pid));
+  const executable = await readExecutable(pid);
+  if (!live(tracer) || basename(executable) !== 'strace') {
+    throw unavailableTrace('daemon tracer executable was not verified');
+  }
+  return { host, tracer: { pid, start: tracer.start, executable } };
+}
+
+export async function waitForDaemonTrace(markerPath, nativeExecutable, {
+  readMarker = path => readFile(path, 'utf8'),
+  discover = discoverDaemonTrace,
+  wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  budgetMs = STARTUP_MS,
+} = {}) {
+  const deadline = Date.now() + budgetMs;
+  let lastError;
+  do {
+    try { return await discover(await readMarker(markerPath), nativeExecutable); }
+    catch (error) { lastError = error; }
+    if (Date.now() >= deadline) break;
+    await wait(25);
+  } while (true);
+  throw unavailableTrace(`daemon tracer discovery failed: ${lastError?.code ?? lastError?.message ?? 'unknown'}`);
+}
+
+export async function stopDaemonTrace(identity, {
+  readStat = pid => readFile(`/proc/${pid}/stat`, 'utf8'),
+  readStatus = pid => readFile(`/proc/${pid}/status`, 'utf8'),
+  readExecutable = pid => readlink(`/proc/${pid}/exe`),
+  signal = (pid, name) => process.kill(pid, name),
+  wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  budgetMs = TRACE_STOP_MS,
+} = {}) {
+  if (!identity) return { state: 'uncertain', reason: 'identity_unavailable' };
+  const { host, tracer } = identity;
+  try {
+    const currentHost = parseProcStat(host.pid, await readStat(host.pid));
+    if (!live(currentHost) || currentHost.start !== host.start ||
+      currentHost.parent !== host.parent || currentHost.group !== host.group ||
+      currentHost.session !== host.session) return { state: 'uncertain', reason: 'host_identity_changed' };
+    const attached = tracerPid(await readStatus(host.pid));
+    let current;
+    try { current = parseProcStat(tracer.pid, await readStat(tracer.pid)); }
+    catch (error) {
+      if (['ENOENT', 'ESRCH'].includes(error.code) && attached === 0) {
+        return { state: 'observed', detached: true };
+      }
+      throw error;
+    }
+    if (current.start !== tracer.start) return { state: 'uncertain', reason: 'identity_changed' };
+    if (!live(current)) return attached === 0
+      ? { state: 'observed', detached: true }
+      : { state: 'uncertain', reason: 'terminal_but_attached' };
+    if (
+      await readExecutable(tracer.pid) !== tracer.executable ||
+      attached !== tracer.pid) {
+      return { state: 'uncertain', reason: 'identity_changed' };
+    }
+    signal(tracer.pid, 'SIGINT');
+  } catch (error) { return { state: 'uncertain', reason: error.code ?? 'signal_unavailable' }; }
+  const deadline = Date.now() + budgetMs;
+  do {
+    try {
+      const current = parseProcStat(tracer.pid, await readStat(tracer.pid));
+      const attached = tracerPid(await readStatus(host.pid));
+      if (current.start !== tracer.start) return { state: 'uncertain', reason: 'tracer_reused' };
+      if (!live(current) && attached === 0) return { state: 'observed', detached: true };
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ESRCH') {
+        return { state: 'uncertain', reason: error.code ?? 'proc_unavailable' };
+      }
+      try {
+        if (tracerPid(await readStatus(host.pid)) === 0) return { state: 'observed', detached: true };
+      } catch { return { state: 'uncertain', reason: 'host_status_unavailable' }; }
+    }
+    if (Date.now() >= deadline) break;
+    await wait(25);
+  } while (true);
+  return { state: 'uncertain', reason: 'stop_timeout' };
+}
+
 function tracerPid(status) { return Number(/^TracerPid:\s*(\d+)$/m.exec(status)?.[1] ?? 0); }
 
 export async function startNativeTrace(identity, output, { spawnTrace = spawn,
@@ -206,7 +339,9 @@ async function file(path) {
 }
 
 export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario = 'inside', decision = 'deny',
-  sessionStart = 'facade', runProcess = runManagedProcess } = {}) {
+  sessionStart = 'facade', runProcess = runManagedProcess, spawnConnection = spawnMspConnection,
+  startDaemonDiscovery = waitForDaemonTrace, stopDaemon = stopDaemonTrace,
+  startLoopbackFixture = startFixture, resolveNativeExecutable = pinnedNativeExecutable } = {}) {
   const commands = {
     inside: 'printf shell-ran > shell-canary',
     git: 'printf git-ran > .git/probe',
@@ -214,8 +349,8 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     auth: 'cat "$HOME/.config/muse/auth.json" > auth-canary; env > env-canary',
   };
   if (!(scenario in commands) || !['allow', 'deny'].includes(decision)) throw new Error('invalid scenario or decision');
-  if (!['facade', 'raw', 'raw-memory', 'raw-trace', 'quickstart'].includes(sessionStart)) {
-    throw new Error('sessionStart must be facade, raw, raw-memory, raw-trace or quickstart');
+  if (!['facade', 'raw', 'raw-memory', 'raw-trace', 'raw-trace-daemon', 'quickstart'].includes(sessionStart)) {
+    throw new Error('sessionStart must be facade, raw, raw-memory, raw-trace, raw-trace-daemon or quickstart');
   }
   const quickstart = sessionStart === 'quickstart';
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-serve-boundary-'));
@@ -231,6 +366,8 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
   let hostIdentity;
   let trace;
   let traceStop;
+  let daemonDiscovery;
+  let daemonTrace;
   let result;
   let stderr = '';
   let stage = 'version';
@@ -255,7 +392,7 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
       await chmod(join(workspace, '.git', 'hooks', 'pre-commit'), 0o755);
     }
     stage = 'loopback_fixture';
-    fixture = await startFixture(commands[scenario]);
+    fixture = await startLoopbackFixture(commands[scenario]);
     const configDir = join(home, '.config', 'muse');
     await mkdir(configDir, { recursive: true });
     await writeFile(join(configDir, 'settings.json'), `${JSON.stringify({ schema_version: 1, endpoint_transport: { base_url: fixture.url, auth: 'bearer' } })}\n`);
@@ -265,19 +402,46 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     stage = 'host_spawn';
     const pidFile = join(root, 'serve.stat');
     const wrapper = join(root, 'serve-wrapper');
-    await writeFile(wrapper, `#!/bin/sh\nset -eu\ncat /proc/$$/stat > ${shellQuote(pidFile)}\nexec ${shellQuote(muse)} "$@"\n`, { mode: 0o700 });
+    const daemonMode = sessionStart === 'raw-trace-daemon';
+    const traceOutput = join(root, 'native-file-process.trace');
+    const nativeExecutable = daemonMode ? await resolveNativeExecutable(muse) : undefined;
     hostArgs = serveArgs(sessionStart);
+    const wrapperCommand = daemonMode
+      ? `exec strace ${daemonTraceArgs(traceOutput, muse, []).map(shellQuote).join(' ')} "$@"`
+      : `exec ${shellQuote(muse)} "$@"`;
+    await writeFile(wrapper, `#!/bin/sh\nset -eu\ncat /proc/$$/stat > ${shellQuote(pidFile)}\n${wrapperCommand}\n`, { mode: 0o700 });
     hostSpawnAttempted = true;
-    handshake = spawnMspConnection({ command: wrapper, args: hostArgs, cwd: workspace, env, shutdownTimeoutMs: 2_000,
+    handshake = spawnConnection({ command: wrapper, args: hostArgs, cwd: workspace, env, shutdownTimeoutMs: 2_000,
       onStderr: chunk => { stderr = (stderr + chunk).slice(-4_000); } });
+    if (daemonMode) {
+      daemonDiscovery = startDaemonDiscovery(pidFile, nativeExecutable)
+        .then(identity => ({ identity }), error => ({ error }));
+    }
+    if (daemonMode) stage = 'host_initialize';
     const spawned = await within('host initialize', handshake.initialize({ clientInfo: {
       name: 'passeur_disposable_qualification', version: '0.1.0',
     } }), STARTUP_MS);
+    if (daemonMode) stage = 'daemon_trace_discovery';
     const birth = parseHostMarker(await readFile(pidFile, 'utf8'));
     if (birth.group !== birth.pid || birth.session !== birth.pid) {
       throw Object.assign(new Error('SDK host marker did not identify its process group'), { code: 'HOST_IDENTITY_UNVERIFIED' });
     }
     hostIdentity = observedHostTree(birth.pid, await processTable(), birth.start);
+    if (daemonMode) {
+      stage = 'daemon_trace_discovery';
+      const discovered = await daemonDiscovery;
+      if (discovered.error) throw discovered.error;
+      daemonTrace = discovered.identity;
+      const currentTrace = await discoverDaemonTrace(await readFile(pidFile, 'utf8'), nativeExecutable);
+      if (daemonTrace.host.pid !== hostIdentity.pid || daemonTrace.host.start !== hostIdentity.start) {
+        throw unavailableTrace('SDK host and daemon trace identities disagreed');
+      }
+      if (currentTrace.tracer.pid !== daemonTrace.tracer.pid ||
+        currentTrace.tracer.start !== daemonTrace.tracer.start ||
+        currentTrace.tracer.executable !== daemonTrace.tracer.executable) {
+        throw unavailableTrace('daemon tracer changed before session/start');
+      }
+    }
     if (sessionStart === 'raw-trace') {
       stage = 'trace_attach';
       trace = await startNativeTrace(hostIdentity, join(root, 'native-file-process.trace'));
@@ -287,7 +451,7 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
         return result;
       }
     }
-    if (sessionStart === 'raw' || sessionStart === 'raw-memory' || sessionStart === 'raw-trace' || quickstart) {
+    if (sessionStart === 'raw' || sessionStart === 'raw-memory' || sessionStart === 'raw-trace' || daemonMode || quickstart) {
       stage = 'session_start';
       const started = await within('session/start', startRawSession(spawned.connection, workspace), STARTUP_MS);
       result = { kind: 'raw_session_started', sessionStart, hostArgs, sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(),
@@ -331,7 +495,10 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     return result;
   } catch (error) {
     if (error.code === 'GROUP_NOT_STOPPED') uncertainPreHostStop = true;
-    result = { kind: 'qualification_error', stage, scenario, decision,
+    result = { kind: error.code === 'DAEMON_TRACE_UNAVAILABLE' ||
+      (sessionStart === 'raw-trace-daemon' && stage === 'daemon_trace_discovery')
+      ? 'native_trace_unavailable' : 'qualification_error',
+      stage, scenario, decision,
       ...(sessionStart !== 'facade' ? { sessionStart } : {}), code: error.code ?? error.name,
       ...(hostSpawnAttempted ? { hostArgs } : {}),
       message: String(error.message).slice(0, 1_000), sdkVersion: '1.3.0', stderr: stderr.slice(-2_000),
@@ -339,6 +506,25 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     return result;
   } finally {
     let closeSucceeded = false;
+    if (daemonDiscovery) {
+      const discovered = await daemonDiscovery;
+      daemonTrace ??= discovered.identity;
+      if (daemonTrace) {
+        traceStop = await stopDaemon(daemonTrace);
+        if (result) {
+          result.trace = { pid: daemonTrace.tracer.pid, start: daemonTrace.tracer.start,
+            executable: daemonTrace.tracer.executable, attached: true,
+            output: join(root, 'native-file-process.trace'), stop: traceStop };
+          try { result.trace.failedPathLeads = failedTraceLeads(await readFile(result.trace.output, 'utf8'), [
+            { name: 'home', path: home }, { name: 'workspace', path: workspace }, { name: 'fixture', path: root },
+          ]); } catch { result.trace.failedPathLeads = []; result.trace.read = 'unavailable'; }
+        }
+      } else if (result) {
+        traceStop = { state: 'uncertain', reason: 'identity_unavailable' };
+        result.trace = { attached: false, output: join(root, 'native-file-process.trace'),
+          discovery: discovered.error?.code ?? 'unavailable', stop: traceStop };
+      }
+    }
     if (trace) {
       traceStop = await stopNativeTrace(trace);
       if (result) {

@@ -153,6 +153,26 @@ focused tests passed 15/15 after independent review and repair of a tracer
 stop-reporting bug. No kernel policy was changed. Persistent MSP and protected
 worker admission remain open.
 
+An independently reviewed `strace -D -I 2` arrangement then preserved the
+native child's PID/parent/process group and observed a separate tracer. The
+first installed diagnostic conservatively stopped before `session/start`
+because it compared `/proc/<host>/exe` to the Bash launcher rather than the
+versioned binary; retain `/tmp/passeur-muse-serve-boundary-RamFNk` with tracer
+stop unknown. A reviewed repair pinned the exact installed 1.4.0-R4302.1
+binary path and SHA-256, while keeping the original launcher invocation.
+Focused tests passed 23/23. One repaired no-account persistent raw request
+reproduced `-32603 UnsafePath` at `session/start`. Exact tracer PID 23236 was
+observed attached, detached and terminal before SDK close; host descendants
+are still unverified. The root `/tmp/passeur-muse-serve-boundary-27vtab` and
+its 1,344,659-byte metadata trace (SHA-256
+`cbbafb2170021e074c6f1dfc03263b674e0168df7fc23f14ec5847dfe54bed71`)
+remain retained locally. The last traced filesystem call before the error was
+`stat` of the disposable HOME's missing `.local/share/muse/sessions` directory.
+The session index had already been created and opened, with no subsequent
+`mkdir sessions` in that trace. This path is a concrete diagnostic lead, not
+proof of the deletion-registry cause. No turn, approval, model tool or real
+account occurred.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.
