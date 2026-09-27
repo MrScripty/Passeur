@@ -69,6 +69,30 @@ no-provider process. Echo did not invoke shell or file tools, authenticate,
 exercise MSP, create a commit, or test network/credential denial. The
 disposable canary directory remained outside the namespace.
 
+The installed `muse exec` accepts a dummy API key on stdin and a loopback
+`--base-url`; a disposable fake endpoint saw a first `/muse-code/models`
+catalog request, then the CLI stopped because no catalog was served. This did
+not invoke a model tool or reach an account. An SDK MSP diagnostic separately
+requested `userShell` with an echo session; that user-initiated TUI escape
+hatch wrote `.git/probe` under the default Muse host posture. It exercises a
+different authority path from model shell tools and is explicitly excluded
+from Git-write qualification. Passeur's Muse adapter does not request the
+`userShell` capability. The diagnostic host was closed and its disposable Git
+fixture removed. A bounded scripted fake catalog/response stream then induced
+an actual installed model `tool.bash` call without a real account. With
+`--approval-mode never` and no explicit `--disable-sandbox`, one disposable
+run wrote `.git/probe`; another made a commit and ran the fixture's default
+pre-commit hook. These are observed effects for that exact `exec` posture,
+not proof that its effective sandbox was active or that the Passeur MSP host
+can do the same. A proposed tool under `on-request` produced no file/tool
+result during a bounded 20-second observation; the diagnostic did not capture
+a completed native approval decision. The attempted `../outside-canary` write
+was inside the temporary root and is not a valid denial control because Muse
+documents temp writes. The fake endpoint saw catalog and Responses traffic on
+loopback with a dummy stdin key; other network egress was not independently
+denied or observed. Preserve APR-028 until an effective boundary and actual
+approval posture are qualified.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.
