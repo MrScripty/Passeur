@@ -4,13 +4,15 @@ import { test } from 'node:test';
 import { lstat, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, guestEnvironment,
   pinnedBinary, pinnedNode, qualify, retainHostRoot, sandboxConfig, stageRuntime, validateIdleRead,
   verifiedNativeNamespace, loopbackReady, parseBubblewrapStatus, verifyHostStop,
   validateResumeOutcome, qualifyFreshHostResume,
   assertHostAssociation,
   advertisedBash, matchingShellResult, shellOutputMarkers, shellProbeCommand,
-  rejectedToolSchemaShape, summarizedShellModel,
+  rejectedToolSchemaShape, summarizedShellModel, recognizedReminderSchema, decodeShellOutcomeLine,
+  startShellProvider,
   validateShellReady, validateShellOutcome, qualifyNativeShell,
   diagnosticMode,
   runStatusPhase,
@@ -575,6 +577,69 @@ test('rejected native tool schema retains bounded structure without values', () 
   assert.equal(JSON.stringify(manyGroups).includes(secretKey), false);
 });
 
+test('recognized reminder prelude records only its seven-field schema and never a payload', () => {
+  const secret = 'secret-prompt-and-default-value';
+  const properties = { decision: { type: 'string', enum: ['none', 'remind'], description: secret },
+    reason: { type: ['string', 'null'], minLength: 0, maxLength: 120, default: secret },
+    next_step: { anyOf: [{ type: 'string' }, { type: 'null' }], description: secret },
+    detail: { type: 'string' }, code: { type: 'integer', minimum: 0, maximum: 10 },
+    flag: { type: 'boolean' }, tags: { type: 'array', minItems: 0, maxItems: 3 } };
+  const tool = { type: 'namespace', name: 'muse', tools: [{ type: 'function',
+    name: 'submit_reminder_decision', description: secret, strict: true,
+    parameters: { type: 'object', properties, required: Object.keys(properties),
+      additionalProperties: false } }] };
+  const body = { model: 'fixture-native-shell', input: secret, tools: [tool] };
+  const summary = recognizedReminderSchema(body);
+  assert.equal(summary.function, 'submit_reminder_decision');
+  assert.deepEqual(summary.required, Object.keys(properties));
+  assert.deepEqual(summary.properties.find(property => property.name === 'decision').enum, ['none', 'remind']);
+  assert.deepEqual(summary.properties.find(property => property.name === 'reason').types, ['string', 'null']);
+  assert.equal(summary.properties.find(property => property.name === 'reason').nullable, true);
+  assert.deepEqual(summary.properties.find(property => property.name === 'code').bounds,
+    { minimum: 0, maximum: 10 });
+  assert.equal(JSON.stringify(summary).includes(secret), false);
+  assert.ok(Buffer.byteLength(JSON.stringify(summary)) <= 4_096);
+  assert.equal(recognizedReminderSchema({ ...body, tools: [{ ...tool, name: 'wrong' }] }), null);
+  assert.equal(recognizedReminderSchema({ ...body, tools: [{ ...tool, tools: [{ ...tool.tools[0], name: 'wrong' }] }] }), null);
+  assert.throws(() => recognizedReminderSchema({ ...body, tools: [{ ...tool, tools: [{ ...tool.tools[0],
+    parameters: { ...tool.tools[0].parameters, required: [...Object.keys(properties).slice(0, 6), 'unknown'] } }] }] }),
+  { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
+});
+
+test('recognized reminder provider request returns 422 without a function call frame', async () => {
+  let handle;
+  const provider = await startShellProvider(31001, 'unused', {
+    makeServer: callback => { handle = callback; return {}; },
+    waitListen: async () => 31002, shut: async () => undefined,
+  });
+  const names = ['decision', 'reason', 'next_step', 'detail', 'code', 'flag', 'tags'];
+  const body = { model: 'fixture-native-shell', input: 'secret prompt', tools: [{ type: 'namespace',
+    name: 'muse', tools: [{ type: 'function', name: 'submit_reminder_decision',
+      parameters: { type: 'object', properties: Object.fromEntries(names.map(name =>
+        [name, { type: 'string', description: 'secret description' }])), required: names } }] }] };
+  const request = Readable.from([JSON.stringify(body)]);
+  request.method = 'POST'; request.url = '/responses';
+  const response = { status: null, body: null, writeHead(status) { this.status = status; return this; },
+    end(value = '') { this.body = value; return this; } };
+  await handle(request, response);
+  assert.equal(response.status, 422);
+  assert.equal(response.body, '');
+  assert.equal(provider.requests.length, 1);
+  assert.equal(provider.requests[0].kind, 'native_reminder_schema_only');
+  assert.equal(provider.requests[0].reminderSchema.function, 'submit_reminder_decision');
+  assert.equal(JSON.stringify(provider.requests).includes('secret'), false);
+  assert.deepEqual(await provider.rejection, { kind: 'provider_rejected', code: 'NATIVE_REMINDER_SCHEMA_ONLY' });
+  await provider.close();
+});
+
+test('shell output decoder retains a typed primary native guest failure', () => {
+  const failure = { kind: 'guest_transport_error', stage: 'native_turn',
+    code: 'NATIVE_REMINDER_SCHEMA_ONLY', message: 'schema-only stop', providerRequests: [] };
+  assert.deepEqual(decodeShellOutcomeLine(JSON.stringify(failure)), failure);
+  assert.throws(() => decodeShellOutcomeLine(JSON.stringify({ ...failure, code: 'bad secret' })),
+    { code: 'GUEST_OUTPUT_INVALID' });
+});
+
 function shellReadyFixture(workspace) {
   const commandSha256 = createHash('sha256').update(shellProbeCommand(workspace,
     join(workspace, '..', 'protected'), 'protected-canary')).digest('hex');
@@ -641,7 +706,8 @@ test('native shell outcome rejects wrong turn, extra provider call and unanswere
 
 test('native shell controller verifies effects and requires stop even for pending approval', async () => {
   const run = async ({ approval = false, writeShell = false, stopFails = false,
-    workspaceReportedWritten = true, dummyAuthVisible = false } = {}) => {
+    workspaceReportedWritten = true, dummyAuthVisible = false, guestFailure = false,
+    finishedReject = false, terminalInvalid = false } = {}) => {
     const result = await qualifyNativeShell({
       stage: async root => {
         const runtime = join(root, 'runtime');
@@ -653,15 +719,24 @@ test('native shell controller verifies effects and requires stop even for pendin
       probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
       launch: (_prepared, config) => {
         const ready = shellReadyFixture(config.workspace);
-        const outcome = shellOutcomeFixture(ready, approval, workspaceReportedWritten);
-        if (!approval) outcome.observations.items[0].dummyAuthVisible = dummyAuthVisible;
+        const outcome = guestFailure ? { kind: 'guest_transport_error', stage: 'native_turn',
+          code: 'NATIVE_REMINDER_SCHEMA_ONLY', message: 'schema-only stop',
+          providerRequests: [{ method: 'POST', path: '/responses', kind: 'native_reminder_schema_only' }] } :
+          shellOutcomeFixture(ready, approval, workspaceReportedWritten);
+        if (!approval && !guestFailure) outcome.observations.items[0].dummyAuthVisible = dummyAuthVisible;
+        const finished = finishedReject ? Promise.reject(Object.assign(new Error('host exit timed out'),
+          { code: 'PROBE_DEADLINE' })) : Promise.resolve({ code: guestFailure ? 1 : 0, signal: null,
+          timedOut: false, overflow: false, statusClosed: true,
+          statusLines: terminalInvalid ? ['{"child-pid":101}', 'bad-json'] :
+            ['{"child-pid":101}', `{"exit-code":${guestFailure ? 1 : 0}}`], stderr: '',
+          output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
+            JSON.stringify(guestFailure ? outcome : { kind: 'guest_outcome', result: outcome }),
+            JSON.stringify(outcome)] });
+        finished.catch(() => undefined);
         return { pid: 100, ready: Promise.resolve(ready),
           liveStatus: Promise.resolve({ child: 101, exit: null }), outcome: Promise.resolve(outcome),
           releaseTurn: () => undefined, releaseShutdown: () => undefined, abort: () => undefined,
-          finished: Promise.resolve({ code: 0, signal: null, timedOut: false, overflow: false,
-            statusClosed: true, statusLines: ['{"child-pid":101}', '{"exit-code":0}'], stderr: '',
-            output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
-              JSON.stringify({ kind: 'guest_outcome', result: outcome }), JSON.stringify(outcome)] }) };
+          finished };
       },
       capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
         supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
@@ -687,6 +762,20 @@ test('native shell controller verifies effects and requires stop even for pendin
   const uncertain = await run({ writeShell: true, stopFails: true });
   assert.equal(uncertain.code, 'STOP_SURVIVOR');
   assert.equal(uncertain.stopProof, 'unconfirmed');
+  const primary = await run({ guestFailure: true, stopFails: true });
+  assert.equal(primary.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
+  assert.equal(primary.evidence.primaryGuestFailure.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
+  assert.equal(primary.evidence.stopError.code, 'STOP_SURVIVOR');
+  assert.equal(primary.stopProof, 'unconfirmed');
+  const completionFailed = await run({ guestFailure: true, finishedReject: true });
+  assert.equal(completionFailed.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
+  assert.equal(completionFailed.evidence.primaryGuestFailure.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
+  assert.equal(completionFailed.evidence.secondaryError.code, 'PROBE_DEADLINE');
+  assert.equal(completionFailed.stopProof, 'unconfirmed');
+  const terminalFailed = await run({ guestFailure: true, terminalInvalid: true });
+  assert.equal(terminalFailed.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
+  assert.equal(terminalFailed.evidence.terminalError.code, 'BWRAP_STATUS_INVALID');
+  assert.equal(terminalFailed.stopProof, 'unconfirmed');
 });
 
 test('early shell child failure settles an unread bounded outcome without unhandled rejection', async () => {

@@ -294,6 +294,67 @@ export function rejectedToolSchemaShape(body) {
 
 export function summarizedShellModel(value) { return value === SHELL_MODEL ? SHELL_MODEL : 'invalid'; }
 
+// The native reminder function is a distinct model-side prelude. Until its
+// complete contract is known, observe its schema and emit no function result.
+export function recognizedReminderSchema(body) {
+  if (body?.model !== SHELL_MODEL) return null;
+  const namespace = body?.tools?.length === 1 ? body.tools[0] : null;
+  const functionTool = namespace?.tools?.length === 1 ? namespace.tools[0] : null;
+  if (namespace?.type !== 'namespace' || namespace.name !== 'muse' ||
+      functionTool?.type !== 'function' || functionTool.name !== 'submit_reminder_decision') return null;
+  const parameters = functionTool.parameters;
+  if (parameters?.type !== 'object' || !parameters.properties ||
+      Array.isArray(parameters.properties) || typeof parameters.properties !== 'object' ||
+      Object.keys(parameters.properties).length !== 7 || !Array.isArray(parameters.required) ||
+      parameters.required.length !== 7) throw fault('NATIVE_REMINDER_SCHEMA_INVALID', 'reminder schema shape differs');
+  const safeName = value => typeof value === 'string' && /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(value);
+  const names = Object.keys(parameters.properties);
+  if (names.some(name => !safeName(name)) || parameters.required.some(name => !safeName(name)) ||
+      new Set(parameters.required).size !== 7 || parameters.required.some(name => !names.includes(name))) {
+    throw fault('NATIVE_REMINDER_SCHEMA_INVALID', 'reminder property names or required list differ');
+  }
+  const allowedTypes = new Set(['string', 'integer', 'number', 'boolean', 'object', 'array', 'null']);
+  const typeShape = schema => {
+    const direct = Array.isArray(schema?.type) ? schema.type : [schema?.type];
+    const alternatives = Array.isArray(schema?.anyOf) ? schema.anyOf :
+      Array.isArray(schema?.oneOf) ? schema.oneOf : [];
+    const observed = [...direct, ...alternatives.flatMap(branch =>
+      Array.isArray(branch?.type) ? branch.type : [branch?.type])];
+    const types = [...new Set(observed.filter(type => allowedTypes.has(type)))];
+    return { types: types.length && types.length <= 3 ? types : ['unresolved'],
+      nullable: types.includes('null') || schema?.nullable === true };
+  };
+  const bounds = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+    'minLength', 'maxLength', 'minItems', 'maxItems'];
+  const properties = names.map(name => {
+    const schema = parameters.properties[name];
+    const { types, nullable } = typeShape(schema);
+    const enumValues = schema?.enum;
+    if (enumValues !== undefined && (!Array.isArray(enumValues) || enumValues.length > 8 ||
+        enumValues.some(value => value !== null && typeof value !== 'boolean' &&
+          !(typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1_000_000) &&
+          !(typeof value === 'string' && /^[A-Za-z0-9_-]{0,64}$/.test(value))))) {
+      throw fault('NATIVE_REMINDER_SCHEMA_INVALID', 'reminder enum cannot be retained safely');
+    }
+    const observedBounds = {};
+    for (const key of bounds) if (Object.hasOwn(schema, key)) {
+      const value = schema[key];
+      if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1_000_000) {
+        throw fault('NATIVE_REMINDER_SCHEMA_INVALID', 'reminder bound cannot be retained safely');
+      }
+      observedBounds[key] = value;
+    }
+    return { name, types, nullable, ...(enumValues === undefined ? {} : { enum: enumValues }),
+      bounds: observedBounds };
+  });
+  const result = { namespace: 'muse', function: 'submit_reminder_decision', required: parameters.required,
+    additionalProperties: parameters.additionalProperties === false ? false : 'unspecified', properties };
+  if (Buffer.byteLength(JSON.stringify(result)) > 4_096) {
+    throw fault('NATIVE_REMINDER_SCHEMA_INVALID', 'reminder schema exceeds retained evidence budget');
+  }
+  return result;
+}
+
 export function shellOutputMarkers(output) {
   if (typeof output !== 'string' || Buffer.byteLength(output) > LIMIT) return null;
   const lines = output.endsWith('\n') ? output.slice(0, -1).split('\n') : output.split('\n');
@@ -311,12 +372,14 @@ export function matchingShellResult(body) {
   return shellOutputMarkers(output) !== null;
 }
 
-export async function startShellProvider(forbiddenPort, command) {
+export async function startShellProvider(forbiddenPort, command, {
+  makeServer = createServer, waitListen = listen, shut = close,
+} = {}) {
   const requests = [];
   let calls = 0;
   let reportRejection;
   const rejection = new Promise(resolve => { reportRejection = resolve; });
-  const server = createServer(async (request, response) => {
+  const server = makeServer(async (request, response) => {
     let body = '';
     try {
       for await (const chunk of request) {
@@ -348,6 +411,14 @@ export async function startShellProvider(forbiddenPort, command) {
     let events;
     if (calls === 1) {
       try {
+        const reminder = recognizedReminderSchema(parsed);
+        if (reminder) {
+          summary.kind = 'native_reminder_schema_only';
+          summary.reminderSchema = reminder;
+          summary.rejection = 'NATIVE_REMINDER_SCHEMA_ONLY';
+          reportRejection({ kind: 'provider_rejected', code: summary.rejection });
+          response.writeHead(422).end(); return;
+        }
         const selected = advertisedBash({ ...parsed, fixtureCommand: command });
         summary.advertisedBash = true;
         summary.argumentKeys = Object.keys(selected.arguments);
@@ -391,10 +462,10 @@ export async function startShellProvider(forbiddenPort, command) {
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     response.end(events.map(sse).join(''));
   });
-  const port = await listen(server);
+  const port = await waitListen(server);
   try { assertPortSeparation(forbiddenPort, port); }
-  catch (error) { await close(server); throw error; }
-  return { port, requests, rejection, close: () => close(server) };
+  catch (error) { await shut(server); throw error; }
+  return { port, requests, rejection, close: () => shut(server) };
 }
 
 export async function tcpProbe(address, port, ms = 700) {
@@ -1033,12 +1104,7 @@ export function runStatusPhase(prepared, config) {
     }
     if (config.phase === 'shell' && output.length === 2) {
       try {
-        const parsed = JSON.parse(line);
-        if (parsed.kind !== 'guest_outcome' ||
-            !['guest_shell_outcome', 'native_shell_approval_pending'].includes(parsed.result?.kind)) {
-          throw fault('GUEST_OUTPUT_INVALID', 'shell outcome framing invalid');
-        }
-        outcomeResolve(parsed.result);
+        outcomeResolve(decodeShellOutcomeLine(line));
       } catch (error) { outcomeReject(error); }
     }
   });
@@ -1085,6 +1151,19 @@ export function runStatusPhase(prepared, config) {
       shutdownReleased = true; child.stdin.end('shutdown\n');
     } },
     abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } }, finished };
+}
+
+export function decodeShellOutcomeLine(line) {
+  let parsed;
+  try { parsed = JSON.parse(line); }
+  catch { throw fault('GUEST_OUTPUT_INVALID', 'shell outcome JSON invalid'); }
+  if (parsed?.kind === 'guest_outcome' &&
+      ['guest_shell_outcome', 'native_shell_approval_pending'].includes(parsed.result?.kind)) return parsed.result;
+  if (parsed?.kind === 'guest_transport_error' && parsed.stage === 'native_turn' &&
+      /^[A-Z][A-Z0-9_]{0,63}$/.test(parsed.code ?? '') &&
+      typeof parsed.message === 'string' && Buffer.byteLength(parsed.message) <= 400 &&
+      Array.isArray(parsed.providerRequests)) return parsed;
+  throw fault('GUEST_OUTPUT_INVALID', 'shell outcome framing invalid');
 }
 
 function validatePhaseOutcome(phase, guest) {
@@ -1413,6 +1492,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
   let stopAttempted = false;
   let stageName = 'stage';
   let outcome;
+  let primaryGuestFailure;
   const evidence = {};
   try {
     const workspace = join(root, 'workspace');
@@ -1457,17 +1537,31 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     try { guestOutcome = await host.outcome; evidence.guestOutcome = guestOutcome; }
     catch (error) { outcomeError = error; evidence.outcomeError = { code: error.code ?? error.name,
       message: String(error.message).slice(0, 300) }; }
+    primaryGuestFailure = guestOutcome?.kind === 'guest_transport_error' ?
+      { stage: guestOutcome.stage, code: guestOutcome.code, message: guestOutcome.message } : null;
+    if (primaryGuestFailure) evidence.primaryGuestFailure = primaryGuestFailure;
     host.releaseShutdown();
     const done = await timeout('shell host exit', host.finished, DEADLINE_MS + 3_000);
     evidence.completion = { code: done.code, signal: done.signal, timedOut: done.timedOut,
       overflow: done.overflow, statusClosed: done.statusClosed, statusLines: done.statusLines,
       output: done.output, stderr: done.stderr };
-    const terminal = parseBubblewrapStatus(done.statusLines);
+    let terminal;
+    try { terminal = parseBubblewrapStatus(done.statusLines); }
+    catch (error) { evidence.terminalError = { code: error.code ?? error.name,
+      message: String(error.message).slice(0, 300) };
+      if (primaryGuestFailure) throw fault(primaryGuestFailure.code, primaryGuestFailure.message);
+      throw error; }
     evidence.terminal = terminal;
     stopAttempted = true;
-    const stopped = await timeout('shell host stop scan', stop(captured, terminal, done));
-    evidence.stop = stopped;
+    let stopped;
+    try { stopped = await timeout('shell host stop scan', stop(captured, terminal, done));
+      evidence.stop = stopped; }
+    catch (error) { evidence.stopError = { code: error.code ?? error.name,
+      message: String(error.message).slice(0, 300) };
+      if (primaryGuestFailure) throw fault(primaryGuestFailure.code, primaryGuestFailure.message);
+      throw error; }
     await captured.fd.close(); captured = undefined;
+    if (primaryGuestFailure) throw fault(primaryGuestFailure.code, primaryGuestFailure.message);
     if (stopped.kind !== 'confirmed') throw fault('STOP_UNCONFIRMED', 'shell namespace stop was not confirmed');
     if (outcomeError) throw outcomeError;
     if (done.code !== 0 || done.output.length !== 3 || done.timedOut || done.overflow ||
@@ -1489,8 +1583,14 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     }
     outcome = { kind: classified.kind, classified, effects, evidence };
   } catch (error) {
-    outcome = { kind: 'native_shell_error', stage: stageName, code: error.code ?? error.name,
-      message: String(error.message).slice(0, 400), stopProof: evidence.stop?.kind ?? 'unconfirmed', evidence };
+    if (primaryGuestFailure && error.code !== primaryGuestFailure.code) {
+      evidence.secondaryError = { code: error.code ?? error.name,
+        message: String(error.message).slice(0, 300) };
+    }
+    outcome = { kind: 'native_shell_error', stage: primaryGuestFailure?.stage ?? stageName,
+      code: primaryGuestFailure?.code ?? error.code ?? error.name,
+      message: (primaryGuestFailure?.message ?? String(error.message)).slice(0, 400),
+      stopProof: evidence.stop?.kind ?? 'unconfirmed', evidence };
   } finally {
     if (host) {
       host.abort();
