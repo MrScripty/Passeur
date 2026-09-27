@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { selectChoice, qualify, within } from '../../scripts/qualify-muse-serve-boundary.mjs';
+import { selectChoice, startRawSession, qualify, within } from '../../scripts/qualify-muse-serve-boundary.mjs';
 
 test('approval routing selects only the offered once-only decision', () => {
   const request = { availableChoices: [
@@ -14,6 +14,30 @@ test('approval routing selects only the offered once-only decision', () => {
   assert.equal(selectChoice(request, 'allow'), 'once-allow');
   assert.equal(selectChoice(request, 'deny'), 'once-deny');
   assert.equal(selectChoice({ availableChoices: request.availableChoices.slice(0, 1) }, 'allow'), undefined);
+});
+
+test('raw session start uses the quickstart command shape without overrides', async () => {
+  const calls = [];
+  const started = { session: { sessionId: '0197134c-6a23-7a41-8a02-82f4a322f43f', workspaceRoot: '/tmp/disposable-workspace' } };
+  const connection = { command: async (...args) => { calls.push(args); return started; } };
+  assert.deepEqual(await startRawSession(connection, '/tmp/disposable-workspace'), started);
+  assert.deepEqual(calls, [[
+    'session/start', { workspaceRoot: '/tmp/disposable-workspace' }, { maxAttempts: 1 },
+  ]]);
+});
+
+test('raw session start rejects empty or malformed IDs and a wrong workspace', async () => {
+  const workspaceRoot = '/tmp/disposable-workspace';
+  for (const session of [
+    { sessionId: '', workspaceRoot },
+    { sessionId: 'fixture', workspaceRoot },
+    { sessionId: '0197134c-6a23-4a41-8a02-82f4a322f43f', workspaceRoot },
+    { sessionId: '0197134c-6a23-7a41-8a02-82f4a322f43f', workspaceRoot: '/tmp/another-workspace' },
+  ]) {
+    await assert.rejects(startRawSession({ command: async () => ({ session }) }, workspaceRoot), {
+      code: 'INVALID_SESSION_START',
+    });
+  }
 });
 
 test('version mismatch returns a typed result and removes its disposable HOME', async () => {

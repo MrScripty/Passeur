@@ -28,12 +28,25 @@ export function selectChoice(request, decision) {
   return request.availableChoices.find(choice => choice.decision === wanted && choice.scope === 'once')?.choiceId;
 }
 
+export async function startRawSession(connection, workspaceRoot) {
+  // Exact session-new command in the official quickstart journey.
+  const started = await connection.command('session/start', { workspaceRoot }, { maxAttempts: 1 });
+  // MSP session identities are UUIDv7; a mismatched workspace is not this fixture's session.
+  const sessionId = started?.session?.sessionId;
+  if (typeof sessionId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)
+    || started.session.workspaceRoot !== workspaceRoot) {
+    throw Object.assign(new Error('raw session/start returned an invalid workspace or session identity'), { code: 'INVALID_SESSION_START' });
+  }
+  return started;
+}
+
 async function file(path) {
   try { return await readFile(path, 'utf8'); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 
-export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario = 'inside', decision = 'deny', runProcess = runManagedProcess } = {}) {
+export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario = 'inside', decision = 'deny',
+  sessionStart = 'facade', runProcess = runManagedProcess } = {}) {
   const commands = {
     inside: 'printf shell-ran > shell-canary',
     git: 'printf git-ran > .git/probe',
@@ -41,6 +54,7 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     auth: 'cat "$HOME/.config/muse/auth.json" > auth-canary; env > env-canary',
   };
   if (!(scenario in commands) || !['allow', 'deny'].includes(decision)) throw new Error('invalid scenario or decision');
+  if (!['facade', 'raw'].includes(sessionStart)) throw new Error('sessionStart must be facade or raw');
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-serve-boundary-'));
   const home = join(root, 'home');
   const workspace = join(root, 'workspace');
@@ -87,6 +101,13 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     const spawned = await within('host initialize', handshake.initialize({ clientInfo: {
       name: 'passeur_disposable_qualification', version: '0.1.0',
     } }), STARTUP_MS);
+    if (sessionStart === 'raw') {
+      stage = 'session_start';
+      const started = await within('session/start', startRawSession(spawned.connection, workspace), STARTUP_MS);
+      return { kind: 'raw_session_started', sessionStart, sdkVersion: '1.3.0', nativeVersion: version.stdout.trim(),
+        sessionId: started.session.sessionId, status: started.session.status, viewCursor: started.viewCursor,
+        requests: fixture.requests, retainedFixture: root, stopProof: 'descendants_unverified' };
+    }
     client = new MuseClient(spawned.connection, { durability: readSessionDurability(spawned.initializeResult), host: spawned });
     stage = 'session_start';
     const session = await within('session/start', client.startSession({ workspaceRoot: workspace, modelId: MODEL,
@@ -124,7 +145,8 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
     return result;
   } catch (error) {
     if (error.code === 'GROUP_NOT_STOPPED') uncertainPreHostStop = true;
-    return { kind: 'qualification_error', stage, scenario, decision, code: error.code ?? error.name,
+    return { kind: 'qualification_error', stage, scenario, decision,
+      ...(sessionStart === 'raw' ? { sessionStart } : {}), code: error.code ?? error.name,
       message: String(error.message).slice(0, 1_000), sdkVersion: '1.3.0', stderr: stderr.slice(-2_000),
       requests: fixture?.requests, ...(hostSpawnAttempted || uncertainPreHostStop ? {
         retainedFixture: root, stopProof: 'descendants_unverified',
@@ -141,5 +163,6 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse', scenario 
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  console.log(JSON.stringify(await qualify({ scenario: process.argv[2] ?? 'inside', decision: process.argv[3] ?? 'deny' }), null, 2));
+  console.log(JSON.stringify(await qualify({ scenario: process.argv[2] ?? 'inside', decision: process.argv[3] ?? 'deny',
+    sessionStart: process.argv[4] ?? 'facade' }), null, 2));
 }

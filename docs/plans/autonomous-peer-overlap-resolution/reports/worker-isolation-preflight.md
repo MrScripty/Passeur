@@ -110,6 +110,22 @@ session-start blocker, not a native tool or isolation result. Resolve the
 version/host condition before repeating the same probe; keep this fixture until
 its remaining processes can be identified and safely stopped.
 
+The [official SDK quickstart](https://meta-models.github.io/muse-code-sdk/next/generated/examples/quickstart-journey/)
+sends `session/start` with only `workspaceRoot`. A reviewed raw variant of the
+probe used that exact command shape with `maxAttempts: 1`, and validates the
+returned UUIDv7 and workspace before reporting success. Its focused suite
+passes 6/6. Installed command `node scripts/qualify-muse-serve-boundary.mjs
+inside deny raw` reached the same catalog GET and the same `-32603 UnsafePath`
+session-start failure; it retained
+`/tmp/passeur-muse-serve-boundary-b5uoAF` with descendant stop unverified.
+This rules out optional facade request fields as the sole cause. Published SDK
+1.3.0 is still the current mirrored package; no documented deletion-registry
+setting or recovery path was found in the inspected SDK and [sessions
+guide](https://meta-models.github.io/muse-code-sdk/next/guides/msp-concepts/sessions-and-turns/).
+The native root cause is unproven. Do not repeat either unchanged request until
+a supported host-state correction or additional diagnostic evidence changes the
+precondition.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.
