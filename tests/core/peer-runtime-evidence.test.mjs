@@ -346,9 +346,9 @@ test('older retained comparison cannot overwrite a newer same-live capture', t =
   currentCaptureReplacementScenario(t, true));
 
 async function pendingObservedCaseScenario(t, captureRace = false, removalRace = false,
-  artifactEviction = false, pairEviction = false, artifactSettlementFirst = false) {
+  artifactEviction = false, pairEviction = false, artifactSettlementFirst = false, pairSettlementFirst = false) {
   const fixture = await serviceFixture(t);
-  const base = pairEviction
+  const base = pairEviction || pairSettlementFirst
     ? await fixture.commit(fixture.root, 'helper.ts', 'export function assist() { return 0; }\n')
     : fixture.base;
   await fixture.service.close();
@@ -369,18 +369,20 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
   const artifactOrder = [];
   let helperWorkId, helperArmed = false;
   const pairEvictions = [];
+  const pairOrder = [];
+  let pairHelperIds;
   const workspaces = [], received = [], statuses = [], settlementAttempts = [];
   let otherRevised, obsoleteRevised, obsoleteObserved, settlementRelease, stop = false;
-  const workerCount = pairEviction ? 5 : artifactEviction || artifactSettlementFirst ? 4 : 3;
+  const workerCount = pairEviction || pairSettlementFirst ? 5 : artifactEviction || artifactSettlementFirst ? 4 : 3;
   const workers = Array.from({ length: workerCount }, (_, index) => ({ async run(input) {
     workspaces[index] = input.workspace;
     const path = index >= 3 ? 'helper.ts' : 'source.ts';
-    const name = pairEviction && index >= 3 ? 'assist' : 'run';
-    if (!(artifactSettlementFirst && index === 3))
+    const name = (pairEviction || pairSettlementFirst) && index >= 3 ? 'assist' : 'run';
+    if (!(artifactSettlementFirst && index === 3 || pairSettlementFirst && index === 4))
       await writeFile(join(input.workspace, path), `export function ${name}() { return ${index + 1}; }\n`);
     await input.onEvent({ kind: 'turn_started', turn_id: `initial-${index}`, native_session_id: `session-${index}` });
     await input.onEvent({ kind: 'turn_settled', turn_id: `initial-${index}`, native_session_id: `session-${index}`, terminal: 'completed' });
-    if (artifactSettlementFirst && index === 3) {
+    if (artifactSettlementFirst && index === 3 || pairSettlementFirst && index === 4) {
       await helperWrite.promise;
       await writeFile(join(input.workspace, path), `export function ${name}() { return ${index + 1}; }\n`);
       helperWritten.release();
@@ -419,9 +421,11 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
         artifactEvictions.push({ workId, path, artifactId });
         if (helperArmed) artifactOrder.push('evicted');
       } } : {}),
-    ...(pairEviction ? { pairIndexLimitForTest: 3,
-      onPairIndexEvictedForTest: (pairId, workIds, path, artifacts, admitted) =>
-        pairEvictions.push({ pairId, workIds, path, artifacts, admitted }) } : {}),
+    ...(pairEviction || pairSettlementFirst ? { pairIndexLimitForTest: 3,
+      onPairIndexEvictedForTest: (pairId, workIds, path, artifacts, admitted) => {
+        pairEvictions.push({ pairId, workIds, path, artifacts, admitted });
+        if (helperArmed && path === 'source.ts' && admitted.path === 'helper.ts') pairOrder.push('evicted');
+      } } : {}),
     store: () => store,
     onObservedCaseSettlement: attempt => settlementAttempts.push(attempt),
     ...(captureRace ? {
@@ -442,6 +446,14 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
       },
       onCapturePublicationCompletedForTest: (workId, path) => {
         if (helperArmed && workId === helperWorkId && path === 'helper.ts') artifactOrder.push('published');
+      },
+    } : {}),
+    ...(pairSettlementFirst ? {
+      onCapturePublicationAttemptForTest: (workId, path) => {
+        if (helperArmed && workId === helperWorkId && path === 'helper.ts') pairOrder.push('attempt');
+      },
+      onCapturePublicationCompletedForTest: (workId, path) => {
+        if (helperArmed && workId === helperWorkId && path === 'helper.ts') pairOrder.push('published');
       },
     } : {}),
     ...(removalRace ? {
@@ -554,6 +566,26 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
       'pre-admitted helper has not yet displaced selected source evidence');
     artifactEvictions.length = 0;
   }
+  if (pairSettlementFirst) {
+    const helpers = await Promise.all([submit(3), submit(4)]);
+    ids.push(...helpers.map(item => item.task_id));
+    for (const helper of helpers) await waitFor('pre-admitted helper native task', () => store.readControl(helper.task_id),
+      item => item.native.state === 'observed_live' && item.native.coverage === 'turn_scoped');
+    const helperState = await state();
+    pairHelperIds = helpers.map(helper => helperState.works.find(work =>
+      work.managed?.task_id === helper.task_id)?.id);
+    assert.ok(pairHelperIds.every(Boolean) && pairHelperIds.every(id =>
+      !joined.inputs.some(input => input.work_id === id)));
+    helperWorkId = pairHelperIds[1];
+    await refresh(3);
+    assert.ok((await runtime.structuralCurrent(actor)).reports.some(report =>
+      report.work_id === pairHelperIds[0] && report.path === 'helper.ts'),
+    'first helper edit has a genuine retained capture before settlement');
+    assert.ok(!pairEvictions.some(item => item.path === 'source.ts' &&
+      item.workIds.every(id => workIds.includes(id))),
+    'first helper alone cannot evict a selected overlap pair');
+    pairEvictions.length = 0;
+  }
   if (pairEviction) {
     pairEvictions.length = 0;
     const helpers = await Promise.all([submit(3), submit(4)]);
@@ -653,6 +685,7 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
       const result = await observeDelivery.apply(this, args);
       if (captureRace && firstAttempt) captureOrder.push('settled');
       if (artifactSettlementFirst && firstAttempt) artifactOrder.push('settled');
+      if (pairSettlementFirst && firstAttempt) pairOrder.push('settled');
       return result;
     }
     catch (error) {
@@ -692,6 +725,42 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
       artifactOrder.indexOf('settled') < artifactOrder.indexOf('published') &&
       artifactOrder.indexOf('published') < artifactOrder.indexOf('evicted'));
     const completed = await waitFor('completed exact settlement observation', async () =>
+      settlementAttempts.find(attempt => attempt.recipient_work_id === workIds[0] && attempt.outcome === 'completed'), Boolean, 400);
+    const replacement = received.find(envelope => envelope.case_revision === joined.revision &&
+      envelope.source_work_id === obsoleteRevised.source_work_id && envelope.delivery_id !== obsoleteRevised.delivery_id);
+    assert.ok(replacement && completed.observed_delivery_ids.includes(replacement.delivery_id));
+    assert.ok(completed.observed_delivery_ids.includes(otherRevised.delivery_id));
+    const caseAfter = (await state()).cases.find(item => item.id === joined.id);
+    assert.ok(!caseAfter.delivery_pending.includes(workIds[0]));
+    assert.equal(caseAfter.delivery_observed.filter(item => item.work_id === workIds[0]).length, 1);
+    assert.ok((await store.readPeerDeliveries(ids[0])).some(record => record.state === 'observed' &&
+      record.envelope.delivery_id === obsoleteRevised.delivery_id), 'obsolete historical native receipt remains retained');
+    return;
+  }
+  if (pairSettlementFirst) {
+    helperArmed = true;
+    helperWrite.release();
+    await helperWritten.promise;
+    const helperRefresh = refresh(4);
+    await waitFor('second helper capture attempted pair publication during settlement', async () =>
+      pairOrder.includes('attempt'), Boolean, 400);
+    assert.ok(!pairOrder.includes('published') && !pairOrder.includes('evicted'),
+      'second helper cannot publish a pair while exact settlement holds capture protection');
+    assert.ok((await state()).cases.find(item => item.id === joined.id).delivery_pending.includes(workIds[0]));
+    settlementRelease.release();
+    await waitFor('exact settlement published before unrelated pair eviction', async () =>
+      (await state()).cases.find(item => item.id === joined.id).delivery_observed.some(item => item.work_id === workIds[0]), Boolean, 400);
+    await helperRefresh;
+    const evicted = await waitFor('real helper pair evicted selected pair after settlement', async () =>
+      pairEvictions.find(item => item.path === 'source.ts' && item.workIds.includes(workIds[0]) &&
+        item.workIds.every(id => workIds.includes(id)) && item.admitted.path === 'helper.ts' &&
+        item.admitted.workIds.every(id => pairHelperIds.includes(id))), Boolean, 400);
+    for (const workId of workIds) assert.ok(evicted.artifacts.some(item => item.workId === workId &&
+      item.path === 'source.ts' && item.artifactId), 'selected source artifacts remain indexed after pair eviction');
+    assert.ok(pairOrder.indexOf('attempt') < pairOrder.indexOf('settled') &&
+      pairOrder.indexOf('settled') < pairOrder.indexOf('published') &&
+      pairOrder.indexOf('published') < pairOrder.indexOf('evicted'));
+    const completed = await waitFor('completed exact pair-race settlement observation', async () =>
       settlementAttempts.find(attempt => attempt.recipient_work_id === workIds[0] && attempt.outcome === 'completed'), Boolean, 400);
     const replacement = received.find(envelope => envelope.case_revision === joined.revision &&
       envelope.source_work_id === obsoleteRevised.source_work_id && envelope.delivery_id !== obsoleteRevised.delivery_id);
@@ -802,6 +871,8 @@ test('unrelated genuine pair eviction leaves selected source artifacts and deliv
   pendingObservedCaseScenario(t, false, false, false, true));
 test('exact settlement precedes unrelated genuine artifact eviction', t =>
   pendingObservedCaseScenario(t, false, false, false, false, true));
+test('exact settlement precedes unrelated genuine pair eviction', t =>
+  pendingObservedCaseScenario(t, false, false, false, false, false, true));
 
 async function observedExtensionScenario(t, enable, replaceRun = false, partialQueue = false) {
   const fixture = await serviceFixture(t);
