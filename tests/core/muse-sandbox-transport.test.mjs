@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, guestEnvironment,
   pinnedBinary, pinnedNode, qualify, retainHostRoot, sandboxConfig, stageRuntime, validateIdleRead,
-  verifiedNativeNamespace, loopbackReady,
+  verifiedNativeNamespace, loopbackReady, parseBubblewrapStatus, verifyHostStop,
+  validateResumeOutcome, qualifyFreshHostResume,
+  assertHostAssociation,
 } from '../../scripts/qualify-muse-sandbox-transport.mjs';
 import { prepareSandbox } from '../../scripts/experiment-worker-sandbox.mjs';
 
@@ -193,6 +195,7 @@ test('malformed or non-idle session/read fails closed', () => {
     turnCount: 0, status: 'idle', path: `${home}/.local/share/muse/sessions/log.jsonl` },
   pendingRequests: [], history: { mode: 'none', noneReason: 'excluded', items: null, snapshot: null }, viewCursor: 'v0' };
   assert.equal(validateIdleRead(started, read, workspace, home).sessionId, sessionId);
+  assert.equal(validateIdleRead(read, read, workspace, home).sessionId, sessionId);
   for (const variant of [{ session: { ...read.session, turnCount: 1 } },
     { session: { ...read.session, status: 'running' } },
     { session: { ...read.session, status: 'notLoaded' } },
@@ -200,6 +203,8 @@ test('malformed or non-idle session/read fails closed', () => {
     { session: { ...read.session, path: '/home/jeremy/.local/muse/log' } },
     { pendingRequests: [{}] }]) {
     assert.throws(() => validateIdleRead(started, { ...read, ...variant }, workspace, home),
+      { code: 'INVALID_SESSION_READ' });
+    assert.throws(() => validateIdleRead({ ...read, ...variant }, { ...read, ...variant }, workspace, home),
       { code: 'INVALID_SESSION_READ' });
   }
 });
@@ -238,5 +243,217 @@ test('nonzero guest result retains its typed stage, code and provider facts', as
   assert.deepEqual(result.guestFailure.providerRequests, guestFailure.providerRequests);
   assert.deepEqual(result.processExit, { code: 1, signal: null, timedOut: false, overflow: false });
   assert.equal(result.stopProof, 'descendants_unverified');
+  await rm(result.retainedFixtures[0], { recursive: true, force: true });
+});
+
+test('Bubblewrap status accepts extensions but requires one ordered child and terminal exit', () => {
+  assert.deepEqual(parseBubblewrapStatus(['{"future":true}', '{"child-pid":101,"pidns":"pid:[1]"}',
+    '{"exit-code":0}', '{"later":"ignored"}']), { child: 101, exit: 0 });
+  for (const lines of [['{'], ['{"exit-code":0}'], ['{"child-pid":"101"}'],
+    ['{"child-pid":101}', '{"child-pid":102}'],
+    ['{"child-pid":101}', '{"exit-code":0}', '{"exit-code":0}']]) {
+    assert.throws(() => parseBubblewrapStatus(lines), { code: 'BWRAP_STATUS_INVALID' });
+  }
+});
+
+test('stop gate rejects changed boot/start, unreadable scan and reparented survivor', async () => {
+  const capture = { boot: 'boot-a', pidns: 'pid:[42]', statusChild: { pid: 101 },
+    wrapper: { pid: 100, start: '10' }, members: [{ pid: 101, start: '11' }, { pid: 102, start: '12' }] };
+  const status = { child: 101, exit: 0 };
+  const exit = { code: 0, signal: null, timedOut: false, overflow: false, statusClosed: true };
+  const gone = async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); };
+  const options = { bootId: async () => 'boot-a', readStat: gone, scan: async () => [] };
+  assert.equal((await verifyHostStop(capture, status, exit, options)).kind, 'confirmed');
+  await assert.rejects(verifyHostStop(capture, status, exit, { ...options,
+    bootId: async () => 'boot-b' }), { code: 'STOP_IDENTITY_INVALID' });
+  await assert.rejects(verifyHostStop(capture, { child: 999, exit: 0 }, exit, options),
+    { code: 'STOP_STATUS_INVALID' });
+  await assert.rejects(verifyHostStop(capture, status, { ...exit, statusClosed: false }, options),
+    { code: 'STOP_STATUS_INVALID' });
+  await assert.rejects(verifyHostStop(capture, status, exit, { ...options,
+    readStat: async pid => procStat(pid, { start: '99' }) }), { code: 'STOP_PID_REUSED' });
+  await assert.rejects(verifyHostStop(capture, status, exit, { ...options,
+    scan: async () => { throw Object.assign(new Error('unreadable'), { code: 'EACCES' }); } }),
+    { code: 'EACCES' });
+  // The member need not retain its original parent. Namespace membership is decisive.
+  await assert.rejects(verifyHostStop(capture, status, exit, { ...options,
+    scan: async () => [{ pid: 102, parent: 1, pidns: 'pid:[42]' }] }),
+    { code: 'STOP_SURVIVOR' });
+});
+
+test('host association requires one init and native descendant in the pinned namespace', () => {
+  const wrapper = { pid: 100, pidns: 'pid:[host]', netns: 'net:[host]' };
+  const supervisor = { pid: 101, parent: 100, pidns: 'pid:[guest]', netns: 'net:[guest]',
+    nspid: [101, 1], exe: '/runtime/node', start: '11' };
+  const native = { pid: 102, parent: 101, pidns: 'pid:[guest]', netns: 'net:[guest]',
+    nspid: [102, 7], exe: '/runtime/native', start: '12' };
+  assert.equal(assertHostAssociation(wrapper, supervisor, [supervisor, native], '12', '/runtime/native', '/runtime/node').native.pid, 102);
+  const reaper = { ...supervisor, pid: 103, nspid: [103, 1], exe: '/usr/bin/bwrap', start: '13' };
+  const command = { ...supervisor, parent: 103, nspid: [101, 2] };
+  assert.equal(assertHostAssociation(wrapper, reaper, [reaper, command, native], '12', '/runtime/native', '/runtime/node').init.pid, 103);
+  for (const [child, members] of [
+    [{ ...supervisor, parent: 1 }, [supervisor, native]],
+    [supervisor, [native]],
+    [supervisor, [supervisor, { ...native, parent: 1 }]],
+    [supervisor, [supervisor, { ...native, netns: 'net:[host]' }]],
+    [supervisor, [supervisor, native, { ...supervisor, pid: 103 }]],
+  ]) assert.throws(() => assertHostAssociation(wrapper, child, members, '12', '/runtime/native', '/runtime/node'),
+    { code: 'STOP_ASSOCIATION_INVALID' });
+});
+
+test('outer resume result checks the original durable identity and command scope', () => {
+  const workspace = '/tmp/disposable/workspace';
+  const home = '/mounts/home';
+  const metadata = { sessionId: '0199aabb-ccdd-7eef-8abc-0123456789ab', workspaceRoot: workspace,
+    durableLogPath: `${home}/.local/share/muse/sessions/log.jsonl`, status: 'idle', turnCount: 0,
+    activeTurnId: null, pendingCount: 0, history: 'none', viewCursor: '' };
+  const shared = { nativeNamespace: 'net:[1]', guestNamespace: 'net:[1]',
+    hostPort: 31001, guestPort: 31002,
+    sentinel: { kind: 'error', code: 'ECONNREFUSED' }, external: { kind: 'error', code: 'ENETUNREACH' },
+    canaries: { directAbsent: true, symlinkAbsent: true, procAbsent: true }, nativeCatalogGet: true,
+    providerRequests: [{ method: 'GET', path: '/muse-code/models' }] };
+  const first = { ...shared, kind: 'guest_transport_observed', metadata,
+    directResponses: { attribution: 'direct_guest_client_text_only', status: 200 }, nativeTurnSubmitted: false,
+    commands: ['session/start', 'session/read'], providerRequests: [...shared.providerRequests,
+      { method: 'POST', path: '/responses', directMarker: true }] };
+  const second = { ...shared, kind: 'guest_resume_observed', guestNamespace: 'net:[2]',
+    nativeNamespace: 'net:[2]', metadata: { ...metadata }, resumeMetadata: { ...metadata },
+    commands: ['session/resume', 'session/read'] };
+  assert.equal(validateResumeOutcome(first, second, workspace, home).sessionId, metadata.sessionId);
+  for (const variant of [{ metadata: { ...metadata, durableLogPath: `${home}/other` } },
+    { metadata: { ...metadata, turnCount: 1 } }, { metadata: { ...metadata, viewCursor: null } },
+    { hostPort: 32000 },
+    { resumeMetadata: { ...metadata, turnCount: 1 } },
+    { resumeMetadata: { ...metadata, pendingCount: 1 } },
+    { resumeMetadata: { ...metadata, history: 'full' } },
+    { sentinel: undefined }, { canaries: { a: true, b: true, c: true } },
+    { commands: ['session/start', 'session/read'] },
+    { providerRequests: [...second.providerRequests, { method: 'GET', path: '/unknown' }] },
+    { providerRequests: [...second.providerRequests, { method: 'POST', path: '/responses' }] }]) {
+    assert.throws(() => validateResumeOutcome(first, { ...second, ...variant }, workspace, home));
+  }
+});
+
+test('uncertain first stop retains fixture and cannot launch a second host', async () => {
+  let launches = 0;
+  const guest = { kind: 'guest_transport_observed', nativeIdentity: { pid: 7, start: '123' },
+    nativeNamespace: 'net:[2]', guestNamespace: 'net:[2]',
+    hostPort: 30001, guestPort: 30002,
+    sentinel: { kind: 'error', code: 'ECONNREFUSED' }, external: { kind: 'error', code: 'ENETUNREACH' },
+    canaries: { directAbsent: true, symlinkAbsent: true, procAbsent: true }, nativeCatalogGet: true,
+    commands: ['session/start', 'session/read'], nativeTurnSubmitted: false,
+    directResponses: { attribution: 'direct_guest_client_text_only', status: 200 },
+    providerRequests: [{ method: 'GET', path: '/muse-code/models' },
+      { method: 'POST', path: '/responses', directMarker: true }],
+    metadata: { sessionId: '0199aabb-ccdd-7eef-8abc-0123456789ab', workspaceRoot: '/tmp/disposable/workspace', history: 'none', activeTurnId: null,
+      viewCursor: '',
+      durableLogPath: '/mounts/home/.local/share/muse/sessions/log.jsonl', status: 'idle',
+      turnCount: 0, pendingCount: 0 } };
+  const result = await qualifyFreshHostResume({
+    stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
+    startSentinel: async () => ({ port: 30001, close: async () => undefined }),
+    probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+    launch: (_prepared, config) => { launches++;
+      guest.metadata.workspaceRoot = config.workspace;
+      return { pid: 100, ready: Promise.resolve(guest), liveStatus: Promise.resolve({ child: 101, exit: null }),
+        release: () => undefined, finished: Promise.resolve({ code: 0, signal: null, timedOut: false,
+          overflow: false, statusClosed: true, statusLines: ['{"child-pid":101}', '{"exit-code":0}'],
+          output: [JSON.stringify({ kind: 'guest_ready', result: guest }), JSON.stringify(guest)] }) };
+    },
+    capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
+      supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
+    stop: async () => { throw Object.assign(new Error('incomplete scan'), { code: 'STOP_SCAN_INCOMPLETE' }); },
+  });
+  assert.equal(launches, 1);
+  assert.equal(result.code, 'STOP_SCAN_INCOMPLETE');
+  assert.equal(result.stopProof, 'unconfirmed');
+  assert.equal(result.retainedFixtures.length, 1);
+  await rm(result.retainedFixtures[0], { recursive: true, force: true });
+});
+
+test('malformed first terminal output prevents the second launch even with declared stop', async () => {
+  let launches = 0;
+  const guest = { kind: 'guest_transport_observed', nativeIdentity: { pid: 7, start: '123' },
+    nativeNamespace: 'net:[2]', guestNamespace: 'net:[2]',
+    hostPort: 30001, guestPort: 30002,
+    sentinel: { kind: 'error', code: 'ECONNREFUSED' }, external: { kind: 'error', code: 'ENETUNREACH' },
+    canaries: { directAbsent: true, symlinkAbsent: true, procAbsent: true }, nativeCatalogGet: true,
+    commands: ['session/start', 'session/read'], nativeTurnSubmitted: false,
+    directResponses: { attribution: 'direct_guest_client_text_only', status: 200 },
+    providerRequests: [{ method: 'GET', path: '/muse-code/models' },
+      { method: 'POST', path: '/responses', directMarker: true }],
+    metadata: { sessionId: '0199aabb-ccdd-7eef-8abc-0123456789ab', workspaceRoot: '/tmp/disposable/workspace', history: 'none', activeTurnId: null,
+      viewCursor: '',
+      durableLogPath: '/mounts/home/.local/share/muse/sessions/log.jsonl', status: 'idle',
+      turnCount: 0, pendingCount: 0 } };
+  const result = await qualifyFreshHostResume({
+    stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
+    startSentinel: async () => ({ port: 30001, close: async () => undefined }),
+    probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+    launch: (_prepared, config) => { launches++;
+      guest.metadata.workspaceRoot = config.workspace;
+      return { pid: 100, ready: Promise.resolve(guest), liveStatus: Promise.resolve({ child: 101, exit: null }),
+        release: () => undefined, finished: Promise.resolve({ code: 0, signal: null, timedOut: false,
+          overflow: false, statusClosed: true, statusLines: ['{"child-pid":101}', '{"exit-code":0}'],
+          output: [JSON.stringify({ kind: 'guest_ready', result: guest }), '{'] }) };
+    },
+    capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
+      supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
+    stop: async () => ({ kind: 'confirmed', pidns: 'pid:[1]' }),
+  });
+  assert.equal(launches, 1);
+  assert.equal(result.kind, 'fresh_host_idle_resume_error');
+  assert.equal(result.stopProof, 'unconfirmed');
+  await rm(result.retainedFixtures[0], { recursive: true, force: true });
+});
+
+test('second-host readiness failure retains confirmed first-stop and both phase outputs', async () => {
+  let launches = 0;
+  const guest = { kind: 'guest_transport_observed', nativeIdentity: { pid: 7, start: '123' },
+    nativeNamespace: 'net:[2]', guestNamespace: 'net:[2]', hostPort: 30001, guestPort: 30002,
+    sentinel: { kind: 'error', code: 'ECONNREFUSED' }, external: { kind: 'error', code: 'ENETUNREACH' },
+    canaries: { directAbsent: true, symlinkAbsent: true, procAbsent: true }, nativeCatalogGet: true,
+    commands: ['session/start', 'session/read'], nativeTurnSubmitted: false,
+    directResponses: { attribution: 'direct_guest_client_text_only', status: 200 },
+    providerRequests: [{ method: 'GET', path: '/muse-code/models' },
+      { method: 'POST', path: '/responses', directMarker: true }],
+    metadata: { sessionId: '0199aabb-ccdd-7eef-8abc-0123456789ab',
+      workspaceRoot: '', durableLogPath: '/mounts/home/.local/share/muse/sessions/log.jsonl',
+      status: 'idle', turnCount: 0, activeTurnId: null, pendingCount: 0, history: 'none', viewCursor: '' } };
+  const result = await qualifyFreshHostResume({
+    stage: async root => {
+      const runtime = join(root, 'runtime');
+      const logs = join(root, 'home', '.local', 'share', 'muse', 'sessions');
+      await mkdir(runtime);
+      await mkdir(logs, { recursive: true });
+      await writeFile(join(logs, 'log.jsonl'), 'fixture');
+      return runtime;
+    },
+    startSentinel: async () => ({ port: 30001, close: async () => undefined }),
+    probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+    launch: (_prepared, config) => {
+      launches++;
+      if (launches === 2) return { pid: 200,
+        ready: Promise.reject(Object.assign(new Error('bad resume'), { code: 'GUEST_OUTPUT_INVALID' })),
+        liveStatus: Promise.resolve({ child: 201, exit: null }), release: () => undefined,
+        finished: Promise.resolve({ code: 1, signal: null, timedOut: false, overflow: false,
+          statusClosed: true, statusLines: ['{"child-pid":201}', '{"exit-code":1}'],
+          output: ['{"kind":"guest_transport_error","code":"INVALID_SESSION_READ"}'], stderr: '' }) };
+      guest.metadata.workspaceRoot = config.workspace;
+      return { pid: 100, ready: Promise.resolve(guest), liveStatus: Promise.resolve({ child: 101, exit: null }),
+        release: () => undefined, finished: Promise.resolve({ code: 0, signal: null, timedOut: false,
+          overflow: false, statusClosed: true, statusLines: ['{"child-pid":101}', '{"exit-code":0}'],
+          output: [JSON.stringify({ kind: 'guest_ready', result: guest }), JSON.stringify(guest)], stderr: '' }) };
+    },
+    capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
+      supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
+    stop: async () => ({ kind: 'confirmed', pidns: 'pid:[first]', boot: 'boot-a' }),
+  });
+  assert.equal(launches, 2);
+  assert.equal(result.kind, 'fresh_host_idle_resume_error');
+  assert.equal(result.evidence.firstStop.kind, 'confirmed');
+  assert.equal(result.evidence.firstCompletion.code, 0);
+  assert.equal(result.evidence.secondCompletion.code, 1);
+  assert.equal(result.evidence.secondCompletion.output[0].includes('INVALID_SESSION_READ'), true);
   await rm(result.retainedFixtures[0], { recursive: true, force: true });
 });
