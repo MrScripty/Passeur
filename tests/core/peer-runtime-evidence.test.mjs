@@ -1094,9 +1094,7 @@ test('prepublication native run replacement prevents controlled extension and re
 test('committed case retains partial directed enqueue across reopen and same-live retry', t =>
   observedExtensionScenario(t, true, false, true));
 
-test('late third managed worker joins one observed case and each adapter consumes revised peer evidence', {
-  skip: 'G4 gate: an in-flight revised envelope can become unknown and fail its adapter; case delivery remains pending',
-}, async t => {
+test('late third managed worker joins one observed case and each controlled worker consumes revised peer evidence', async t => {
   let stage = 'fixture', polls = 0;
   const within = async (name, promise, ms = 15000) => {
     stage = name;
@@ -1114,9 +1112,11 @@ test('late third managed worker joins one observed case and each adapter consume
   const actors = [createHash('sha256').update(token).digest('hex'), 'b'.repeat(64), 'c'.repeat(64)]
     .map(owner_id => ({ owner_id, client_id: randomUUID() }));
   const consumed = [[], [], []];
+  const workerStage = ['not started', 'not started', 'not started'];
   const workers = [0, 1, 2].map(index => {
     let stopped = false;
     return { release: () => { stopped = true; }, async run(input) {
+      workerStage[index] = 'initial edit';
       await writeFile(join(input.workspace, 'source.ts'),
         `export function run() { return ${index + 1}; }\n`);
       const initial = `initial-${index}`;
@@ -1124,12 +1124,17 @@ test('late third managed worker joins one observed case and each adapter consume
       await input.onEvent({ kind: 'turn_settled', turn_id: initial, native_session_id: `session-${index}`, terminal: 'completed' });
       let sequence = 0;
       while (!stopped) {
+        workerStage[index] = 'next';
         const envelope = await input.peer.next();
         if (!envelope) { await new Promise(resolve => setTimeout(resolve, 30)); continue; }
         const turn_id = `peer-${index}-${++sequence}`;
+        workerStage[index] = 'turn started';
         await input.onEvent({ kind: 'turn_started', turn_id, native_session_id: `session-${index}` });
+        workerStage[index] = 'delivered';
         await input.peer.delivered(envelope.idempotency_key, turn_id, `session-${index}`);
+        workerStage[index] = 'turn settled';
         await input.onEvent({ kind: 'turn_settled', turn_id, native_session_id: `session-${index}`, terminal: 'completed' });
+        workerStage[index] = 'observed';
         await input.peer.observed(envelope.idempotency_key, turn_id, `session-${index}`);
         consumed[index].push(envelope);
       }
@@ -1141,6 +1146,7 @@ test('late third managed worker joins one observed case and each adapter consume
   const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
     mode: 'development', node_version: process.version, node_executable: process.execPath,
     pid: process.pid, started_at: new Date().toISOString() }, {
+    enableObservedCaseExtensionForTest: true,
     store: () => store,
     profile: async () => ({ schema_version: 3, execution: {
       stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
@@ -1165,10 +1171,10 @@ test('late third managed worker joins one observed case and each adapter consume
   const first = await within('submit-first-pair', Promise.all([submit(0), submit(1)]));
   const ids = first.map(item => item.task_id);
   const caseState = async () => JSON.parse(await readFile(join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
-  const refresh = async (indices = ids.map((_, index) => index)) => {
+  const refresh = async (indices = ids.map((_, index) => index), timeoutMs = 15000) => {
     for (const index of indices) {
       const id = ids[index];
-      try { await within(`refresh-${index}`, runtime.structuralRefresh(id, actors[index])); }
+      try { await within(`refresh-${index}`, runtime.structuralRefresh(id, actors[index]), timeoutMs); }
       catch (error) { if (!['STRUCTURAL_SOURCE_FORBIDDEN', 'COORDINATION_NOT_FOUND'].includes(error.code)) throw error; }
     }
   };
@@ -1196,8 +1202,23 @@ test('late third managed worker joins one observed case and each adapter consume
   }
   const ready = await store.readControl(third.task_id);
   assert.equal(ready.native.coverage, 'turn_scoped', 'the late worker must finish its source edit before one refresh');
-  if (!(await caseState()).cases.some(item => item.id === pairCase.id && item.inputs.length === 3))
-    await refresh([2]);
+  if (!(await caseState()).cases.some(item => item.id === pairCase.id && item.inputs.length === 3)) {
+    try { await refresh([2], 90000); }
+    catch (error) {
+      const [state, controls] = await Promise.all([caseState(), Promise.all(ids.map(id => store.readControl(id)))]);
+      const selected = state.cases.find(item => item.id === pairCase.id);
+      error.message += `; late-third frontier=${JSON.stringify({
+        workerStage, runtime: runtime.status().coordination,
+        case: selected && { revision: selected.revision, inputs: selected.inputs.map(item => item.work_id),
+          pending: selected.delivery_pending },
+        tasks: controls.map((control, index) => ({ id: ids[index], phase: control.phase,
+          native: { state: control.native.state, run_id: control.native.run_id, coverage: control.native.coverage },
+          deliveries: control.peer_deliveries.map(record => ({ state: record.state,
+            case_revision: record.envelope.case_revision, source_work_id: record.envelope.source_work_id })) })),
+      })}`;
+      throw error;
+    }
+  }
   let joined;
   for (let attempt = 0; attempt < 160; attempt++) {
     joined = (await caseState()).cases.find(item => item.id === pairCase.id && item.inputs.length === 3);
