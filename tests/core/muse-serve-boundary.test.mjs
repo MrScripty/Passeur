@@ -1,9 +1,61 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { selectChoice, startRawSession, qualify, within } from '../../scripts/qualify-muse-serve-boundary.mjs';
+import { createFixtureDirs, observedHostTree, observedHostQuiet, parseHostMarker, quickstartEnvironment,
+  retainFixtureRoots, selectChoice, startRawSession, qualify, within } from '../../scripts/qualify-muse-serve-boundary.mjs';
+
+function procStat(pid, { state = 'S', parent = 1, group = pid, session = pid, start = '100' } = {}) {
+  const fields = Array(20).fill('0');
+  Object.assign(fields, { 0: state, 1: String(parent), 2: String(group), 3: String(session), 19: start });
+  return `${pid} (muse) ${fields.join(' ')}`;
+}
+
+test('quickstart uses exact isolated environment and separate empty temp roots', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-quickstart-layout-test-'));
+  let dirs;
+  try {
+    dirs = await createFixtureDirs(root, true);
+    assert.equal(dirname(dirs.home), tmpdir());
+    assert.equal(dirname(dirs.workspace), tmpdir());
+    assert.notEqual(dirs.home, dirs.workspace);
+    assert.deepEqual(await readdir(dirs.workspace), []);
+    assert.deepEqual(quickstartEnvironment(dirs.home), {
+      HOME: dirs.home, PATH: process.env.PATH ?? '/usr/bin:/bin', TBH_CREDENTIAL_BACKEND: 'file',
+      TBH_DISABLE_TELEMETRY: '1', MUSE_EXPERIMENTAL_SDK_ENABLED: 'on',
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    if (dirs) { await rm(dirs.home, { recursive: true, force: true }); await rm(dirs.workspace, { recursive: true, force: true }); }
+  }
+});
+
+test('host marker binds birth identity to the SDK detached group before stop', () => {
+  const birth = parseHostMarker(procStat(101, { start: '12345' }));
+  const table = new Map([[101, birth]]);
+  const identity = observedHostTree(birth.pid, table, birth.start);
+  assert.equal(identity.group, 101);
+  assert.equal(identity.start, '12345');
+  assert.throws(() => observedHostTree(101, table, '12346'), { code: 'HOST_IDENTITY_UNVERIFIED' });
+  assert.throws(() => observedHostTree(101, new Map([[101, { ...birth, group: 202 }]]), birth.start), {
+    code: 'HOST_IDENTITY_UNVERIFIED',
+  });
+});
+
+test('partial stop observation detects live group members and captured escaped descendants', () => {
+  const leader = parseHostMarker(procStat(101, { start: '12345' }));
+  const escaped = parseHostMarker(procStat(102, { parent: 101, group: 900, session: 900, start: '23456' }));
+  const identity = observedHostTree(101, new Map([[101, leader], [102, escaped]]), leader.start);
+  assert.equal(observedHostQuiet(identity, new Map(), false), false);
+  assert.equal(observedHostQuiet(undefined, new Map(), true), false);
+  assert.equal(observedHostQuiet(identity, new Map([[202, { ...escaped, pid: 202, group: 101 }]]), true), false);
+  assert.equal(observedHostQuiet(identity, new Map([[102, escaped]]), true), false);
+  assert.equal(observedHostQuiet(identity, new Map([[102, { ...escaped, start: '99999' }]]), true), true);
+  assert.equal(observedHostQuiet(identity, new Map(), true), true);
+  assert.equal(retainFixtureRoots({ hostSpawnAttempted: true, uncertainPreHostStop: false, fixtureClosed: true }), true);
+  assert.equal(retainFixtureRoots({ hostSpawnAttempted: false, uncertainPreHostStop: false, fixtureClosed: true }), false);
+});
 
 test('approval routing selects only the offered once-only decision', () => {
   const request = { availableChoices: [
@@ -65,10 +117,26 @@ test('an unverified pre-host process group retains the disposable fixture', asyn
     assert.equal(result.stage, 'version');
     assert.equal(result.code, 'GROUP_NOT_STOPPED');
     assert.equal(result.stopProof, 'descendants_unverified');
-    assert.equal((await stat(result.retainedFixture)).isDirectory(), true);
+    assert.equal((await stat(result.retainedFixtures[0])).isDirectory(), true);
   } finally {
     // This test's injected failure started no process, so its fixture is safe to remove.
-    if (result.retainedFixture) await rm(result.retainedFixture, { recursive: true, force: true });
+    if (result.retainedFixtures) for (const path of result.retainedFixtures) await rm(path, { recursive: true, force: true });
+  }
+});
+
+test('quickstart uncertainty retains its control, HOME and workspace roots', async () => {
+  const result = await qualify({ sessionStart: 'quickstart', runProcess: async () => {
+    throw Object.assign(new Error('group stop was not verified'), { code: 'GROUP_NOT_STOPPED' });
+  } });
+  try {
+    assert.equal(result.kind, 'qualification_error');
+    assert.equal(result.code, 'GROUP_NOT_STOPPED');
+    assert.equal(result.stopProof, 'descendants_unverified');
+    assert.equal(result.retainedFixtures.length, 3);
+    for (const path of result.retainedFixtures) assert.equal((await stat(path)).isDirectory(), true);
+  } finally {
+    // The injected failure started no process, so all three test roots are safe to remove.
+    if (result.retainedFixtures) for (const path of result.retainedFixtures) await rm(path, { recursive: true, force: true });
   }
 });
 
