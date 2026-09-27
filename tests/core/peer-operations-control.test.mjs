@@ -142,6 +142,25 @@ test('cursorless await_change waits for case versions while a cursor observes no
   assert.equal((await waiting).case_revision, item.revision + 1);
 });
 
+test('metadata-only await_change stays pending without a capture hook until case metadata changes', async t => {
+  const f = await selectedManaged(t);
+  const current = await f.control.workerPeerOperation(f.actor, full(f.actor, { operation_key: key(), kind: 'inspect' }));
+  let settled = false;
+  const waiting = f.control.workerPeerOperation(f.actor, full(f.actor, { operation_key: key(), kind: 'await_change',
+    after_case_revision: current.case_revision, after_case_generation: current.case_generation,
+    after_negotiation_cursor: current.negotiation_cursor }));
+  waiting.then(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(settled, false, 'registration must not wake on its synthetic evidence baseline');
+  await f.control.notifyWorkerPeerCaptureChanged(f.work, 'src/a.ts');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(settled, false, 'observation notification has no capture identity to compare');
+  await f.control.execute(A, post({ kind: 'case', id: f.item.id }));
+  const changed = await within(waiting, 'metadata-only await_change');
+  assert.equal(changed.kind, 'current');
+  assert.notEqual(changed.negotiation_cursor, current.negotiation_cursor);
+});
+
 test('public counter proposal cannot replace worker consent; worker successor retains task parties', async t => {
   const f = await selectedManaged(t);
   const sources = [{ work_id: f.work, work_revision: 1, input_oid: '1'.repeat(40), selected_commit_oid: '3'.repeat(40) }];
@@ -178,6 +197,7 @@ test('revoked consent is rejected by fresh inspection and publication wakeup', a
   const waiting = f.control.workerPeerOperation(f.actor, full(f.actor, { operation_key: key(), kind: 'await_change',
     after_case_revision: before.case_revision, after_case_generation: before.case_generation,
     after_negotiation_cursor: before.negotiation_cursor }));
+  waiting.catch(() => undefined);
   consentCurrent = false;
   await assert.rejects(f.control.workerPeerOperation(f.actor, full(f.actor, { operation_key: key(), kind: 'inspect' })),
     { code: 'PEER_OPERATION_STALE' });

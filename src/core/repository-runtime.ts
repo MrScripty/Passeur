@@ -6,7 +6,7 @@ import { decodeCoordinationRequest, coordinationRequestLane, type CoordinationRe
 import type { CoordinationActor } from "../coordination/control.js";
 import type { ManagedEnrollment } from "../coordination/bound-control.js";
 import { managedTaskSource, managedWorkProjection } from "./managed-coordination.js";
-import { parentId, type Case, type Region, type Work } from "../contracts/coordination-control.js";
+import { parentId, type Case, type ControlState, type Region, type Work } from "../contracts/coordination-control.js";
 import { operatorToken } from "../service/operator-token.js";
 import { privateDirectory } from "../service/process.js";
 import { assertExternalWorkspace } from "./coordination-resources.js";
@@ -28,11 +28,13 @@ import { CapturedPairCache } from "../observation/cache.js";
 import { ObservationMonitor, type ObservationJob, type ObservationWorkspace } from "../observation/monitor.js";
 import { ObservationStore } from "../store/observation-store.js";
 import { CorrespondenceIndex, type CorrespondencePair, type CorrespondenceUpdate } from "../observation/correspondence.js";
-import { selectPeerOverlapEvidence, type PeerOverlapEvidence } from "../observation/overlap.js";
+import { selectPeerOverlapEvidence, type PeerOverlapEvidence, type PeerOverlapSelection } from "../observation/overlap.js";
 import { applyPeerResolutionChanges } from "../coordination/peer-application.js";
-import type { AttributedComparison, SourceFile } from "../observation/model.js";
+import type { AttributedComparison, SourceFile, SourceReference } from "../observation/model.js";
 import type { ObservationGeneration, ObservationPull } from "../contracts/observation.js";
-import { peerDeliveryContentDigest, type PeerDeliveryEnvelope, type PeerDeliverySource } from "../contracts/peer-delivery.js";
+import { MAX_PEER_DELIVERY_ENVELOPE_BYTES, peerDeliveryContentDigest, peerDeliveryEnvelopeBytes,
+  peerDeliverySizingEnvelope, type PeerDeliveryEnvelope, type PeerDeliverySource } from "../contracts/peer-delivery.js";
+import { MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES, peerDeliveryPromptBytes } from "../agents/report-format.js";
 import { decodePeerWorkerOperation, type PeerWorkerOperation, type PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 
 import type { RepositoryLease } from "./lease.js";
@@ -45,6 +47,10 @@ const coordinationLimits: CoordinationServiceLimits = Object.freeze({
   ordinary_requests: 16, control_requests: 4, max_source_operations: 4, max_worktrees: 256,
 });
 const coordinationResourceRecords = 4096;
+// PeerDeliveryEnvelopeSchema owns this content cap. Selection must leave room for
+// the complete serialized content, including identities and JSON escaping.
+const PEER_DELIVERY_CONTENT_BYTES = 16_384;
+type PeerSourceContext = Readonly<{ source_artifact_id: string; recipient_artifact_id: string }>;
 export async function appendWorkerPeerOperationStartEvent(store: Pick<TaskStore, "appendEvent">,
   taskId: string, operation: PeerWorkerOperation, created: boolean): Promise<boolean> {
   if (!created) return true;
@@ -66,9 +72,36 @@ function changedStructuralEvidence(report: AttributedComparison): boolean {
   return comparison.region_changed || comparison.changes.some(change => change.kind !== "unobserved" &&
     (change.declaration_changed || change.body_changed || change.default_changed || change.kind === "added" || change.kind === "removed"));
 }
+function observedSourceIdentity(source: SourceReference): string {
+  return canonicalHash({ status: source.status, content_sha256: source.content_sha256 ?? null,
+    mode: source.mode ?? null, entry_kind: source.entry_kind ?? null,
+    object_oid: source.object_oid ?? null });
+}
 /** Compact correspondence is evidence of overlap, not changed source detail or authorship. */
+function peerDeliveryContent(pair: CorrespondencePair, peerCase: Case, source: Work, target: Work,
+  artifactId: string, selectedEvidence?: Pick<PeerOverlapEvidence, "limitations">,
+  sourceContext?: PeerSourceContext): string {
+  const sourceChange = source.id === pair.current_work_id ? pair.current_change : pair.other_change;
+  const otherChange = source.id === pair.current_work_id ? pair.other_change : pair.current_change;
+  return JSON.stringify({ schema_version: selectedEvidence ? 2 : 1, kind: "peer_overlap_evidence",
+    source_work_id: source.id, source_work_revision: source.revision, source_artifact_id: artifactId,
+    case_id: peerCase.id, case_revision: peerCase.revision, case_generation: peerCase.generation,
+    input: { repository_id: pair.input.repository_id, object_format: pair.input.object_format,
+      commit_oid: pair.input.commit_oid, tree_oid: pair.input.tree_oid,
+      path_sha256: createHash("sha256").update(pair.input.path).digest("hex"), range: pair.input_range },
+    subject_id: pair.subject_id, pair_id: pair.pair_id,
+    source_change: sourceChange, recipient_change: otherChange,
+    ...(selectedEvidence ? { ...(sourceContext ? { participants: [source, target].map((work, index) => ({
+      work_id: work.id, task_id: work.managed?.task_id, intent: work.intent,
+      intent_truncated: work.managed?.intent_truncated ?? false, areas: work.areas,
+      report_id: index === 0 ? sourceContext.source_artifact_id : sourceContext.recipient_artifact_id,
+    })) } : {}), selected_evidence: selectedEvidence,
+      limitations: [...selectedEvidence.limitations, "authorship_unproven"] }
+      : { limitations: ["compact_correspondence_only", "changed_source_detail_unavailable", "authorship_unproven"] }) });
+}
 export function peerDeliveryCandidate(pair: CorrespondencePair, peerCase: Case, source: Work,
-  target: Work, recipientTaskId: string, artifactId: string, selectedEvidence?: PeerOverlapEvidence): PeerDeliverySource | undefined {
+  target: Work, recipientTaskId: string, artifactId: string, selectedEvidence?: PeerOverlapEvidence,
+  sourceContext?: PeerSourceContext): PeerDeliverySource | undefined {
   if (peerCase.state !== "active" || source.id === target.id ||
     !peerCase.inputs.some(input => input.work_id === source.id) ||
     !peerCase.inputs.some(input => input.work_id === target.id) ||
@@ -78,22 +111,69 @@ export function peerDeliveryCandidate(pair: CorrespondencePair, peerCase: Case, 
   const sourceChange = source.id === pair.current_work_id ? pair.current_change : pair.other_change;
   const otherChange = source.id === pair.current_work_id ? pair.other_change : pair.current_change;
   const evidence_id = canonicalHash([artifactId, pair.pair_id, sourceChange.evidence_id, otherChange.evidence_id]);
-  const content = JSON.stringify({ schema_version: selectedEvidence ? 2 : 1, kind: "peer_overlap_evidence",
-    source_work_id: source.id, source_work_revision: source.revision, source_artifact_id: artifactId,
-    case_id: peerCase.id, case_revision: peerCase.revision, case_generation: peerCase.generation,
-    input: { repository_id: pair.input.repository_id, object_format: pair.input.object_format,
-      commit_oid: pair.input.commit_oid, tree_oid: pair.input.tree_oid,
-      path_sha256: createHash("sha256").update(pair.input.path).digest("hex"), range: pair.input_range },
-    subject_id: pair.subject_id, pair_id: pair.pair_id,
-    source_change: sourceChange, recipient_change: otherChange,
-    ...(selectedEvidence ? { selected_evidence: selectedEvidence,
-      limitations: [...selectedEvidence.limitations, "authorship_unproven"] }
-      : { limitations: ["compact_correspondence_only", "changed_source_detail_unavailable", "authorship_unproven"] }) });
+  const content = peerDeliveryContent(pair, peerCase, source, target, artifactId, selectedEvidence, sourceContext);
+  if (Buffer.byteLength(content, "utf8") > PEER_DELIVERY_CONTENT_BYTES) {
+    throw new BridgeError("PEER_DELIVERY_METADATA_TOO_LARGE",
+      "Required peer delivery metadata and selected evidence exceed the bounded content");
+  }
   return { source_work_id: source.id, source_work_revision: source.revision,
     case_id: peerCase.id, case_revision: peerCase.revision, case_generation: peerCase.generation,
     evidence_id, evidence_revision: source.revision, content, evidence_digest: peerDeliveryContentDigest(content),
     idempotency_key: canonicalHash([recipientTaskId, peerCase.id, peerCase.revision,
       peerCase.generation, source.id, source.revision, evidence_id]) };
+}
+/** Select against the bytes of the complete consumer message, including repeated JSON escaping. */
+export function selectPeerDeliveryEvidence(selection: PeerOverlapSelection, pair: CorrespondencePair,
+  peerCase: Case, source: Work, target: Work, recipientTaskId: string,
+  sourceContext: PeerSourceContext, recipientWorkspace: string): PeerOverlapEvidence {
+  const selectAt = (budget: number): PeerOverlapEvidence | undefined => {
+    let evidence: PeerOverlapEvidence;
+    try {
+      evidence = selectPeerOverlapEvidence({ ...selection, budget_bytes: budget });
+    } catch (error) {
+      if (errorInfo(error).code === "STRUCTURAL_OVERLAP_INVALID" &&
+        error instanceof BridgeError && error.message.includes("budget is too small for its required metadata")) {
+        return undefined;
+      }
+      throw error;
+    }
+    return evidence;
+  };
+  // First find the smallest qualified evidence. Escaped participant metadata
+  // can consume most of an envelope; subtracting the excess from a trial
+  // budget can jump below this floor even when a compact selection fits.
+  let lower = 512, upper = PEER_DELIVERY_CONTENT_BYTES;
+  while (lower < upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    if (selectAt(middle)) upper = middle;
+    else lower = middle + 1;
+  }
+  const minimum = selectAt(lower);
+  if (!minimum) throw new BridgeError("PEER_DELIVERY_METADATA_TOO_LARGE",
+    "Required selected overlap metadata cannot fit the bounded peer delivery");
+  const fits = (evidence: PeerOverlapEvidence): boolean => {
+    const content = peerDeliveryContent(pair, peerCase, source, target,
+      sourceContext.source_artifact_id, evidence, sourceContext);
+    if (Buffer.byteLength(content, "utf8") > PEER_DELIVERY_CONTENT_BYTES) return false;
+    const candidate = peerDeliveryCandidate(pair, peerCase, source, target,
+      recipientTaskId, sourceContext.source_artifact_id, evidence, sourceContext);
+    if (!candidate) throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Selected peer delivery is no longer current");
+    return peerDeliveryEnvelopeBytes(candidate, recipientWorkspace) <= MAX_PEER_DELIVERY_ENVELOPE_BYTES &&
+      peerDeliveryPromptBytes(peerDeliverySizingEnvelope(candidate, recipientWorkspace), "codex") <=
+        MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES;
+  };
+  if (!fits(minimum)) throw new BridgeError("PEER_DELIVERY_METADATA_TOO_LARGE",
+    "Required peer evidence cannot fit the encoded delivery envelope");
+  let best = minimum;
+  lower++;
+  upper = PEER_DELIVERY_CONTENT_BYTES;
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const evidence = selectAt(middle);
+    if (evidence && fits(evidence)) { best = evidence; lower = middle + 1; }
+    else upper = middle - 1;
+  }
+  return best;
 }
 function announcementId(owner: string, operationKey: string): string {
   const hex = createHash("sha256").update(`passeur-announcement-v1:${owner}:${operationKey}`).digest("hex");
@@ -441,6 +521,9 @@ export class RepositoryRuntime {
                 control_generation: work.managed ? job.workspace.control_generation : null,
                 recipients: [...new Set(recipients)] });
               const artifactKey = JSON.stringify([work.id, path]);
+              const previous = this.#publishedComparisons.get(artifactKey);
+              const sourceChanged = previous !== undefined &&
+                observedSourceIdentity(previous.comparison.observed) !== observedSourceIdentity(pair.report.comparison.observed);
               this.#publishedArtifactIds.set(artifactKey, { id: artifact.id, owner: work.owner });
               this.#publishedComparisons.set(artifactKey, pair.report);
               if (this.#publishedArtifactIds.size > 512) this.#publishedArtifactIds.delete(this.#publishedArtifactIds.keys().next().value!);
@@ -456,16 +539,17 @@ export class RepositoryRuntime {
                     workId: event.other_work_id, subjectId: event.subject_id, state });
                 }
               }
-              return correspondence;
+              return { correspondence, sourceChanged, workId: work.id, path };
             };
             const managedTaskId = job.workspace.control_generation ?
               (await (await this.#coordinationSession(this.#binding!).observationStore()).snapshot()).works
                 .find(work => work.id === job.workspace.work_id)?.managed?.task_id : undefined;
-            const correspondence = managedTaskId
+            const published = managedTaskId
               ? await (await this.#taskControls()).withTaskPublication([managedTaskId], publish)
               : await publish();
-            if (!correspondence) return;
-            for (const event of correspondence.pairs) await this.#queuePeerOverlap(event);
+            if (!published) return;
+            if (published.sourceChanged) await this.#coordinationSession(this.#binding!).notifyPeerObservation(published.workId, published.path);
+            for (const event of published.correspondence.pairs) await this.#queuePeerOverlap(event);
             await this.#drainCorrespondenceNotices();
           }
         },
@@ -526,9 +610,13 @@ export class RepositoryRuntime {
       ![pair.current_work_id, pair.other_work_id].includes(recipientWork.id)) return "stale";
     const artifact = this.#publishedArtifactIds.get(JSON.stringify([source.id, pair.input.path]));
     if (!artifact || artifact.id !== content.source_artifact_id || artifact.owner !== source.owner || !this.#observationStore) return "stale";
-    const evidence = await this.#selectedOverlapEvidence(pair, peerCase, envelope.recipient_task_id);
+    const evidence = await this.#selectedOverlapEvidence(pair, peerCase, envelope.recipient_task_id,
+      source, recipientWork, resource.worktree_path);
+    const recipientArtifact = this.#publishedArtifactIds.get(JSON.stringify([recipientWork.id, pair.input.path]));
+    if (!recipientArtifact) return "stale";
     const currentCandidate = peerDeliveryCandidate(pair, peerCase, source, recipientWork,
-      envelope.recipient_task_id, artifact.id, evidence);
+      envelope.recipient_task_id, artifact.id, evidence,
+      { source_artifact_id: artifact.id, recipient_artifact_id: recipientArtifact.id });
     if (!currentCandidate || canonicalHash(currentCandidate) !== canonicalHash({
       source_work_id: envelope.source_work_id, source_work_revision: envelope.source_work_revision,
       case_id: envelope.case_id, case_revision: envelope.case_revision, case_generation: envelope.case_generation,
@@ -908,13 +996,21 @@ export class RepositoryRuntime {
     } catch (error) { this.#failure ??= diagnosticInfo(error); }
   }
   async #selectedOverlapEvidence(pair: CorrespondencePair, peerCase: Case,
-    recipientTaskId: string): Promise<PeerOverlapEvidence> {
+    recipientTaskId: string, source: Work, target: Work, recipientWorkspace: string): Promise<PeerOverlapEvidence> {
     const path = pair.input.path;
     const reports = [pair.current_work_id, pair.other_work_id].map(id => this.#publishedComparisons.get(JSON.stringify([id, path])));
     const artifacts = [pair.current_work_id, pair.other_work_id].map(id => this.#publishedArtifactIds.get(JSON.stringify([id, path])));
     if (reports.some(report => !report) || artifacts.some(artifact => !artifact) || !this.#observationStore) {
       throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Current compared source evidence is unavailable");
     }
+    const sourceContext = { source_artifact_id: artifacts[[pair.current_work_id, pair.other_work_id].indexOf(source.id)]!.id,
+      recipient_artifact_id: artifacts[[pair.current_work_id, pair.other_work_id].indexOf(target.id)]!.id };
+    const upstreamLimitations = reports.flatMap((report, index) => [
+      ...(report!.comparison.coverage === "complete" ? [] :
+        [`comparison_coverage:${[pair.current_work_id, pair.other_work_id][index]}:${report!.comparison.coverage}`]),
+      ...report!.comparison.limitations.map(limitation =>
+        `comparison:${[pair.current_work_id, pair.other_work_id][index]}:${limitation}`),
+    ]);
     const observations = [];
     let input: SourceFile | undefined;
     let declaration;
@@ -940,10 +1036,68 @@ export class RepositoryRuntime {
         body_changed: change.body_changed, default_changed: change.default_changed,
         input: change.input, ...(change.observed ? { observed: change.observed } : {}) } });
     }
-    return selectPeerOverlapEvidence({ subject_id: pair.subject_id, dialect: reports[0]!.comparison.dialect,
+    return selectPeerDeliveryEvidence({ subject_id: pair.subject_id, dialect: reports[0]!.comparison.dialect,
       parser_identity: reports[0]!.comparison.parser_identity,
       extractor_identity: reports[0]!.comparison.extractor_identity,
-      input: input!, declaration: declaration!, observations });
+      input: input!, declaration: declaration!, observations, limitations: upstreamLimitations },
+    pair, peerCase, source, target, recipientTaskId, sourceContext, recipientWorkspace);
+  }
+  /**
+   * Stable proposal evidence identity for all currently selected overlap paths.
+   * Capture UUIDs and report IDs are transport identities; source bytes and
+   * analysis coverage are the facts to which worker consent must bind.
+   */
+  async #peerCaptureEvidenceId(actorTaskId: string, state: ControlState, peerCase: Case): Promise<string> {
+    const selected = new Set(peerCase.inputs.map(input => input.work_id));
+    const pairs = [...this.#currentOverlapPairs.values()].filter(pair =>
+      selected.has(pair.current_work_id) && selected.has(pair.other_work_id))
+      .sort((left, right) => left.pair_id.localeCompare(right.pair_id));
+    if (!pairs.length) throw new BridgeError("PEER_OPERATION_NO_CURRENT_OVERLAP",
+      "Selected case has no current captured overlap");
+    const paths = [...new Set(pairs.map(pair => pair.input.path))].sort();
+    if (paths.length > 64 || !this.#observationStore || !this.#binding || !this.#store) {
+      throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Selected capture evidence exceeds its bounded runtime inventory");
+    }
+    const { captureWorkingFile } = await import("../observation/source.js");
+    const sources = [];
+    for (const path of paths) for (const input of peerCase.inputs) {
+      const work = state.works.find(item => item.id === input.work_id);
+      const artifact = this.#publishedArtifactIds.get(JSON.stringify([input.work_id, path]));
+      const report = this.#publishedComparisons.get(JSON.stringify([input.work_id, path]));
+      if (!work?.managed || !artifact || !report || artifact.owner !== work.owner) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Selected overlap has no current source capture");
+      }
+      const retained = await this.#observationStore.readRetainedPair(artifact.id, work.owner,
+        (_recipient, workId, revision, generation) => this.#authorizePeerCaseSource(peerCase.id,
+          actorTaskId, workId, revision, generation, "detail"));
+      if (retained.work_id !== work.id || retained.work_revision !== work.revision || retained.path !== path ||
+        retained.input.source.kind !== "commit" || retained.input.source.commit_oid !== input.commit_oid ||
+        retained.observed.source.kind !== "working_capture") {
+        throw new BridgeError("PEER_OPERATION_STALE", "Selected source capture differs from case inputs");
+      }
+      const managed = await managedTaskSource(this.#store, this.#binding.repositoryId, work.managed.task_id);
+      const live = await captureWorkingFile({ root: managed.root, workspace_id: work.workspace_id,
+        workspace_generation: work.managed.control_generation, capture_sequence: 1,
+        input_commit_oid: work.input_oid }, path, { max_bytes: 8 * 1024 * 1024 });
+      if (live.status !== "present" || retained.observed.status !== "present" ||
+        live.content_sha256 !== retained.observed.content_sha256 || live.mode !== retained.observed.mode) {
+        throw new BridgeError("PEER_OPERATION_STALE", "Current source bytes differ from the selected capture");
+      }
+      sources.push({ path, work_id: work.id, work_revision: work.revision,
+        workspace_id: work.workspace_id, workspace_generation: work.managed.control_generation,
+        input: retained.input.status === "present"
+          ? { status: retained.input.status, commit_oid: input.commit_oid,
+            content_sha256: retained.input.content_sha256, mode: retained.input.mode }
+          : { status: retained.input.status, commit_oid: input.commit_oid },
+        observed: { status: retained.observed.status, content_sha256: retained.observed.content_sha256,
+          mode: retained.observed.mode },
+        parser_identity: report.comparison.parser_identity,
+        extractor_identity: report.comparison.extractor_identity,
+        coverage: report.comparison.coverage, limitations: report.comparison.limitations });
+    }
+    return canonicalHash({ case_id: peerCase.id, case_revision: peerCase.revision,
+      case_generation: peerCase.generation, inputs: peerCase.inputs,
+      pair_ids: pairs.map(pair => pair.pair_id), sources });
   }
   #queueCorrespondenceNotice(notice: PendingCorrespondenceNotice): void {
     const key = JSON.stringify([notice.artifactId, notice.recipient, notice.subjectId, notice.state]);
@@ -1096,6 +1250,10 @@ export class RepositoryRuntime {
           continue;
         }
         const selectedCase = peerCases[0]!;
+        const resource = await store.readResource(taskId);
+        if (resource?.state !== "pending" || !resource.worktree_path) {
+          throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Recipient workspace for bounded delivery is unavailable");
+        }
         const retained = await this.#observationStore!.readRetainedPair(artifact.id, control.owner_id,
           (_recipient, workId, revision, generation) => this.#authorizePeerCaseSource(selectedCase.id,
             taskId, workId, revision, generation, "report"));
@@ -1107,8 +1265,12 @@ export class RepositoryRuntime {
           continue;
         }
         for (const peerCase of peerCases) {
-          const evidence = await this.#selectedOverlapEvidence(pair, peerCase, taskId);
-          const candidate = peerDeliveryCandidate(pair, peerCase, source, target, taskId, artifact.id, evidence);
+          const evidence = await this.#selectedOverlapEvidence(pair, peerCase, taskId, source, target,
+            resource.worktree_path);
+          const recipientArtifact = this.#publishedArtifactIds.get(JSON.stringify([target.id, pair.input.path]));
+          if (!recipientArtifact) throw new BridgeError("PEER_DELIVERY_UNAVAILABLE", "Recipient source capture is unavailable");
+          const candidate = peerDeliveryCandidate(pair, peerCase, source, target, taskId, artifact.id, evidence,
+            { source_artifact_id: artifact.id, recipient_artifact_id: recipientArtifact.id });
           if (candidate) await coordinator.queuePeerDelivery(taskId, candidate);
         }
       } catch (error) {
@@ -1185,17 +1347,21 @@ export class RepositoryRuntime {
       currentTasks.some(id => !selectedTasks.includes(id!))) {
       throw new BridgeError("PEER_OPERATION_STALE", "Selected task authority changed before the peer operation lease");
     }
-    // Case membership alone cannot disclose source. Bind every selected source to this task principal.
-    for (const input of peerCase.inputs) {
-      const selected = snapshot.works.find(candidate => candidate.id === input.work_id)!;
-      await this.#authorizePeerCaseSource(peerCase.id, taskId, selected.id, selected.revision,
-        { control_generation: selected.managed!.control_generation,
-          workspace_generation: selected.managed!.control_generation }, "report");
-    }
     const actor = { owner_id: state.owner_id, task_id: taskId, run_id: state.native.run_id,
       control_generation: state.control_generation, workspace_id: work.workspace_id, source_view: admission.source_view, case_id: request.case_id };
     const operation = decodePeerWorkerOperation({ ...request, task_id: actor.task_id, run_id: actor.run_id,
       control_generation: actor.control_generation, workspace_id: actor.workspace_id, source_view: actor.source_view, case_id: actor.case_id });
+    // Observation can return a canonical settled outcome after a selected source
+    // task has finished. Fresh inspect/await still reauthorizes every source in
+    // captureEvidenceId before exposing source-backed proposal evidence.
+    if (operation.kind !== "inspect" && operation.kind !== "await_change") {
+      for (const input of peerCase.inputs) {
+        const selected = snapshot.works.find(candidate => candidate.id === input.work_id)!;
+        await this.#authorizePeerCaseSource(peerCase.id, taskId, selected.id, selected.revision,
+          { control_generation: selected.managed!.control_generation,
+            workspace_generation: selected.managed!.control_generation }, "report");
+      }
+    }
     if (operation.kind === "apply") {
       const prior = await store.readPeerOperation(taskId, operation.operation_key);
       if (prior) {
@@ -1208,9 +1374,8 @@ export class RepositoryRuntime {
         // this callback has no filesystem effect.
         return this.#coordinationSession(binding).workerApplication(
           { owner_id: state.owner_id, source_view: admission.source_view }, actor, operation,
-          async () => prior.result!);
+          async () => prior.result!, undefined, prior.result!);
       }
-      let selectedCaptureIdentity: string | undefined;
       const assertEffectScope = () => {
         const paths = proposalPaths();
         for (const path of paths) {
@@ -1228,17 +1393,6 @@ export class RepositoryRuntime {
       };
       let admittedProposal: import("../coordination/peer-resolution.js").PeerResolutionProposal | undefined;
       const proposalPaths = () => admittedProposal?.changes?.map(change => change.path) ?? [];
-      const captureIdentity = () => canonicalHash(proposalPaths().map(path => {
-        const artifacts = peerCase.inputs.map(input => ({ work_id: input.work_id,
-          report_id: this.#publishedArtifactIds.get(JSON.stringify([input.work_id, path]))?.id }));
-        if (artifacts.some(artifact => !artifact.report_id))
-          throw new BridgeError("PEER_OPERATION_STALE", "Selected overlap has no current captured source report");
-        return { path,
-          pairs: [...this.#currentOverlapPairs.values()].filter(pair => pair.input.path === path &&
-            peerCase.inputs.some(input => input.work_id === pair.current_work_id) &&
-            peerCase.inputs.some(input => input.work_id === pair.other_work_id)).map(pair => pair.pair_id).sort(),
-          artifacts };
-      }));
       return this.#coordinationSession(binding).workerApplication(
         { owner_id: state.owner_id, source_view: admission.source_view }, actor, operation, async proposal => {
           admittedProposal = proposal;
@@ -1249,8 +1403,6 @@ export class RepositoryRuntime {
           }
           const sourcesCurrent = async () => {
             assertEffectScope();
-            if (selectedCaptureIdentity === undefined || captureIdentity() !== selectedCaptureIdentity)
-              throw new BridgeError("PEER_OPERATION_STALE", "Selected captured overlap changed before file effect");
             const latest = await metadata.snapshot();
             const currentCase = latest.cases.find(candidate => candidate.id === peerCase.id && candidate.state === "active");
             if (!currentCase || currentCase.revision !== proposal.case_revision ||
@@ -1269,13 +1421,17 @@ export class RepositoryRuntime {
               if (sourceControl.owner_id !== selectedWork.owner ||
                 sourceControl.control_generation !== selectedWork.managed.control_generation ||
                 sourceControl.phase !== "active" || sourceControl.cancel ||
-                sourceControl.native.state !== "observed_live" ||
-                sourceControl.native.coverage !== "turn_scoped" || sourceControl.native.obligations.length) {
-                throw new BridgeError("PEER_OPERATION_STALE", "Application selected source native turn changed");
+                selectedWork.managed.task_id === taskId &&
+                  (sourceControl.native.state !== "observed_live" ||
+                    sourceControl.native.coverage !== "turn_scoped" || sourceControl.native.obligations.length)) {
+                throw new BridgeError("PEER_OPERATION_STALE", "Application selected source task authority changed");
               }
               await this.#authorizePeerCaseSource(currentCase.id, taskId, selectedWork.id, selectedWork.revision,
                 { control_generation: selectedWork.managed.control_generation,
                   workspace_generation: selectedWork.managed.control_generation }, "detail");
+            }
+            if (await this.#peerCaptureEvidenceId(taskId, latest, currentCase) !== proposal.evidence_id) {
+              throw new BridgeError("PEER_OPERATION_STALE", "Selected source bytes changed after worker consent");
             }
             const applyingControl = await store.readControl(taskId), applyingResource = await store.readResource(taskId);
             if (applyingControl.owner_id !== actor.owner_id || applyingControl.control_generation !== actor.control_generation ||
@@ -1313,7 +1469,9 @@ export class RepositoryRuntime {
         }, async proposal => (await this.#taskControls()).withTaskPublication(selectedTasks, async () => {
           admittedProposal = proposal;
           assertEffectScope();
-          selectedCaptureIdentity = captureIdentity();
+          if (await this.#peerCaptureEvidenceId(taskId, snapshot, peerCase) !== proposal.evidence_id) {
+            throw new BridgeError("PEER_OPERATION_STALE", "Selected source bytes changed after worker consent");
+          }
         }));
     }
     if (operation.kind === "source_detail") {
@@ -2078,7 +2236,9 @@ export class RepositoryRuntime {
           },
         },
         workerPeerAuthority: {
-          assertCurrent: async (actor, snapshot, item) => {
+          captureEvidenceId: (actor, snapshot, item) =>
+            this.#peerCaptureEvidenceId(actor.task_id, snapshot, item),
+          assertCurrent: async (actor, snapshot, item, historicalOutcome) => {
             const store = this.#store;
             if (!store) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Task authority store is unavailable");
             const current = await store.readControl(actor.task_id);
@@ -2099,6 +2259,7 @@ export class RepositoryRuntime {
             }
             const source = await managedTaskSource(store, binding.repositoryId, actor.task_id);
             if (source.root !== resource.worktree_path) throw new BridgeError("PEER_OPERATION_STALE", "Worker workspace authority changed");
+            if (historicalOutcome) return;
             for (const input of item.inputs) {
               const work = snapshot.works.find(candidate => candidate.id === input.work_id);
               if (!work?.managed) continue;
@@ -2148,8 +2309,7 @@ export class RepositoryRuntime {
               if (!work.managed) continue;
               const control = await store.readControl(work.managed.task_id);
               if (control.owner_id !== work.owner || control.control_generation !== work.managed.control_generation
-                || control.cancel || control.phase !== "active" || control.native.state !== "observed_live"
-                || control.native.coverage !== "turn_scoped" || control.native.obligations.length) {
+                || control.cancel || control.phase !== "active") {
                 throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Retained managed source authority changed");
               }
               const resource = await store.readResource(work.managed.task_id);
@@ -2166,26 +2326,33 @@ export class RepositoryRuntime {
               }
             }
           },
-          withPublication: async (snapshot, item, actor, retainedSources, publish, consent) => {
+          withPublication: async (snapshot, item, actor, retainedSources, publish, consent, historicalOutcome) => {
             const store = this.#store;
             if (!store) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Task authority store is unavailable");
-            const selected = item.inputs.map(input => snapshot.works.find(work => work.id === input.work_id));
+            if (historicalOutcome && (!actor || retainedSources.length || consent)) {
+              throw new BridgeError("PEER_OPERATION_STALE", "Historical outcome disclosure cannot admit a source or effect");
+            }
+            const selected = item.inputs.filter(input => !historicalOutcome ||
+              snapshot.works.find(work => work.id === input.work_id)?.managed?.task_id === actor?.task_id)
+              .map(input => snapshot.works.find(work => work.id === input.work_id));
             const retained = retainedSources.map(source => snapshot.works.find(work => work.id === source.work_id));
             const works = [...selected, ...retained];
             if (works.some(work => !work?.managed)) {
               throw new BridgeError("PEER_OPERATION_STALE", "Worker publication requires current managed source authority");
             }
             const taskIds = works.map(work => work!.managed!.task_id);
-            const retainedIds = new Set(retained.map(work => work!.managed!.task_id));
             type TaskState = Awaited<ReturnType<TaskStore["readControl"]>>;
             const authorityFacts = (control: TaskState) => canonicalHash({
-              revision: control.revision, owner_id: control.owner_id, control_generation: control.control_generation,
-              phase: control.phase, cancel: control.cancel ?? null, native: control.native,
+              owner_id: control.owner_id, control_generation: control.control_generation,
+              phase: control.phase, cancel: control.cancel ?? null,
+              // A peer's routine next turn does not revoke its immutable source.
+              // The acting task still needs its exact settled native state.
+              native: actor?.task_id === control.task_id ? control.native : { run_id: control.native.run_id },
             });
             const validate = (work: Work, control: TaskState) => {
               if (control.owner_id !== work.owner || control.control_generation !== work.managed!.control_generation
-                || control.cancel || control.phase !== "active" || (retainedIds.has(control.task_id)
-                  || actor?.task_id === control.task_id) && (control.native.state !== "observed_live"
+                || control.cancel || control.phase !== "active" || actor?.task_id === control.task_id &&
+                  (control.native.state !== "observed_live"
                     || control.native.coverage !== "turn_scoped" || control.native.obligations.length)
                 || actor?.task_id === control.task_id && control.native.run_id !== actor.run_id) {
                 throw new BridgeError("PEER_OPERATION_STALE", "Selected task authority changed before peer publication");
@@ -2215,7 +2382,9 @@ export class RepositoryRuntime {
               for (const work of works) {
                 const control = await store.readControl(work!.managed!.task_id);
                 if (observed.get(control.task_id) !== authorityFacts(control))
-                  throw new BridgeError("PEER_OPERATION_STALE", "Selected task lifecycle changed before peer publication");
+                  throw new BridgeError("PEER_OPERATION_STALE", actor?.task_id === control.task_id
+                    ? "Acting task turn changed before peer publication"
+                    : "Selected source task authority changed before peer publication");
                 validate(work!, control);
               }
               return publish();

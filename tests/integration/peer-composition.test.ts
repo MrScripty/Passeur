@@ -180,6 +180,9 @@ test("distinct-parent managed overlap delivers changed spans and reaches scoped 
   };
   const first = await inspect(0, "initial-inspect");
   assert.equal(first.kind, "current");
+  assert.equal(first.evidence_status, "current");
+  assert.ok(first.evidence_id);
+  assert.ok(first.evidence_revision);
   const sources = selected.inputs.map((input: { work_id: string; commit_oid: string }) => {
     const work = works.find(candidate => candidate.id === input.work_id);
     assert.ok(work);

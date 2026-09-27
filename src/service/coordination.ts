@@ -183,13 +183,20 @@ export class CoordinationService {
   }
   workerApplication(connection: CoordinationConnection, actor: WorkerPeerActor, raw: unknown,
     effect: (proposal: PeerResolutionProposal) => Promise<PeerWorkerOperationResult>,
-    preflight?: (proposal: PeerResolutionProposal) => Promise<void>): Promise<PeerWorkerOperationResult> {
+    preflight?: (proposal: PeerResolutionProposal) => Promise<void>,
+    settledResult?: PeerWorkerOperationResult): Promise<PeerWorkerOperationResult> {
     return this.#submission(connection, "control", false, undefined, (control, authenticated) => {
       if (this.#taskTransitions.size || actor.owner_id !== authenticated.owner_id || actor.source_view !== connection.source_view) {
         throw new BridgeError("PEER_OPERATION_STALE", "Worker application authority changed");
       }
-      return control.withWorkerApplication(actor, raw, effect, preflight);
+      return control.withWorkerApplication(actor, raw, effect, preflight, settledResult);
     });
+  }
+  /** Trusted runtime observation callback; no parent command or second polling owner. */
+  async notifyPeerObservation(workId: string, path: string): Promise<void> {
+    const opened = await this.#open();
+    this.#authority.assertOwned();
+    await opened.control.notifyWorkerPeerCaptureChanged(workId, path);
   }
   async withWorkerTaskTransition<T>(connection: CoordinationConnection, taskId: string, transition: () => Promise<T>): Promise<T> {
     // A service object can exist for an identity read before metadata is enabled.

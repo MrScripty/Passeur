@@ -149,6 +149,48 @@ function changedWindow(before: SourceFile, after: SourceFile, beforeRange: Reado
   return [range(leftRange, before.byte_length), range(rightRange, after.byte_length)];
 }
 
+/** A shared unchanged line can separate two distant edits without implying adjacency. */
+function bodyWindows(before: SourceFile, after: SourceFile, beforeRange: Readonly<{ start_byte: number; end_byte: number }>,
+  afterRange: Readonly<{ start_byte: number; end_byte: number }>): ReturnType<typeof changedWindow>[] {
+  if (before.status !== "present" || after.status !== "present") return [];
+  const left = Buffer.from(before.text, "utf8").subarray(beforeRange.start_byte, beforeRange.end_byte);
+  const right = Buffer.from(after.text, "utf8").subarray(afterRange.start_byte, afterRange.end_byte);
+  let anchor: { left: number; right: number; length: number } | undefined;
+  const lines = new Map<string, number>();
+  for (let start = 0; start < left.length;) {
+    const end = left.indexOf(10, start);
+    if (end < 0) break;
+    const length = end + 1 - start;
+    const key = left.subarray(start, end + 1).toString("base64");
+    if (length >= 32 && !lines.has(key)) lines.set(key, start);
+    start = end + 1;
+  }
+  for (let start = 0; start < right.length;) {
+    const end = right.indexOf(10, start);
+    if (end < 0) break;
+    const length = end + 1 - start;
+    const match = length >= 32 ? lines.get(right.subarray(start, end + 1).toString("base64")) : undefined;
+    if (match !== undefined && (!anchor || length > anchor.length)) anchor = { left: match, right: start, length };
+    start = end + 1;
+  }
+  if (!anchor || anchor.left < CONTEXT_BYTES || anchor.right < CONTEXT_BYTES ||
+      left.length - anchor.left - anchor.length < CONTEXT_BYTES ||
+      right.length - anchor.right - anchor.length < CONTEXT_BYTES) {
+    return [changedWindow(before, after, beforeRange, afterRange)];
+  }
+  if (left.subarray(0, anchor.left).equals(right.subarray(0, anchor.right)) ||
+      left.subarray(anchor.left + anchor.length).equals(right.subarray(anchor.right + anchor.length))) {
+    return [changedWindow(before, after, beforeRange, afterRange)];
+  }
+  const first = changedWindow(before, after,
+    { start_byte: beforeRange.start_byte, end_byte: beforeRange.start_byte + anchor.left },
+    { start_byte: afterRange.start_byte, end_byte: afterRange.start_byte + anchor.right });
+  const second = changedWindow(before, after,
+    { start_byte: beforeRange.start_byte + anchor.left + anchor.length, end_byte: beforeRange.end_byte },
+    { start_byte: afterRange.start_byte + anchor.right + anchor.length, end_byte: afterRange.end_byte });
+  return [first, second];
+}
+
 function declarationSummary(value: Declaration): PeerOverlapEvidence["subject"] {
   return { key: value.key, kind: value.kind, name: value.name, enclosing: [...value.enclosing], range: { ...value.range }, signature: value.signature };
 }
@@ -186,20 +228,29 @@ function selectedSpans(selection: PeerOverlapSelection, observation: PeerOverlap
   }
   if (selection.input.status !== "present" || observation.observed.status !== "present" || !observedDeclaration) return spans;
   if (observation.change.body_changed && afterRange) {
-    const [left, right] = changedWindow(selection.input, observation.observed, beforeRange, afterRange);
-    add("input", left, beforeRange, selection.input, "body_changed");
-    add("observed", right, afterRange, observation.observed, "body_changed");
+    const windows = observation.change.default_changed || observation.change.declaration_changed
+      ? [changedWindow(selection.input, observation.observed, beforeRange, afterRange)]
+      : bodyWindows(selection.input, observation.observed, beforeRange, afterRange);
+    for (const [left, right] of windows) {
+      add("input", left, beforeRange, selection.input, "body_changed");
+      add("observed", right, afterRange, observation.observed, "body_changed");
+    }
     // A body window need not include a separately changed default or attribute in the header.
-    if (observation.change.default_changed && (left.start_byte !== beforeRange.start_byte || left.end_byte !== beforeRange.end_byte ||
-        right.start_byte !== afterRange.start_byte || right.end_byte !== afterRange.end_byte)) {
+    const [left, right] = windows[0]!;
+    if (observation.change.default_changed && spans.length < MAX_SPANS_PER_CHANGE &&
+        (left.start_byte !== beforeRange.start_byte || left.end_byte !== beforeRange.end_byte ||
+          right.start_byte !== afterRange.start_byte || right.end_byte !== afterRange.end_byte)) {
       add("input", beforeRange, beforeRange, selection.input, "default_changed");
       add("observed", afterRange, afterRange, observation.observed, "default_changed");
     }
   } else if (afterRange) {
+    // Header-only changes can be inside a very large declaration. The changed
+    // window carries the source bytes; the summaries carry the whole signature.
+    const [left, right] = changedWindow(selection.input, observation.observed, beforeRange, afterRange);
     for (const reason of reasons) {
       if (spans.length >= MAX_SPANS_PER_CHANGE) break;
-      add("input", beforeRange, beforeRange, selection.input, reason);
-      add("observed", afterRange, afterRange, observation.observed, reason);
+      add("input", left, beforeRange, selection.input, reason);
+      add("observed", right, afterRange, observation.observed, reason);
     }
   } else {
     add("input", beforeRange, beforeRange, selection.input, reasons[0] ?? "signature_changed");
@@ -232,10 +283,33 @@ function build(selection: PeerOverlapSelection, budget: number): PeerOverlapEvid
     dialect: boundedText(selection.dialect, "dialect", 128), parser_identity: boundedText(selection.parser_identity, "parser_identity", 256),
     extractor_identity: boundedText(selection.extractor_identity, "extractor_identity", 256), input: sourceReference(selection.input), subject,
     changes, coverage, limitations: [...limitations].sort() };
-  if (Buffer.byteLength(JSON.stringify({ ...result, evidence_id: "0".repeat(64) }), "utf8") > budget) {
+  const encodedSize = (value: Omit<PeerOverlapEvidence, "evidence_id">): number =>
+    Buffer.byteLength(JSON.stringify({ ...value, evidence_id: "0".repeat(64) }), "utf8");
+  if (encodedSize(result) > budget) {
     coverage = coverage === "unavailable" ? coverage : "incomplete";
     limitations.add("evidence_budget_exceeded");
-    result = { ...result, coverage, limitations: [...limitations].sort(), changes: result.changes.map(change => ({ ...change, spans: [] })) };
+    const orderedChanges = result.changes.map(change => ({ ...change, spans: [] as PeerOverlapSpan[] }));
+    result = { ...result, coverage, limitations: [...limitations].sort(), changes: orderedChanges };
+    if (encodedSize(result) > budget) {
+      throw new BridgeError("STRUCTURAL_OVERLAP_INVALID", "Overlap evidence budget is too small for its required metadata");
+    }
+    // A modified comparison needs both sides to explain the edit. Admit
+    // complete pairs in observation/reason order; never publish a lone side.
+    for (let index = 0; index < changes.length; index++) {
+      const spans = changes[index]!.spans;
+      for (let offset = 0; offset < spans.length;) {
+        const width = spans[offset]!.side === "input" && spans[offset + 1]?.side === "observed" ? 2 : 1;
+        const candidate = spans.slice(offset, offset + width);
+        offset += width;
+        const nextChanges = orderedChanges.map((change, changeIndex) => changeIndex === index
+          ? { ...change, spans: [...change.spans, ...candidate] } : change);
+        const next = { ...result, changes: nextChanges };
+        if (encodedSize(next) <= budget) {
+          orderedChanges[index] = nextChanges[index]!;
+          result = next;
+        }
+      }
+    }
   }
   const evidence_id = digest(result);
   const final = { ...result, evidence_id };

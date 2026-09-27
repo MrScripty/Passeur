@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fixture, done, hold } from './helpers.mjs';
 import { appendWorkerPeerOperationStartEvent } from '../../.passeur-core/src/core/repository-runtime.js';
@@ -14,12 +14,21 @@ import { BridgeError } from '../../.passeur-core/src/core/errors.js';
 import { serviceFixture, request as coordinationRequest, command as coordinationCommand,
   readRequest, key } from '../fixtures/structural/service-fixture.mjs';
 import { operatorToken } from '../../.passeur-core/src/service/operator-token.js';
-import { PEER_RESOLUTION_ACTIONS } from '../../.passeur-core/src/coordination/peer-resolution.js';
+import { peerResolutionDigest } from '../../.passeur-core/src/coordination/peer-resolution.js';
 
 function operation(taskId, runId, kind = 'await_change') {
   const base = { schema_version: 1, task_id: taskId, run_id: runId, control_generation: 1,
     workspace_id: `workspace:${randomUUID()}`, source_view: '/source/repository', case_id: randomUUID(), operation_key: `peer-${randomUUID()}` };
   return kind === 'await_change' ? { ...base, kind, after_case_revision: 3, after_case_generation: 2 } : { ...base, kind };
+}
+async function within(promise, milliseconds, message) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), milliseconds);
+      timer.unref?.();
+    })]);
+  } finally { clearTimeout(timer); }
 }
 
 test('task-owned peer intent survives reopen and restart exposes an exact unavailable wait', async t => {
@@ -63,8 +72,10 @@ test('committed peer result is retrievable by exact key without a second start o
   const request = operation(id, (await f.store.readControl(id)).native.run_id, 'inspect');
   await f.store.startPeerOperation(id, request);
   const result = { ...request, kind: 'current', operation: 'inspect', case_revision: 3, case_generation: 2,
-    evidence_id: 'a'.repeat(64), evidence_revision: 3, negotiation_cursor: 'b'.repeat(64),
-    proposal_note_id: null, proposal: null, participant_task_ids: [], acknowledged_task_ids: [] };
+    evidence_status: 'current', evidence_id: 'a'.repeat(64), evidence_revision: 3,
+    negotiation_cursor: 'b'.repeat(64), proposal_note_id: null, proposal: null,
+    first_proposal: null, application_outcome: null, selected_work_context: [], selected_work_omitted: 0,
+    participant_task_ids: [], acknowledged_task_ids: [] };
   await f.store.settlePeerOperation(id, request.operation_key, result);
   assert.equal(await f.store.appendEvent(id, { kind: 'worker_peer_operation', padding: 'x'.repeat(262_144) }), false);
   const reopened = new TaskStore(f.state);
@@ -81,8 +92,10 @@ test('concurrent exact peer settlements retain one result and reject a conflicti
   const request = operation(id, (await f.store.readControl(id)).native.run_id, 'inspect');
   await f.store.startPeerOperation(id, request);
   const result = { ...request, kind: 'current', operation: 'inspect', case_revision: 3, case_generation: 2,
-    evidence_id: 'a'.repeat(64), evidence_revision: 3, negotiation_cursor: 'b'.repeat(64),
-    proposal_note_id: null, proposal: null, participant_task_ids: [], acknowledged_task_ids: [] };
+    evidence_status: 'current', evidence_id: 'a'.repeat(64), evidence_revision: 3,
+    negotiation_cursor: 'b'.repeat(64), proposal_note_id: null, proposal: null,
+    first_proposal: null, application_outcome: null, selected_work_context: [], selected_work_omitted: 0,
+    participant_task_ids: [], acknowledged_task_ids: [] };
   const [firstOutcome, secondOutcome] = await Promise.all([
     f.store.settlePeerOperationOutcome(id, request.operation_key, result),
     f.store.settlePeerOperationOutcome(id, request.operation_key, Object.fromEntries(Object.entries(result).reverse())),
@@ -147,32 +160,46 @@ test('RepositoryRuntime replays concurrent inspections after settlement conflict
   const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
   const actor = { owner_id: createHash('sha256').update(await operatorToken(binding, true)).digest('hex'),
     client_id: randomUUID() };
-  const ready = hold(), proceed = hold(), inspected = hold(), finish = hold();
+  const ready = hold(), siblingReady = hold(), proceed = hold(), inspected = hold(), finish = hold();
+  t.after(() => { proceed.release(); finish.release(); });
   const firstAdvanced = hold(), secondCaptured = hold(), staleSecondEntered = hold();
-  let selectedCase, operationResult, acknowledgment, inspections, staleInspections, staleInspectionError, workerInput;
-  const profile = { schema_version: 3, execution: { stop_grace_ms: 1000, max_workers: 1, max_queued_tasks: 2,
+  let selectedCase, operationResult, acknowledgment, inspections, staleInspections, staleInspectionError, workerInput, workerError;
+  const profile = { schema_version: 3, execution: { stop_grace_ms: 1000, max_workers: 2, max_queued_tasks: 2,
     max_clients: 32, max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
     implementation: { enabled: true, worktree_root: join(f.temp, 'worktrees') } },
-    agents: [{ agent_id: 'fixture', adapter_id: 'fixture', description: '', enabled: true, options: {} }] };
+    agents: ['fixture', 'sibling'].map(name => ({ agent_id: name, adapter_id: name,
+      description: '', enabled: true, options: {} })) };
   const definitions = { fixture: { configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {},
     worker: { run: async input => {
       workerInput = input;
+      await writeFile(join(input.workspace, 'source.ts'), 'export function run() { return 1; }\n');
       const turn = randomUUID();
       await input.onEvent({ kind: 'turn_started', turn_id: turn });
       await input.onEvent({ kind: 'turn_settled', turn_id: turn, terminal: 'completed' });
       ready.release();
       await proceed.promise;
-      operationResult = await input.peer.operation({ schema_version: 1, kind: 'propose', operation_key: 'runtime-propose',
-        case_id: selectedCase.id, proposal: selectedCase.proposal });
-      acknowledgment = await input.peer.operation({ schema_version: 1, kind: 'acknowledge',
-        operation_key: 'runtime-acknowledge', case_id: selectedCase.id, note_id: operationResult.note_id });
-      inspections = await Promise.all([0, 1].map(() => input.peer.operation({ schema_version: 1,
-        kind: 'inspect', operation_key: 'runtime-concurrent-inspect', case_id: selectedCase.id })));
       try {
-        staleInspections = await Promise.all([0, 1].map(() => input.peer.operation({ schema_version: 1,
-          kind: 'inspect', operation_key: 'runtime-stale-inspect', case_id: selectedCase.id })));
-      } catch (error) { staleInspectionError = error; }
-      inspected.release();
+        operationResult = await input.peer.operation({ schema_version: 1, kind: 'propose', operation_key: 'runtime-propose',
+          case_id: selectedCase.id, proposal: selectedCase.proposal });
+        acknowledgment = await input.peer.operation({ schema_version: 1, kind: 'acknowledge',
+          operation_key: 'runtime-acknowledge', case_id: selectedCase.id, note_id: operationResult.note_id });
+        inspections = await Promise.all([0, 1].map(() => input.peer.operation({ schema_version: 1,
+          kind: 'inspect', operation_key: 'runtime-concurrent-inspect', case_id: selectedCase.id })));
+        try {
+          staleInspections = await Promise.all([0, 1].map(() => input.peer.operation({ schema_version: 1,
+            kind: 'inspect', operation_key: 'runtime-stale-inspect', case_id: selectedCase.id })));
+        } catch (error) { staleInspectionError = error; }
+      } catch (error) { workerError = error; }
+      finally { inspected.release(); }
+      await finish.promise;
+      return done();
+    } } }) }, sibling: { configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {},
+    worker: { run: async input => {
+      await writeFile(join(input.workspace, 'source.ts'), 'export function run() { return 2; }\n');
+      const turn = randomUUID();
+      await input.onEvent({ kind: 'turn_started', turn_id: turn });
+      await input.onEvent({ kind: 'turn_settled', turn_id: turn, terminal: 'completed' });
+      siblingReady.release();
       await finish.promise;
       return done();
     } } }) } };
@@ -191,21 +218,37 @@ test('RepositoryRuntime replays concurrent inspections after settlement conflict
   const preflight = await runtime.preflightCoordinated(submission, actor, f.root, signal);
   const task = await runtime.submitCoordinated({ ...submission, expected_decision_identity: preflight.decision_identity },
     actor, f.root, signal);
-  await ready.promise;
-  const work = await read('work', task.task_id);
-  const claimed = await call(coordinationCommand({ kind: 'claim_target', operation_key: key(), target: 'refs/heads/main', members: [] }));
-  let item = await read('case', claimed.receipt.item_id);
-  await call(coordinationCommand({ kind: 'select_inputs', operation_key: key(), case_id: item.id,
-    expected_revision: item.revision, generation: item.generation, target_oid: f.base,
-    inputs: [{ work_id: task.task_id, commit_oid: f.base }] }));
-  item = await read('case', item.id);
-  selectedCase = { id: item.id, proposal: { schema_version: 1, kind: 'peer_resolution_proposal',
-    case_id: item.id, case_revision: item.revision, case_generation: item.generation,
-    proposal_revision: 1, evidence_id: 'a'.repeat(64), evidence_revision: 1,
-    participants: [actor.owner_id], sources: [{ work_id: work.id, work_revision: work.revision,
-      input_oid: work.input_oid, selected_commit_oid: f.base }], scope: [{ kind: 'file', path: 'source.ts' }],
-    action: 'propose', resolution_digest: 'b'.repeat(64), predecessor_digest: null,
-    permitted_actions: [...PEER_RESOLUTION_ACTIONS] } };
+  const siblingAssignment = { ...assignment, agent_id: 'sibling', request_key: key(),
+    objective: 'Record a competing controlled proposal' };
+  const siblingSubmission = { schema_version: 2, kind: 'inline', assignment: siblingAssignment };
+  const siblingPreflight = await runtime.preflightCoordinated(siblingSubmission, actor, f.root, signal);
+  const siblingTask = await runtime.submitCoordinated({ ...siblingSubmission,
+    expected_decision_identity: siblingPreflight.decision_identity }, actor, f.root, signal);
+  await within(Promise.all([ready.promise, siblingReady.promise]), 10_000,
+    'managed peer fixture did not settle both native turns');
+  let item;
+  for (let attempt = 0; attempt < 100 && !item; attempt++) {
+    for (const id of [task.task_id, siblingTask.task_id]) await runtime.structuralRefresh(id, actor).catch(() => undefined);
+    const inventory = await call({ schema_version: 1, kind: 'recovery_read',
+      selector: { kind: 'inventory' }, offset: 0, limit: 8192, expected_hash: null });
+    for (const candidate of JSON.parse(inventory.content).cases ?? []) {
+      const current = await read('case', candidate.id);
+      if ([task.task_id, siblingTask.task_id].every(id => current.inputs.some(input => input.work_id === id))) item = current;
+    }
+    if (!item) await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(item, 'real managed edits must establish the replay test overlap');
+  const inspectedCurrent = await within(workerInput.peer.operation({ schema_version: 1, kind: 'inspect',
+    operation_key: 'runtime-initial-inspect', case_id: item.id }), 10_000,
+  'initial peer inspection did not settle');
+  assert.ok(inspectedCurrent.first_proposal, 'real capture must authorize the proposal context');
+  const summary = 'Record one controlled proposal';
+  const changes = [{ path: 'source.ts',
+    before_sha256: createHash('sha256').update('export function run() { return 1; }\n').digest('hex'),
+    after_base64: Buffer.from('export function run() { return 3; }\n').toString('base64') }];
+  selectedCase = { id: item.id, proposal: { ...inspectedCurrent.first_proposal,
+    scope: [{ kind: 'file', path: 'source.ts' }], summary, changes,
+    resolution_digest: peerResolutionDigest(summary, changes) } };
   // Advance metadata after control captures an inspection but before runtime
   // settles and discloses it. The exact concurrent callers must replay the
   // durable winner, even though its cursor is now historical.
@@ -257,7 +300,8 @@ test('RepositoryRuntime replays concurrent inspections after settlement conflict
   };
   t.after(() => { CoordinationService.prototype.workerPeerOperation = originalPeerOperation; });
   proceed.release();
-  await inspected.promise;
+  await within(inspected.promise, 10_000, 'concurrent peer inspections did not settle');
+  if (workerError) throw workerError;
   assert.equal(acknowledgment.operation, 'acknowledge');
   const originalPublication = TaskControls.prototype.withTaskPublication;
   const changedTurn = randomUUID();
@@ -270,8 +314,9 @@ test('RepositoryRuntime replays concurrent inspections after settlement conflict
     return originalPublication.call(this, ids, publish);
   };
   try {
-    await assert.rejects(call(readRequest({ kind: 'note', id: operationResult.note_id })),
-      { code: 'PEER_OPERATION_STALE' });
+    const note = await call(readRequest({ kind: 'note', id: operationResult.note_id }));
+    assert.equal(JSON.parse(note.content).peer_resolution_state, 'current',
+      'a new turn in the same native run preserves retained consent');
     assert.equal(consentRace, true);
   } finally {
     TaskControls.prototype.withTaskPublication = originalPublication;
@@ -310,15 +355,18 @@ test('native turn change between validation and reservation rejects worker publi
   const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
   const actor = { owner_id: createHash('sha256').update(await operatorToken(binding, true)).digest('hex'),
     client_id: randomUUID() };
-  const ready = hold(), proceed = hold();
+  const ready = hold(), siblingReady = hold(), proceed = hold(), finish = hold();
+  t.after(() => { proceed.release(); finish.release(); });
   let workerInput, failure;
-  const profile = { schema_version: 3, execution: { stop_grace_ms: 1000, max_workers: 1, max_queued_tasks: 2,
+  const profile = { schema_version: 3, execution: { stop_grace_ms: 1000, max_workers: 2, max_queued_tasks: 2,
     max_clients: 32, max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
     implementation: { enabled: true, worktree_root: join(f.temp, 'worktrees') } },
-    agents: [{ agent_id: 'fixture', adapter_id: 'fixture', description: '', enabled: true, options: {} }] };
+    agents: ['fixture', 'sibling'].map(name => ({ agent_id: name, adapter_id: name,
+      description: '', enabled: true, options: {} })) };
   const definitions = { fixture: { configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {},
     worker: { run: async input => {
       workerInput = input;
+      await writeFile(join(input.workspace, 'source.ts'), 'export function run() { return 1; }\n');
       const settledTurn = randomUUID();
       await input.onEvent({ kind: 'turn_started', turn_id: settledTurn });
       await input.onEvent({ kind: 'turn_settled', turn_id: settledTurn, terminal: 'completed' });
@@ -328,6 +376,15 @@ test('native turn change between validation and reservation rejects worker publi
         operation_key: 'native-race-inspect', case_id: selectedCaseId }); }
       catch (error) { failure = error; }
       await input.onEvent({ kind: 'turn_settled', turn_id: changedTurnId, terminal: 'completed' });
+      return done();
+    } } }) }, sibling: { configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {},
+    worker: { run: async input => {
+      await writeFile(join(input.workspace, 'source.ts'), 'export function run() { return 2; }\n');
+      const turn = randomUUID();
+      await input.onEvent({ kind: 'turn_started', turn_id: turn });
+      await input.onEvent({ kind: 'turn_settled', turn_id: turn, terminal: 'completed' });
+      siblingReady.release();
+      await finish.promise;
       return done();
     } } }) } };
   const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture', mode: 'development',
@@ -344,15 +401,26 @@ test('native turn change between validation and reservation rejects worker publi
   const preflight = await runtime.preflightCoordinated(submission, actor, f.root, signal);
   const task = await runtime.submitCoordinated({ ...submission, expected_decision_identity: preflight.decision_identity },
     actor, f.root, signal);
-  await ready.promise;
-  const claimed = await call(coordinationCommand({ kind: 'claim_target', operation_key: key(),
-    target: 'refs/heads/main', members: [] }));
-  let item = JSON.parse((await call(readRequest({ kind: 'case', id: claimed.receipt.item_id }))).content);
-  await call(coordinationCommand({ kind: 'select_inputs', operation_key: key(), case_id: item.id,
-    expected_revision: item.revision, generation: item.generation, target_oid: f.base,
-    inputs: [{ work_id: task.task_id, commit_oid: f.base }] }));
-  item = JSON.parse((await call(readRequest({ kind: 'case', id: item.id }))).content);
-  const selectedCaseId = item.id;
+  const siblingAssignment = { ...assignment, agent_id: 'sibling', request_key: key(),
+    objective: 'Make a competing source edit' };
+  const siblingSubmission = { schema_version: 2, kind: 'inline', assignment: siblingAssignment };
+  const siblingPreflight = await runtime.preflightCoordinated(siblingSubmission, actor, f.root, signal);
+  const siblingTask = await runtime.submitCoordinated({ ...siblingSubmission,
+    expected_decision_identity: siblingPreflight.decision_identity }, actor, f.root, signal);
+  await within(Promise.all([ready.promise, siblingReady.promise]), 10_000,
+    'managed race fixture did not settle both native turns');
+  let selectedCaseId;
+  for (let attempt = 0; attempt < 100 && !selectedCaseId; attempt++) {
+    for (const id of [task.task_id, siblingTask.task_id]) await runtime.structuralRefresh(id, actor).catch(() => undefined);
+    const inventory = await call({ schema_version: 1, kind: 'recovery_read',
+      selector: { kind: 'inventory' }, offset: 0, limit: 8192, expected_hash: null });
+    for (const candidate of JSON.parse(inventory.content).cases ?? []) {
+      const item = JSON.parse((await call(readRequest({ kind: 'case', id: candidate.id }))).content);
+      if ([task.task_id, siblingTask.task_id].every(id => item.inputs.some(input => input.work_id === id))) selectedCaseId = item.id;
+    }
+    if (!selectedCaseId) await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(selectedCaseId, 'real managed edits must establish the native race case');
   const originalPublication = TaskControls.prototype.withTaskPublication;
   let changedBeforeReservation = false;
   TaskControls.prototype.withTaskPublication = async function (ids, publish) {
@@ -367,6 +435,7 @@ test('native turn change between validation and reservation rejects worker publi
   proceed.release();
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline && !failure) await new Promise(resolve => setTimeout(resolve, 10));
+  finish.release();
   assert.equal(changedBeforeReservation, true);
   assert.equal(failure?.code, 'PEER_OPERATION_STALE');
   assert.equal((await new TaskStore(binding.storeRoot).readPeerOperation(task.task_id, 'native-race-inspect')).disposition,

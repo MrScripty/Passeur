@@ -117,24 +117,36 @@ async function syncDirectory(path: string): Promise<void> {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 async function readRecord(path: string): Promise<unknown> {
-  let handle;
-  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-  catch (error) {
-    if (nativeCode(error) === "ENOENT") throw new BridgeError("COORDINATION_STORE_INCOMPLETE", "Initialized coordination state is incomplete; it must not be reset");
-    if (nativeCode(error) === "ELOOP") throw new BridgeError("COORDINATION_PATH_UNSAFE", "Coordination records may not be symlinks");
-    throw filesystemFailure(error, "coordination.read", path);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    let handle;
+    try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch (error) {
+      if (nativeCode(error) === "ENOENT") throw new BridgeError("COORDINATION_STORE_INCOMPLETE", "Initialized coordination state is incomplete; it must not be reset");
+      if (nativeCode(error) === "ELOOP") throw new BridgeError("COORDINATION_PATH_UNSAFE", "Coordination records may not be symlinks");
+      throw filesystemFailure(error, "coordination.read", path);
+    }
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
+        throw new BridgeError("COORDINATION_PATH_UNSAFE", "Coordination records must be private owned regular files");
+      }
+      // Atomic replacement may unlink this already opened private inode before
+      // fstat. Reopen the pathname; a linked second inode remains forbidden.
+      if (info.nlink === 0) {
+        if (attempt < 3) continue;
+        throw new BridgeError("COORDINATION_RECORD_CHANGED", "Coordination record changed repeatedly during read");
+      }
+      if (info.nlink !== 1) throw new BridgeError("COORDINATION_PATH_UNSAFE", "Coordination records must be private owned regular files");
+      if (info.size > CONTROL_MAX_BYTES) throw new BridgeError("COORDINATION_RECORD_TOO_LARGE", "Coordination record exceeds its read bound");
+      const buffer = Buffer.alloc(info.size + 1);
+      let total = 0;
+      while (total < buffer.length) { const read = await handle.read(buffer, total, buffer.length - total, total); if (!read.bytesRead) break; total += read.bytesRead; }
+      if (total !== info.size) throw new BridgeError("COORDINATION_RECORD_CHANGED", "Record changed while being read");
+      try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total))); }
+      catch (cause) { throw new BridgeError("COORDINATION_RECORD_CORRUPT", "Control is not valid UTF-8 JSON", { cause }); }
+    } finally { await handle.close(); }
   }
-  try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) throw new BridgeError("COORDINATION_PATH_UNSAFE", "Coordination records must be private owned regular files");
-    if (info.size > CONTROL_MAX_BYTES) throw new BridgeError("COORDINATION_RECORD_TOO_LARGE", "Coordination record exceeds its read bound");
-    const buffer = Buffer.alloc(info.size + 1);
-    let total = 0;
-    while (total < buffer.length) { const read = await handle.read(buffer, total, buffer.length - total, total); if (!read.bytesRead) break; total += read.bytesRead; }
-    if (total !== info.size) throw new BridgeError("COORDINATION_RECORD_CHANGED", "Record changed while being read");
-    try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total))); }
-    catch (cause) { throw new BridgeError("COORDINATION_RECORD_CORRUPT", "Control is not valid UTF-8 JSON", { cause }); }
-  } finally { await handle.close(); }
+  throw new BridgeError("COORDINATION_RECORD_CHANGED", "Coordination record changed repeatedly during read");
 }
 function decodeMarker(value: unknown, repository: string): { epoch: string } {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new BridgeError("COORDINATION_RECORD_CORRUPT", "Invalid initialization marker");

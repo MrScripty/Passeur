@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, appendFile, chmod, link, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { access, appendFile, chmod, link, mkdir, mkdtemp, open, readdir, readFile, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -74,6 +74,28 @@ test('symlink and hardlink records cannot redirect control reads', async t => {
   await assert.rejects(f.store.snapshot(), { code: 'COORDINATION_PATH_UNSAFE' });
   await unlink(f.file); await link(other, f.file);
   await assert.rejects(f.store.snapshot(), { code: 'COORDINATION_PATH_UNSAFE' });
+});
+test('an atomic replacement after open does not make a private control read unsafe', async t => {
+  const f = await fixture(t), before = await f.disk();
+  const handle = await open(f.file, 'r');
+  const old = await handle.stat(), prototype = Object.getPrototypeOf(handle), stat = prototype.stat;
+  await handle.close();
+  let replaced = false;
+  prototype.stat = async function (...args) {
+    const info = await stat.apply(this, args);
+    if (!replaced && info.dev === old.dev && info.ino === old.ino) {
+      replaced = true;
+      await atomicJson(f.file, before);
+      const unlinked = await stat.apply(this, args);
+      assert.equal(unlinked.nlink, 0, 'atomic replace must unlink the already opened old inode');
+      return unlinked;
+    }
+    return info;
+  };
+  try {
+    assert.deepEqual(await f.store.snapshot(), before);
+    assert.equal(replaced, true, 'the test must replace control.json between open and fstat');
+  } finally { prototype.stat = stat; }
 });
 test('nonregular records and nonprivate paths are rejected without blocking', async t => {
   const f = await fixture(t); await unlink(f.file); await mkdir(f.file, { mode: 0o700 });
