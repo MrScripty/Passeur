@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { canonicalHash, Mutex } from "../core/async.js";
 import { BridgeError } from "../core/errors.js";
-import { MANAGED_CONTROL_SCHEMA, SUBMISSION_CONTROL_SCHEMA, SOURCE_GRANT_CONTROL_SCHEMA, SOURCE_WATCH_CONTROL_SCHEMA, CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
+import { MANAGED_CONTROL_SCHEMA, SUBMISSION_CONTROL_SCHEMA, SOURCE_GRANT_CONTROL_SCHEMA, SOURCE_WATCH_CONTROL_SCHEMA, OBSERVED_CASE_CONTROL_SCHEMA, CONTROL_MAX_BYTES, CONTROL_RELEASE_BYTES, releaseSlotsRequired, decodeCommand, entityId, parentId, type Case, type Command, type ControlState, type Note,
   coordinationOperationKey, controlReceiptCount, recoveryReceipts, decodeRecoveryCommand, MAX_PARTIES, MAX_REGIONS, type RecoveryCommand, type RecoveryReceipt, type ParentId, type Receipt, type Region, type Subject, type Work } from "../contracts/coordination-control.js";
 import { announcements, submissionBindings, submissionEvents, decodeAnnouncementInput, decodeAnnouncementWithdrawalInput,
   decodeSubmissionPreflightInput, decodeSubmissionBindInput, decodeSubmissionDispositionInput, decodeSubmissionTerminalInput,
@@ -244,6 +244,104 @@ export class CoordinationControl {
     return this.#ordering.run(async () => structuredClone((await this.store.snapshot()).receipts.find(r => r.owner === owner && r.key === operationKey)));
   }
 
+  /** Elected observation only. The caller has already proved task, Git and complete delivery scope. */
+  async extendObservedCase(actor: CoordinationActor, input: Readonly<{
+    operation_key: string; case_id: string; expected_revision: number; generation: number;
+    new_work_id: string; target_oid: string;
+  }>): Promise<Receipt> {
+    const owner = parentId(actor.owner_id), command = {
+      kind: "extend_observed_case" as const, operation_key: coordinationOperationKey(input.operation_key),
+      case_id: entityId(input.case_id), expected_revision: input.expected_revision,
+      generation: input.generation, new_work_id: entityId(input.new_work_id), target_oid: input.target_oid,
+    };
+    const hash = canonicalHash({ owner, command });
+    return this.#ordering.run(async () => {
+      this.store.assertMutable();
+      const current = await this.store.snapshot();
+      const prior = current.receipts.find(receipt => receipt.owner === owner && receipt.key === command.operation_key);
+      if (prior) {
+        if (prior.request_hash !== hash || prior.action !== command.kind) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Observed extension key identifies different intent");
+        return structuredClone(prior);
+      }
+      if (recoveryReceipts(current).some(receipt => receipt.operator === owner && receipt.command.operation_key === command.operation_key)
+        || submissionEvents(current).some(event => event.owner === owner && event.key === command.operation_key))
+        throw new BridgeError("COORDINATION_KEY_CONFLICT", "Observed extension key identifies another authority");
+      const item = ownCase(current, owner, command.case_id, command.expected_revision, command.generation);
+      if (item.observed_origin !== "selected" || item.external_effect !== "not_started")
+        throw new BridgeError("COORDINATION_OBSERVED_ORIGIN_UNAVAILABLE", "Only an uneffected elected observed case can extend");
+      if (this.#applicationCases.has(item.id) || this.#transitionCases.has(item.id))
+        throw new BridgeError("PEER_OPERATION_STALE", "Selected case has an active task or effect transition");
+      if (current.notes.some(note => note.subject.kind === "case" && note.subject.id === item.id &&
+        retainedPeerRecord(note.text)?.kind === "peer_resolution_application"))
+        throw new BridgeError("COORDINATION_EXTERNAL_EFFECT_UNRESOLVED", "Retained application admission prevents case extension");
+      const selected = item.inputs.map(input => visibleWork(current, owner, input.work_id));
+      const added = current.works.find(work => work.id === command.new_work_id);
+      if (!added) return unavailable();
+      if (selected.some(work => work.id === added.id)) throw new BridgeError("COORDINATION_OBSERVED_DUPLICATE", "Work is already selected");
+      if (!added.managed || added.state !== "active" || !selected.length || selected.some(work => !work.managed || work.state !== "active" || work.input_oid !== added.input_oid || work.object_format !== added.object_format)
+        || command.target_oid !== item.target_oid)
+        throw new BridgeError("COORDINATION_OBSERVED_SCOPE_UNSUPPORTED", "Observed extension requires current compatible managed sources and target");
+      const members = [...new Set([...item.members, added.owner])];
+      if (members.length > MAX_PARTIES) throw new BridgeError("COORDINATION_CAPACITY", "Case participant capacity is full");
+      const visibility_delta = [...selected, added].map(work => ({ work_id: work.id,
+        work_revision: work.revision, control_generation: work.managed!.control_generation,
+        areas: structuredClone(work.areas), added_readers: members.filter(member => !canReadWork(member, work)) }));
+      for (const work of [...selected, added]) if (work.managed && (this.#transitionTasks.has(work.managed.task_id)
+        || this.serviceTransitions?.has(work.managed.task_id) || this.#retirements.has(work.managed.task_id)))
+        throw new BridgeError("PEER_OPERATION_STALE", "Selected task authority is changing");
+      const next = structuredClone(current), changed = next.cases.find(candidate => candidate.id === item.id)!;
+      changed.members = members;
+      changed.inputs.push({ work_id: added.id, commit_oid: added.input_oid });
+      changed.delivery_pending = changed.inputs.map(input => input.work_id);
+      changed.delivery_observed = [];
+      changed.visibility_delta = visibility_delta;
+      changed.revision++;
+      next.revision++;
+      const receipt: Receipt = { owner, key: command.operation_key, request_hash: hash, revision: next.revision,
+        action: command.kind, entity: { kind: "case", id: item.id }, item_id: item.id, outcome: "recorded" };
+      next.receipts.push(receipt);
+      checkCapacity(next);
+      await this.#publish(current, next);
+      return structuredClone(receipt);
+    });
+  }
+
+  /** Runtime calls this only after all current-revision peer envelopes for one task carry native observed receipts. */
+  async observeCaseDelivery(actor: CoordinationActor, input: Readonly<{
+    operation_key: string; case_id: string; case_revision: number; generation: number;
+    recipient_work_id: string; observation_digest: string;
+  }>): Promise<Receipt> {
+    const owner = parentId(actor.owner_id), command = { kind: "observe_case_delivery" as const,
+      operation_key: coordinationOperationKey(input.operation_key), case_id: entityId(input.case_id),
+      case_revision: input.case_revision, generation: input.generation,
+      recipient_work_id: entityId(input.recipient_work_id), observation_digest: input.observation_digest };
+    const hash = canonicalHash({ owner, command });
+    return this.#ordering.run(async () => {
+      this.store.assertMutable();
+      const current = await this.store.snapshot();
+      const prior = current.receipts.find(receipt => receipt.owner === owner && receipt.key === command.operation_key);
+      if (prior) {
+        if (prior.request_hash !== hash || prior.action !== command.kind) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Delivery observation key identifies different evidence");
+        return structuredClone(prior);
+      }
+      const item = current.cases.find(candidate => candidate.id === command.case_id && candidate.state === "active");
+      if (!item || item.lead !== owner || item.revision !== command.case_revision || item.generation !== command.generation ||
+        item.observed_origin !== "selected" || !item.delivery_pending?.includes(command.recipient_work_id))
+        throw new BridgeError("PEER_DELIVERY_STALE", "Current case has no pending observation for this task");
+      const next = structuredClone(current), changed = next.cases.find(candidate => candidate.id === item.id)!;
+      changed.delivery_pending = changed.delivery_pending!.filter(id => id !== command.recipient_work_id);
+      (changed.delivery_observed ??= []).push({ work_id: command.recipient_work_id,
+        observation_digest: command.observation_digest });
+      next.revision++;
+      const receipt: Receipt = { owner, key: command.operation_key, request_hash: hash, revision: next.revision,
+        action: command.kind, entity: { kind: "case", id: item.id }, item_id: item.id, outcome: "recorded" };
+      next.receipts.push(receipt);
+      checkCapacity(next);
+      await this.#publish(current, next);
+      return structuredClone(receipt);
+    });
+  }
+
   /** Capture permission-checked values for read-only Git validation, outside this owner's lock. */
   async prepareSourceCommand(actor: CoordinationActor, raw: unknown): Promise<
     { kind: "recorded"; receipt: Receipt } | { kind: "inspect"; target: Case | null; works: Work[]; resource_versions: SourceVersions }
@@ -278,7 +376,7 @@ export class CoordinationControl {
     });
   }
 
-  async execute(actor: CoordinationActor, input: unknown, sourceVersions?: SourceVersions): Promise<Receipt> {
+  async execute(actor: CoordinationActor, input: unknown, sourceVersions?: SourceVersions, observed = false): Promise<Receipt> {
     const owner = parentId(actor.owner_id), command = decodeCommand(input);
     const versions = sourceVersions ? sourceVersions.map(v => ({ ...v })) : [];
     if (this.#closing) throw new BridgeError("COORDINATION_CLOSED", "Coordination no longer accepts operations");
@@ -302,7 +400,7 @@ export class CoordinationControl {
         }
       }
     }
-    const publish = () => this.#ordering.run(() => this.#executeCommand(owner, command, versions, consentGuard));
+    const publish = () => this.#ordering.run(() => this.#executeCommand(owner, command, versions, consentGuard, observed));
     return consentPublication
       ? this.#withWorkerPublication(consentPublication.state, consentPublication.item, undefined, [], publish,
         consentPublication.consent)
@@ -311,7 +409,7 @@ export class CoordinationControl {
 
   /** The caller holds #ordering. Worker consent, when required, was checked outside it. */
   async #executeCommand(owner: ParentId, command: Command, versions: SourceVersions,
-    consentGuard?: { revision: number; epoch: number }): Promise<Receipt> {
+    consentGuard?: { revision: number; epoch: number }, observed = false): Promise<Receipt> {
     const hash = canonicalHash({ owner, command });
       this.store.assertMutable();
       const current = await this.store.snapshot();
@@ -395,8 +493,15 @@ export class CoordinationControl {
           if (item) this.#assertCaseTransition(current, item);
         }
       }
-      const next: ControlState = command.kind === "watch_source"
-        ? current.schema_version === SOURCE_WATCH_CONTROL_SCHEMA ? structuredClone(current)
+      const next: ControlState = observed && command.kind === "claim_target" ||
+        command.kind === "post_note" && command.subject.kind === "work" && current.schema_version < OBSERVED_CASE_CONTROL_SCHEMA
+        ? { ...structuredClone(current), schema_version: OBSERVED_CASE_CONTROL_SCHEMA,
+            recoveries: structuredClone([...recoveryReceipts(current)]),
+            announcements: structuredClone([...announcements(current)]),
+            bindings: structuredClone([...submissionBindings(current)]),
+            submission_events: structuredClone([...submissionEvents(current)]) }
+        : command.kind === "watch_source"
+        ? current.schema_version >= SOURCE_WATCH_CONTROL_SCHEMA ? structuredClone(current)
           : { ...structuredClone(current), schema_version: SOURCE_WATCH_CONTROL_SCHEMA,
               recoveries: structuredClone([...recoveryReceipts(current)]),
               announcements: structuredClone([...announcements(current)]),
@@ -413,7 +518,7 @@ export class CoordinationControl {
         ? current.schema_version >= SUBMISSION_CONTROL_SCHEMA ? structuredClone(current)
           : { ...structuredClone(current), schema_version: MANAGED_CONTROL_SCHEMA, recoveries: structuredClone([...recoveryReceipts(current)]) }
         : structuredClone(current);
-      const result = apply(next, owner, command);
+      const result = apply(next, owner, command, observed);
       next.revision++;
       const receipt: Receipt = { owner, key: command.operation_key, request_hash: hash, revision: next.revision,
         action: command.kind, entity: result.entity, item_id: result.item_id, outcome: "recorded" };
@@ -519,6 +624,7 @@ export class CoordinationControl {
         noteId = randomUUID(); action = "post_note";
         next.notes.push({ id: noteId, subject: { kind: "case", id: item.id }, author: owner, kind: "agreement_proposal",
           text, work_refs: item.inputs.map(input => input.work_id), parties: parties.map(party => party.principal),
+          ...(item.observed_origin ? { readers: [...item.members] } : {}),
           acknowledged: [], withdrawn: false });
       } else if ("note_id" in operation) {
         noteId = operation.note_id;
@@ -620,7 +726,7 @@ export class CoordinationControl {
           const work = state.works.find(candidate => candidate.id === source.work_id);
           const input = item.inputs.find(candidate => candidate.work_id === source.work_id);
           if (!work?.managed || work.state !== "active" || work.revision !== source.work_revision ||
-            work.input_oid !== source.input_oid || input?.commit_oid !== source.selected_commit_oid || !canReadWork(owner, work)) {
+            work.input_oid !== source.input_oid || input?.commit_oid !== source.selected_commit_oid || !canReadSelectedWork(state, owner, work)) {
             throw new BridgeError("STRUCTURAL_SOURCE_FORBIDDEN", "Retained peer source is no longer authorized");
           }
         }
@@ -669,7 +775,7 @@ export class CoordinationControl {
             const work = state.works.find(candidate => candidate.id === source.work_id);
             const input = item.inputs.find(candidate => candidate.work_id === source.work_id);
             return !work?.managed || work.state !== "active" || work.revision !== source.work_revision ||
-              work.input_oid !== source.input_oid || input?.commit_oid !== source.selected_commit_oid || !canReadWork(owner, work);
+              work.input_oid !== source.input_oid || input?.commit_oid !== source.selected_commit_oid || !canReadSelectedWork(state, owner, work);
           }))) {
         throw new BridgeError("PEER_OPERATION_STALE", "Peer result authority changed during disclosure");
       }
@@ -847,6 +953,7 @@ export class CoordinationControl {
         next.notes.push({ id: noteId, subject: { kind: "case", id: selected.item.id }, author: owner,
           kind: "resolution_update", text: encodePeerResolutionRecord(pending),
           work_refs: selected.item.inputs.map(input => input.work_id), parties: [],
+          ...(selected.item.observed_origin ? { readers: [...selected.item.members] } : {}),
           acknowledged: [], withdrawn: false });
         next.revision++;
         next.receipts.push({ owner, key: pendingKey, request_hash: canonicalHash({ owner, operation, pending }),
@@ -886,6 +993,7 @@ export class CoordinationControl {
         const text = encodePeerResolutionRecord(record), noteId = randomUUID(), next = structuredClone(state);
         next.notes.push({ id: noteId, subject: { kind: "case", id: item.id }, author: owner,
           kind: "resolution_update", text, work_refs: item.inputs.map(input => input.work_id),
+          ...(item.observed_origin ? { readers: [...item.members] } : {}),
           parties: [], acknowledged: [], withdrawn: false });
         next.revision++;
         next.receipts.push({ owner, key: `${workerPeerKey(operation)}:outcome`, request_hash: canonicalHash({ owner, operation, result }),
@@ -1073,7 +1181,7 @@ export class CoordinationControl {
         throw new BridgeError("COORDINATION_KEY_CONFLICT", "Recovery key already identifies submission authority");
       }
       if (recovery.epoch !== current.epoch) throw new BridgeError("COORDINATION_STALE_EPOCH", "Recovery belongs to a different initialized coordination store");
-      const next: Exclude<ControlState, { schema_version: 1 }> = current.schema_version === 4 || current.schema_version === 5 || current.schema_version === 6 ? structuredClone(current) : {
+      const next: Exclude<ControlState, { schema_version: 1 }> = "announcements" in current ? structuredClone(current) : {
         ...structuredClone(current), schema_version: current.schema_version === MANAGED_CONTROL_SCHEMA ? MANAGED_CONTROL_SCHEMA : 2,
         recoveries: structuredClone([...recoveryReceipts(current)]),
       };
@@ -1196,7 +1304,7 @@ export class CoordinationControl {
     const owner = parentId(actor.owner_id), id = entityId(workId);
     return this.#ordering.run(async () => {
       const state = await this.store.snapshot(), target = visibleWork(state, owner, id);
-      return state.works.filter(w => w.id !== id && w.state === "active" && canReadWork(owner, w))
+      return state.works.filter(w => w.id !== id && w.state === "active" && canReadSelectedWork(state, owner, w))
         .map(w => ({ work_id: w.id, areas: w.areas.filter(a => target.areas.some(b => overlap(a, b))) })).filter(w => w.areas.length > 0);
     });
   }
@@ -1310,7 +1418,7 @@ function workerPeerCase(state: ControlState, owner: ParentId, actor: WorkerPeerA
   for (const input of item.inputs) {
     const selected = state.works.find(candidate => candidate.id === input.work_id);
     if (!selected?.managed || selected.state !== "active" || !item.members.includes(selected.owner)
-      || !canReadWork(owner, selected)) {
+      || !canReadSelectedWork(state, owner, selected)) {
       throw new BridgeError("PEER_OPERATION_FORBIDDEN", "Worker selected source authority is no longer current");
     }
   }
@@ -1435,8 +1543,8 @@ async function assertWorkerResultConsent(state: ControlState, item: Case, value:
   }
   await authority.assertConsentCurrent(state, item, note);
 }
-function submissionState(current: ControlState): Extract<ControlState, { schema_version: 4 | 5 | 6 }> {
-  return current.schema_version === 4 || current.schema_version === 5 || current.schema_version === 6 ? structuredClone(current) : {
+function submissionState(current: ControlState): Extract<ControlState, { schema_version: 4 | 5 | 6 | 7 }> {
+  return "announcements" in current ? structuredClone(current) : {
     ...structuredClone(current), schema_version: SUBMISSION_CONTROL_SCHEMA,
     recoveries: structuredClone([...recoveryReceipts(current)]), announcements: [], bindings: [], submission_events: [],
   };
@@ -1451,7 +1559,7 @@ function sameSubmissionKey(state: ControlState, owner: ParentId, key: string, ha
   if (prior && prior.request_hash !== hash) throw new BridgeError("COORDINATION_KEY_CONFLICT", "Operation key names different submission intent");
   return prior;
 }
-function appendSubmissionEvent(next: Extract<ControlState, { schema_version: 4 | 5 | 6 }>, kind: SubmissionEvent["kind"],
+function appendSubmissionEvent(next: Extract<ControlState, { schema_version: 4 | 5 | 6 | 7 }>, kind: SubmissionEvent["kind"],
   owner: ParentId, key: string, item_id: string, request_hash: string): void {
   next.revision++;
   next.submission_events.push({ kind, owner, key, item_id, request_hash, revision: next.revision });
@@ -1466,7 +1574,7 @@ function submissionDecision(state: ControlState, owner: ParentId, input: Submiss
     throw new BridgeError("COORDINATION_CHANGED", "Announcement changed before the requested preflight");
   }
   const overlaps = [
-    ...state.works.filter(w => w.state === "active" && canReadWork(owner, w))
+    ...state.works.filter(w => w.state === "active" && canReadSelectedWork(state, owner, w))
       .map(w => ({ kind: "work" as const, id: w.id, revision: w.revision,
         areas: w.areas.filter(area => input.areas.some(b => overlap(area, b))) })).filter(w => w.areas.length),
     ...announcements(state).filter(a => a.state === "unresolved" && a.id !== input.announcement?.id
@@ -1475,7 +1583,7 @@ function submissionDecision(state: ControlState, owner: ParentId, input: Submiss
         areas: a.areas.filter(area => input.areas.some(b => overlap(area, b))) })).filter(a => a.areas.length),
     ...submissionBindings(state).filter(b => (b.state === "bound" || b.state === "settled") &&
       (b.owner === owner || b.announcement && announcements(state).some(a => a.id === b.announcement!.id && a.readers.includes(owner)))
-      && !state.works.some(w => w.managed?.task_id === b.task_id && canReadWork(owner, w)))
+      && !state.works.some(w => w.managed?.task_id === b.task_id && canReadSelectedWork(state, owner, w)))
       .map(b => ({ kind: "binding" as const, id: b.task_id, revision: b.announcement?.revision ?? 0,
         areas: b.areas.filter(area => input.areas.some(other => overlap(area, other))) })).filter(b => b.areas.length),
   ].sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
@@ -1493,11 +1601,19 @@ function retainedPeerRecord(text: string): PeerResolutionRecord | null {
   }
 }
 function canReadWork(parent: ParentId, work: Work): boolean { return work.owner === parent || work.readers.includes(parent); }
+function canReadSelectedWork(state: ControlState, parent: ParentId, work: Work): boolean {
+  if (canReadWork(parent, work)) return true;
+  return state.cases.some(item => item.state === "active" && item.observed_origin === "selected" &&
+    item.members.includes(parent) && item.inputs.some(input => input.work_id === work.id) &&
+    item.visibility_delta?.some(delta => delta.work_id === work.id && delta.work_revision === work.revision &&
+      delta.control_generation === work.managed?.control_generation &&
+      canonicalHash(delta.areas) === canonicalHash(work.areas) && delta.added_readers.includes(parent)));
+}
 function visibleWork(state: ControlState, parent: ParentId, id: string): Work {
-  const work = state.works.find(w => w.id === id); if (!work || !canReadWork(parent, work)) return unavailable(); return work;
+  const work = state.works.find(w => w.id === id); if (!work || !canReadSelectedWork(state, parent, work)) return unavailable(); return work;
 }
 function canReadCase(state: ControlState, parent: ParentId, item: Case): boolean {
-  return item.members.includes(parent) && item.inputs.every(i => { const work = state.works.find(w => w.id === i.work_id); return work !== undefined && canReadWork(parent, work); });
+  return item.members.includes(parent) && item.inputs.every(i => { const work = state.works.find(w => w.id === i.work_id); return work !== undefined && canReadSelectedWork(state, parent, work); });
 }
 function visibleCase(state: ControlState, parent: ParentId, id: string): Case {
   const item = state.cases.find(c => c.id === id); if (!item || !canReadCase(state, parent, item)) return unavailable(); return item;
@@ -1507,6 +1623,11 @@ function requireSubject(state: ControlState, parent: ParentId, subject: Subject)
 }
 function requireNoteAccess(state: ControlState, parent: ParentId, note: Note): void {
   requireSubject(state, parent, note.subject);
+  // Case-scoped work visibility cannot retroactively add a reader to retained text.
+  // Legacy notes without an audience stamp fail closed to their explicit principals.
+  if ((note.subject.kind === "work" || note.readers !== undefined ||
+    state.cases.find(item => item.id === note.subject.id)?.observed_origin) &&
+    !(note.readers?.includes(parent) || note.author === parent || note.parties.includes(parent))) return unavailable();
   for (const id of note.work_refs) visibleWork(state, parent, id);
 }
 function sameSet(left: readonly string[], right: readonly string[]): boolean {
@@ -1722,7 +1843,7 @@ function ownCase(state: ControlState, parent: ParentId, id: string, revision: nu
 function idle(item: Case): void {
   if (item.external_effect !== "not_started") throw new BridgeError("COORDINATION_EXTERNAL_EFFECT_UNRESOLVED", "Unmediated integration may still be in progress; explicit settlement is required");
 }
-function apply(state: ControlState, parent: ParentId, command: Command): { entity: Subject; item_id: string } {
+function apply(state: ControlState, parent: ParentId, command: Command, observed = false): { entity: Subject; item_id: string } {
   switch (command.kind) {
     case "register_task_work": {
       if (state.works.some(w => w.id === command.managed.task_id)) throw new BridgeError("COORDINATION_TASK_REGISTERED", "This task already has retained coordination work; use its original receipt or read its current metadata");
@@ -1777,6 +1898,11 @@ function apply(state: ControlState, parent: ParentId, command: Command): { entit
       const id = randomUUID();
       state.notes.push({ id, subject: command.subject, author: parent, kind: command.note_kind, text: command.text,
         work_refs: command.subject.kind === "work" ? [command.subject.id] : visibleCase(state, parent, command.subject.id).inputs.map(i => i.work_id),
+        ...(command.subject.kind === "case" && state.cases.find(item => item.id === command.subject.id)?.observed_origin
+          ? { readers: [...state.cases.find(item => item.id === command.subject.id)!.members] }
+          : command.subject.kind === "work" ? { readers: [...new Set([
+            state.works.find(work => work.id === command.subject.id)!.owner,
+            ...state.works.find(work => work.id === command.subject.id)!.readers])] } : {}),
         parties: command.parties, acknowledged: [], withdrawn: false });
       return { entity: command.subject, item_id: id };
     }
@@ -1803,7 +1929,8 @@ function apply(state: ControlState, parent: ParentId, command: Command): { entit
       const generation = Math.max(0, ...state.cases.filter(c => c.target === command.target).map(c => c.generation)) + 1;
       const id = randomUUID();
       state.cases.push({ id, target: command.target, lead: parent, members: [...new Set([parent, ...command.members])], revision: 1, generation,
-        state: "active", external_effect: "not_started", target_oid: null, inputs: [] });
+        state: "active", external_effect: "not_started", target_oid: null, inputs: [],
+        ...(observed ? { observed_origin: "pending" as const } : {}) });
       return { entity: { kind: "case", id }, item_id: id };
     }
     default: {
@@ -1811,8 +1938,12 @@ function apply(state: ControlState, parent: ParentId, command: Command): { entit
       switch (command.kind) {
         case "select_inputs":
           idle(item);
+          if (item.observed_origin === "pending" && !observed || observed && item.observed_origin !== "pending")
+            throw new BridgeError("COORDINATION_OBSERVED_ORIGIN_UNAVAILABLE", "Observed case selection requires its original elected claim");
           for (const input of command.inputs) for (const member of item.members) visibleWork(state, member, input.work_id);
-          item.inputs = command.inputs; item.target_oid = command.target_oid; break;
+          item.inputs = command.inputs; item.target_oid = command.target_oid;
+          if (observed) item.observed_origin = "selected";
+          break;
         case "transfer_case":
           idle(item);
           if (command.new_lead === parent || !item.members.includes(command.new_lead)) throw new BridgeError("COORDINATION_FORBIDDEN", "Handoff requires a different existing case participant");

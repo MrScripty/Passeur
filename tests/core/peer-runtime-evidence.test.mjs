@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { peerDeliveryCandidate, RepositoryRuntime, resolveRepositoryBinding,
@@ -225,4 +225,132 @@ test('real incomplete parser coverage reaches the queued peer delivery', async t
   assert.equal(content.selected_evidence.coverage, 'incomplete');
   assert.ok(content.selected_evidence.limitations.some(value => value.includes('comparison:') &&
     (value.includes('syntax') || value.includes('parse'))), JSON.stringify(content.selected_evidence.limitations));
+});
+
+test('late third managed worker joins one observed case and each adapter consumes revised peer evidence', {
+  skip: 'G4 gate: an in-flight revised envelope can become unknown and fail its adapter; case delivery remains pending',
+}, async t => {
+  let stage = 'fixture', polls = 0;
+  const within = async (name, promise, ms = 15000) => {
+    stage = name;
+    let timer;
+    try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() =>
+      reject(new Error(`late-third timeout at ${stage} after ${polls} polls`)), ms); })]); }
+    finally { clearTimeout(timer); }
+  };
+  const fixture = await serviceFixture(t);
+  await fixture.service.close();
+  const intent = { project: fixture.root, stateRoot: fixture.state,
+    profilePath: join(fixture.temp, 'missing-profile.json') };
+  const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
+  const token = await operatorToken(binding, true);
+  const actors = [createHash('sha256').update(token).digest('hex'), 'b'.repeat(64), 'c'.repeat(64)]
+    .map(owner_id => ({ owner_id, client_id: randomUUID() }));
+  const consumed = [[], [], []];
+  const workers = [0, 1, 2].map(index => {
+    let stopped = false;
+    return { release: () => { stopped = true; }, async run(input) {
+      await writeFile(join(input.workspace, 'source.ts'),
+        `export function run() { return ${index + 1}; }\n`);
+      const initial = `initial-${index}`;
+      await input.onEvent({ kind: 'turn_started', turn_id: initial, native_session_id: `session-${index}` });
+      await input.onEvent({ kind: 'turn_settled', turn_id: initial, native_session_id: `session-${index}`, terminal: 'completed' });
+      let sequence = 0;
+      while (!stopped) {
+        const envelope = await input.peer.next();
+        if (!envelope) { await new Promise(resolve => setTimeout(resolve, 30)); continue; }
+        const turn_id = `peer-${index}-${++sequence}`;
+        await input.onEvent({ kind: 'turn_started', turn_id, native_session_id: `session-${index}` });
+        await input.peer.delivered(envelope.idempotency_key, turn_id, `session-${index}`);
+        await input.onEvent({ kind: 'turn_settled', turn_id, native_session_id: `session-${index}`, terminal: 'completed' });
+        await input.peer.observed(envelope.idempotency_key, turn_id, `session-${index}`);
+        consumed[index].push(envelope);
+      }
+      return { status: 'completed', worker_stop: 'confirmed', worker_assessment: 'met',
+        summary: 'Controlled peer stopped', blockers: [], questions: [], checks: [] };
+    } };
+  });
+  const store = new TaskStore(binding.storeRoot);
+  const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
+    mode: 'development', node_version: process.version, node_executable: process.execPath,
+    pid: process.pid, started_at: new Date().toISOString() }, {
+    store: () => store,
+    profile: async () => ({ schema_version: 3, execution: {
+      stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
+      max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
+      implementation: { enabled: true, worktree_root: join(fixture.temp, 'managed-worktrees') },
+    }, agents: workers.map((_, index) => ({ agent_id: `peer${index}`, adapter_id: `peer${index}`,
+      description: '', enabled: true, options: {} })) }),
+    definitions: Object.fromEntries(workers.map((worker, index) => [`peer${index}`, {
+      configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {},
+        worker: { run: input => worker.run(input) } }),
+    }])),
+  });
+  fixture.sessions.push({ close: async () => { workers.forEach(worker => worker.release());
+    await within('shutdown', runtime.shutdown(), 10000); } });
+  await within('initialize', runtime.coordinate({ schema_version: 1, kind: 'initialize', limits: fixture.limits }, actors[0], fixture.root));
+  const submit = index => runtime.submitCoordinated({ schema_version: 2, kind: 'inline',
+    assignment: { schema_version: 3, agent_id: `peer${index}`, request_key: randomUUID(),
+      mode: 'implement', objective: `Change source.ts for peer ${index}`, context: '',
+      acceptance_criteria: ['Edit source.ts'], allowed_paths: ['source.ts'],
+      base_commit: fixture.base, target_ref: 'refs/heads/main' },
+  }, actors[index], fixture.root, new AbortController().signal);
+  const first = await within('submit-first-pair', Promise.all([submit(0), submit(1)]));
+  const ids = first.map(item => item.task_id);
+  const caseState = async () => JSON.parse(await readFile(join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
+  const refresh = async (indices = ids.map((_, index) => index)) => {
+    for (const index of indices) {
+      const id = ids[index];
+      try { await within(`refresh-${index}`, runtime.structuralRefresh(id, actors[index])); }
+      catch (error) { if (!['STRUCTURAL_SOURCE_FORBIDDEN', 'COORDINATION_NOT_FOUND'].includes(error.code)) throw error; }
+    }
+  };
+  let pairCase;
+  for (let attempt = 0; attempt < 120 && !pairCase; attempt++) {
+    polls++; await refresh();
+    pairCase = (await caseState()).cases.find(item => item.observed_origin === 'selected' && item.inputs.length === 2);
+    if (!pairCase) await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(pairCase, 'the first two real observations must select one observed case');
+  for (let attempt = 0; attempt < 120 && !consumed.slice(0, 2).every(records =>
+    records.some(envelope => envelope.case_id === pairCase.id && envelope.case_revision === pairCase.revision)); attempt++) {
+    polls++; await refresh();
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(consumed.slice(0, 2).every(records => records.some(envelope =>
+    envelope.case_id === pairCase.id && envelope.case_revision === pairCase.revision)),
+  'both original adapters must observe their pair envelopes before a late revision');
+  const third = await within('submit-third', submit(2));
+  ids.push(third.task_id);
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const control = await store.readControl(third.task_id);
+    if (control.native.state === 'observed_live' && control.native.coverage === 'turn_scoped') break;
+    polls++; await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  const ready = await store.readControl(third.task_id);
+  assert.equal(ready.native.coverage, 'turn_scoped', 'the late worker must finish its source edit before one refresh');
+  if (!(await caseState()).cases.some(item => item.id === pairCase.id && item.inputs.length === 3))
+    await refresh([2]);
+  let joined;
+  for (let attempt = 0; attempt < 160; attempt++) {
+    joined = (await caseState()).cases.find(item => item.id === pairCase.id && item.inputs.length === 3);
+    if (joined) break;
+    polls++;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(joined, 'late worker must extend the original observed case');
+  for (let attempt = 0; attempt < 160; attempt++) {
+    joined = (await caseState()).cases.find(item => item.id === pairCase.id && item.inputs.length === 3);
+    if (joined.delivery_pending.length === 0 && consumed.every(records =>
+      records.filter(envelope => envelope.case_id === joined.id && envelope.case_revision === joined.revision).length >= 2)) break;
+    polls++; await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.equal(joined.revision, pairCase.revision + 1);
+  assert.deepEqual(joined.delivery_pending, [], 'only exact adapter observations discharge every recipient');
+  for (const [index, records] of consumed.entries()) {
+    const current = records.filter(envelope => envelope.case_id === joined.id && envelope.case_revision === joined.revision);
+    assert.equal(new Set(current.map(envelope => envelope.source_work_id)).size, 2,
+      `adapter ${index} must consume two distinct current peers`);
+    assert.ok(current.every(envelope => JSON.parse(envelope.content).selected_evidence?.subject_id));
+  }
 });

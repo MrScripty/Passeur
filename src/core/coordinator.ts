@@ -100,6 +100,10 @@ export class Coordinator {
   onCoordinatedWorkspacePrepared?: (record: CoordinatedDurableRequest, workspace: Workspace) => Promise<void>;
   /** Coordination owner must recheck exact grants and case/source versions; absence keeps the port unavailable. */
   onAuthorizePeerDelivery?: (envelope: PeerDeliveryEnvelope) => Promise<"current" | "stale" | "revoked">;
+  /** Advisory wake after a durable native observed receipt; reconciliation reads TaskStore itself. */
+  onPeerDeliveryObserved?: (caseId: string) => Promise<void>;
+  /** A queued stale envelope may have been replaced by newer source evidence. */
+  onPeerDeliveryQueuedStale?: (caseId: string) => Promise<void>;
   /** The runtime supplies task-bound identity; adapters may submit only decoded operation intent. */
   onWorkerPeerOperation?: (taskId: string, request: WorkerPeerOperationRequest, signal: AbortSignal) => Promise<PeerWorkerOperationResult>;
   constructor(readonly project: string, readonly projectId: string, readonly policy: LifecyclePolicy,
@@ -217,7 +221,13 @@ export class Coordinator {
           delivery.state = "dispatch_intent"; delivery.dispatch_intent_at = now(); changed = structuredClone(delivery);
             return { kind: "value" as const, envelope: immutablePeerEnvelope(delivery.envelope) };
           });
-          if (changed) await this.#peerEvent(id, changed);
+          if (changed) {
+            await this.#peerEvent(id, changed);
+            if (changed.state === "stale") {
+              const callback = this.onPeerDeliveryQueuedStale;
+              if (callback) void Promise.resolve().then(() => callback(changed!.envelope.case_id)).catch(() => undefined);
+            }
+          }
           if (outcome.kind === "retry" || outcome.kind === "drain") continue;
           const current = await this.#peerValidity(id, await this.store.readControl(id), outcome.envelope);
           if (current !== "current") {
@@ -282,6 +292,10 @@ export class Coordinator {
     if (changed) await this.#peerEvent(id, changed);
     if (outcome === "retry") continue;
     if (outcome !== "accepted") throw new BridgeError(`PEER_DELIVERY_${outcome.toUpperCase()}`, `Peer delivery receipt ${outcome}`);
+    if (target === "observed" && changed) {
+      const callback = this.onPeerDeliveryObserved;
+      if (callback) void Promise.resolve().then(() => callback(changed!.envelope.case_id)).catch(() => undefined);
+    }
     return;
     }
     throw new BridgeError("PEER_DELIVERY_STALE", "Recipient control changed during peer receipt");

@@ -99,6 +99,18 @@ export class RepositoryCoordination {
   async executeInternal(connection: CoordinationConnection, raw: unknown, signal?: AbortSignal): Promise<Receipt> {
     return this.#execute(connection, raw, true, signal);
   }
+  /** Elected observation path; the runtime has reserved and checked every selected task. */
+  async extendObservedCase(connection: CoordinationConnection, command: Readonly<{
+    operation_key: string; case_id: string; expected_revision: number; generation: number;
+    new_work_id: string; target_oid: string; target: string;
+  }>): Promise<Receipt> {
+    const actor = Object.freeze({ owner_id: parentId(connection.owner_id) });
+    return this.#track(() => this.#source(async () => {
+      await this.repository.inspect(connection.source_view);
+      await this.repository.target(command.target, command.target_oid);
+      return this.control.extendObservedCase(actor, command);
+    }));
+  }
   async #execute(connection: CoordinationConnection, raw: unknown, internal: boolean, signal?: AbortSignal): Promise<Receipt> {
     // Decode/copy synchronously so a caller cannot change request identity during asynchronous Git work.
     const actor: CoordinationActor = Object.freeze({ owner_id: parentId(connection.owner_id) });
@@ -183,7 +195,8 @@ export class RepositoryCoordination {
         }
         throwIfAborted(signal);
         // Rechecks authorization, case revision, leadership and shared inputs after read-only inspection.
-        return this.control.execute(actor, command, prepared.resource_versions);
+        return this.control.execute(actor, command, prepared.resource_versions,
+          internal && (command.kind === "claim_target" || command.kind === "select_inputs"));
       });
     });
   }

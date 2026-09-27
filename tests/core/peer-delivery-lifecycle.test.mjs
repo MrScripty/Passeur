@@ -85,6 +85,8 @@ test('authenticated delivery is durable through queue, intent, native delivery a
     return done();
   });
   await settled.promise;
+  const observedCases = [];
+  f.coordinator.onPeerDeliveryObserved = async caseId => { observedCases.push(caseId); throw new Error('advisory wake failed'); };
   const evidence = source();
   const queued = await f.coordinator.queuePeerDelivery(f.taskId, evidence);
   assert.equal(queued.recipient_task_id, f.taskId);
@@ -98,6 +100,7 @@ test('authenticated delivery is durable through queue, intent, native delivery a
   assert.equal((await f.store.readPeerDeliveries(f.taskId))[0].state, 'queued');
   proceed.resolve(); await f.coordinator.waitForIdle();
   assert.equal((await f.store.readPeerDeliveries(f.taskId))[0].state, 'observed');
+  assert.deepEqual(observedCases, [evidence.case_id], 'only the new durable observed receipt wakes reconciliation');
   assert.equal((await f.store.readResult(f.taskId)).execution_status, 'completed');
   assert.equal(worker.task_id, f.taskId);
 });
@@ -199,6 +202,27 @@ test('stale generation and revoked grants retain dispositions and never dispatch
   g.coordinator.onAuthorizePeerDelivery = async () => 'revoked'; finish.resolve();
   await g.coordinator.waitForIdle();
   assert.equal((await g.store.readPeerDeliveries(g.taskId))[0].state, 'revoked');
+});
+
+test('queued stale peer evidence wakes one advisory case retry after durable disposition', async t => {
+  const settled = hold(), proceed = hold();
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', terminal: 'completed' });
+    settled.resolve(); await proceed.promise;
+    assert.equal(await input.peer.next(), undefined);
+    return done();
+  });
+  await settled.promise;
+  let validity = 'current';
+  f.coordinator.onAuthorizePeerDelivery = async () => validity;
+  const evidence = source('queued-stale-wake');
+  await f.coordinator.queuePeerDelivery(f.taskId, evidence);
+  const wakes = [];
+  f.coordinator.onPeerDeliveryQueuedStale = async caseId => { wakes.push(caseId); throw new Error('advisory wake failed'); };
+  validity = 'stale'; proceed.resolve(); await f.coordinator.waitForIdle();
+  assert.equal((await f.store.readPeerDeliveries(f.taskId))[0].state, 'stale');
+  assert.deepEqual(wakes, [evidence.case_id]);
 });
 
 test('a revoked queued head is drained and a current later envelope is dispatched', async t => {

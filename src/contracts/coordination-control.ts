@@ -8,6 +8,7 @@ export const MANAGED_CONTROL_SCHEMA = 3;
 export const SUBMISSION_CONTROL_SCHEMA = 4;
 export const SOURCE_GRANT_CONTROL_SCHEMA = 5;
 export const SOURCE_WATCH_CONTROL_SCHEMA = 6;
+export const OBSERVED_CASE_CONTROL_SCHEMA = 7;
 export const WORK_INTENT_BYTES = 4096;
 export const CONTROL_MAX_BYTES = 2 * 1024 * 1024;
 // More than the worst-case escaped closure receipt and its bounded counter changes.
@@ -40,15 +41,24 @@ export type Case = {
   id: string; target: string; lead: ParentId; members: ParentId[];
   revision: number; generation: number; state: "active" | "closed";
   external_effect: "not_started" | "possible"; target_oid: string | null; inputs: Selection[];
+  /** Present only for an elected-runtime observed claim. Older cases have unknown origin. */
+  observed_origin?: "pending" | "selected";
+  /** A revised case owes current context to every selected managed task until adapter evidence settles it. */
+  delivery_pending?: string[];
+  delivery_observed?: Array<{ work_id: string; observation_digest: string }>;
+  visibility_delta?: Array<{ work_id: string; work_revision: number; control_generation: number;
+    areas: Region[]; added_readers: ParentId[] }>;
 };
 export type Note = {
   id: string; subject: Subject; author: ParentId;
   kind: "intent" | "question" | "statement" | "agreement_proposal" | "resolution_update";
   text: string; work_refs: string[]; parties: ParentId[]; acknowledged: ParentId[]; withdrawn: boolean;
+  /** Snapshot of the original audience; new case members never inherit historical note access. */
+  readers?: ParentId[];
 };
 export type Receipt = {
   owner: ParentId; key: string; request_hash: string; revision: number;
-  action: Command["kind"]; entity: Subject; item_id: string; outcome: "recorded";
+  action: Command["kind"] | "extend_observed_case" | "observe_case_delivery"; entity: Subject; item_id: string; outcome: "recorded";
 };
 type ControlData = {
   repository_id: string; epoch: string; revision: number; limits: Limits;
@@ -74,7 +84,7 @@ export type SubmissionEvent = {
 export type ControlState = ControlData & (
   | { schema_version: 1 }
   | { schema_version: 2 | 3; recoveries: RecoveryReceipt[] }
-  | { schema_version: 4 | 5 | 6; recoveries: RecoveryReceipt[]; announcements: AnnouncementRecord[];
+  | { schema_version: 4 | 5 | 6 | 7; recoveries: RecoveryReceipt[]; announcements: AnnouncementRecord[];
       bindings: SubmissionBinding[]; submission_events: SubmissionEvent[] }
 );
 export type RecoveryCommand = {
@@ -99,9 +109,9 @@ export function recoveryReceipts(state: ControlState): readonly RecoveryReceipt[
 export function controlReceiptCount(state: ControlState): number {
   return state.receipts.length + recoveryReceipts(state).length + submissionEvents(state).length;
 }
-export function announcements(state: ControlState): readonly AnnouncementRecord[] { return state.schema_version === 4 || state.schema_version === 5 || state.schema_version === 6 ? state.announcements : []; }
-export function submissionBindings(state: ControlState): readonly SubmissionBinding[] { return state.schema_version === 4 || state.schema_version === 5 || state.schema_version === 6 ? state.bindings : []; }
-export function submissionEvents(state: ControlState): readonly SubmissionEvent[] { return state.schema_version === 4 || state.schema_version === 5 || state.schema_version === 6 ? state.submission_events : []; }
+export function announcements(state: ControlState): readonly AnnouncementRecord[] { return "announcements" in state ? state.announcements : []; }
+export function submissionBindings(state: ControlState): readonly SubmissionBinding[] { return "bindings" in state ? state.bindings : []; }
+export function submissionEvents(state: ControlState): readonly SubmissionEvent[] { return "submission_events" in state ? state.submission_events : []; }
 
 export type Command =
   | { kind: "register_task_work"; operation_key: string; workspace_id: string; input_oid: string;
@@ -302,21 +312,37 @@ function work(value: unknown): Work {
   return decoded;
 }
 function caseRecord(value: unknown): Case {
-  const v = object(value); fields(v, ["id", "target", "lead", "members", "revision", "generation", "state", "external_effect", "target_oid", "inputs"]);
+  const v = object(value); fields(v, ["id", "target", "lead", "members", "revision", "generation", "state", "external_effect", "target_oid", "inputs",
+    ...(Object.hasOwn(v, "observed_origin") ? ["observed_origin"] : []), ...(Object.hasOwn(v, "delivery_pending") ? ["delivery_pending"] : []),
+    ...(Object.hasOwn(v, "visibility_delta") ? ["visibility_delta"] : []),
+    ...(Object.hasOwn(v, "delivery_observed") ? ["delivery_observed"] : [])]);
   return { id: entityId(v.id), target: coordinationTarget(v.target), lead: parentId(v.lead), members: parents(v.members), revision: number(v.revision, 1),
     generation: number(v.generation, 1), state: choice(v.state, ["active", "closed"]), external_effect: choice(v.external_effect, ["not_started", "possible"]),
-    target_oid: v.target_oid === null ? null : coordinationOid(v.target_oid), inputs: selections(v.inputs) };
+    target_oid: v.target_oid === null ? null : coordinationOid(v.target_oid), inputs: selections(v.inputs),
+    ...(Object.hasOwn(v, "observed_origin") ? { observed_origin: choice(v.observed_origin, ["pending", "selected"]) } : {}),
+    ...(Object.hasOwn(v, "delivery_pending") ? { delivery_pending: unique(list(v.delivery_pending, MAX_PARTIES, entityId), x => x) } : {}),
+    ...(Object.hasOwn(v, "delivery_observed") ? { delivery_observed: unique(list(v.delivery_observed, MAX_PARTIES, value => {
+      const item = object(value); fields(item, ["work_id", "observation_digest"]);
+      return { work_id: entityId(item.work_id), observation_digest: digest(item.observation_digest) };
+    }), item => item.work_id) } : {}),
+    ...(Object.hasOwn(v, "visibility_delta") ? { visibility_delta: unique(list(v.visibility_delta, MAX_PARTIES, value => {
+      const item = object(value); fields(item, ["work_id", "work_revision", "control_generation", "areas", "added_readers"]);
+      return { work_id: entityId(item.work_id), work_revision: number(item.work_revision, 1),
+        control_generation: number(item.control_generation, 1), areas: regions(item.areas), added_readers: parents(item.added_readers) };
+    }), item => item.work_id) } : {}) };
 }
 function note(value: unknown): Note {
-  const v = object(value); fields(v, ["id", "subject", "author", "kind", "text", "work_refs", "parties", "acknowledged", "withdrawn"]);
+  const v = object(value); fields(v, ["id", "subject", "author", "kind", "text", "work_refs", "parties", "acknowledged", "withdrawn",
+    ...(Object.hasOwn(v, "readers") ? ["readers"] : [])]);
   const kind = choice(v.kind, noteKinds), parties = parents(v.parties), acknowledged = parents(v.acknowledged);
   if ((kind === "agreement_proposal") !== (parties.length > 0) || acknowledged.some(p => !parties.includes(p))) invalid("Acknowledgments contradict the exact named agreement parties");
-  return { id: entityId(v.id), subject: subject(v.subject), author: parentId(v.author), kind, text: text(v.text, MAX_NOTE_BYTES), work_refs: unique(list(v.work_refs, MAX_REGIONS, entityId), x => x), parties, acknowledged, withdrawn: boolean(v.withdrawn) };
+  return { id: entityId(v.id), subject: subject(v.subject), author: parentId(v.author), kind, text: text(v.text, MAX_NOTE_BYTES), work_refs: unique(list(v.work_refs, MAX_REGIONS, entityId), x => x), parties, acknowledged, withdrawn: boolean(v.withdrawn),
+    ...(Object.hasOwn(v, "readers") ? { readers: parents(v.readers) } : {}) };
 }
 function receipt(value: unknown): Receipt {
   const v = object(value); fields(v, ["owner", "key", "request_hash", "revision", "action", "entity", "item_id", "outcome"]);
   return { owner: parentId(v.owner), key: text(v.key, 256), request_hash: digest(v.request_hash), revision: number(v.revision, 1),
-    action: choice(v.action, actions), entity: subject(v.entity), item_id: entityId(v.item_id), outcome: choice(v.outcome, ["recorded"]) };
+    action: choice(v.action, [...actions, "extend_observed_case", "observe_case_delivery"]), entity: subject(v.entity), item_id: entityId(v.item_id), outcome: choice(v.outcome, ["recorded"]) };
 }
 function sourceView(value: unknown): string {
   const v = text(value, 4096);
@@ -369,10 +395,10 @@ function submissionEvent(value: unknown): SubmissionEvent {
 }
 export function decodeControl(value: unknown, expectedRepository: string): ControlState {
   const v = object(value);
-  if (typeof v.schema_version === "number" && Number.isSafeInteger(v.schema_version) && v.schema_version > SOURCE_WATCH_CONTROL_SCHEMA) throw new BridgeError("COORDINATION_VERSION_UNSUPPORTED", "The control version has no supported reader");
+  if (typeof v.schema_version === "number" && Number.isSafeInteger(v.schema_version) && v.schema_version > OBSERVED_CASE_CONTROL_SCHEMA) throw new BridgeError("COORDINATION_VERSION_UNSUPPORTED", "The control version has no supported reader");
   fields(v, ["schema_version", "repository_id", "epoch", "revision", "limits", "works", "cases", "notes", "receipts", ...(v.schema_version !== 1 ? ["recoveries"] : []),
-    ...(v.schema_version === SUBMISSION_CONTROL_SCHEMA || v.schema_version === SOURCE_GRANT_CONTROL_SCHEMA || v.schema_version === SOURCE_WATCH_CONTROL_SCHEMA ? ["announcements", "bindings", "submission_events"] : [])]);
-  if (v.schema_version !== CONTROL_SCHEMA && v.schema_version !== 2 && v.schema_version !== MANAGED_CONTROL_SCHEMA && v.schema_version !== SUBMISSION_CONTROL_SCHEMA && v.schema_version !== SOURCE_GRANT_CONTROL_SCHEMA && v.schema_version !== SOURCE_WATCH_CONTROL_SCHEMA) invalid("Missing or malformed control schema version");
+    ...(typeof v.schema_version === "number" && v.schema_version >= SUBMISSION_CONTROL_SCHEMA ? ["announcements", "bindings", "submission_events"] : [])]);
+  if (v.schema_version !== CONTROL_SCHEMA && v.schema_version !== 2 && v.schema_version !== MANAGED_CONTROL_SCHEMA && v.schema_version !== SUBMISSION_CONTROL_SCHEMA && v.schema_version !== SOURCE_GRANT_CONTROL_SCHEMA && v.schema_version !== SOURCE_WATCH_CONTROL_SCHEMA && v.schema_version !== OBSERVED_CASE_CONTROL_SCHEMA) invalid("Missing or malformed control schema version");
   const repository_id = text(v.repository_id, 256); if (repository_id !== expectedRepository) throw new BridgeError("COORDINATION_BINDING_CONFLICT", "Control belongs to another repository");
   const limits = decodeLimits(v.limits), revision = number(v.revision);
   const works = unique(list(v.works, limits.works, work), x => x.id), cases = unique(list(v.cases, limits.cases, caseRecord), x => x.id);
@@ -383,6 +409,7 @@ export function decodeControl(value: unknown, expectedRepository: string): Contr
   const events = v.schema_version >= 4 ? list(v.submission_events, limits.receipts, submissionEvent) : [];
   if (typeof v.schema_version === "number" && v.schema_version < SOURCE_GRANT_CONTROL_SCHEMA && works.some(w => w.source_grants !== undefined)) invalid("Source grants require control storage v5");
   if (typeof v.schema_version === "number" && v.schema_version < SOURCE_WATCH_CONTROL_SCHEMA && works.some(w => w.source_watches !== undefined)) invalid("Source watches require control storage v6");
+  if (typeof v.schema_version === "number" && v.schema_version < OBSERVED_CASE_CONTROL_SCHEMA && (cases.some(c => c.observed_origin || c.delivery_pending || c.delivery_observed || c.visibility_delta) || notes.some(n => n.readers) || receipts.some(r => r.action === "extend_observed_case" || r.action === "observe_case_delivery"))) invalid("Observed cases and note audiences require control storage v7");
   if (v.schema_version === 2 && recoveries.length === 0) invalid("Recovery storage requires its first atomic recovery receipt");
   if (receipts.length + recoveries.length + events.length > limits.receipts) invalid("Receipt capacity includes submission and operator history");
   unique([...receipts.map(r => `${r.owner}:${r.key}`), ...recoveries.map(r => `${r.operator}:${r.command.operation_key}`), ...events.map(e => `${e.owner}:${e.key}`)], x => x);
@@ -415,6 +442,17 @@ export function decodeControl(value: unknown, expectedRepository: string): Contr
   for (const c of cases) {
     if (c.revision > revision || c.generation > revision || !c.members.includes(c.lead) || c.state === "closed" && c.external_effect !== "not_started") invalid("Case lifecycle contradicts its authority");
     if (c.inputs.length && !c.target_oid) invalid("Selected inputs need an explicit target observation");
+    if (c.observed_origin === "pending" && (c.inputs.length || c.target_oid) || c.observed_origin === "selected" && !c.inputs.length) invalid("Observed case provenance contradicts selection");
+    if (c.delivery_pending && (c.observed_origin !== "selected" || c.delivery_pending.some(id => !c.inputs.some(input => input.work_id === id)))) invalid("Pending delivery refers outside the selected observed case");
+    if (c.delivery_observed && (c.observed_origin !== "selected" || c.delivery_observed.some(entry =>
+      !c.inputs.some(input => input.work_id === entry.work_id) || c.delivery_pending?.includes(entry.work_id)))) invalid("Observed delivery contradicts selected pending recipients");
+    if (c.visibility_delta?.some(delta => {
+      const work = workMap.get(delta.work_id);
+      return !c.inputs.some(input => input.work_id === delta.work_id) || !work?.managed ||
+        delta.work_revision > work.revision || delta.control_generation > work.managed.control_generation ||
+        delta.added_readers.some(reader =>
+          reader === work.owner || !c.members.includes(reader));
+    })) invalid("Visibility delta refers outside selected case authority");
     for (const input of c.inputs) { const w = workMap.get(input.work_id); if (!w) invalid("Case input references missing work"); formatOid(input.commit_oid, w.object_format); if (c.target_oid) formatOid(c.target_oid, w.object_format); }
   }
   for (const n of notes) {
@@ -454,7 +492,7 @@ export function decodeControl(value: unknown, expectedRepository: string): Contr
   }
   const data = { repository_id, epoch, revision, limits, works, cases, notes, receipts };
   return v.schema_version === 1 ? { schema_version: 1, ...data } : v.schema_version >= 4
-    ? { schema_version: v.schema_version as 4 | 5 | 6, ...data, recoveries, announcements: announcementRecords, bindings, submission_events: events }
+    ? { schema_version: v.schema_version as 4 | 5 | 6 | 7, ...data, recoveries, announcements: announcementRecords, bindings, submission_events: events }
     : { schema_version: v.schema_version as 2 | 3, ...data, recoveries };
 }
 export function emptyControl(repository: string, epoch: string, limits: unknown): ControlState {
@@ -528,7 +566,9 @@ export function assertControlTransition(before: ControlState, next: ControlState
   } else if (!submissionEvent && (newRecoveries.length !== oldRecoveries.length || next.receipts.length !== before.receipts.length + 1
     || next.schema_version !== before.schema_version && !(next.schema_version === MANAGED_CONTROL_SCHEMA && next.receipts.at(-1)?.action === "register_task_work")
       && !(next.schema_version === SOURCE_GRANT_CONTROL_SCHEMA && next.receipts.at(-1)?.action === "grant_source")
-      && !(next.schema_version === SOURCE_WATCH_CONTROL_SCHEMA && next.receipts.at(-1)?.action === "watch_source"))) {
+      && !(next.schema_version === SOURCE_WATCH_CONTROL_SCHEMA && next.receipts.at(-1)?.action === "watch_source")
+      && !(next.schema_version === OBSERVED_CASE_CONTROL_SCHEMA &&
+        (next.receipts.at(-1)?.action === "claim_target" || next.receipts.at(-1)?.action === "post_note")))) {
     invalid("A control publication appends one ordinary or recovery receipt");
   }
   if (!submissionEvent && (!same(announcements(before), announcements(next)) || !same(submissionBindings(before), submissionBindings(next)))) invalid("Ordinary or recovery publication changed submission authority");
@@ -545,7 +585,7 @@ export function assertControlTransition(before: ControlState, next: ControlState
   const watchReceipt = next.receipts.length === before.receipts.length + 1 && next.receipts.at(-1)?.action === "watch_source"
     ? next.receipts.at(-1) : undefined;
   if ((grantReceipt || watchReceipt) && (next.schema_version < SOURCE_GRANT_CONTROL_SCHEMA
-    || watchReceipt && next.schema_version !== SOURCE_WATCH_CONTROL_SCHEMA || !same(before.cases, next.cases)
+    || watchReceipt && next.schema_version < SOURCE_WATCH_CONTROL_SCHEMA || !same(before.cases, next.cases)
     || !same(before.notes, next.notes) || next.works.length !== before.works.length
     || !before.works.some(w => w.id === (grantReceipt ?? watchReceipt)!.item_id))) invalid("Source configuration changed unrelated metadata");
   for (const old of before.works) {
@@ -581,9 +621,45 @@ export function assertControlTransition(before: ControlState, next: ControlState
   for (const old of before.cases) {
     const item = next.cases.find(c => c.id === old.id); if (!item) invalid("Retained cases cannot disappear during a control update");
     if (recovered && "case_id" in recovered.command && recovered.command.case_id === old.id) continue;
-    if (old.target !== item.target || !same(old.members, item.members) || item.revision < old.revision || item.revision > old.revision + 1
+    const extension = next.receipts.at(-1)?.action === "extend_observed_case" && next.receipts.at(-1)?.item_id === old.id;
+    const observation = next.receipts.at(-1)?.action === "observe_case_delivery" && next.receipts.at(-1)?.item_id === old.id;
+    if (old.target !== item.target || !extension && !same(old.members, item.members) || item.revision < old.revision || item.revision > old.revision + 1
       || item.generation < old.generation || item.generation > old.generation + 1 || old.lead !== item.lead && item.generation !== old.generation + 1
-      || old.state === "closed" && !same(old, item) || old.revision === item.revision && !same(old, item)) invalid("Case identity, generation or closure was rewritten");
+      || old.state === "closed" && !same(old, item) || old.revision === item.revision && !observation && !same(old, item)) invalid("Case identity, generation or closure was rewritten");
+    if (extension) {
+      const receipt = next.receipts.at(-1)!;
+      const newInput = item.inputs.at(-1), newWork = next.works.find(work => work.id === newInput?.work_id);
+      if (!newInput || !newWork) invalid("Observed extension has no added managed work");
+      const expectedMembers = [...new Set([...old.members, newWork.owner])];
+      const expectedDelta = [...old.inputs, newInput].map(input => {
+        const work = next.works.find(candidate => candidate.id === input.work_id)!;
+        return { work_id: work.id, work_revision: work.revision,
+          control_generation: work.managed?.control_generation, areas: work.areas,
+          added_readers: expectedMembers.filter(member => member !== work.owner && !work.readers.includes(member)) };
+      });
+      const expected = { ...old, members: expectedMembers,
+        inputs: [...old.inputs, newInput], delivery_pending: item.inputs.map(input => input.work_id),
+        delivery_observed: [], visibility_delta: expectedDelta, revision: old.revision + 1 };
+      const command = { kind: "extend_observed_case", operation_key: receipt.key, case_id: old.id,
+        expected_revision: old.revision, generation: old.generation, new_work_id: newInput?.work_id,
+        target_oid: old.target_oid };
+      if (old.state !== "active" || old.observed_origin !== "selected" || old.external_effect !== "not_started"
+        || !newInput || !newWork?.managed || old.inputs.some(input => input.work_id === newInput.work_id)
+        || !same(item, expected) || receipt.owner !== old.lead || receipt.request_hash !== canonicalHash({ owner: old.lead, command })
+        || !same(before.works, next.works) || !same(before.notes, next.notes)) invalid("Observed extension changed unrelated or unsupported authority");
+    }
+    if (observation) {
+      const receipt = next.receipts.at(-1)!, appended = item.delivery_observed?.at(-1);
+      const command = { kind: "observe_case_delivery", operation_key: receipt.key, case_id: old.id,
+        case_revision: old.revision, generation: old.generation, recipient_work_id: appended?.work_id,
+        observation_digest: appended?.observation_digest };
+      const expected = { ...old, delivery_pending: old.delivery_pending?.filter(id => id !== appended?.work_id),
+        delivery_observed: [...(old.delivery_observed ?? []), appended] };
+      if (!appended || old.state !== "active" || old.observed_origin !== "selected" ||
+        !old.delivery_pending?.includes(appended.work_id) || !same(item, expected) ||
+        receipt.owner !== old.lead || receipt.request_hash !== canonicalHash({ owner: old.lead, command }) ||
+        !same(before.works, next.works) || !same(before.notes, next.notes)) invalid("Delivery observation changed unrelated case authority");
+    }
   }
   for (const old of before.notes) {
     const item = next.notes.find(n => n.id === old.id); if (!item) invalid("Retained notes cannot disappear during a control update");
@@ -596,7 +672,7 @@ export function assertControlTransition(before: ControlState, next: ControlState
 function assertSubmissionTransition(before: ControlState, next: ControlState, event: SubmissionEvent): void {
   const same = (a: unknown, b: unknown) => canonicalHash(a) === canonicalHash(b);
   const oldAnnouncements = announcements(before), oldBindings = submissionBindings(before);
-  if (next.schema_version !== 4 && next.schema_version !== 5 && next.schema_version !== 6) invalid("Submission transition requires v4 storage");
+  if (!("announcements" in next)) invalid("Submission transition requires v4 storage");
   if (event.kind === "announce") {
     const added = next.announcements.at(-1);
     if (!added || added.id !== event.item_id || added.owner !== event.owner || added.state !== "unresolved" || added.revision !== 1

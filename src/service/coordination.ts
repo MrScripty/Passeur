@@ -121,6 +121,24 @@ export class CoordinationService {
       return (await this.#source(opened, connection.source_view)).executeInternal(connection, command);
     });
   }
+  /** Not reachable through a parent command or transport request. */
+  extendObservedCase(connection: CoordinationConnection, command: Readonly<{
+    operation_key: string; case_id: string; expected_revision: number; generation: number;
+    new_work_id: string; target_oid: string; target: string;
+  }>): Promise<Receipt> {
+    return this.#submission(connection, "ordinary", true, undefined, async control => {
+      const opened = this.#opened;
+      if (!opened || opened.control !== control) throw new BridgeError("COORDINATION_STATE_INVALID", "Metadata owner changed during observed extension");
+      return (await this.#source(opened, connection.source_view)).extendObservedCase(connection, command);
+    });
+  }
+  observeCaseDelivery(connection: CoordinationConnection, command: Readonly<{
+    operation_key: string; case_id: string; case_revision: number; generation: number;
+    recipient_work_id: string; observation_digest: string;
+  }>): Promise<Receipt> {
+    return this.#submission(connection, "control", true, undefined, (control, actor) =>
+      control.observeCaseDelivery(actor, command));
+  }
   submissionBinding(connection: CoordinationConnection, taskId: string, signal?: AbortSignal): Promise<SubmissionBinding> {
     return this.#submission(connection, "control", false, signal, (control, actor) => control.submissionBinding(actor, taskId));
   }
