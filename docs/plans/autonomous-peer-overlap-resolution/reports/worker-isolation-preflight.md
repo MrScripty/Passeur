@@ -93,6 +93,23 @@ loopback with a dummy stdin key; other network egress was not independently
 denied or observed. Preserve APR-028 until an effective boundary and actual
 approval posture are qualified.
 
+The adapter-relevant `muse serve` route has a separate bounded no-account
+diagnostic in `scripts/qualify-muse-serve-boundary.mjs`. It gives the host a
+disposable `HOME`, fake Meta credential and loopback provider configuration,
+then requests an MSP session through the local SDK 1.3.0 against installed Muse
+1.4.0-R4302.1. On `node scripts/qualify-muse-serve-boundary.mjs inside deny`,
+the fake endpoint saw `GET /muse-code/models`, then `session/start` returned
+`-32603` with `read surviving deletion authority: deletion registry authority
+is unavailable: UnsafePath`. There was no Responses request, worker turn,
+approval or model tool. Focused diagnostic tests pass 4/4; an independent
+Astra High review cleared three lifecycle findings for this retained diagnostic.
+The SDK close does not attest to descendant stop, so the result reports
+`descendants_unverified` and retains
+`/tmp/passeur-muse-serve-boundary-E1SSEL`. This run establishes an exact
+session-start blocker, not a native tool or isolation result. Resolve the
+version/host condition before repeating the same probe; keep this fixture until
+its remaining processes can be identified and safely stopped.
+
 1. Establish a genuinely new disposable Muse MSP host invocation with the wrapper outside the adapter, before provider/native initialization. Preserve normal service attachment, accepted-task ownership, native input, continuation, and explicit cancellation.
 2. Capture and review the exact new host executable, runtime libraries, sockets, cwd, environment/credential route, and Git common-dir layout. Mount only required paths; keep production, private control, oracle, pristine fixture, and sibling locations outside all source trees. Recheck the resolved mount sources immediately at launch; control source replacement or prove it cannot occur.
 3. Prove both workers retain ordinary Git hooks and commits in the actual Passeur managed-worktree lifecycle without exposing shared Git writes. Confirm the wrapper's signal propagation and descendant stop behavior under real native host stop, not only command exit.
