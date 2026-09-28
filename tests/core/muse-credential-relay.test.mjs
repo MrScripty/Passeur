@@ -305,6 +305,8 @@ test('native tool rejection identifies only the first bounded failure family and
     const expected = { code, functionIndex };
     if (code === 'SCHEMA_TYPE') expected.schemaType = { depth: 0, class: 'scalar',
       memberCount: 1, moreMembers: false, recognizedTypes: [], unknownMemberCount: 1 };
+    if (code === 'SCHEMA_DESCRIPTION') expected.schemaDescription = {
+      depth: 0, class: 'string', byteCount: Buffer.byteLength(secret.repeat(100)) };
     if (code === 'FUNCTION_DESCRIPTION') {
       const description = tools[0].tools[0].description;
       expected.descriptionType = description === null ? 'null' :
@@ -395,6 +397,53 @@ test('native schema type rejection reports bounded shape without schema values',
   }
   for (const type of ['object', ['string', 'null'], ['integer', 'number', 'boolean']]) {
     assert.equal(requestDecision(post, envelope({ type }), nativePolicy).ok, true);
+  }
+});
+
+test('native schema description rejection captures only first bounded shape', () => {
+  const secret = 'secret-credential-header-and-property-name';
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const envelope = parameters => body({ model: nativePolicy.model,
+    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters }] }] });
+  const cases = [
+    [{ type: 'object', description: secret.repeat(60) },
+      { depth: 0, class: 'string', byteCount: Buffer.byteLength(secret.repeat(60)) }],
+    [{ type: 'object', properties: { [secret]: { type: 'string', title: '😀'.repeat(513) } } },
+      { depth: 1, class: 'string', byteCount: 2_052 }],
+    [{ type: 'object', items: { anyOf: [{ type: 'string', description: null }] } },
+      { depth: 2, class: 'null' }],
+    [{ type: 'object', properties: { [secret]: { description: [secret] } } },
+      { depth: 1, class: 'array' }],
+    [{ type: 'object', properties: { first: { description: null },
+      [secret]: { description: secret.repeat(60) } } },
+    { depth: 1, class: 'null' }],
+    [{ type: 'object', description: { [secret]: true } },
+      { depth: 0, class: 'object' }],
+    [{ type: 'object', description: 17 }, { depth: 0, class: 'number' }],
+    [{ type: 'object', description: false }, { depth: 0, class: 'boolean' }],
+  ];
+  for (const [parameters, schemaDescription] of cases) {
+    const payload = envelope(parameters);
+    assert.deepEqual(requestDecision(post, payload, nativePolicy),
+      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
+    const projection = nativeRejectionProjection(payload,
+      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
+    assert.deepEqual(projection.tools.failure,
+      { code: 'SCHEMA_DESCRIPTION', functionIndex: 0, schemaDescription });
+    assert.equal(JSON.stringify(projection).includes(secret), false);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+  }
+  for (const description of ['x'.repeat(2_048), '😀'.repeat(512)]) {
+    assert.equal(requestDecision(post, envelope({ type: 'object', description }),
+      nativePolicy).ok, true);
+  }
+  for (const description of ['x'.repeat(2_049), '😀'.repeat(513)]) {
+    assert.equal(requestDecision(post, envelope({ type: 'object', description }),
+      nativePolicy).code, 'NATIVE_TOOLS_INVALID');
   }
 });
 

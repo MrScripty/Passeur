@@ -175,7 +175,10 @@ function nativeToolsFailure(tools) {
           return 'SCHEMA_ENUM';
       } else if (['description', 'title'].includes(key)) {
         if (typeof value !== 'string' || Buffer.byteLength(value) > 2_048)
-          return 'SCHEMA_DESCRIPTION';
+          return { code: 'SCHEMA_DESCRIPTION', schemaDescription: {
+            depth, class: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
+            ...(typeof value === 'string' ? { byteCount: Buffer.byteLength(value) } : {}),
+          } };
       } else if (key === 'nullable' || key === 'additionalProperties') {
         if (typeof value !== 'boolean') return 'SCHEMA_BOOLEAN';
       } else if (key === 'const') {
@@ -207,7 +210,8 @@ function nativeToolsFailure(tools) {
           Buffer.byteLength(tool.description) : null };
     const issue = schemaFailure(tool.parameters, 0, index);
     if (issue) return typeof issue === 'object' ?
-      { ...failure(issue.code, index), schemaType: issue.schemaType } : failure(issue, index);
+      { ...failure(issue.code, index), ...(issue.schemaType ? { schemaType: issue.schemaType } :
+        { schemaDescription: issue.schemaDescription }) } : failure(issue, index);
   }
   return null;
 }
