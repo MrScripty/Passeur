@@ -31,6 +31,7 @@ const NATIVE_TOP_LEVEL_CAPTURE_FIELDS = Object.freeze([
   'store', 'stream', 'stream_options', 'temperature', 'text', 'tool_choice',
   'top_logprobs', 'top_p', 'truncation', 'user',
 ]);
+const NATIVE_REASONING_CAPTURE_FIELDS = Object.freeze(['effort', 'summary', 'generate_summary']);
 const NATIVE_RESPONSE_IDS = new Set(['resp_native_read_file_1', 'resp_native_read_file_2',
   'resp_native_reminder_1', 'resp_native_reminder_2', 'resp_native_verify_reminder_1']);
 const NATIVE_ITEM_IDS = new Set(['fc_native_read_file_1', 'fc_native_reminder_1',
@@ -441,6 +442,29 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
   const outputTokens = object?.max_output_tokens;
   const outputTokenValue = Number.isSafeInteger(outputTokens) && outputTokens > 0 &&
     outputTokens <= 1_000_000 ? outputTokens : null;
+  const reasoning = object?.reasoning;
+  const reasoningMembers = reasoning && typeof reasoning === 'object' &&
+    !Array.isArray(reasoning) ? Object.keys(reasoning) : [];
+  const reasoningMemberShape = value => {
+    const shape = { class: type(value) };
+    if (typeof value === 'string') {
+      const bytes = Buffer.byteLength(value);
+      shape.byteCount = Math.min(bytes, 8_192);
+      shape.moreBytes = bytes > 8_192;
+    } else if (Array.isArray(value)) {
+      shape.memberCount = Math.min(value.length, 64);
+      shape.moreMembers = value.length > 64;
+    }
+    return shape;
+  };
+  const reasoningShape = { class: type(reasoning),
+    memberCount: Math.min(reasoningMembers.length, 64),
+    moreMembers: reasoningMembers.length > 64,
+    recognizedMembers: Object.fromEntries(NATIVE_REASONING_CAPTURE_FIELDS
+      .filter(key => Object.hasOwn(reasoning ?? {}, key))
+      .map(key => [key, reasoningMemberShape(reasoning[key])])),
+    unknownMemberCount: Math.min(reasoningMembers.filter(key =>
+      !NATIVE_REASONING_CAPTURE_FIELDS.includes(key)).length, 64) };
   const projection = { schemaVersion: 1, requestIndex: index, byteCount: receivedBytes,
     capturedByteCount: body.length, omittedByteCount: Math.max(0, receivedBytes - body.length),
     bodyComplete: complete, capturedSha256: createHash('sha256').update(body).digest('hex'),
@@ -462,6 +486,7 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
         promptCacheKey: { byteCount: cacheKeyBytes,
           format: typeof cacheKey !== 'string' ? type(cacheKey) : cacheKey.length === 0 ?
             'empty' : /^[\x20-\x7e]+$/.test(cacheKey) ? 'printable_ascii' : 'other' },
+        reasoning: reasoningShape,
         store: typeof object?.store === 'boolean' ? object.store : type(object?.store),
         stream: typeof object?.stream === 'boolean' ? object.stream : type(object?.stream),
       } },

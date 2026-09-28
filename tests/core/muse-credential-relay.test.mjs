@@ -196,6 +196,58 @@ test('native rejected POST projection is bounded and contains no request values'
     { byteCount: Buffer.byteLength(secret), format: 'printable_ascii' });
   assert.equal(projection.topLevel.observedExtraFieldShapes.store, false);
   assert.equal(projection.topLevel.observedExtraFieldShapes.stream, true);
+  assert.deepEqual(projection.topLevel.observedExtraFieldShapes.reasoning,
+    { class: 'object', memberCount: 1, moreMembers: false,
+      recognizedMembers: { summary: { class: 'string', byteCount: Buffer.byteLength(secret),
+        moreBytes: false } }, unknownMemberCount: 0 });
+});
+
+test('rejected reasoning field exposes only finite bounded member shapes', () => {
+  const secret = 'secret-reasoning-content-and-header';
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const base = { model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters: { type: 'object' } }] }] };
+  const accepted = requestDecision(post, body(base), nativePolicy);
+  assert.equal(accepted.ok, true);
+  assert.equal(JSON.parse(accepted.body.toString()).reasoning, undefined);
+  const cases = [
+    [{}, { class: 'object', memberCount: 0, moreMembers: false,
+      recognizedMembers: {}, unknownMemberCount: 0 }],
+    [{ [secret]: secret }, { class: 'object', memberCount: 1, moreMembers: false,
+      recognizedMembers: {}, unknownMemberCount: 1 }],
+    [Object.fromEntries(Array.from({ length: 80 }, (_, i) => [`${secret}${i}`, secret])),
+      { class: 'object', memberCount: 64, moreMembers: true,
+        recognizedMembers: {}, unknownMemberCount: 64 }],
+    [{ effort: secret.repeat(300), summary: Array(70).fill(secret),
+      generate_summary: 17, [secret]: secret },
+    { class: 'object', memberCount: 4, moreMembers: false,
+      recognizedMembers: { effort: { class: 'string', byteCount: 8_192, moreBytes: true },
+        summary: { class: 'array', memberCount: 64, moreMembers: true },
+        generate_summary: { class: 'number' } }, unknownMemberCount: 1 }],
+    [null, { class: 'null', memberCount: 0, moreMembers: false,
+      recognizedMembers: {}, unknownMemberCount: 0 }],
+    [[secret], { class: 'array', memberCount: 0, moreMembers: false,
+      recognizedMembers: {}, unknownMemberCount: 0 }],
+    [secret, { class: 'string', memberCount: 0, moreMembers: false,
+      recognizedMembers: {}, unknownMemberCount: 0 }],
+    [17, { class: 'number', memberCount: 0, moreMembers: false,
+      recognizedMembers: {}, unknownMemberCount: 0 }],
+    [false, { class: 'boolean', memberCount: 0, moreMembers: false,
+      recognizedMembers: {}, unknownMemberCount: 0 }],
+  ];
+  for (const [reasoning, expected] of cases) {
+    const payload = body({ ...base, reasoning });
+    assert.deepEqual(requestDecision(post, payload, nativePolicy),
+      { ok: false, code: 'NATIVE_TOP_LEVEL_FIELDS' });
+    const projection = nativeRejectionProjection(payload,
+      { index: 1, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
+    assert.deepEqual(projection.topLevel.observedExtraFieldShapes.reasoning, expected);
+    assert.equal(JSON.stringify(projection).includes(secret), false);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+  }
 });
 
 test('maximum recognized field projection trims samples under the artifact limit', () => {
