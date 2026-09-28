@@ -117,10 +117,6 @@ test('native read profile is separate and forwards only canonical reviewed envel
       ...envelope.tools[0].tools, { type: 'function', name: 'extra' }] }] },
     { ...envelope, tools: [{ ...envelope.tools[0], tools: [
       { ...envelope.tools[0].tools[0], source: 'unapproved' }] }] },
-    { ...envelope, tools: [{ ...envelope.tools[0], tools: [
-      { ...envelope.tools[0].tools[0], parameters: { type: 'object', unknown: 'source' } }] }] },
-    { ...envelope, tools: [{ ...envelope.tools[0], tools: [
-      { ...envelope.tools[0].tools[0], parameters: { type: 'object', const: { source: 'secret' } } }] }] },
   ]) assert.equal(requestDecision(post, body(changed), native).ok, false);
   assert.equal(requestDecision(request('GET', '/muse-code/models'), Buffer.alloc(0), native).ok, true);
   const call = { type: 'function_call', id: 'fc_native_read_file_1',
@@ -202,175 +198,93 @@ test('native rejected POST projection is bounded and contains no request values'
         moreBytes: false } }, unknownMemberCount: 0 });
 });
 
-test('rejected reasoning field exposes only finite bounded member shapes', () => {
+test('optional native reasoning has exact bounded opaque fields', () => {
   const secret = 'secret-reasoning-content-and-header';
   const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
     workspace: '/tmp/native-fixture/workspace' };
   const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  const base = { model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+  const envelope = { model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
     tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
       name: 'submit_reminder_decision', parameters: { type: 'object' } }] }] };
-  const accepted = requestDecision(post, body(base), nativePolicy);
-  assert.equal(accepted.ok, true);
-  assert.equal(JSON.parse(accepted.body.toString()).reasoning, undefined);
-  const cases = [
-    [{}, { class: 'object', memberCount: 0, moreMembers: false,
-      recognizedMembers: {}, unknownMemberCount: 0 }],
-    [{ [secret]: secret }, { class: 'object', memberCount: 1, moreMembers: false,
-      recognizedMembers: {}, unknownMemberCount: 1 }],
-    [Object.fromEntries(Array.from({ length: 80 }, (_, i) => [`${secret}${i}`, secret])),
-      { class: 'object', memberCount: 64, moreMembers: true,
-        recognizedMembers: {}, unknownMemberCount: 64 }],
-    [{ effort: secret.repeat(300), summary: Array(70).fill(secret),
-      generate_summary: 17, [secret]: secret },
-    { class: 'object', memberCount: 4, moreMembers: false,
-      recognizedMembers: { effort: { class: 'string', byteCount: 8_192, moreBytes: true },
-        summary: { class: 'array', memberCount: 64, moreMembers: true },
-        generate_summary: { class: 'number' } }, unknownMemberCount: 1 }],
-    [null, { class: 'null', memberCount: 0, moreMembers: false,
-      recognizedMembers: {}, unknownMemberCount: 0 }],
-    [[secret], { class: 'array', memberCount: 0, moreMembers: false,
-      recognizedMembers: {}, unknownMemberCount: 0 }],
-    [secret, { class: 'string', memberCount: 0, moreMembers: false,
-      recognizedMembers: {}, unknownMemberCount: 0 }],
-    [17, { class: 'number', memberCount: 0, moreMembers: false,
-      recognizedMembers: {}, unknownMemberCount: 0 }],
-    [false, { class: 'boolean', memberCount: 0, moreMembers: false,
-      recognizedMembers: {}, unknownMemberCount: 0 }],
-  ];
-  for (const [reasoning, expected] of cases) {
-    const payload = body({ ...base, reasoning });
-    assert.deepEqual(requestDecision(post, payload, nativePolicy),
-      { ok: false, code: 'NATIVE_TOP_LEVEL_FIELDS' });
+  for (const reasoning of [{ effort: 'high', summary: 'auto' },
+    { effort: '😀'.repeat(16), summary: 's'.repeat(64) }]) {
+    const accepted = requestDecision(post, body({ ...envelope, reasoning }), nativePolicy);
+    assert.equal(accepted.ok, true);
+    assert.equal(JSON.parse(accepted.body).reasoning, undefined);
+  }
+  for (const reasoning of [{}, { effort: 'high' }, { effort: 'high', summary: '' },
+    { effort: 'x'.repeat(65), summary: 'auto' },
+    { effort: '😀'.repeat(17), summary: 'auto' },
+    { effort: '\ud800', summary: 'auto' },
+    { effort: 'high', summary: 'auto', [secret]: secret },
+    { effort: 1, summary: 'auto' }, null, [], secret]) {
+    const payload = body({ ...envelope, reasoning });
+    assert.equal(requestDecision(post, payload, nativePolicy).code, 'NATIVE_REASONING_INVALID');
     const projection = nativeRejectionProjection(payload,
-      { index: 1, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
-    assert.deepEqual(projection.topLevel.observedExtraFieldShapes.reasoning, expected);
+      { index: 1, stage: 'admission', code: 'NATIVE_REASONING_INVALID' });
+    assert.equal(projection.diagnostic.violations.NATIVE_REASONING_INVALID, 1);
     assert.equal(JSON.stringify(projection).includes(secret), false);
     assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
   }
+  assert.equal(requestDecision(post, body({ ...envelope, [secret]: secret }), nativePolicy).code,
+    'NATIVE_TOP_LEVEL_FIELDS');
 });
 
-test('aggregate native envelope diagnosis crosses independent reachable branches', () => {
-  const secret = 'secret-schema-key-description-and-reasoning';
+test('aggregate transport diagnosis crosses independent reachable branches', () => {
+  const secret = 'secret-metadata-key-and-reasoning';
   const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
     workspace: '/tmp/native-fixture/workspace' };
   const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  const oneFunction = [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
-    name: 'submit_reminder_decision', parameters: { type: 'object',
-      properties: { [secret]: { type: 'string', [secret]: true } } } }] }];
-  const mainFunctions = Array.from({ length: 25 }, (_, index) => ({ type: 'function',
-    name: index === 1 ? 'read_file' : `native_${index}`,
-    parameters: index === 13 ? { type: 'object', properties: {
-      [secret]: { type: 'string', [secret]: true } } } : { type: 'object' } }));
-  const payload = (tools, extras = {}) => body({ model: nativePolicy.model,
-    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools, ...extras });
-  const one = payload(oneFunction, { reasoning: { effort: secret, [secret]: secret } });
-  assert.equal(requestDecision(post, one, nativePolicy).code, 'NATIVE_TOP_LEVEL_FIELDS');
-  const oneProjection = nativeRejectionProjection(one,
-    { index: 1, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
-  assert.equal(oneProjection.diagnostic.coverage.functions, 1);
-  assert.equal(oneProjection.diagnostic.coverage.schemaNodes, 2);
-  assert.equal(oneProjection.diagnostic.violations.NATIVE_TOP_LEVEL_FIELDS, 1);
-  assert.equal(oneProjection.diagnostic.violations.SCHEMA_KEYS, 1);
-  assert.equal(oneProjection.diagnostic.coverage.unexaminedSchemaSubtrees, 0);
-  const main = payload([{ type: 'namespace', name: 'muse', tools: mainFunctions }]);
-  assert.equal(requestDecision(post, main, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
-  const mainProjection = nativeRejectionProjection(main,
-    { index: 2, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
-  assert.equal(mainProjection.diagnostic.coverage.functions, 25);
-  assert.equal(mainProjection.diagnostic.coverage.schemaNodes, 26);
-  assert.equal(mainProjection.diagnostic.violations.SCHEMA_KEYS, 1);
-  assert.ok(mainProjection.diagnostic.examples.some(example =>
-    example.code === 'SCHEMA_KEYS' && example.functionIndex === 13 && example.depth === 1));
-  for (const projection of [oneProjection, mainProjection]) {
-    assert.equal(JSON.stringify(projection).includes(secret), false);
-    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
-  }
-  const simultaneous = payload(oneFunction, { reasoning: { [secret]: secret },
-    include: [], instructions: '', previous_response_id: secret });
-  assert.equal(requestDecision(post, simultaneous, nativePolicy).code,
-    'NATIVE_TOP_LEVEL_FIELDS');
-  const multiple = nativeRejectionProjection(simultaneous,
-    { index: 3, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
-  for (const code of ['NATIVE_TOP_LEVEL_FIELDS', 'NATIVE_INCLUDE_INVALID',
-    'NATIVE_INSTRUCTIONS_INVALID', 'NATIVE_RESPONSE_REFERENCE_INVALID', 'SCHEMA_KEYS'])
-    assert.equal(multiple.diagnostic.violations[code], 1);
-  assert.equal(JSON.stringify(multiple).includes(secret), false);
-  const invalidParent = payload([{ type: 'namespace', name: 'muse', tools: [{
-    type: 'function', name: 'submit_reminder_decision', parameters: {
-      type: 'object', properties: secret, items: { [secret]: true } } }] }]);
-  const blocked = nativeRejectionProjection(invalidParent,
-    { index: 4, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).diagnostic;
-  assert.equal(blocked.coverage.blockedParents.properties, 1);
-  assert.equal(blocked.coverage.schemaNodes, 2);
-  assert.equal(blocked.violations.SCHEMA_KEYS, 1);
-  const validTools = [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
-    name: 'submit_reminder_decision', parameters: { type: 'object' } }] }];
-  const unauthorizedArguments = payload(validTools, { input: [{ type: 'function_call',
-    id: 'fc_native_read_file_1', call_id: 'call_native_read_file_1',
-    name: 'muse.read_file', arguments: JSON.stringify({ path: secret, offset: 1, limit: 20 }) }] });
-  assert.equal(requestDecision(post, unauthorizedArguments, nativePolicy).code,
-    'NATIVE_ARGUMENTS_REJECTED');
-  const argumentCoverage = nativeRejectionProjection(unauthorizedArguments,
-    { index: 5, stage: 'admission', code: 'NATIVE_ARGUMENTS_REJECTED' }).diagnostic.coverage;
-  assert.equal(argumentCoverage.inputItems, 1);
-  assert.equal(argumentCoverage.unexaminedWorkspaceArgumentChecks, 1);
+  const tools = [{ type: 'namespace', name: 'muse', tools: Array.from({ length: 25 },
+    (_, index) => ({ type: 'function', name: index === 1 ? 'read_file' : `native_${index}`,
+      parameters: index === 13 ? { [secret]: '\ud800', minimum: secret } : {} })) }];
+  const payload = body({ model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE',
+    ...nativeExtras, reasoning: { effort: secret }, tools });
+  assert.equal(requestDecision(post, payload, nativePolicy).code, 'NATIVE_REASONING_INVALID');
+  const projection = nativeRejectionProjection(payload,
+    { index: 1, stage: 'admission', code: 'NATIVE_REASONING_INVALID' });
+  assert.equal(projection.diagnostic.coverage.functions, 25);
+  assert.equal(projection.diagnostic.violations.NATIVE_REASONING_INVALID, 1);
+  assert.equal(projection.diagnostic.violations.SCHEMA_UNICODE, 1);
+  assert.equal(projection.diagnostic.violations.SCHEMA_KEYS, undefined);
+  assert.equal(projection.diagnostic.violations.SCHEMA_NUMBER, undefined);
+  assert.ok(projection.diagnostic.examples.some(example =>
+    example.code === 'SCHEMA_UNICODE' && example.functionIndex === 13));
+  assert.equal(JSON.stringify(projection).includes(secret), false);
+  assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+  const invalidInput = body({ model: nativePolicy.model, input: [[[['x']]]], ...nativeExtras,
+    tools, reasoning: {} });
+  assert.equal(requestDecision(post, invalidInput, nativePolicy).code, 'NATIVE_REASONING_INVALID');
+  const blocked = nativeRejectionProjection(invalidInput,
+    { index: 2, stage: 'admission', code: 'NATIVE_REASONING_INVALID' }).diagnostic;
+  assert.equal(blocked.coverage.blockedParents.initialContext, 1);
+  assert.equal(blocked.coverage.unexaminedInitialContextChecks, 1);
+  assert.equal(blocked.violations.SCHEMA_UNICODE, 1);
 });
 
-test('aggregate coverage distinguishes unexamined nodes from omitted examples', () => {
-  const secret = 'leak';
-  const parameters = { type: 'object', properties: Object.fromEntries(
-    Array.from({ length: 9_000 }, (_, index) => [`p${index}`, { [secret]: true }])) };
+test('aggregate distinguishes unexamined metadata from omitted violation examples', () => {
+  const secret = 'secret-metadata-content';
+  const parameters = { values: Array.from({ length: 9_000 }, (_, index) =>
+    index < 20 ? '\ud800' : secret) };
   const payload = body({ model: 'fixture-native-shell', input: 'NATIVE_READ_FILE_PROBE',
     ...nativeExtras, tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
       name: 'submit_reminder_decision', parameters }] }] });
   assert.ok(payload.length < 262_144);
   const projection = nativeRejectionProjection(payload,
     { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
-  assert.equal(projection.diagnostic.coverage.functions, 1);
   assert.equal(projection.diagnostic.coverage.schemaNodes, 8_192);
   assert.ok(projection.diagnostic.coverage.unexaminedSchemaSubtrees > 0);
-  assert.ok(projection.diagnostic.violations.SCHEMA_KEYS > 0);
+  assert.ok(projection.diagnostic.violations.SCHEMA_UNICODE >= 20);
   assert.ok(projection.diagnostic.violationsOmittedFromExamples > 0);
   assert.equal(JSON.stringify(projection).includes(secret), false);
   assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
 });
 
-test('aggregate reports admission 512-node complexity across independent failures', () => {
-  const schema = finalLeaves => ({ type: 'object', properties: Object.fromEntries(
-    Array.from({ length: 8 }, (_, group) => [`g${group}`, { type: 'object',
-      properties: Object.fromEntries(Array.from({ length: group === 7 ? finalLeaves : 63 },
-        (_, leaf) => [`p${leaf}`, { type: 'string' }])) }])) });
-  const envelope = (parameters, extra = {}) => body({ model: 'fixture-native-shell',
-    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
-    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
-      name: 'submit_reminder_decision', parameters }] }], ...extra });
-  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
-    workspace: '/tmp/native-fixture/workspace' };
-  const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  assert.equal(requestDecision(post, envelope(schema(62)), nativePolicy).ok, true);
-  const over = envelope(schema(63));
-  assert.equal(requestDecision(post, over, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
-  const diagnosed = nativeRejectionProjection(over,
-    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).diagnostic;
-  assert.equal(diagnosed.coverage.admissionSchemaNodes, 513);
-  assert.equal(diagnosed.coverage.unexaminedSchemaSubtrees, 0);
-  assert.equal(diagnosed.violations.SCHEMA_COMPLEXITY, 1);
-  const earlier = envelope(schema(63), { reasoning: { effort: 'secret-reasoning' } });
-  assert.equal(requestDecision(post, earlier, nativePolicy).code, 'NATIVE_TOP_LEVEL_FIELDS');
-  const combined = nativeRejectionProjection(earlier,
-    { index: 2, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
-  assert.equal(combined.diagnostic.violations.NATIVE_TOP_LEVEL_FIELDS, 1);
-  assert.equal(combined.diagnostic.violations.SCHEMA_COMPLEXITY, 1);
-  assert.equal(JSON.stringify(combined).includes('secret-reasoning'), false);
-});
-
-test('deep invalid input blocks dependent context check while sibling diagnostics survive', () => {
-  const secret = 'secret-schema-key';
+test('deep invalid input leaves independent metadata diagnosis intact', () => {
   const ordinary = JSON.stringify({ model: 'fixture-native-shell',
     input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
     tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
-      name: 'submit_reminder_decision', parameters: { type: 'object', [secret]: true } }] }],
+      name: 'submit_reminder_decision', parameters: { value: '\ud800' } }] }],
     reasoning: {} });
   const deepInput = `${'['.repeat(10_000)}"x"${']'.repeat(10_000)}`;
   const payload = Buffer.from(ordinary.replace('"input":"NATIVE_READ_FILE_PROBE"',
@@ -379,13 +293,12 @@ test('deep invalid input blocks dependent context check while sibling diagnostic
     workspace: '/tmp/native-fixture/workspace' };
   const post = request('POST', '/responses', { 'content-type': 'application/json' });
   assert.ok(payload.length < 262_144);
-  assert.equal(requestDecision(post, payload, nativePolicy).code, 'NATIVE_TOP_LEVEL_FIELDS');
+  assert.equal(requestDecision(post, payload, nativePolicy).code, 'NATIVE_REASONING_INVALID');
   const projection = nativeRejectionProjection(payload,
-    { index: 1, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
+    { index: 1, stage: 'admission', code: 'NATIVE_REASONING_INVALID' });
   assert.equal(projection.diagnostic.coverage.blockedParents.initialContext, 1);
   assert.equal(projection.diagnostic.coverage.unexaminedInitialContextChecks, 1);
-  assert.equal(projection.diagnostic.violations.SCHEMA_KEYS, 1);
-  assert.equal(JSON.stringify(projection).includes(secret), false);
+  assert.equal(projection.diagnostic.violations.SCHEMA_UNICODE, 1);
   assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
 });
 
@@ -422,315 +335,138 @@ test('maximum recognized field projection trims samples under the artifact limit
     { 'content-type': 'application/json' }), payload, nativePolicy).ok, false);
 });
 
-test('native tool rejection identifies only the first bounded failure family and index', () => {
-  const secret = 'secret-tool-description-and-property-name';
+test('native tool transport retains outer function and namespace gates', () => {
+  const secret = 'secret-tool-description';
   const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
     workspace: '/tmp/native-fixture/workspace' };
   const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  const validTool = { type: 'function', name: 'submit_reminder_decision',
-    parameters: { type: 'object', properties: {} } };
-  const validNamespace = { type: 'namespace', name: 'muse', tools: [validTool] };
-  const fullTools = change => Array.from({ length: 25 }, (_, index) => index === 0 ?
-    { type: 'function', name: 'native_0', parameters: { type: 'object' }, ...change } :
-    { type: 'function', name: index === 1 ? 'read_file' : `native_${index}`,
-      parameters: { type: 'object' } });
-  const envelope = tools => ({ model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE',
+  const valid = { type: 'function', name: 'submit_reminder_decision', parameters: {} };
+  const namespace = { type: 'namespace', name: 'muse', tools: [valid] };
+  const payload = tools => body({ model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE',
     ...nativeExtras, tools });
   const cases = [
     [[], 'NAMESPACE_COUNT', null],
-    [[{ ...validNamespace, name: secret }], 'NAMESPACE_SHAPE', null],
-    [[{ ...validNamespace, tools: [{ ...validTool, name: secret }] }], 'FUNCTION_NAME_SET', null],
-    [[{ ...validNamespace, tools: fullTools({ type: secret }) }], 'FUNCTION_TYPE', 0],
-    [[{ ...validNamespace, tools: fullTools({ name: 'bad-name' }) }], 'FUNCTION_NAME_SYNTAX', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool, [secret]: true }] }], 'FUNCTION_FIELDS', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool, strict: secret }] }], 'FUNCTION_STRICT', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool, description: secret.repeat(100) }] }],
-    'FUNCTION_DESCRIPTION', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool, description: 17 }] }],
-    'FUNCTION_DESCRIPTION', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool, description: [secret] }] }],
-    'FUNCTION_DESCRIPTION', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool, description: { secret } }] }],
-    'FUNCTION_DESCRIPTION', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool, description: null }] }],
-    'FUNCTION_DESCRIPTION', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool, parameters: null }] }], 'SCHEMA_SHAPE', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', [secret]: true } }] }], 'SCHEMA_KEYS', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', properties: Object.fromEntries(
-        Array.from({ length: 65 }, (_, index) => [`field${index}`, { type: 'string' }])) } }] }],
-    'SCHEMA_PROPERTIES', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', required: [secret.repeat(4)] } }] }], 'SCHEMA_REQUIRED', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: secret } }] }], 'SCHEMA_TYPE', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', enum: Array(17).fill(secret) } }] }], 'SCHEMA_ENUM', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', description: secret.repeat(100) } }] }],
-    'SCHEMA_DESCRIPTION', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', nullable: secret } }] }], 'SCHEMA_BOOLEAN', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', const: { secret } } }] }], 'SCHEMA_CONST', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', minimum: secret } }] }], 'SCHEMA_NUMBER', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: { type: 'object', anyOf: [] } }] }], 'SCHEMA_COMPOSITION', 0],
-    [[{ ...validNamespace, tools: [{ ...validTool,
-      parameters: Array.from({ length: 10 }).reduce(schema =>
-        ({ type: 'object', properties: { nested: schema } }), { type: 'string' }) }] }],
-    'SCHEMA_COMPLEXITY', 0],
-    [[{ ...validNamespace, tools: Array.from({ length: 25 }, (_, index) => ({
-      type: 'function', name: index === 1 ? 'read_file' : `native_${index}`,
-      parameters: index === 22 ? { type: 'object', [secret]: true } : { type: 'object' },
-    })) }], 'SCHEMA_KEYS', 22],
+    [[{ ...namespace, name: secret }], 'NAMESPACE_SHAPE', null],
+    [[{ ...namespace, tools: [{ ...valid, name: secret }] }], 'FUNCTION_NAME_SET', null],
+    [[{ ...namespace, tools: [{ ...valid, type: secret }] }], 'FUNCTION_TYPE', 0],
+    [[{ ...namespace, tools: [{ ...valid, bad: true }] }], 'FUNCTION_FIELDS', 0],
+    [[{ ...namespace, tools: [{ ...valid, strict: secret }] }], 'FUNCTION_STRICT', 0],
+    [[{ ...namespace, tools: [{ ...valid, description: secret.repeat(200) }] }],
+      'FUNCTION_DESCRIPTION', 0],
+    [[{ ...namespace, tools: [{ ...valid, parameters: null }] }], 'SCHEMA_SHAPE', 0],
+    [[{ ...namespace, tools: [{ ...valid, parameters: [] }] }], 'SCHEMA_SHAPE', 0],
   ];
   for (const [tools, code, functionIndex] of cases) {
-    const payload = body(envelope(tools));
-    assert.deepEqual(requestDecision(post, payload, nativePolicy),
-      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
-    const projection = nativeRejectionProjection(payload,
+    const bytes = payload(tools);
+    assert.equal(requestDecision(post, bytes, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+    const projection = nativeRejectionProjection(bytes,
       { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
-    const expected = { code, functionIndex };
-    if (code === 'SCHEMA_TYPE') expected.schemaType = { depth: 0, class: 'scalar',
-      memberCount: 1, moreMembers: false, recognizedTypes: [], unknownMemberCount: 1 };
-    if (code === 'SCHEMA_DESCRIPTION') expected.schemaDescription = {
-      depth: 0, class: 'string', byteCount: Buffer.byteLength(secret.repeat(100)) };
-    if (code === 'FUNCTION_DESCRIPTION') {
-      const description = tools[0].tools[0].description;
-      expected.descriptionType = description === null ? 'null' :
-        Array.isArray(description) ? 'array' : typeof description;
-      expected.descriptionBytes = typeof description === 'string' ?
-        Buffer.byteLength(description) : null;
-    }
-    assert.deepEqual(projection.tools.failure, expected);
+    assert.equal(projection.tools.failure.code, code);
+    assert.equal(projection.tools.failure.functionIndex, functionIndex);
     assert.equal(JSON.stringify(projection).includes(secret), false);
     assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
   }
-  assert.equal(requestDecision(post, body(envelope([{ ...validNamespace, tools: [{
-    ...validTool, description: '😀'.repeat(512) }] }])), nativePolicy).ok, true);
-  const emojiOver = body(envelope([{ ...validNamespace, tools: [{
-    ...validTool, description: '😀'.repeat(513) }] }]));
-  assert.deepEqual(nativeRejectionProjection(emojiOver,
-    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure,
-  { code: 'FUNCTION_DESCRIPTION', functionIndex: 0,
-    descriptionType: 'string', descriptionBytes: 2_052 });
-  const mainTools = description => [{ ...validNamespace,
-    tools: fullTools({ description }) }];
-  assert.equal(requestDecision(post, body(envelope(mainTools('😀'.repeat(2_048)))),
-    nativePolicy).ok, true);
-  for (const surrogate of ['\ud800', '\udc00']) {
-    const malformed = body(envelope(mainTools('x'.repeat(2_048) + surrogate)));
-    assert.equal(requestDecision(post, malformed, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
-    assert.equal(nativeRejectionProjection(malformed,
-      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' })
-      .tools.failure.code, 'FUNCTION_DESCRIPTION');
-  }
-  const mainOver = body(envelope(mainTools('😀'.repeat(2_049))));
-  assert.equal(requestDecision(post, mainOver, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
-  assert.deepEqual(nativeRejectionProjection(mainOver,
-    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure,
-  { code: 'FUNCTION_DESCRIPTION', functionIndex: 0,
-    descriptionType: 'string', descriptionBytes: 8_196 });
-  const secondOver = body(envelope([{ ...validNamespace,
-    tools: fullTools({ description: 'x'.repeat(8_192) }).map((tool, index) =>
-      index === 1 ? { ...tool, description: 'x'.repeat(2_049) } : tool) }]));
-  assert.deepEqual(nativeRejectionProjection(secondOver,
-    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure,
-  { code: 'FUNCTION_DESCRIPTION', functionIndex: 1,
-    descriptionType: 'string', descriptionBytes: 2_049 });
-  assert.equal(requestDecision(post, secondOver, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
-  assert.equal(JSON.stringify(nativeRejectionProjection(mainOver,
-    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }))
-    .includes('😀'), false);
+  for (const description of ['😀'.repeat(512), 'x'.repeat(2_048)])
+    assert.equal(requestDecision(post, payload([{ ...namespace, tools: [{ ...valid,
+      description }] }]), nativePolicy).ok, true);
+  for (const description of ['😀'.repeat(513), '\ud800'])
+    assert.equal(requestDecision(post, payload([{ ...namespace, tools: [{ ...valid,
+      description }] }]), nativePolicy).code, 'NATIVE_TOOLS_INVALID');
 });
 
-test('native schema type rejection reports bounded shape without schema values', () => {
-  const secret = 'credential-header-and-property-secret';
+test('one-function and 25-function envelopes carry inert metadata without resolution', () => {
+  const secret = 'secret-metadata-and-credential';
   const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
     workspace: '/tmp/native-fixture/workspace' };
   const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  const envelope = parameters => body({ model: nativePolicy.model,
+  const inert = { type: ['unreviewed', 'object', 'object', null], description: secret.repeat(200),
+    minimum: secret, const: { arbitrary: [false, 4_000_000, null] },
+    $ref: 'https://127.0.0.1:1/should-never-fetch', pattern: '(.*)+',
+    [secret]: { nested: ['x', { $ref: '/tmp/never-read', nullable: secret }] } };
+  const variants = [
+    [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters: inert }] }],
+    [{ type: 'namespace', name: 'muse', tools: Array.from({ length: 25 }, (_, index) =>
+      ({ type: 'function', name: index === 1 ? 'read_file' : `native_${index}`,
+        parameters: index === 13 ? inert : {} })) }],
+  ];
+  for (const tools of [...variants, ...variants.toReversed()]) {
+    const accepted = requestDecision(post, body({ model: nativePolicy.model,
+      input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools,
+      reasoning: { effort: 'arbitrary', summary: 'opaque' } }), nativePolicy);
+    assert.equal(accepted.ok, true);
+    assert.deepEqual(JSON.parse(accepted.body).tools, tools);
+    assert.equal(JSON.parse(accepted.body).reasoning, undefined);
+  }
+  const pure = body({ model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE',
+    ...nativeExtras, tools: variants[0], reasoning: { effort: secret, summary: 'auto' } });
+  const projection = nativeRejectionProjection(pure,
+    { index: 1, stage: 'admission', code: 'NATIVE_REASONING_INVALID' });
+  assert.equal(projection.diagnostic.violations.SCHEMA_KEYS, undefined);
+  assert.equal(projection.diagnostic.violations.SCHEMA_NUMBER, undefined);
+  assert.equal(JSON.stringify(projection).includes(secret), false);
+});
+
+test('metadata depth and global entry limits include scalars and array items', () => {
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const one = parameters => [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+    name: 'submit_reminder_decision', parameters }] }];
+  const twentyFive = count => [{ type: 'namespace', name: 'muse',
+    tools: Array.from({ length: 25 }, (_, index) => ({ type: 'function',
+      name: index === 1 ? 'read_file' : `native_${index}`,
+      parameters: index === 24 ? { values: Array(count).fill(null) } : {} })) }];
+  const decide = tools => requestDecision(post, body({ model: nativePolicy.model,
+    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools }), nativePolicy);
+  assert.equal(decide(one({ values: Array(8_190).fill(0) })).ok, true);
+  assert.equal(decide(one({ values: Array(8_191).fill(0) })).code, 'NATIVE_TOOLS_INVALID');
+  assert.equal(decide(twentyFive(8_166)).ok, true);
+  assert.equal(decide(twentyFive(8_167)).code, 'NATIVE_TOOLS_INVALID');
+  const over = body({ model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE',
+    ...nativeExtras, tools: twentyFive(8_167) });
+  const diagnosis = nativeRejectionProjection(over,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
+  assert.equal(diagnosis.tools.failure.code, 'SCHEMA_COMPLEXITY');
+  assert.equal(diagnosis.tools.failure.functionIndex, 24);
+  assert.equal(diagnosis.diagnostic.coverage.schemaNodes, 8_192);
+  assert.ok(diagnosis.diagnostic.coverage.unexaminedSchemaSubtrees > 0);
+  assert.equal(diagnosis.diagnostic.violations.SCHEMA_COMPLEXITY, 1);
+  assert.ok(Buffer.byteLength(`${JSON.stringify(diagnosis)}\n`) <= 4_096);
+  const nested = levels => { let value = 'leaf';
+    for (let index = 0; index < levels; index++) value = [value];
+    return { value }; };
+  assert.equal(decide(one(nested(15))).ok, true);
+  const tooDeep = body({ model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE',
+    ...nativeExtras, tools: one(nested(16)) });
+  assert.equal(requestDecision(post, tooDeep, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+  assert.deepEqual(nativeRejectionProjection(tooDeep,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure,
+  { code: 'SCHEMA_COMPLEXITY', functionIndex: 0, depth: 17 });
+});
+
+test('metadata refuses malformed Unicode and JSON numeric overflow', () => {
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const payload = parameters => body({ model: nativePolicy.model,
     input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
     tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
       name: 'submit_reminder_decision', parameters }] }] });
-  const cases = [
-    [{ type: 'object', properties: { [secret]: { type: ['string', secret] } } },
-      { depth: 1, class: 'array', memberCount: 2, moreMembers: false,
-        recognizedTypes: ['string'], unknownMemberCount: 1 }],
-    [{ type: 'object', items: { anyOf: [{ type: 'number' },
-      { type: [secret, 'null', 'object'] }] } },
-    { depth: 2, class: 'array', memberCount: 3, moreMembers: false,
-      recognizedTypes: ['object', 'null'], unknownMemberCount: 1 }],
-    [{ type: [] }, { depth: 0, class: 'array', memberCount: 0,
-      moreMembers: false, recognizedTypes: [], unknownMemberCount: 0 }],
-    [{ type: ['string', 'number', 'null', 'object'] },
-      { depth: 0, class: 'array', memberCount: 4, moreMembers: false,
-        recognizedTypes: ['object', 'string', 'number', 'null'], unknownMemberCount: 0 }],
-    [{ type: Array(80).fill(secret) },
-      { depth: 0, class: 'array', memberCount: 64, moreMembers: true,
-        recognizedTypes: [], unknownMemberCount: 64 }],
-    [{ type: secret }, { depth: 0, class: 'scalar', memberCount: 1,
-      moreMembers: false, recognizedTypes: [], unknownMemberCount: 1 }],
-  ];
-  for (const [parameters, schemaType] of cases) {
-    const payload = envelope(parameters);
-    assert.deepEqual(requestDecision(post, payload, nativePolicy),
-      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
-    const projection = nativeRejectionProjection(payload,
+  for (const parameters of [{ x: '\ud800' }, { ['\udc00']: true }]) {
+    const bytes = payload(parameters);
+    assert.equal(requestDecision(post, bytes, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+    const projected = nativeRejectionProjection(bytes,
       { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
-    assert.deepEqual(projection.tools.failure,
-      { code: 'SCHEMA_TYPE', functionIndex: 0, schemaType });
-    assert.equal(JSON.stringify(projection).includes(secret), false);
-    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+    assert.equal(projected.tools.failure.code, 'SCHEMA_UNICODE');
+    assert.ok(Buffer.byteLength(`${JSON.stringify(projected)}\n`) <= 4_096);
   }
-  for (const type of ['object', ['string', 'null'], ['integer', 'number', 'boolean']]) {
-    assert.equal(requestDecision(post, envelope({ type }), nativePolicy).ok, true);
-  }
-});
-
-test('native schema description rejection captures only first bounded shape', () => {
-  const secret = 'secret-credential-header-and-property-name';
-  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
-    workspace: '/tmp/native-fixture/workspace' };
-  const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  const envelope = parameters => body({ model: nativePolicy.model,
-    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
-    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
-      name: 'submit_reminder_decision', parameters }] }] });
-  const cases = [
-    [{ type: 'object', description: secret.repeat(60) },
-      { depth: 0, class: 'string', byteCount: Buffer.byteLength(secret.repeat(60)) }],
-    [{ type: 'object', properties: { [secret]: { type: 'string', title: '😀'.repeat(513) } } },
-      { depth: 1, class: 'string', byteCount: 2_052 }],
-    [{ type: 'object', items: { anyOf: [{ type: 'string', description: null }] } },
-      { depth: 2, class: 'null' }],
-    [{ type: 'object', properties: { [secret]: { description: [secret] } } },
-      { depth: 1, class: 'array' }],
-    [{ type: 'object', properties: { first: { description: null },
-      [secret]: { description: secret.repeat(60) } } },
-    { depth: 1, class: 'null' }],
-    [{ type: 'object', description: { [secret]: true } },
-      { depth: 0, class: 'object' }],
-    [{ type: 'object', description: 17 }, { depth: 0, class: 'number' }],
-    [{ type: 'object', description: false }, { depth: 0, class: 'boolean' }],
-  ];
-  for (const [parameters, schemaDescription] of cases) {
-    const payload = envelope(parameters);
-    assert.deepEqual(requestDecision(post, payload, nativePolicy),
-      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
-    const projection = nativeRejectionProjection(payload,
-      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
-    assert.deepEqual(projection.tools.failure,
-      { code: 'SCHEMA_DESCRIPTION', functionIndex: 0, schemaDescription });
-    assert.equal(JSON.stringify(projection).includes(secret), false);
-    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
-  }
-  for (const description of ['x'.repeat(2_048), '😀'.repeat(512)]) {
-    assert.equal(requestDecision(post, envelope({ type: 'object', description }),
-      nativePolicy).ok, true);
-  }
-  for (const description of ['x'.repeat(2_049), '😀'.repeat(513)]) {
-    assert.equal(requestDecision(post, envelope({ type: 'object', description }),
-      nativePolicy).code, 'NATIVE_TOOLS_INVALID');
-  }
-});
-
-test('only reviewed nested first-function description admits well-formed 8192 bytes', () => {
-  const secret = 'secret-description-and-property-name';
-  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
-    workspace: '/tmp/native-fixture/workspace' };
-  const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  const tools = (parameters, functionIndex = 0, count = 25) => [{ type: 'namespace',
-    name: 'muse', tools: Array.from({ length: count }, (_, index) => ({ type: 'function',
-      name: count === 1 ? 'submit_reminder_decision' : index === 1 ? 'read_file' : `native_${index}`,
-      parameters: index === functionIndex ? parameters : { type: 'object' } })) }];
-  const envelope = entries => body({ model: nativePolicy.model,
-    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools: entries });
-  const nested = description => ({ type: 'object', properties: { [secret]:
-    { type: 'string', description } } });
-  for (const description of ['x'.repeat(8_192), '😀'.repeat(2_048),
-    'x'.repeat(2_048)]) {
-    assert.equal(requestDecision(post, envelope(tools(nested(description))), nativePolicy).ok,
-      true);
-  }
-  const cases = [
-    [tools(nested('x'.repeat(8_193))), 0, 1, 'string', 8_193],
-    [tools(nested('😀'.repeat(2_049))), 0, 1, 'string', 8_196],
-    [tools(nested(secret.repeat(300))), 0, 1, 'string',
-      Buffer.byteLength(secret.repeat(300))],
-    [tools(nested('\ud800')), 0, 1, 'string', 3],
-    [tools(nested(null)), 0, 1, 'null', null],
-    [tools({ type: 'object', description: 'x'.repeat(2_049) }),
-      0, 0, 'string', 2_049],
-    [tools({ type: 'object', items: nested('x'.repeat(2_049)) }),
-      0, 2, 'string', 2_049],
-    [tools({ type: 'object', properties: { [secret]:
-      { type: 'string', title: 'x'.repeat(2_049) } } }),
-    0, 1, 'string', 2_049],
-    [tools(nested('x'.repeat(2_049)), 1), 1, 1, 'string', 2_049],
-    [tools(nested('x'.repeat(2_049)), 0, 1), 0, 1, 'string', 2_049],
-  ];
-  for (const [entries, functionIndex, depth, valueClass, byteCount] of cases) {
-    const payload = envelope(entries);
-    assert.deepEqual(requestDecision(post, payload, nativePolicy),
-      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
-    const projection = nativeRejectionProjection(payload,
-      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
-    assert.deepEqual(projection.tools.failure,
-      { code: 'SCHEMA_DESCRIPTION', functionIndex, schemaDescription: {
-        depth, class: valueClass, ...(byteCount === null ? {} : { byteCount }) } });
-    assert.equal(JSON.stringify(projection).includes(secret), false);
-    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
-  }
-});
-
-test('only the reviewed first function admits a distinct six-type depth-one union', () => {
-  const secret = 'secret-credential-or-property-name';
-  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
-    workspace: '/tmp/native-fixture/workspace' };
-  const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  const six = ['object', 'array', 'string', 'number', 'boolean', 'null'];
-  const tools = (parameters, functionIndex = 0, count = 25) => [{ type: 'namespace',
-    name: 'muse', tools: Array.from({ length: count }, (_, index) => ({ type: 'function',
-      name: count === 1 ? 'submit_reminder_decision' : index === 1 ? 'read_file' : `native_${index}`,
-      parameters: index === functionIndex ? parameters : { type: 'object' } })) }];
-  const payload = entries => body({ model: nativePolicy.model,
-    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools: entries });
-  const atDepthOne = type => ({ type: 'object', properties: { [secret]: { type } } });
-  for (const type of [six, six.slice(0, 5), six.slice(0, 3)]) {
-    assert.equal(requestDecision(post, payload(tools(atDepthOne(type))), nativePolicy).ok, true);
-  }
-  const cases = [
-    [tools(atDepthOne([...six, 'integer'])), 0, 1, 7, 0,
-      ['object', 'array', 'string', 'integer', 'number', 'boolean', 'null']],
-    [tools(atDepthOne([...six.slice(0, 5), 'string'])), 0, 1, 6, 0,
-      ['object', 'array', 'string', 'number', 'boolean']],
-    [tools(atDepthOne(['object', 'object'])), 0, 1, 2, 0, ['object']],
-    [tools(atDepthOne([...six.slice(0, 5), secret])), 0, 1, 6, 1, six.slice(0, 5)],
-    [tools(atDepthOne([...six.slice(0, 5), 17])), 0, 1, 6, 1, six.slice(0, 5)],
-    [tools(atDepthOne([])), 0, 1, 0, 0, []],
-    [tools({ type: six }), 0, 0, 6, 0, six],
-    [tools({ type: 'object', properties: { [secret]: atDepthOne(six.slice(0, 4)) } }),
-      0, 2, 4, 0, six.slice(0, 4)],
-    [tools(atDepthOne(six.slice(0, 4)), 1), 1, 1, 4, 0, six.slice(0, 4)],
-    [tools(atDepthOne(six.slice(0, 4)), 0, 1), 0, 1, 4, 0, six.slice(0, 4)],
-  ];
-  for (const [entries, functionIndex, depth, memberCount, unknownMemberCount,
-    recognizedTypes] of cases) {
-    const requestBody = payload(entries);
-    assert.deepEqual(requestDecision(post, requestBody, nativePolicy),
-      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
-    const projection = nativeRejectionProjection(requestBody,
-      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
-    assert.deepEqual(projection.tools.failure, { code: 'SCHEMA_TYPE', functionIndex,
-      schemaType: { depth, class: 'array', memberCount, moreMembers: false,
-        recognizedTypes, unknownMemberCount } });
-    assert.equal(JSON.stringify(projection).includes(secret), false);
-    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
-  }
+  assert.equal(requestDecision(post, payload({ x: '😀', y: 1e100 }), nativePolicy).ok, true);
+  const overflow = Buffer.from(payload({ x: 7.77 }).toString().replace('7.77', '1e999'));
+  assert.equal(requestDecision(post, overflow, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+  assert.equal(nativeRejectionProjection(overflow,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure.code,
+  'SCHEMA_NONFINITE_NUMBER');
 });
 
 test('guest headers and auth cannot select upstream authority or identity', () => {
@@ -1206,8 +942,8 @@ test('native broker keeps separate catalog/Responses budgets and rejects canonic
     assert.equal(JSON.stringify(captured).includes('NATIVE_READ_FILE_PROBE: 0'), false);
     const later = JSON.parse(await readFile(join(root, 'rejected-native-post-3.json'), 'utf8'));
     assert.equal(later.requestIndex, 3);
-    assert.deepEqual(later.failedPredicates, ['NATIVE_TOP_LEVEL_FIELDS']);
-    assert.equal(later.diagnostic.violations.NATIVE_TOP_LEVEL_FIELDS, 1);
+    assert.deepEqual(later.failedPredicates, ['NATIVE_REASONING_INVALID']);
+    assert.equal(later.diagnostic.violations.NATIVE_REASONING_INVALID, 1);
     assert.equal(JSON.stringify(later).includes('secret-native-reasoning'), false);
     assert.deepEqual(broker.evidence.additionalCaptures,
       [{ index: 3, status: 'written', path: join(root, 'rejected-native-post-3.json') }]);
@@ -1356,7 +1092,7 @@ test('later pending capture stays unverified after cancellation and late writer 
       await broker.flushCapture();
       assert.equal(broker.evidence.additionalCaptures[0].status, 'unverified');
       assert.deepEqual(broker.evidence.firstFailure,
-        { code: 'NATIVE_TOP_LEVEL_FIELDS', stage: 'admission' });
+        { code: 'NATIVE_REASONING_INVALID', stage: 'admission' });
     } finally {
       releaseWrite?.();
       if (broker) await broker.close();
@@ -1406,6 +1142,7 @@ test('oversized native POST records only bounded prefix and explicit truncation'
 test('reviewed native provider handler sees only host synthetic bearer', { skip: !network }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'passeur-native-upstream-'));
   let upstream;
+  let mutatedUpstream;
   let broker;
   const bearer = 'synthetic-host-held-bearer-0123456789';
   try {
@@ -1459,9 +1196,29 @@ test('reviewed native provider handler sees only host synthetic bearer', { skip:
     assert.equal(upstream.provider.requests.filter(item => item.method === 'GET').length, 1);
     assert.equal(upstream.provider.requests.find(item => item.method === 'POST')?.kind,
       'native_read_file_call');
+    const changedTools = structuredClone(tools);
+    changedTools[1].parameters.properties.path.type = 'number';
+    const changedPayload = body({ model: 'fixture-native-shell',
+      input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+      tools: [{ type: 'namespace', name: 'muse', tools: changedTools }] });
+    const admitted = requestDecision(request('POST', '/responses',
+      { 'content-type': 'application/json' }), changedPayload,
+    { ...policy, profile: 'native-read', model: 'fixture-native-shell', workspace });
+    assert.equal(admitted.ok, true);
+    mutatedUpstream = await startNativeUpstream({ bearer, workspace, protectedRoot,
+      canaryToken: 'synthetic-canary-token', hostPort: 1 });
+    const providerRefusal = await fetch(`${mutatedUpstream.origin}responses`, {
+      method: 'POST', headers: { authorization: `Bearer ${bearer}`,
+        'content-type': 'application/json' }, body: admitted.body });
+    assert.equal(providerRefusal.status, 422);
+    assert.deepEqual(await mutatedUpstream.provider.rejection,
+      { kind: 'provider_rejected', code: 'NATIVE_READ_FILE_SCHEMA_INVALID' });
+    assert.equal(mutatedUpstream.provider.requests.filter(item =>
+      item.method === 'POST').length, 1);
   } finally {
     if (broker) await broker.close();
     if (upstream) await upstream.close();
+    if (mutatedUpstream) await mutatedUpstream.close();
     await rm(root, { recursive: true, force: true });
   }
 });

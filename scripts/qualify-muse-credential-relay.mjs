@@ -33,12 +33,8 @@ const NATIVE_TOP_LEVEL_CAPTURE_FIELDS = Object.freeze([
   'top_logprobs', 'top_p', 'truncation', 'user',
 ]);
 const NATIVE_REASONING_CAPTURE_FIELDS = Object.freeze(['effort', 'summary', 'generate_summary']);
-const NATIVE_SCHEMA_KEYS = new Set(['type', 'description', 'title', 'examples', 'properties',
-  'required', 'additionalProperties', 'items', 'enum', 'const', 'nullable',
-  'anyOf', 'oneOf', 'allOf', 'minimum', 'maximum', 'exclusiveMinimum',
-  'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems',
-  'maxItems', 'minProperties', 'maxProperties']);
-const NATIVE_SCHEMA_TYPES = ['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'];
+const NATIVE_METADATA_ENTRY_LIMIT = 8_192;
+const NATIVE_METADATA_DEPTH_LIMIT = 16;
 const NATIVE_RESPONSE_IDS = new Set(['resp_native_read_file_1', 'resp_native_read_file_2',
   'resp_native_reminder_1', 'resp_native_reminder_2', 'resp_native_verify_reminder_1']);
 const NATIVE_ITEM_IDS = new Set(['fc_native_read_file_1', 'fc_native_reminder_1',
@@ -109,6 +105,59 @@ function nativeInputAllowed(input) {
     return true;
   });
 }
+function wellFormedUtf8(value) {
+  return Buffer.from(value, 'utf8').toString('utf8') === value;
+}
+// Metadata is transported to the synthetic provider, never interpreted here.
+// The state is shared across every advertised function in one namespace.
+function inspectNativeMetadata(root, functionIndex, state, report, stopOnIssue = false) {
+  const pending = [{ value: root, depth: 0 }];
+  const issue = (code, depth, kind) => {
+    const failure = { code, functionIndex, depth, ...(kind ? { class: kind } : {}) };
+    report(failure);
+    return stopOnIssue ? failure : null;
+  };
+  while (pending.length) {
+    if (state.entries === NATIVE_METADATA_ENTRY_LIMIT) {
+      state.unexamined += pending.length;
+      state.exhausted = true;
+      return issue('SCHEMA_COMPLEXITY', pending.at(-1).depth);
+    }
+    const { value, depth } = pending.pop();
+    state.entries++;
+    if (depth > NATIVE_METADATA_DEPTH_LIMIT) {
+      state.unexamined++;
+      const failure = issue('SCHEMA_COMPLEXITY', depth);
+      if (failure) return failure;
+      continue;
+    }
+    if (depth === 0 && (!value || typeof value !== 'object' || Array.isArray(value))) {
+      const failure = issue('SCHEMA_SHAPE', depth,
+        value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
+      if (failure) return failure;
+      continue;
+    }
+    if (typeof value === 'string' && !wellFormedUtf8(value)) {
+      const failure = issue('SCHEMA_UNICODE', depth, 'string');
+      if (failure) return failure;
+    } else if (typeof value === 'number' && !Number.isFinite(value)) {
+      const failure = issue('SCHEMA_NONFINITE_NUMBER', depth, 'number');
+      if (failure) return failure;
+    }
+    if (value && typeof value === 'object') {
+      if (!Array.isArray(value)) {
+        for (const key of Object.keys(value)) if (!wellFormedUtf8(key)) {
+          const failure = issue('SCHEMA_UNICODE', depth, 'key');
+          if (failure) return failure;
+        }
+      }
+      const children = Array.isArray(value) ? value : Object.values(value);
+      for (let index = children.length - 1; index >= 0; index--)
+        pending.push({ value: children[index], depth: depth + 1 });
+    }
+  }
+  return null;
+}
 function nativeToolsFailure(tools) {
   const failure = (code, functionIndex = null) => ({ code, functionIndex });
   if (!Array.isArray(tools) || tools.length !== 1) return failure('NAMESPACE_COUNT');
@@ -124,80 +173,7 @@ function nativeToolsFailure(tools) {
       (names.length === 25 && names[1] !== 'read_file') ||
       (names.length === 1 && names[0] !== 'submit_reminder_decision'))
     return failure('FUNCTION_NAME_SET');
-  const schemaKeys = NATIVE_SCHEMA_KEYS;
-  const schemaTypes = NATIVE_SCHEMA_TYPES;
-  const context = { nodes: 0 };
-  const schemaFailure = (schema, depth = 0, functionIndex) => {
-    if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return 'SCHEMA_SHAPE';
-    if (depth > 8 || ++context.nodes > 512) return 'SCHEMA_COMPLEXITY';
-    if (Object.keys(schema).some(key => !schemaKeys.has(key))) return 'SCHEMA_KEYS';
-    for (const [key, value] of Object.entries(schema)) {
-      if (key === 'properties') {
-        if (!value || typeof value !== 'object' || Array.isArray(value) ||
-            Object.keys(value).length > 64) return 'SCHEMA_PROPERTIES';
-        for (const child of Object.values(value)) {
-          const issue = schemaFailure(child, depth + 1, functionIndex);
-          if (issue) return issue;
-        }
-      } else if (key === 'items' || key === 'additionalProperties' &&
-          typeof value === 'object') {
-        const issue = schemaFailure(value, depth + 1, functionIndex);
-        if (issue) return issue;
-      } else if (['anyOf', 'oneOf', 'allOf'].includes(key)) {
-        if (!Array.isArray(value) || value.length < 1 || value.length > 8)
-          return 'SCHEMA_COMPOSITION';
-        for (const child of value) {
-          const issue = schemaFailure(child, depth + 1, functionIndex);
-          if (issue) return typeof issue === 'object' ? issue : 'SCHEMA_COMPOSITION';
-        }
-      } else if (key === 'required') {
-        if (!Array.isArray(value) || value.length > 64 ||
-            value.some(item => typeof item !== 'string' || item.length > 64) ||
-            new Set(value).size !== value.length) return 'SCHEMA_REQUIRED';
-      } else if (key === 'type') {
-        const values = Array.isArray(value) ? value : [value];
-        const expandedUnion = namespace.tools.length === 25 && functionIndex === 0 &&
-          depth === 1 && Array.isArray(value);
-        if (!values.length || values.length > (expandedUnion ? 6 : 3) ||
-            values.some(item => !schemaTypes.includes(item)) ||
-            expandedUnion && new Set(values).size !== values.length) {
-          const memberLimit = 64;
-          return { code: 'SCHEMA_TYPE', schemaType: {
-            depth, class: Array.isArray(value) ? 'array' : 'scalar',
-            memberCount: Math.min(values.length, memberLimit),
-            moreMembers: values.length > memberLimit,
-            recognizedTypes: schemaTypes.filter(label => values.includes(label)),
-            unknownMemberCount: Math.min(values.reduce((count, item) =>
-              count + Number(!schemaTypes.includes(item)), 0), memberLimit),
-          } };
-        }
-      } else if (key === 'enum' || key === 'examples') {
-        if (!Array.isArray(value) || value.length > 16 ||
-            value.some(item => item !== null &&
-              (!['string', 'number', 'boolean'].includes(typeof item) ||
-                typeof item === 'string' && Buffer.byteLength(item) > 2_048)))
-          return 'SCHEMA_ENUM';
-      } else if (['description', 'title'].includes(key)) {
-        const expandedDescription = key === 'description' && namespace.tools.length === 25 &&
-          functionIndex === 0 && depth === 1;
-        if (typeof value !== 'string' ||
-            Buffer.byteLength(value) > (expandedDescription ? 8_192 : 2_048) ||
-            expandedDescription && Buffer.from(value, 'utf8').toString('utf8') !== value)
-          return { code: 'SCHEMA_DESCRIPTION', schemaDescription: {
-            depth, class: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
-            ...(typeof value === 'string' ? { byteCount: Buffer.byteLength(value) } : {}),
-          } };
-      } else if (key === 'nullable' || key === 'additionalProperties') {
-        if (typeof value !== 'boolean') return 'SCHEMA_BOOLEAN';
-      } else if (key === 'const') {
-        if (value !== null && !['string', 'number', 'boolean'].includes(typeof value) ||
-            typeof value === 'string' && Buffer.byteLength(value) > 2_048)
-          return 'SCHEMA_CONST';
-      } else if (typeof value !== 'number' ||
-          !Number.isFinite(value) || Math.abs(value) > 1_000_000) return 'SCHEMA_NUMBER';
-    }
-    return null;
-  };
+  const metadata = { entries: 0, unexamined: 0, exhausted: false };
   for (const [index, tool] of namespace.tools.entries()) {
     if (tool?.type !== 'function') return failure('FUNCTION_TYPE', index);
     if (typeof tool.name !== 'string' || !/^[a-z_][a-z0-9_]{0,63}$/.test(tool.name))
@@ -216,10 +192,9 @@ function nativeToolsFailure(tools) {
           Array.isArray(tool.description) ? 'array' : typeof tool.description,
         descriptionBytes: typeof tool.description === 'string' ?
           Buffer.byteLength(tool.description) : null };
-    const issue = schemaFailure(tool.parameters, 0, index);
-    if (issue) return typeof issue === 'object' ?
-      { ...failure(issue.code, index), ...(issue.schemaType ? { schemaType: issue.schemaType } :
-        { schemaDescription: issue.schemaDescription }) } : failure(issue, index);
+    const issue = inspectNativeMetadata(tool.parameters, index, metadata, () => {}, true);
+    if (issue) return { code: issue.code, functionIndex: index, depth: issue.depth,
+      ...(issue.class ? { class: issue.class } : {}) };
   }
   return null;
 }
@@ -292,7 +267,8 @@ export function requestDecision(request, body, policy) {
     if (policy.profile === 'native-read') {
       const keys = Object.keys(parsed ?? {}).sort();
       const allowedKeys = ['include', 'input', 'instructions', 'max_output_tokens',
-        'model', 'previous_response_id', 'prompt_cache_key', 'store', 'stream', 'tools'];
+        'model', 'previous_response_id', 'prompt_cache_key', 'reasoning',
+        'store', 'stream', 'tools'];
       const requiredKeys = ['include', 'input', 'instructions', 'max_output_tokens',
         'model', 'prompt_cache_key', 'store', 'stream', 'tools'];
       const reject = code => ({ ok: false, code });
@@ -301,6 +277,15 @@ export function requestDecision(request, body, policy) {
       if (keys.some(key => !allowedKeys.includes(key)) ||
           !requiredKeys.every(key => keys.includes(key)))
         return reject('NATIVE_TOP_LEVEL_FIELDS');
+      if (Object.hasOwn(parsed, 'reasoning') &&
+          (!parsed.reasoning || typeof parsed.reasoning !== 'object' ||
+            Array.isArray(parsed.reasoning) ||
+            Object.keys(parsed.reasoning).sort().join(',') !== 'effort,summary' ||
+            !['effort', 'summary'].every(key => typeof parsed.reasoning[key] === 'string' &&
+              parsed.reasoning[key].length > 0 &&
+              Buffer.byteLength(parsed.reasoning[key]) <= 64 &&
+              wellFormedUtf8(parsed.reasoning[key]))))
+        return reject('NATIVE_REASONING_INVALID');
       if (!Array.isArray(parsed.include) || parsed.include.length !== 1 ||
           parsed.include[0] !== 'reasoning.encrypted_content')
         return reject('NATIVE_INCLUDE_INVALID');
@@ -383,29 +368,19 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
   const tools = Array.isArray(object?.tools) ? object.tools : [];
   const classify = (value, allowed) => value === undefined ? 'absent' :
     typeof value !== 'string' ? 'wrong_type' : allowed.has(value) ? 'reviewed' : 'foreign';
-  const schemaShape = schema => {
-    const result = { nodes: 0, maximumDepth: 0, properties: 0, omittedNodes: 0 };
-    const visit = (value, depth) => {
-      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-      if (depth > 8 || result.nodes >= 64) { result.omittedNodes++; return; }
-      result.nodes++;
+  const metadataShape = root => {
+    const result = { entries: 0, maximumDepth: 0, omittedEntries: 0 };
+    const pending = [{ value: root, depth: 0 }];
+    while (pending.length && result.entries < 64) {
+      const { value, depth } = pending.pop();
+      result.entries++;
       result.maximumDepth = Math.max(result.maximumDepth, depth);
-      const properties = value.properties;
-      if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
-        const children = Object.values(properties);
-        result.properties += children.length;
-        children.slice(0, 16).forEach(child => visit(child, depth + 1));
-        result.omittedNodes += Math.max(0, children.length - 16);
-      }
-      if (value.items) visit(value.items, depth + 1);
-      for (const key of ['anyOf', 'oneOf', 'allOf']) {
-        if (Array.isArray(value[key])) {
-          value[key].slice(0, 8).forEach(child => visit(child, depth + 1));
-          result.omittedNodes += Math.max(0, value[key].length - 8);
-        }
-      }
-    };
-    visit(schema, 0);
+      if (!value || typeof value !== 'object') continue;
+      const children = Array.isArray(value) ? value : Object.values(value);
+      for (let index = children.length - 1; index >= 0; index--)
+        pending.push({ value: children[index], depth: depth + 1 });
+    }
+    result.omittedEntries = pending.length;
     return result;
   };
   const itemClasses = items.slice(0, 8).map(item => ({
@@ -429,7 +404,7 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       schemaType: type(tool?.parameters),
       schemaFieldCount: tool?.parameters && typeof tool.parameters === 'object' &&
         !Array.isArray(tool.parameters) ? Math.min(Object.keys(tool.parameters).length, 64) : 0,
-      schemaShape: schemaShape(tool?.parameters),
+      metadataShape: metadataShape(tool?.parameters),
     })) : [],
     omittedFunctions: Array.isArray(namespace?.tools) ? Math.max(0, namespace.tools.length - 4) : 0,
   }));
@@ -470,7 +445,6 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       !NATIVE_REASONING_CAPTURE_FIELDS.includes(key)).length, 64) };
   const diagnostic = { coverage: { inputItems: 0, namespaces: 0, functions: 0,
     schemaNodes: 0, schemaNodeLimit: NATIVE_DIAGNOSTIC_SCHEMA_NODE_LIMIT,
-    admissionSchemaNodes: 0, admissionSchemaNodeLimit: 512,
     invalidParents: 0, blockedParents: {}, unexaminedSchemaSubtrees: 0,
     unexaminedWorkspaceArgumentChecks: 0, unexaminedInitialContextChecks: 0 },
   violations: {}, examples: [], violationsOmittedFromExamples: 0 };
@@ -485,8 +459,8 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
     else diagnostic.violationsOmittedFromExamples++;
   };
   const topKeys = ['include', 'input', 'instructions', 'max_output_tokens', 'model',
-    'previous_response_id', 'prompt_cache_key', 'store', 'stream', 'tools'];
-  const requiredTopKeys = topKeys.filter(key => key !== 'previous_response_id');
+    'previous_response_id', 'prompt_cache_key', 'reasoning', 'store', 'stream', 'tools'];
+  const requiredTopKeys = topKeys.filter(key => !['previous_response_id', 'reasoning'].includes(key));
   if (!object) {
     note('NATIVE_ENVELOPE_TYPE', { class: type(parsed) });
     blocked('envelope');
@@ -495,6 +469,13 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
     const missingTop = requiredTopKeys.filter(key => !Object.hasOwn(object, key)).length;
     if (unknownTop || missingTop) note('NATIVE_TOP_LEVEL_FIELDS',
       { unknownFieldCount: Math.min(unknownTop, 64), missingFieldCount: missingTop });
+    if (Object.hasOwn(object, 'reasoning') &&
+        (!reasoning || typeof reasoning !== 'object' || Array.isArray(reasoning) ||
+          Object.keys(reasoning).sort().join(',') !== 'effort,summary' ||
+          !['effort', 'summary'].every(key => typeof reasoning[key] === 'string' &&
+            reasoning[key].length > 0 && Buffer.byteLength(reasoning[key]) <= 64 &&
+            wellFormedUtf8(reasoning[key]))))
+      note('NATIVE_REASONING_INVALID', { class: type(reasoning) });
     if (!Array.isArray(object.include) || object.include.length !== 1 ||
         object.include[0] !== 'reasoning.encrypted_content') note('NATIVE_INCLUDE_INVALID');
     if (typeof object.instructions !== 'string' || !object.instructions.length ||
@@ -560,8 +541,7 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       diagnostic.coverage.namespaces = object.tools.length;
       if (object.tools.length !== 1) note('NAMESPACE_COUNT',
         { namespaceCount: Math.min(object.tools.length, 64) });
-      const schemaKeys = NATIVE_SCHEMA_KEYS;
-      const typeLabels = NATIVE_SCHEMA_TYPES;
+      const metadata = { entries: 0, unexamined: 0, exhausted: false };
       for (const namespace of object.tools) {
         if (!namespace || typeof namespace !== 'object' || Array.isArray(namespace) ||
             !Array.isArray(namespace.tools)) {
@@ -604,86 +584,16 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
             note('FUNCTION_DESCRIPTION', { functionIndex, class: type(tool.description),
               byteCount: typeof tool.description === 'string' ?
                 Math.min(Buffer.byteLength(tool.description), descriptionLimit + 1) : null });
-          const pending = [{ value: tool.parameters, depth: 0 }];
-          while (pending.length) {
-            const { value, depth } = pending.pop();
-            if (diagnostic.coverage.schemaNodes >= NATIVE_DIAGNOSTIC_SCHEMA_NODE_LIMIT) {
-              diagnostic.coverage.unexaminedSchemaSubtrees += pending.length + 1;
-              break;
-            }
-            diagnostic.coverage.schemaNodes++;
-            if (!value || typeof value !== 'object' || Array.isArray(value)) {
-              note('SCHEMA_SHAPE', { functionIndex, depth, class: type(value) });
-              blocked('schema');
-              continue;
-            }
-            if (depth <= 8 && ++diagnostic.coverage.admissionSchemaNodes === 513)
-              note('SCHEMA_COMPLEXITY', { functionIndex, depth });
-            if (depth > 8) note('SCHEMA_COMPLEXITY', { functionIndex, depth });
-            const keys = Object.keys(value);
-            const unknown = keys.filter(key => !schemaKeys.has(key)).length;
-            if (unknown) note('SCHEMA_KEYS', { functionIndex, depth,
-              unknownFieldCount: Math.min(unknown, 64) });
-            for (const key of keys) {
-              if (!schemaKeys.has(key)) continue;
-              const child = value[key];
-              const location = { functionIndex, depth, keyword: key, class: type(child) };
-              if (key === 'properties') {
-                if (!child || typeof child !== 'object' || Array.isArray(child)) {
-                  note('SCHEMA_PROPERTIES', location); blocked('properties');
-                } else {
-                  if (Object.keys(child).length > 64) note('SCHEMA_PROPERTIES', location);
-                  for (const nested of Object.values(child)) pending.push({ value: nested, depth: depth + 1 });
-                }
-              } else if (key === 'items' || key === 'additionalProperties' &&
-                  child && typeof child === 'object') {
-                pending.push({ value: child, depth: depth + 1 });
-              } else if (['anyOf', 'oneOf', 'allOf'].includes(key)) {
-                if (!Array.isArray(child) || child.length < 1 || child.length > 8) {
-                  note('SCHEMA_COMPOSITION', location);
-                  if (!Array.isArray(child)) blocked('composition');
-                }
-                if (Array.isArray(child)) for (const nested of child)
-                  pending.push({ value: nested, depth: depth + 1 });
-              } else if (key === 'type') {
-                const values = Array.isArray(child) ? child : [child];
-                const expanded = namespace.tools.length === 25 && functionIndex === 0 && depth === 1 &&
-                  Array.isArray(child);
-                if (!values.length || values.length > (expanded ? 6 : 3) ||
-                    values.some(label => !typeLabels.includes(label)) ||
-                    expanded && new Set(values).size !== values.length)
-                  note('SCHEMA_TYPE', { ...location, memberCount: Math.min(values.length, 64) });
-              } else if (key === 'description' || key === 'title') {
-                const limit = key === 'description' && namespace.tools.length === 25 &&
-                  functionIndex === 0 && depth === 1 ? 8_192 : 2_048;
-                if (typeof child !== 'string' || Buffer.byteLength(child) > limit ||
-                    limit === 8_192 &&
-                    Buffer.from(child, 'utf8').toString('utf8') !== child)
-                  note('SCHEMA_DESCRIPTION', { ...location, byteCount: typeof child === 'string' ?
-                    Math.min(Buffer.byteLength(child), limit + 1) : null });
-              } else if (key === 'required' && (!Array.isArray(child) || child.length > 64 ||
-                  child.some(item => typeof item !== 'string' || item.length > 64) ||
-                  new Set(child).size !== child.length))
-                note('SCHEMA_REQUIRED', location);
-              else if (key === 'enum' || key === 'examples') {
-                if (!Array.isArray(child) || child.length > 16 ||
-                    child.some(item => item !== null &&
-                      (!['string', 'number', 'boolean'].includes(typeof item) ||
-                        typeof item === 'string' && Buffer.byteLength(item) > 2_048)))
-                  note('SCHEMA_ENUM', location);
-              } else if (key === 'const') {
-                if (child !== null && !['string', 'number', 'boolean'].includes(typeof child) ||
-                    typeof child === 'string' && Buffer.byteLength(child) > 2_048)
-                  note('SCHEMA_CONST', location);
-              } else if (key === 'nullable' || key === 'additionalProperties') {
-                if (typeof child !== 'boolean') note('SCHEMA_BOOLEAN', location);
-              } else if (!['required'].includes(key) &&
-                  (typeof child !== 'number' || !Number.isFinite(child) ||
-                    Math.abs(child) > 1_000_000)) {
-                note('SCHEMA_NUMBER', location);
-              }
-            }
-          }
+          if (!metadata.exhausted) {
+            inspectNativeMetadata(tool.parameters, functionIndex, metadata, issue => {
+              note(issue.code, { functionIndex, depth: issue.depth,
+                ...(issue.class ? { class: issue.class } : {}) });
+              if (issue.code === 'SCHEMA_SHAPE') blocked('schema');
+            });
+            diagnostic.coverage.schemaNodes = metadata.entries;
+            diagnostic.coverage.unexaminedSchemaSubtrees = metadata.unexamined;
+          } else diagnostic.coverage.unexaminedSchemaSubtrees++;
+
         }
       }
     }
