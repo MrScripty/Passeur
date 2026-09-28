@@ -1,5 +1,10 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-28 — installed relay finite field names and types
+
+- Operation `continue` from reviewed classifier commit `5563fe6`. Parent pure focused tests passed 16/16 with eight local-network skips; elevated local-only tests passed 24/24; independent Astra High found no P0/P1/P2 and checked a 3,797-byte adversarial all-fields artifact. The broker policy and native lifecycle were unchanged.
+- One fresh installed no-account synthetic host again returned nonpassing primary `native_turn/NATIVE_TOP_LEVEL_FIELDS`, with exact four-process stop confirmed. Its complete 92,085-byte first rejected POST had exactly six extra fields: `include` array, `instructions` string, `max_output_tokens` number, `prompt_cache_key` string, `store` boolean and `stream` boolean. Values were excluded. The capture SHA-256 is `85dcac95e888d884a2896e2b8ffe36d23c1e8f32b9b5ffd53f4810bace5fb52f`; bounded outcome `/tmp/passeur-muse-native-credential-relay-field-evidence-20260928.json` SHA-256 `0f79e6850c74e896e16f5fdf5fcf70998700a0e291c61663ac138f0db7d44fe3`. The `/tmp` root remained after exit, while the immediate-result `/dev/shm` runtime path was absent on subsequent inspection. No accepted turn, real credential, external provider or protected worker is claimed. Next: bound and capture safe value shapes for these six fields before any exact allowlist change.
+
 ## 2026-09-28 — installed relay first-rejection structure captured
 
 - Operation `continue` from reviewed capture commit `e4f640f`. Parent pure focused tests passed 16/16 with eight local-network cases skipped; elevated local-only tests passed 24/24. Independent Astra High cleared the three first-candidate P2 repairs on first-observed broker/provider order, capture timeout uncertainty and 262,144-byte prefix bounds. The Coding-Standards Core/Router route selected 20 standards with zero unresolved at `snapshot:v1:8602a3dc-093f-4218-af74-d406d3147718`.

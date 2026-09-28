@@ -142,8 +142,9 @@ test('native rejected POST projection is bounded and contains no request values'
   tools: Array.from({ length: 6 }, () => ({ type: 'namespace', name: secret,
     tools: Array.from({ length: 20 }, () => ({ type: 'function', name: secret,
       description: secret, parameters: { type: 'object', description: secret } })) })),
-  [secret]: secret, stream: true, reasoning: { summary: secret },
-  max_output_tokens: 42, instructions: secret });
+  [secret]: secret, stream: true, store: false, reasoning: { summary: secret },
+  max_output_tokens: 42, instructions: secret, prompt_cache_key: secret,
+  include: ['reasoning.encrypted_content', ...Array.from({ length: 20 }, () => secret)] });
   const projection = nativeRejectionProjection(payload,
     { index: 7, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
   const serialized = JSON.stringify(projection);
@@ -157,9 +158,53 @@ test('native rejected POST projection is bounded and contains no request values'
   assert.equal(projection.tools.toolClasses[0].omittedFunctions, 16);
   assert.deepEqual(projection.failedPredicates, ['NATIVE_TOOLS_INVALID']);
   assert.deepEqual(projection.topLevel.recognizedExtraFieldTypes,
-    { instructions: 'string', max_output_tokens: 'number', reasoning: 'object', stream: 'boolean' });
-  assert.equal(projection.topLevel.unknownFieldCount, 5);
+    { include: 'array', instructions: 'string', max_output_tokens: 'number',
+      prompt_cache_key: 'string', reasoning: 'object', store: 'boolean', stream: 'boolean' });
+  assert.equal(projection.topLevel.unknownFieldCount, 8);
   assert.equal(projection.topLevel.unrecognizedExtraFieldCount, 1);
+  assert.deepEqual(projection.topLevel.observedExtraFieldShapes.include,
+    { count: 21, members: ['reasoning.encrypted_content', ...Array(7).fill('other')],
+      omittedMembers: 13 });
+  assert.equal(projection.topLevel.observedExtraFieldShapes.instructions.byteCount,
+    Buffer.byteLength(secret));
+  assert.equal(projection.topLevel.observedExtraFieldShapes.maxOutputTokens.safePositiveValue, 42);
+  assert.deepEqual(projection.topLevel.observedExtraFieldShapes.promptCacheKey,
+    { byteCount: Buffer.byteLength(secret), format: 'printable_ascii' });
+  assert.equal(projection.topLevel.observedExtraFieldShapes.store, false);
+  assert.equal(projection.topLevel.observedExtraFieldShapes.stream, true);
+});
+
+test('maximum recognized field projection trims samples under the artifact limit', () => {
+  const secret = 'secret-value-must-not-appear';
+  const extraNames = ['background', 'conversation', 'include', 'instructions',
+    'max_output_tokens', 'max_tool_calls', 'metadata', 'parallel_tool_calls',
+    'prompt', 'prompt_cache_key', 'prompt_cache_retention', 'reasoning',
+    'safety_identifier', 'service_tier', 'store', 'stream', 'stream_options',
+    'temperature', 'text', 'tool_choice', 'top_logprobs', 'top_p', 'truncation', 'user'];
+  const extras = Object.fromEntries(extraNames.map(name => [name, secret]));
+  Object.assign(extras, { include: Array(8).fill('message.input_image.image_url'),
+    instructions: secret, max_output_tokens: 256, prompt_cache_key: secret,
+    store: false, stream: true });
+  const payload = body({ model: 'fixture-native-shell',
+    input: Array.from({ length: 8 }, () => ({ type: 'message', role: 'user', content: secret })),
+    tools: Array.from({ length: 2 }, () => ({ type: 'namespace', name: secret,
+      tools: Array.from({ length: 4 }, () => ({ type: 'function', name: secret,
+        parameters: { type: 'object', properties: Object.fromEntries(
+          Array.from({ length: 16 }, (_, i) => [`field${i}`, { type: 'string' }])) } })) })),
+    ...extras });
+  assert.ok(payload.length <= 262_144);
+  const projection = nativeRejectionProjection(payload,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
+  const artifact = `${JSON.stringify(projection)}\n`;
+  assert.ok(Buffer.byteLength(artifact) <= 4_096);
+  assert.equal(artifact.includes(secret), false);
+  assert.equal(projection.topLevel.unrecognizedExtraFieldCount, 0);
+  assert.ok(projection.tools.toolClasses.some(namespace => namespace.omittedFunctions > 0) ||
+    projection.input.omittedItems > 0 || projection.tools.omittedNamespaces > 0);
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  assert.equal(requestDecision(request('POST', '/responses',
+    { 'content-type': 'application/json' }), payload, nativePolicy).ok, false);
 });
 
 test('guest headers and auth cannot select upstream authority or identity', () => {

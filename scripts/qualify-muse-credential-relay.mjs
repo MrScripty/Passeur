@@ -22,6 +22,7 @@ const MODEL = 'fixture-relay-model';
 const NATIVE_MODEL = 'fixture-native-shell';
 const NATIVE_REQUEST_LIMIT = 262_144;
 const NATIVE_AGGREGATE_REQUEST_LIMIT = NATIVE_REQUEST_LIMIT * 5;
+const NATIVE_CAPTURE_ARTIFACT_LIMIT = 4_096;
 // Field names only. This vocabulary changes capture evidence, never request admission.
 const NATIVE_TOP_LEVEL_CAPTURE_FIELDS = Object.freeze([
   'background', 'conversation', 'include', 'instructions', 'max_output_tokens',
@@ -357,7 +358,17 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
   }));
   const baseFields = new Set(['model', 'input', 'tools', 'previous_response_id']);
   const extraFields = object ? Object.keys(object).filter(key => !baseFields.has(key)) : [];
-  return { schemaVersion: 1, requestIndex: index, byteCount: receivedBytes,
+  const include = object?.include;
+  const includeKinds = new Set(['reasoning.encrypted_content', 'file_search_call.results',
+    'web_search_call.results', 'message.input_image.image_url']);
+  const instructionBytes = typeof object?.instructions === 'string' ?
+    Buffer.byteLength(object.instructions) : null;
+  const cacheKey = object?.prompt_cache_key;
+  const cacheKeyBytes = typeof cacheKey === 'string' ? Buffer.byteLength(cacheKey) : null;
+  const outputTokens = object?.max_output_tokens;
+  const outputTokenValue = Number.isSafeInteger(outputTokens) && outputTokens > 0 &&
+    outputTokens <= 1_000_000 ? outputTokens : null;
+  const projection = { schemaVersion: 1, requestIndex: index, byteCount: receivedBytes,
     capturedByteCount: body.length, omittedByteCount: Math.max(0, receivedBytes - body.length),
     bodyComplete: complete, capturedSha256: createHash('sha256').update(body).digest('hex'),
     stage, failedPredicates: [code],
@@ -367,12 +378,42 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       recognizedExtraFieldTypes: Object.fromEntries(NATIVE_TOP_LEVEL_CAPTURE_FIELDS
         .filter(key => Object.hasOwn(object ?? {}, key)).map(key => [key, type(object[key])])),
       unrecognizedExtraFieldCount: extraFields.filter(key =>
-        !NATIVE_TOP_LEVEL_CAPTURE_FIELDS.includes(key)).length },
+        !NATIVE_TOP_LEVEL_CAPTURE_FIELDS.includes(key)).length,
+      observedExtraFieldShapes: {
+        include: Array.isArray(include) ? { count: include.length,
+          members: include.slice(0, 8).map(value => includeKinds.has(value) ? value : 'other'),
+          omittedMembers: Math.max(0, include.length - 8) } : { class: type(include) },
+        instructions: { byteCount: instructionBytes },
+        maxOutputTokens: { safePositiveValue: outputTokenValue,
+          class: outputTokenValue === null ? type(outputTokens) : 'safe_positive_integer' },
+        promptCacheKey: { byteCount: cacheKeyBytes,
+          format: typeof cacheKey !== 'string' ? type(cacheKey) : cacheKey.length === 0 ?
+            'empty' : /^[\x20-\x7e]+$/.test(cacheKey) ? 'printable_ascii' : 'other' },
+        store: typeof object?.store === 'boolean' ? object.store : type(object?.store),
+        stream: typeof object?.stream === 'boolean' ? object.stream : type(object?.stream),
+      } },
     input: { class: type(input), itemCount: items.length, itemClasses,
       omittedItems: Math.max(0, items.length - itemClasses.length) },
     previousResponse: classify(object?.previous_response_id, NATIVE_RESPONSE_IDS),
     tools: { class: type(object?.tools), namespaceCount: tools.length, toolClasses,
       omittedNamespaces: Math.max(0, tools.length - toolClasses.length) } };
+  while (Buffer.byteLength(JSON.stringify(projection)) + 1 > NATIVE_CAPTURE_ARTIFACT_LIMIT) {
+    const sampledNamespace = projection.tools.toolClasses.find(namespace =>
+      namespace.functionSamples.length > 0);
+    if (sampledNamespace) {
+      sampledNamespace.functionSamples.pop();
+      sampledNamespace.omittedFunctions++;
+    } else if (projection.input.itemClasses.length > 0) {
+      projection.input.itemClasses.pop();
+      projection.input.omittedItems++;
+    } else if (projection.tools.toolClasses.length > 0) {
+      projection.tools.toolClasses.pop();
+      projection.tools.omittedNamespaces++;
+    } else {
+      throw fault('NATIVE_CAPTURE_BOUND_INVALID', 'fixed projection exceeds artifact limit');
+    }
+  }
+  return projection;
 }
 
 export async function assertSocketIdentity(socketPath, identity, inspect = lstat) {
