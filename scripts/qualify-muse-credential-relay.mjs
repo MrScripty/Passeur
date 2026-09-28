@@ -54,6 +54,7 @@ const OUTPUT_LIMIT = 16_384;
 const RUN_MS = 20_000;
 
 function fault(code, message) { return Object.assign(new Error(message), { code }); }
+function nativeProfile(profile) { return profile === 'native-read' || profile === 'native-shell'; }
 function boundedCode(error) {
   const code = error?.code ?? error?.name;
   return typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ?
@@ -76,9 +77,10 @@ function awaitListen(server, target) {
     server.listen(target, () => { server.off('error', reject); resolveValue(server.address()); });
   });
 }
-function nativeInputAllowed(input) {
+function nativeInputAllowed(input, shell = false) {
   if (typeof input === 'string') return input.length > 0 && Buffer.byteLength(input) <= 32_768 &&
-    (input.includes('NATIVE_READ_FILE_PROBE') || input.includes('NATIVE_READ_FILE_SCHEMA_PROBE'));
+    (shell ? input.includes('NATIVE_SHELL_PROBE') :
+      input.includes('NATIVE_READ_FILE_PROBE') || input.includes('NATIVE_READ_FILE_SCHEMA_PROBE'));
   if (!Array.isArray(input) || input.length < 1 || input.length > 16) return false;
   const keys = {
     message: ['type', 'role', 'content', 'id'],
@@ -94,8 +96,9 @@ function nativeInputAllowed(input) {
     if (item.call_id !== undefined && !NATIVE_CALL_IDS.has(item.call_id)) return false;
     if (item.type === 'function_call_output' && typeof item.output !== 'string') return false;
     if (item.type === 'function_call_output' && Buffer.byteLength(item.output) > 8_192) return false;
-    if (item.type === 'function_call' && (item.name !== 'muse.read_file' &&
-        item.name !== 'muse.submit_reminder_decision' || typeof item.arguments !== 'string')) return false;
+    if (item.type === 'function_call' &&
+        (item.name !== 'muse.submit_reminder_decision' &&
+          (shell || item.name !== 'muse.read_file') || typeof item.arguments !== 'string')) return false;
     if (item.type === 'function_call' && Buffer.byteLength(item.arguments) > 4_096) return false;
     if (item.type === 'message' && (typeof item.content !== 'string' ||
         Buffer.byteLength(item.content) > 32_768 ||
@@ -272,10 +275,10 @@ export function requestDecision(request, body, policy) {
       headers['content-type'] === 'application/json') {
     let parsed;
     const sourceText = body.toString('utf8');
-    if (policy.profile === 'native-read' && !Buffer.from(sourceText, 'utf8').equals(body))
+    if (nativeProfile(policy.profile) && !Buffer.from(sourceText, 'utf8').equals(body))
       return { ok: false, code: 'BODY_INVALID' };
     try { parsed = JSON.parse(sourceText); } catch { return { ok: false, code: 'BODY_INVALID' }; }
-    if (policy.profile === 'native-read') {
+    if (nativeProfile(policy.profile)) {
       const keys = Object.keys(parsed ?? {}).sort();
       const allowedKeys = ['include', 'input', 'instructions', 'max_output_tokens',
         'model', 'previous_response_id', 'prompt_cache_key', 'reasoning',
@@ -313,11 +316,13 @@ export function requestDecision(request, body, policy) {
       if (parsed.model !== NATIVE_MODEL) return reject('NATIVE_MODEL_INVALID');
       if (typeof policy.workspace !== 'string' || !policy.workspace.startsWith('/tmp/'))
         return reject('NATIVE_WORKSPACE_INVALID');
-      if (!nativeInputAllowed(parsed.input)) return reject('NATIVE_INPUT_INVALID');
+      if (!nativeInputAllowed(parsed.input, policy.profile === 'native-shell')) return reject('NATIVE_INPUT_INVALID');
       if (parsed.previous_response_id === undefined && Array.isArray(parsed.input) &&
             !parsed.input.some(item => item.type === 'function_call_output') &&
-            !JSON.stringify(parsed.input).includes('NATIVE_READ_FILE_PROBE') &&
-            !JSON.stringify(parsed.input).includes('NATIVE_READ_FILE_SCHEMA_PROBE') &&
+            !(policy.profile === 'native-shell' ?
+              JSON.stringify(parsed.input).includes('NATIVE_SHELL_PROBE') :
+              JSON.stringify(parsed.input).includes('NATIVE_READ_FILE_PROBE') ||
+              JSON.stringify(parsed.input).includes('NATIVE_READ_FILE_SCHEMA_PROBE')) &&
             !parsed.input.some(item => item.call_id !== undefined || item.id !== undefined))
         return reject('NATIVE_INITIAL_CONTEXT_INVALID');
       if (parsed.previous_response_id !== undefined &&
@@ -676,10 +681,10 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   perRouteBudget = 1,
   inspectSocket = assertSocketIdentity, writeCapture = writeFile,
   projectCapture = nativeRejectionProjection }) {
-  if (!['controlled', 'native-read'].includes(profile)) {
+  if (!['controlled', 'native-read', 'native-shell'].includes(profile)) {
     throw fault('BROKER_POLICY_INVALID', 'unknown synthetic relay profile');
   }
-  if (profile === 'native-read') {
+  if (profile === 'native-read' || profile === 'native-shell') {
     if (typeof workspace !== 'string' || !workspace.startsWith('/tmp/') ||
         workspace.endsWith('/') || workspace.includes('/../')) {
       throw fault('BROKER_POLICY_INVALID', 'native workspace path is not exact');
@@ -704,7 +709,7 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       !Array.isArray(allowedInputs) || allowedInputs.length < 1 || allowedInputs.length > 8 ||
       allowedInputs.some(value => typeof value !== 'string' || !/^[a-z]{1,32}$/.test(value)) ||
       !Number.isSafeInteger(requestLimit) || requestLimit < 1 || requestLimit >
-        (profile === 'native-read' ? NATIVE_REQUEST_LIMIT : REQUEST_LIMIT) ||
+        (nativeProfile(profile) ? NATIVE_REQUEST_LIMIT : REQUEST_LIMIT) ||
       !Number.isSafeInteger(responseLimit) || responseLimit < 1 || responseLimit > RESPONSE_LIMIT ||
       !Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 4 ||
       !Number.isSafeInteger(perRouteBudget) || perRouteBudget < 1 || perRouteBudget > 8 ||
@@ -730,7 +735,7 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   let nativePostIndex = 0;
   const markFailure = (code, stage, incoming, body = Buffer.alloc(0), index = null,
     complete = true, receivedBytes = body.length) => {
-    if (profile !== 'native-read') return captureFinished;
+    if (!nativeProfile(profile)) return captureFinished;
     if (!evidence.firstFailure) {
       evidence.firstFailure = { code: boundedCode({ code }), stage };
       resolveFailure(evidence.firstFailure);
@@ -775,7 +780,7 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   let active = 0;
   let socketIdentity;
   const server = createServer(async (incoming, outgoing) => {
-    const postIndex = incoming.method === 'POST' && profile === 'native-read' ? ++nativePostIndex : null;
+    const postIndex = incoming.method === 'POST' && nativeProfile(profile) ? ++nativePostIndex : null;
     incoming.setTimeout(deadlineMs, () => incoming.destroy(fault('GUEST_REQUEST_TIMEOUT', 'guest request timed out')));
     outgoing.setTimeout(deadlineMs, () => outgoing.destroy());
     if (active >= concurrency) { evidence.rejected++;
@@ -811,11 +816,11 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       await inspectSocket(socketPath, socketIdentity);
       for await (const chunk of incoming) {
         receivedBytes += chunk.length;
-        if (profile === 'native-read') aggregateRequestBytes += chunk.length;
+        if (nativeProfile(profile)) aggregateRequestBytes += chunk.length;
         const take = Math.min(chunk.length, Math.max(0, requestLimit - capturedBytes));
         if (take > 0) { chunks.push(chunk.subarray(0, take)); capturedBytes += take; }
         if (receivedBytes > requestLimit) throw fault('REQUEST_LIMIT', 'guest request exceeded body budget');
-        if (profile === 'native-read' && aggregateRequestBytes > NATIVE_AGGREGATE_REQUEST_LIMIT) {
+        if (nativeProfile(profile) && aggregateRequestBytes > NATIVE_AGGREGATE_REQUEST_LIMIT) {
           throw fault('REQUEST_LIMIT', 'native aggregate request budget exceeded');
         }
       }
@@ -825,7 +830,7 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       if (!decision.ok) { evidence.rejected++;
         await markFailure(decision.code, 'admission', incoming, body, postIndex);
         send(outgoing, 403, decision.code); return; }
-      if (profile === 'native-read' && decision.route === 'responses') {
+      if (nativeProfile(profile) && decision.route === 'responses') {
         const digest = createHash('sha256').update(decision.body).digest('hex');
         if (nativeRequestDigests.has(digest)) {
           evidence.rejected++; await markFailure('NATIVE_REQUEST_REPLAY', 'replay', incoming, body, postIndex);
@@ -834,7 +839,7 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
         nativeRequestDigests.add(digest);
       }
       if (routeUses[decision.route] >=
-          (profile === 'native-read' && decision.route === 'catalog' ? 4 : perRouteBudget)) {
+          (nativeProfile(profile) && decision.route === 'catalog' ? 4 : perRouteBudget)) {
         evidence.rejected++; await markFailure('ROUTE_BUDGET', 'budget', incoming, body, postIndex);
         send(outgoing, 429, 'ROUTE_BUDGET'); return;
       }
@@ -862,7 +867,7 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
             send(outgoing, 502, 'UPSTREAM_RESPONSE_REJECTED');
             resolveValue(); return;
           }
-          if (profile === 'native-read') {
+          if (nativeProfile(profile)) {
             const chunks = [];
             let total = 0;
             upstreamResponse.on('data', chunk => {
@@ -904,9 +909,9 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
           let total = 0;
           upstreamResponse.on('data', chunk => {
             total += chunk.length;
-            if (profile === 'native-read') aggregateResponseBytes += chunk.length;
+            if (nativeProfile(profile)) aggregateResponseBytes += chunk.length;
             if (total > responseLimit ||
-                profile === 'native-read' && aggregateResponseBytes > RESPONSE_LIMIT) {
+                nativeProfile(profile) && aggregateResponseBytes > RESPONSE_LIMIT) {
               evidence.responseLimit++; upstreamRequest.destroy(); outgoing.destroy(); return;
             }
             if (!outgoing.write(chunk)) upstreamResponse.pause();
@@ -1039,15 +1044,17 @@ async function fakeUpstream(bearer) {
 }
 
 export async function startNativeUpstream({ bearer, workspace, protectedRoot,
-  canaryToken, hostPort }) {
+  canaryToken, hostPort, shell = false }) {
   if (typeof bearer !== 'string' || bearer.length < 24 || bearer === DUMMY ||
       typeof workspace !== 'string' || !workspace.startsWith('/tmp/') ||
       typeof protectedRoot !== 'string' || typeof canaryToken !== 'string') {
     throw fault('NATIVE_UPSTREAM_CONFIG_INVALID', 'native fake provider config invalid');
   }
   const seen = [];
-  const provider = await startShellProvider(hostPort, 'NATIVE_READ_FILE_ONLY', {
-    readFileProbe: true, workspace, protectedRoot, canaryToken,
+  const provider = await startShellProvider(hostPort,
+    shell ? shellProbeCommand(workspace, protectedRoot, canaryToken) : 'NATIVE_READ_FILE_ONLY', {
+    ...(shell ? { outerOnly: true } : { readFileProbe: true }),
+    workspace, protectedRoot, canaryToken,
     makeServer: handler => createServer((request, response) => {
       const correctBearer = request.headers.authorization === `Bearer ${bearer}`;
       seen.push({ method: request.method, path: request.url,
@@ -1108,7 +1115,9 @@ export async function guestNativeFixture(config, {
   },
 } = {}) {
   if (typeof release !== 'function' || !callerFailure ||
-      typeof callerFailure.then !== 'function' || config?.phase !== 'read-file-probe' ||
+      typeof callerFailure.then !== 'function' ||
+      !(config?.phase === 'read-file-probe' ||
+        config?.taskOwned === true && config.phase === 'outer-held-shell') ||
       typeof config.runId !== 'string') {
     throw fault('NATIVE_GUEST_CONFIG_INVALID', 'native relay guest lacks exact control inputs');
   }
@@ -1166,8 +1175,11 @@ export async function stageNativeRuntime(root, muse, stagePinned = stageRuntime)
   return runtime;
 }
 
-export function relaySandboxConfig({ workspace, runtime, home, protectedRoot, socketDirectory }) {
-  return { workspace, preserveWorkspacePath: true, denied: [protectedRoot], mounts: [
+export function relaySandboxConfig({ workspace, runtime, home, protectedRoot, socketDirectory,
+  privateGit }) {
+  return { workspace, preserveWorkspacePath: true,
+    denied: privateGit ? [protectedRoot, privateGit.controlRoot] : [protectedRoot],
+    ...(privateGit ? { privateGit } : {}), mounts: [
     { source: runtime, target: GUEST_RUNTIME, mode: 'ro' },
     { source: home, target: '/mounts/home', mode: 'rw' },
     { source: socketDirectory, target: '/mounts/relay', mode: 'ro' },

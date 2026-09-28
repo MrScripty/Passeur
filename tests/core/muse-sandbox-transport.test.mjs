@@ -493,6 +493,14 @@ test('stop gate rejects changed boot/start, unreadable scan and reparented survi
   const gone = async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); };
   const options = { bootId: async () => 'boot-a', readStat: gone, scan: async () => [] };
   assert.equal((await verifyHostStop(capture, status, exit, options)).kind, 'confirmed');
+  const taskStop = { ...exit, code: null, signal: 'SIGTERM' };
+  await assert.rejects(verifyHostStop(capture, { child: 101, exit: null }, taskStop, options),
+    { code: 'STOP_STATUS_INVALID' });
+  assert.equal((await verifyHostStop(capture, { child: 101, exit: null }, taskStop,
+    { ...options, allowTaskStop: true })).kind, 'confirmed');
+  await assert.rejects(verifyHostStop(capture, { child: 101, exit: null }, taskStop,
+    { ...options, allowTaskStop: true, scan: async () => [{ pid: 102 }] }),
+  { code: 'STOP_SURVIVOR' });
   await assert.rejects(verifyHostStop(capture, status, exit, { ...options,
     bootId: async () => 'boot-b' }), { code: 'STOP_IDENTITY_INVALID' });
   await assert.rejects(verifyHostStop(capture, { child: 999, exit: 0 }, exit, options),
@@ -4396,6 +4404,99 @@ printf '{"exit-code":0}\\n' >&3
     assert.equal((await host.outcome).kind, 'native_shell_approval_pending');
     host.releaseShutdown();
     assert.equal((await host.finished).output.length, 4);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('service-owned held transport records native turn before approval and stops only on task cancellation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-task-held-'));
+  try {
+    const fake = join(root, 'fake-bwrap');
+    await writeFile(fake, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '{"kind":"guest_ready","result":{"kind":"guest_shell_ready","metadata":{"sessionId":"session-task"}}}\\n'
+read turn
+printf '{"kind":"guest_turn_accepted","schemaVersion":1,"checkpointId":"checkpoint-task","sessionId":"session-task","turnId":"turn-task","status":"accepted","disposition":"started","startedNewTurn":true}\\n'
+read acknowledgement
+case "$acknowledgement" in *host_turn_recorded*) ;; *) exit 8 ;; esac
+printf '{"kind":"guest_handoff","result":{"kind":"native_shell_live_approval"}}\\n'
+read decision
+`, { mode: 0o700 });
+    const scheduled = [];
+    const originalSetTimeout = global.setTimeout;
+    let host;
+    try {
+      global.setTimeout = (callback, ms, ...args) => {
+        scheduled.push(ms);
+        return originalSetTimeout(callback, ms, ...args);
+      };
+      host = runStatusPhase({ executable: fake, args: ['--', 'ignored'] },
+        { phase: 'outer-held-shell', taskOwned: true, turnCheckpointId: 'checkpoint-task' });
+    } finally { global.setTimeout = originalSetTimeout; }
+    assert.equal(scheduled.includes(660_000), false);
+    await host.ready;
+    await host.liveStatus;
+    host.releaseTurn();
+    assert.equal((await host.turnAccepted).turnId, 'turn-task');
+    let recorded = false;
+    const originalNow = Date.now;
+    Date.now = () => originalNow() + 10_000;
+    const record = host.recordAndAckTurn(async turn => {
+      assert.equal(turn.sessionId, 'session-task');
+      await new Promise(resolve => setTimeout(resolve, 40));
+      recorded = true;
+    });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(recorded, false);
+    try { await record; }
+    finally { Date.now = originalNow; }
+    assert.equal((await host.handoff).kind, 'native_shell_live_approval');
+    let finished = false;
+    host.finished.then(() => { finished = true; });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(finished, false);
+    host.cancelTask();
+    const stopped = await host.finished;
+    assert.notEqual(stopped.code, 0);
+    assert.equal(stopped.timedOut, false);
+    assert.equal(host.turnCheckpoint().recorded, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('service-owned held transport exposes post-handoff native failures before guest exit', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-task-native-change-'));
+  try {
+    for (const code of ['NATIVE_APPROVAL_CHANGED', 'NATIVE_TASK_TURN_ENDED']) {
+      const fake = join(root, `fake-${code}`);
+      const failure = { kind: 'guest_transport_error', stage: 'native_turn', code,
+        message: 'native pending identity changed', providerRequests: [] };
+      await writeFile(fake, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '{"kind":"guest_ready","result":{"kind":"guest_shell_ready","metadata":{"sessionId":"session-task"}}}\\n'
+read turn
+printf '{"kind":"guest_turn_accepted","schemaVersion":1,"checkpointId":"checkpoint-task","sessionId":"session-task","turnId":"turn-task","status":"accepted","disposition":"started","startedNewTurn":true}\\n'
+read acknowledgement
+printf '{"kind":"guest_handoff","result":{"kind":"native_shell_live_approval"}}\\n'
+printf '%s\\n' '${JSON.stringify(failure)}'
+read decision
+`, { mode: 0o700 });
+      const host = runStatusPhase({ executable: fake, args: ['--', 'ignored'] },
+        { phase: 'outer-held-shell', taskOwned: true, turnCheckpointId: 'checkpoint-task' });
+      await host.ready;
+      await host.liveStatus;
+      host.releaseTurn();
+      await host.turnAccepted;
+      await host.recordAndAckTurn(async () => {});
+      assert.equal((await host.handoff).kind, 'native_shell_live_approval');
+      assert.equal((await host.outcome).code, code);
+      let finished = false;
+      host.finished.then(() => { finished = true; });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(finished, false);
+      host.cancelTask();
+      await host.finished;
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

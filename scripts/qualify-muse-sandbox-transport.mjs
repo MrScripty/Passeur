@@ -1923,13 +1923,14 @@ export function approvalSummary(value, command) {
 }
 
 export function heldApprovalPresentation(approval, command, workspace, protectedRoot, token,
-  outerOnly = false) {
+  outerOnly = false, taskOwned = false) {
   const summary = approvalSummary(approval, command);
   return { kind: 'native_shell_live_approval', handoffId: randomBytes(16).toString('hex'),
-    approval: summary, command, waitBudgetMs: HELD_INPUT_MS,
+    approval: summary, command,
+    ...(taskOwned ? { nativeRawArgs: approval.rawArgs } : { waitBudgetMs: HELD_INPUT_MS }),
     ...(outerOnly ? { sandboxPosture: OUTER_ONLY_POSTURE,
       isolation: 'Outer Bubblewrap supplies shell filesystem and network isolation; native shell sandbox is disabled.' } : {}),
-    expiresAt: new Date(Date.now() + HELD_INPUT_MS).toISOString(),
+    ...(!taskOwned ? { expiresAt: new Date(Date.now() + HELD_INPUT_MS).toISOString() } : {}),
     effects: { workspaceWrite: join(workspace, 'shell-canary'),
       protectedDirect: join(protectedRoot, token),
       protectedSymlink: join(workspace, 'protected-link', token),
@@ -2003,11 +2004,11 @@ export async function submitHeldDecision(connection, presentation, input, comman
     approvalId: ack.approvalId, commandId: ack.commandId } };
 }
 
-export async function releaseAndStartNativeTurn(release, startTurn, gate) {
-  if (await timeout('turn release', gate(release)) !== 'turn') {
+export async function releaseAndStartNativeTurn(release, startTurn, gate, taskOwned = false) {
+  if (await (taskOwned ? gate(release) : timeout('turn release', gate(release))) !== 'turn') {
     throw fault('HOST_RELEASE_INVALID', 'native turn was not released by host');
   }
-  return timeout('turn/start', gate(startTurn));
+  return taskOwned ? gate(startTurn) : timeout('turn/start', gate(startTurn));
 }
 
 export async function awaitRecordedNativeTurn(config, sessionId, ack, gate,
@@ -2025,7 +2026,8 @@ export async function awaitRecordedNativeTurn(config, sessionId, ack, gate,
     throw fault('NATIVE_TURN_CHECKPOINT_INVALID', 'accepted native turn checkpoint exceeded frame limit');
   }
   emit(accepted);
-  const line = await timeout('host turn recording', gate(() => config.release()), 5_000);
+  const line = await (config.taskOwned ? gate(() => config.release()) :
+    timeout('host turn recording', gate(() => config.release()), 5_000));
   if (typeof line !== 'string' || Buffer.byteLength(line) + 2 > TURN_CHECKPOINT_FRAME_LIMIT) {
     throw fault('NATIVE_TURN_RECORD_INVALID', 'host turn recording frame exceeded limit');
   }
@@ -2068,7 +2070,7 @@ export async function writeTurnAcknowledgement(stream, payload, gate, remainingM
     catch (error) { finish(error); }
   }));
   try {
-    await timeout('turn acknowledgement write', pending, remainingMs);
+    await (remainingMs === undefined ? pending : timeout('turn acknowledgement write', pending, remainingMs));
     if (stream.destroyed || stream.writableEnded || childClosed()) {
       throw fault('NATIVE_TURN_ACK_UNCERTAIN', 'turn acknowledgement pipe closed after write completion');
     }
@@ -2086,13 +2088,25 @@ export async function spawnNativeHost(gate, create, own) {
 export async function runNativeShellLifecycle(config, { providerPort, callerFailure,
   onReady = async () => [], onCandidate = async () => [], onFinal = async () => undefined,
 } = {}) {
-  const caller = nativeCallerGate(callerFailure);
+  let nativeReject;
+  let nativeActive = true;
+  const nativeFailure = new Promise((_, reject) => { nativeReject = reject; });
+  nativeFailure.catch(() => undefined);
+  const failNative = (code, message) => { if (nativeActive) nativeReject(fault(code, message)); };
+  const caller = nativeCallerGate(config.taskOwned === true ?
+    callerFailure === undefined ? nativeFailure : Promise.race([callerFailure, nativeFailure]) : callerFailure);
   const withCaller = caller.run;
+  const stageCall = (name, operation, ms = DEADLINE_MS) => taskOwned ?
+    withCaller(operation) : timeout(name, withCaller(operation), ms);
   const workspace = config.workspace;
   const native = `${GUEST_RUNTIME}/muse-bin-${VERSION}`;
   let namespace;
   const outerOnly = config.phase === 'outer-held-shell';
   const held = ['held-shell', 'outer-held-shell'].includes(config.phase);
+  const taskOwned = config.taskOwned === true;
+  if (taskOwned && (!held || !controlId(config.turnCheckpointId))) {
+    throw fault('NATIVE_TASK_MODE_INVALID', 'task lifetime requires a held shell and accepted-turn checkpoint');
+  }
   const readFileSchemaOnly = config.phase === 'read-file-schema';
   const readFileProbe = config.phase === 'read-file-probe';
   const protectedRead = config.phase === 'protected-read';
@@ -2104,6 +2118,8 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
     protectedReadPath(protectedRoute, workspace, config.protectedRoot) :
     join(workspace, READ_CANARY_NAME);
   let host;
+  let nativeWatchTimer;
+  let nativeWatchBusy = false;
   let stage = 'network';
   const commands = [];
   const observations = { approvals: [], items: [], reminders: [], protocolErrors: [],
@@ -2155,6 +2171,9 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
       args: outerOnly ? [...OUTER_ONLY_SERVE_ARGS] : ['serve'],
       cwd: workspace, env: guestEnvironment(), shutdownTimeoutMs: 2_000, onStderr: () => undefined,
     }), value => { host = value; });
+    if (taskOwned) host.exited.then(() => failNative('NATIVE_HOST_EXIT',
+      'native host exited while accepted task was active'), () => failNative('NATIVE_HOST_EXIT',
+      'native host process observation failed')).catch(() => undefined);
     let resolveObserved;
     const observed = new Promise(resolve => { resolveObserved = resolve; });
     const heldEvents = [];
@@ -2177,6 +2196,8 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
           sessionId: request.params?.sessionId, turnId: request.params?.turnId,
           toolCallId: request.params?.toolCallId, kind: 'additional_stage' });
         holdEvent({ kind: 'additional_approval_request' });
+        if (taskOwned) failNative('NATIVE_APPROVAL_CHANGED',
+          'native task requested another approval while the first permission remained pending');
         return {};
       }
       const approval = approvalSummary(request.params, command);
@@ -2187,6 +2208,9 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
     });
     host.onNotification(notification => {
       const params = notification.params;
+      if (taskOwned && ['approval/resolved', 'approval/updated', 'approval/withdrawn'].includes(notification.method)) {
+        failNative('NATIVE_APPROVAL_WITHDRAWN', 'native approval changed without a task-owned decision');
+      }
       if (notification.method === 'item/completed' && params?.item?.kind === 'toolCall') {
         const item = params.item;
         const outputShape = { type: item.visibleOutput === null ? 'null' : typeof item.visibleOutput,
@@ -2236,6 +2260,8 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
           resolvedBy: params?.resolvedBy, requirementId: params?.currentRequirementId });
       }
       if (notification.method === 'turn/completed') {
+        if (taskOwned) failNative('NATIVE_TASK_TURN_ENDED',
+          'native turn ended while task-owned permission remained pending');
         holdEvent({ kind: 'turn_completed', terminal: params?.terminal,
           turnId: params?.turnId, sessionId: params?.sessionId });
         resolveObserved({ kind: 'turn_completed', terminal: params?.terminal,
@@ -2244,28 +2270,39 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
       }
     });
     host.onProtocolError(error => { observe('protocolErrors',
-      /^[A-Z0-9_]{1,64}$/.test(error.code ?? '') ? error.code : 'PROTOCOL_ERROR'); });
-    const initialized = await timeout('initialize', withCaller(() => host.initialize({ clientInfo: {
+      /^[A-Z0-9_]{1,64}$/.test(error.code ?? '') ? error.code : 'PROTOCOL_ERROR');
+      if (taskOwned) failNative('NATIVE_CONNECTION_FAILED', 'native protocol connection failed'); });
+    const initialized = await stageCall('initialize', () => host.initialize({ clientInfo: {
       name: 'passeur_guest_native_shell_probe', version: '0.1.0',
-    } })));
+    } }));
     const nativeIdentity = await verifiedNativeNamespace(GUEST_HOME, native, namespace);
+    if (taskOwned) nativeWatchTimer = setInterval(async () => {
+      if (!nativeActive || nativeWatchBusy) return;
+      nativeWatchBusy = true;
+      try {
+        const current = hostStat(await readFile(`/proc/${nativeIdentity.pid}/stat`, 'utf8'));
+        if (current.start !== nativeIdentity.start || ['Z', 'X'].includes(current.state))
+          failNative('NATIVE_HOST_EXIT', 'native host identity is no longer alive');
+      } catch { failNative('NATIVE_HOST_EXIT', 'native host process identity became unavailable'); }
+      finally { nativeWatchBusy = false; }
+    }, 250);
     const nativeServe = outerOnly ? await verifyNativeServeArgs(nativeIdentity.pid,
       [native, ...OUTER_ONLY_SERVE_ARGS]) : null;
     stage = 'session_start';
     commands.push('session/start');
-    const started = await timeout('session/start', withCaller(() => initialized.connection.command('session/start',
+    const started = await stageCall('session/start', () => initialized.connection.command('session/start',
       { workspaceRoot: workspace, modelId: SHELL_MODEL, providerId: 'meta', approvalMode: 'onRequest' },
-      { maxAttempts: 1 })));
+      { maxAttempts: 1 }));
     commands.push('session/read');
-    const read = await timeout('session/read', withCaller(() => initialized.connection.command('session/read',
-      { sessionId: started?.session?.sessionId, excludeItems: true }, { maxAttempts: 1 })));
+    const read = await stageCall('session/read', () => initialized.connection.command('session/read',
+      { sessionId: started?.session?.sessionId, excludeItems: true }, { maxAttempts: 1 }));
     const metadata = validateIdleRead(started, read, workspace, GUEST_HOME);
     if (started.session?.approvalMode?.mode !== 'onRequest' || read.session?.approvalMode?.mode !== 'onRequest' ||
         started.session?.modelId !== SHELL_MODEL || read.session?.modelId !== SHELL_MODEL ||
         started.session?.providerId !== 'meta' || read.session?.providerId !== 'meta') {
       throw fault('NATIVE_SHELL_POSTURE_INVALID', 'native session did not retain requested model, provider and approval mode');
     }
-    const readyRequests = await timeout('native ready checkpoint', withCaller(() => onReady()), 5_000);
+    const readyRequests = await stageCall('native ready checkpoint', () => onReady(), 5_000);
     if (!Array.isArray(readyRequests)) throw fault('NATIVE_PROVIDER_SNAPSHOT_INVALID',
       'ready provider snapshot was not an array');
     const procInit = protectedRoute === 'proc' ? procIdentity(await readFile('/proc/1/stat', 'utf8')) : null;
@@ -2296,20 +2333,26 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
         readFileSchemaOnly ?
         'NATIVE_READ_FILE_SCHEMA_PROBE: Describe the advertised read_file arguments. Do not call any tool.' :
         'NATIVE_SHELL_PROBE: Use the advertised bash tool once to run the disposable command. Report its result.' }],
-    }, { maxAttempts: 1 }); }, withCaller);
+    }, { maxAttempts: 1 }); }, withCaller, taskOwned);
     if (ack.status !== 'accepted' || ack.disposition !== 'started' || ack.startedNewTurn !== true ||
         typeof ack.turnId !== 'string') {
       throw fault('NATIVE_TURN_ACK_INVALID', 'native turn was not admitted as one fresh turn');
     }
     await awaitRecordedNativeTurn(config, metadata.sessionId, ack, withCaller);
-    const event = await timeout('native turn or approval', withCaller(() => observed), 15_000);
+    const event = await (taskOwned ? withCaller(() => observed) :
+      timeout('native turn or approval', withCaller(() => observed), 15_000));
+    if (taskOwned && event.kind !== 'approval') {
+      throw fault('NATIVE_TASK_PERMISSION_MISSING', 'accepted task ended without the required native approval');
+    }
     let pending = null;
     if ((readFileSchemaOnly || readFileTurn) && event.kind !== 'turn_completed') {
       throw fault('NATIVE_READ_FILE_SCHEMA_EVENT_INVALID', 'schema-only turn requested an approval or tool');
     }
     if (event.kind === 'approval') {
-      pending = await timeout('approval/listPending', withCaller(() => initialized.connection.request('approval/listPending',
-        { sessionId: metadata.sessionId })));
+      pending = await (taskOwned ? withCaller(() => initialized.connection.request('approval/listPending',
+        { sessionId: metadata.sessionId })) :
+        timeout('approval/listPending', withCaller(() => initialized.connection.request('approval/listPending',
+          { sessionId: metadata.sessionId }))));
       if (!Array.isArray(pending?.approvals) || !Array.isArray(pending?.userInputs) ||
           pending.userInputs.length !== 0 || pending.approvals.length !== 1 ||
           pending.approvals[0].approvalId !== event.approval.approvalId) {
@@ -2320,13 +2363,14 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
     if (held && event.kind === 'approval') {
       validateHeldInitialApproval(metadata, ack, event, pending, command);
       const presentation = heldApprovalPresentation(pending.approvals[0], command,
-        workspace, config.protectedRoot, config.canaryToken, outerOnly);
+        workspace, config.protectedRoot, config.canaryToken, outerOnly, taskOwned);
       if (JSON.stringify(presentation.approval) !== JSON.stringify(event.approval) ||
           observations.approvals.length !== 1) {
         throw fault('NATIVE_HELD_APPROVAL_STALE', 'held approval differed before presentation');
       }
       process.stdout.write(`${JSON.stringify({ kind: 'guest_handoff', result: presentation })}\n`);
-      const line = await timeout('held human input', withCaller(() => config.release()), HELD_WAIT_MS + 5_000);
+      const line = await (taskOwned ? withCaller(() => config.release()) :
+        timeout('held human input', withCaller(() => config.release()), HELD_WAIT_MS + 5_000));
       let input;
       try { input = JSON.parse(line); }
       catch { throw fault('NATIVE_HELD_INPUT_INVALID', 'held input was not JSON'); }
@@ -2372,8 +2416,10 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
         heldResult = { kind: 'decided', presentation, decision, resolved, item: item.item, terminal };
       }
     }
-    const candidateRequests = await timeout('native candidate checkpoint',
-      withCaller(() => onCandidate({ event, observations, commands: [...commands] })), 5_000);
+    const candidateRequests = await (taskOwned ?
+      withCaller(() => onCandidate({ event, observations, commands: [...commands] })) :
+      timeout('native candidate checkpoint',
+        withCaller(() => onCandidate({ event, observations, commands: [...commands] })), 5_000));
     if (!Array.isArray(candidateRequests)) throw fault('NATIVE_PROVIDER_SNAPSHOT_INVALID',
       'candidate provider snapshot was not an array');
     const result = { kind: dummyAuthRead ? 'native_dummy_auth_read_outcome' :
@@ -2389,9 +2435,11 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
       observations, providerRequests: [...candidateRequests], commands: [...commands],
       ...(heldResult ? { held: heldResult } : {}) };
     process.stdout.write(`${JSON.stringify({ kind: 'guest_outcome', result })}\n`);
-    if (await timeout('shutdown release', withCaller(() => config.release())) !== 'shutdown') {
+    if (await (taskOwned ? withCaller(() => config.release()) :
+      timeout('shutdown release', withCaller(() => config.release()))) !== 'shutdown') {
       throw fault('HOST_RELEASE_INVALID', 'native shutdown was not released by host');
     }
+    nativeActive = false;
     await timeout('host close', withCaller(() => host.close()), 5_000);
     host = undefined;
     await timeout('native final checkpoint', withCaller(() => onFinal(result)), 5_000);
@@ -2401,6 +2449,8 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
       message: String(error.message).slice(0, 400), guestNamespace: namespace,
       commands, providerRequests: [], observations };
   } finally {
+    nativeActive = false;
+    if (nativeWatchTimer) clearInterval(nativeWatchTimer);
     try { if (host) await timeout('host close', host.close(), 5_000); } catch { /* stop is verified outside */ }
   }
 }
@@ -2678,12 +2728,14 @@ export function assertHostAssociation(wrapper, statusChild, members, nativeStart
 export async function verifyHostStop(capture, status, exit, {
   bootId = async () => (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim(),
   readStat = pid => readFile(`/proc/${pid}/stat`, 'utf8'),
-  scan = namespaceMembers,
+  scan = namespaceMembers, allowTaskStop = false,
 } = {}) {
   const boot = await bootId();
   if (boot !== capture.boot) throw fault('STOP_IDENTITY_INVALID', 'host boot changed during diagnostic');
-  if (status.child !== capture.statusChild.pid || status.exit !== 0 || exit.code !== 0 || exit.signal !== null ||
-      exit.timedOut || exit.overflow || !exit.statusClosed) {
+  if (status.child !== capture.statusChild.pid ||
+      (!allowTaskStop && (status.exit !== 0 || exit.code !== 0 || exit.signal !== null)) ||
+      exit.timedOut || exit.overflow || !exit.statusClosed ||
+      allowTaskStop && exit.code === null && exit.signal === null) {
     throw fault('STOP_STATUS_INVALID', 'Bubblewrap status, closure or wrapper exit did not confirm clean stop');
   }
   for (const observed of [capture.wrapper, ...capture.members]) {
@@ -2704,6 +2756,10 @@ export function runStatusPhase(prepared, config) {
     protectedMarkerPresent, turnCallerFailure, ...guestConfig } = config;
   const protectedPhase = ['protected-read', 'dummy-auth-read'].includes(config.phase);
   const turnCheckpointEnabled = config.turnCheckpointId !== undefined;
+  const taskOwned = config.taskOwned === true;
+  if (taskOwned && (!['held-shell', 'outer-held-shell'].includes(config.phase) || !turnCheckpointEnabled)) {
+    throw fault('NATIVE_TASK_MODE_INVALID', 'task lifetime requires held shell and checkpoint');
+  }
   if (turnCheckpointEnabled && (!controlId(config.turnCheckpointId) ||
       !['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe',
         'protected-read', 'dummy-auth-read'].includes(config.phase))) {
@@ -2749,6 +2805,7 @@ export function runStatusPhase(prepared, config) {
   let turnRecording = false;
   let turnCheckpointError;
   let childClosed = false;
+  let taskStopTimer = null;
   const turnCaller = turnCheckpointEnabled ? nativeCallerGate(turnCallerFailure) : undefined;
   const turnAccepted = turnCheckpointEnabled ? new Promise((resolveValue, rejectValue) => {
     turnAcceptedResolve = resolveValue; turnAcceptedReject = rejectValue;
@@ -2926,12 +2983,13 @@ export function runStatusPhase(prepared, config) {
   });
   child.stdin.on('error', () => { /* child completion reports the failed phase */ });
   child.stdin.write(`${JSON.stringify(guestConfig)}\n`);
-  const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM');
+  const timer = taskOwned ? null : setTimeout(() => { timedOut = true; child.kill('SIGTERM');
     setTimeout(() => child.kill('SIGKILL'), 2_000).unref(); },
   ['held-shell', 'outer-held-shell'].includes(config.phase) ? HELD_DEADLINE_MS : DEADLINE_MS);
   const finished = new Promise(resolveResult => {
     child.once('error', error => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      if (taskStopTimer) clearTimeout(taskStopTimer);
       childClosed = true;
       readyReject(error);
       outcomeReject(error);
@@ -2943,7 +3001,8 @@ export function runStatusPhase(prepared, config) {
         output, stderr, statusLines, statusClosed });
     });
     child.once('close', (code, signal) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      if (taskStopTimer) clearTimeout(taskStopTimer);
       childClosed = true;
       if (output.length === 0) readyReject(fault('GUEST_OUTPUT_INVALID', 'phase exited before readiness'));
       if (turnCheckpointEnabled && !turnCheckpoint) turnAcceptedReject(fault('NATIVE_TURN_CHECKPOINT_MISSING',
@@ -2962,15 +3021,17 @@ export function runStatusPhase(prepared, config) {
     });
   });
   const boundedOutcome = ['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) ?
-    timeout('shell outcome', outcome, ['held-shell', 'outer-held-shell'].includes(config.phase) ? HELD_DEADLINE_MS : DEADLINE_MS) : undefined;
+    taskOwned ? outcome : timeout('shell outcome', outcome, ['held-shell', 'outer-held-shell'].includes(config.phase) ? HELD_DEADLINE_MS : DEADLINE_MS) : undefined;
   boundedOutcome?.catch(() => undefined);
-  const boundedHandoff = ['held-shell', 'outer-held-shell'].includes(config.phase) ? timeout('held approval handoff', handoff) : undefined;
+  const boundedHandoff = ['held-shell', 'outer-held-shell'].includes(config.phase) ?
+    taskOwned ? handoff : timeout('held approval handoff', handoff) : undefined;
   boundedHandoff?.catch(() => undefined);
   const boundedProtectedResult = protectedPhase ? timeout('protected result classification', protectedResult) : undefined;
   boundedProtectedResult?.catch(() => undefined);
-  const boundedTurnAccepted = turnCheckpointEnabled ? timeout('native turn acceptance', turnAccepted) : undefined;
+  const boundedTurnAccepted = turnCheckpointEnabled ?
+    taskOwned ? turnAccepted : timeout('native turn acceptance', turnAccepted) : undefined;
   boundedTurnAccepted?.catch(() => undefined);
-  return { pid: child.pid, ready: timeout('host readiness', ready),
+  return { pid: child.pid, ready: taskOwned ? ready : timeout('host readiness', ready),
     outcome: boundedOutcome,
     handoff: boundedHandoff,
     protectedResult: boundedProtectedResult,
@@ -2982,21 +3043,22 @@ export function runStatusPhase(prepared, config) {
       }
       turnRecording = true;
       try {
-        const remaining = 5_000 - (Date.now() - turnCheckpointAt);
-        if (remaining <= 0) throw fault('NATIVE_TURN_RECORD_DEADLINE', 'turn recording window expired');
-        await timeout('durable turn record', turnCaller.run(() => recorder({ ...turnCheckpoint })), remaining);
+        const remaining = taskOwned ? undefined : 5_000 - (Date.now() - turnCheckpointAt);
+        if (!taskOwned && remaining <= 0) throw fault('NATIVE_TURN_RECORD_DEADLINE', 'turn recording window expired');
+        await (taskOwned ? turnCaller.run(() => recorder({ ...turnCheckpoint })) :
+          timeout('durable turn record', turnCaller.run(() => recorder({ ...turnCheckpoint })), remaining));
         turnDurableRecordConfirmed = true;
         if (turnCaller.error()) throw turnCaller.error();
         if (turnCheckpointError || childClosed || timedOut || overflow || child.stdin.destroyed ||
-            child.stdin.writableEnded || Date.now() - turnCheckpointAt >= 5_000) {
+            child.stdin.writableEnded || !taskOwned && Date.now() - turnCheckpointAt >= 5_000) {
           throw fault('NATIVE_TURN_RECORD_DEADLINE', 'turn recording could not be acknowledged to the live guest');
         }
         const acknowledgement = { kind: 'host_turn_recorded', schemaVersion: 1,
           checkpointId: turnCheckpoint.checkpointId, sessionId: turnCheckpoint.sessionId,
           turnId: turnCheckpoint.turnId };
         await writeTurnAcknowledgement(child.stdin, `${JSON.stringify(acknowledgement)}\n`, turnCaller.run,
-          Math.max(1, 5_000 - (Date.now() - turnCheckpointAt)), () => childClosed || !!turnCheckpointError);
-        if (turnCheckpointError || timedOut || overflow || Date.now() - turnCheckpointAt >= 5_000) {
+          taskOwned ? undefined : Math.max(1, 5_000 - (Date.now() - turnCheckpointAt)), () => childClosed || !!turnCheckpointError);
+        if (turnCheckpointError || timedOut || overflow || !taskOwned && Date.now() - turnCheckpointAt >= 5_000) {
           throw fault('NATIVE_TURN_ACK_UNCERTAIN', 'turn acknowledgement completion crossed a failed boundary');
         }
         turnRecorded = true;
@@ -3007,7 +3069,7 @@ export function runStatusPhase(prepared, config) {
       durableRecordConfirmed: turnDurableRecordConfirmed, recorded: turnRecorded,
       error: turnCheckpointError?.code ?? null }),
     protectedFrameError: () => protectedFrameError,
-    liveStatus: timeout('live Bubblewrap status', liveStatus),
+    liveStatus: taskOwned ? liveStatus : timeout('live Bubblewrap status', liveStatus),
     statusLines: () => [...statusLines],
     release: () => { if (!released) { released = true; child.stdin.end('release\n'); } },
     releaseTurn: () => { if (['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && !released) {
@@ -3025,7 +3087,13 @@ export function runStatusPhase(prepared, config) {
       if (['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && released && !shutdownReleased) {
       shutdownReleased = true; child.stdin.end('shutdown\n');
     } },
-    abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } }, finished };
+    abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } },
+    cancelTask: () => { if (!taskOwned) throw fault('NATIVE_TASK_MODE_INVALID', 'task stop requires task lifetime');
+      if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      taskStopTimer ??= setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }, 2_000).unref(); }, finished };
 }
 
 export function decodeShellOutcomeLine(line) {

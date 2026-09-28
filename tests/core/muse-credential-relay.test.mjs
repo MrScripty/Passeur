@@ -141,6 +141,23 @@ test('native read profile is separate and forwards only canonical reviewed envel
       offset: 1, limit: 20 }) }] }), native).ok, false);
 });
 
+test('service shell relay admits only the fixed native shell prompt under its own profile', () => {
+  const shell = { ...policy, profile: 'native-shell', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const read = { ...shell, profile: 'native-read' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const tools = [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+    name: 'submit_reminder_decision', parameters: { type: 'object', properties: {} } }] }];
+  const envelope = { model: shell.model, input: 'NATIVE_SHELL_PROBE: fixed disposable command',
+    ...nativeExtras, tools };
+  assert.equal(requestDecision(post, body(envelope), shell).ok, true);
+  assert.equal(requestDecision(post, body(envelope), read).code, 'NATIVE_INPUT_INVALID');
+  assert.equal(requestDecision(post, body({ ...envelope, input: 'unrelated shell prompt' }), shell).code,
+    'NATIVE_INPUT_INVALID');
+  assert.equal(requestDecision(post, body({ ...envelope, model: 'foreign' }), shell).code,
+    'NATIVE_MODEL_INVALID');
+});
+
 test('native cache key admits only 45 or 46 printable ASCII bytes and remains omitted', () => {
   const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
     workspace: '/tmp/native-fixture/workspace' };
