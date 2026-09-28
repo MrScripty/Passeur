@@ -3,38 +3,109 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { chmod, mkdir, mkdtemp, open, readlink, realpath, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const VERSION = 'codex-cli 0.157.1';
+const NATIVE_ELF = '/home/jeremy/.nvm/versions/node/v24.12.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex';
+const NATIVE_SHA256 = '3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970';
+const PROFILE = 'passeur-boundary';
+const COMMAND_SCHEMA_SHA256 = 'fd034b4c85d7b6f466e30a3cbb73db86be1263aca3f81b89b547f14817dfb62e';
 const REQUEST_MS = 10_000;
 const MAX_LINE = 1_048_576;
+
+export function matchesNativeAttestation(path, sha256) {
+  return path === NATIVE_ELF && sha256 === NATIVE_SHA256;
+}
 
 export function selectedEnvironment(home) {
   return { HOME: home, CODEX_HOME: join(home, 'codex'), PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', RUST_LOG: 'off' };
 }
 
-export function commandPolicy(workspace, readableRoots) {
-  return { type: 'workspaceWrite', writableRoots: [workspace], networkAccess: false,
-    readOnlyAccess: { type: 'restricted', includePlatformDefaults: true, readableRoots } };
+export function profileToml(workspace, verifiedElf) {
+  if (verifiedElf !== NATIVE_ELF) throw new Error('profile requires the exact verified Codex ELF');
+  return `default_permissions = "${PROFILE}"\n[permissions."${PROFILE}".workspace_roots]\n${JSON.stringify(workspace)} = true\n` +
+    `[permissions."${PROFILE}".filesystem]\n":root" = "deny"\n":minimal" = "read"\n":slash_tmp" = "deny"\n":tmpdir" = "deny"\n${JSON.stringify(verifiedElf)} = "read"\n` +
+    `[permissions."${PROFILE}".filesystem.":workspace_roots"]\n"." = "write"\n` +
+    `[permissions."${PROFILE}".network]\nenabled = false\n`;
+}
+
+export function commandRequest(command, cwd) {
+  return { command, cwd, permissionProfile: PROFILE, timeoutMs: REQUEST_MS, outputBytesCap: 4096 };
+}
+
+export function profileAvailability(result) {
+  if (!Array.isArray(result?.data) || result.nextCursor !== null && result.nextCursor !== undefined) return 'unknown';
+  const matches = result.data.filter(item => item?.id === PROFILE);
+  if (matches.length !== 1 || typeof matches[0].allowed !== 'boolean') return 'unknown';
+  return matches[0].allowed ? 'allowed' : 'disallowed';
 }
 
 export function safeReply(reply) {
   const output = reply?.result;
-  if (reply?.error) return { id: reply.id, kind: 'error', code: Number.isSafeInteger(reply.error.code) ? reply.error.code : null };
+  if (reply?.error) return { id: reply.id, kind: 'error', code: Number.isSafeInteger(reply.error.code) ? reply.error.code : null,
+    category: errorCategory(reply.error.message) };
   return { id: reply?.id, kind: 'result', exitCode: Number.isSafeInteger(output?.exitCode) ? output.exitCode : null,
     stdoutBytes: Buffer.byteLength(typeof output?.stdout === 'string' ? output.stdout : ''),
     stderrBytes: Buffer.byteLength(typeof output?.stderr === 'string' ? output.stderr : '') };
 }
 
-export function classifyRead(reply, canary) {
+export function errorCategory(message) {
+  if (typeof message !== 'string') return 'unknown';
+  if (/cannot be combined|mutually exclusive|both.*sandboxPolicy.*permissionProfile|both.*permissionProfile.*sandboxPolicy/i.test(message)) return 'mutually_exclusive';
+  if (/profile.*(not allowed|disallowed|denied|unknown|not found|invalid)/i.test(message)) return 'profile_rejected';
+  if (/sandbox.*(unavailable|failed|not supported)|bubblewrap.*(unavailable|failed)/i.test(message)) return 'sandbox_unavailable';
+  if (/unsupported|unknown field|invalid params|invalid request|not implemented/i.test(message)) return 'unsupported_request';
+  return 'unknown';
+}
+
+export function positiveCommandFailure(reply) {
+  const stderr = typeof reply?.result?.stderr === 'string' ? reply.result.stderr : '';
+  const category = /sandbox|bubblewrap|bwrap|seccomp|unshare|mount namespace/i.test(stderr) ? 'sandbox_runtime'
+    : /permission denied|operation not permitted|access denied|\bEACCES\b|\bEPERM\b/i.test(stderr) ? 'permission'
+    : /command not found|exec format error|not executable|failed to execute/i.test(stderr) ? 'execution'
+    : /no such file or directory|\bENOENT\b|path not found/i.test(stderr) ? 'missing_path'
+    : 'unknown';
+  return { category, stderrBytes: Buffer.byteLength(stderr), stderrSha256: createHash('sha256').update(stderr).digest('hex') };
+}
+
+export async function retainPositiveStderr(reply, root, write = writeFile) {
+  if (reply?.error || typeof reply?.result?.stderr !== 'string') return undefined;
+  const bytes = Buffer.from(reply.result.stderr, 'utf8').subarray(0, 256);
+  const path = join(root, 'allowed-read-stderr.txt');
+  await write(path, bytes, { mode: 0o600, flag: 'wx' });
+  return { path, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length,
+    category: positiveCommandFailure(reply).category };
+}
+
+export async function hostCanaryCheck(kind, path, target, canary) {
+  try {
+    if (await readFile(target, 'utf8') !== canary) return false;
+    if (kind === 'symlink') {
+      if (!(await lstat(path)).isSymbolicLink() || await readlink(path) !== target) return false;
+    } else if (kind === 'proc') {
+      if (path !== `/proc/self/root${target}`) return false;
+    } else if (kind === 'direct' || kind === 'codex_home') {
+      if (path !== target || !(await lstat(path)).isFile()) return false;
+    } else return false;
+    return await readFile(path, 'utf8') === canary;
+  } catch { return false; }
+}
+
+export function classifyRead(reply, canary, { positive, before, after, path } = {}) {
   if (reply?.error) return 'unsupported';
   const result = reply?.result;
   if (!result || typeof result.stdout !== 'string' || typeof result.stderr !== 'string' || !Number.isSafeInteger(result.exitCode)) return 'inconclusive';
   if (result.stdout.includes(canary) || result.stderr.includes(canary)) return 'exposed';
-  if (result.exitCode !== 0 && /permission denied|operation not permitted|access denied/i.test(result.stderr)) return 'denied';
+  if (!positive || !before || !after || typeof path !== 'string') return 'inconclusive';
+  const diagnostic = result.stderr.trimEnd();
+  const catErrors = ['cat', '/usr/bin/cat'].map(command => `${command}: ${path}: `);
+  if (result.exitCode !== 0 && catErrors.some(prefix => ['Permission denied', 'Operation not permitted', 'Access denied']
+    .some(reason => diagnostic === `${prefix}${reason}`))) return 'denied';
+  if (result.exitCode !== 0 && catErrors.some(prefix => ['No such file or directory', 'ENOENT']
+    .some(reason => diagnostic === `${prefix}${reason}`))) return 'hidden_denied';
   return 'inconclusive';
 }
 
@@ -53,7 +124,6 @@ export function permissionSelector(value) {
 export function effectiveConfig(result) {
   const config = result?.config;
   const features = config?.features;
-  const workspace = config?.sandbox_workspace_write;
   const selector = permissionSelector(config?.default_permissions);
   const legacySelector = permissionSelector(config?.permission_profile);
   const camelSelector = permissionSelector(config?.permissionProfile);
@@ -61,10 +131,10 @@ export function effectiveConfig(result) {
     appsDisabled: features?.apps === false, pluginsDisabled: features?.plugins === false,
     multiAgentDisabled: features?.multi_agent === false, webDisabled: config?.web_search === 'disabled',
     mcpEmpty: config?.mcp_servers && typeof config.mcp_servers === 'object' && !Array.isArray(config.mcp_servers) && Object.keys(config.mcp_servers).length === 0,
-    slashTmpExcluded: workspace?.exclude_slash_tmp === true,
-    tmpdirExcluded: workspace?.exclude_tmpdir_env_var === true,
     permissionSelector: selector,
-    profileAbsent: ['absent', 'null'].includes(selector) && ['absent', 'null'].includes(legacySelector) && ['absent', 'null'].includes(camelSelector),
+    selectedProfileExact: config?.default_permissions === PROFILE,
+    legacySandboxAbsent: [undefined, null].includes(config?.sandbox_mode) && [undefined, null].includes(config?.sandbox_workspace_write),
+    otherSelectorAbsent: ['absent', 'null'].includes(legacySelector) && ['absent', 'null'].includes(camelSelector),
   };
   return { ...observation, valid: Object.entries(observation).every(([key, value]) => key === 'permissionSelector' || value === true) };
 }
@@ -86,9 +156,7 @@ async function digest(path) {
 
 function native(bin, cwd, env) {
   const child = spawn(bin, ['-c', 'mcp_servers={}', '-c', 'features.apps=false', '-c', 'features.plugins=false',
-    '-c', 'features.multi_agent=false', '-c', 'web_search="disabled"',
-    '-c', 'sandbox_workspace_write.exclude_slash_tmp=true',
-    '-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true', 'app-server'],
+    '-c', 'features.multi_agent=false', '-c', 'web_search="disabled"', 'app-server'],
   { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   let sequence = 0;
   const pending = new Map();
@@ -147,6 +215,7 @@ export async function run(bin) {
   const home = join(root, 'home'), workspace = join(root, 'work'), protectedRoot = join(root, 'protected');
   let host, hostExited = false;
   const report = { fixture: 'codex-protected-boundary/1', expectedVersion: VERSION, root,
+    commandSchemaSha256: COMMAND_SCHEMA_SHA256,
     status: 'not_started', probes: [], hostExitObserved: false, descendantStop: 'unverified',
     unqualifiedModelSurfaces: ['model_turn_file_tools', 'model_turn_command_tools'],
     excludedClientRpcs: ['fs/readFile', 'thread/shellCommand', 'process/spawn'] };
@@ -155,6 +224,7 @@ export async function run(bin) {
     await chmod(home, 0o700); await chmod(protectedRoot, 0o700);
     const canary = randomBytes(24).toString('hex');
     const protectedPath = join(protectedRoot, 'dummy-auth');
+    const authPath = join(home, 'codex', 'auth.json');
     await writeFile(protectedPath, canary, { mode: 0o600 });
     await writeFile(join(workspace, 'allowed'), 'allowed fixture data\n');
     await symlink(protectedPath, join(workspace, 'protected-link'));
@@ -163,17 +233,21 @@ export async function run(bin) {
     if (!await nativeExecutable(bin)) { report.status = 'native_executable_required'; return report; }
     report.nativeExecutableSha256 = await digest(bin);
     if (report.observedVersion !== VERSION) { report.status = 'version_mismatch'; return report; }
-    const policy = commandPolicy(workspace, [workspace, '/usr', '/bin', '/lib', '/lib64']);
-    report.policy = policy;
+    const verifiedElf = await realpath(bin);
+    if (!matchesNativeAttestation(verifiedElf, report.nativeExecutableSha256)) {
+      report.status = 'native_executable_mismatch'; return report;
+    }
+    await writeFile(join(home, 'codex', 'config.toml'), profileToml(workspace, verifiedElf), { mode: 0o600 });
+    report.policy = { kind: 'named_permission_profile', id: PROFILE, sandboxPolicy: 'absent' };
     host = native(bin, workspace, selectedEnvironment(home));
     report.nativePid = host.child.pid ?? null;
     if (host.child.pid) {
       try {
         report.hostExecutable = await realpath(await readlink(`/proc/${host.child.pid}/exe`));
-        if (report.hostExecutable !== await realpath(bin)) { report.status = 'native_executable_mismatch'; return report; }
+        if (report.hostExecutable !== verifiedElf) { report.status = 'native_executable_mismatch'; return report; }
       } catch { report.status = 'native_executable_unverified'; return report; }
     }
-    const initialized = await host.request('initialize', { clientInfo: { name: 'passeur_codex_boundary_fixture', version: '1' }, capabilities: { experimentalApi: false } });
+    const initialized = await host.request('initialize', { clientInfo: { name: 'passeur_codex_boundary_fixture', version: '1' }, capabilities: { experimentalApi: true } });
     report.probes.push({ name: 'initialize', reply: safeReply(initialized) });
     if (initialized.error || !initialized.result) { report.status = 'native_initialize_unsupported'; return report; }
     host.notify('initialized');
@@ -181,26 +255,38 @@ export async function run(bin) {
     const effective = effectiveConfig(config.result);
     report.probes.push({ name: 'effective_config_read', effective, reply: safeReply(config) });
     if (config.error || !effective.valid) { report.status = 'effective_config_unsupported'; return report; }
+    const profiles = await host.request('permissionProfile/list', { cwd: workspace });
+    const availability = profileAvailability(profiles.result);
+    report.probes.push({ name: 'permission_profile_list', availability, reply: safeReply(profiles) });
+    if (profiles.error || availability !== 'allowed') { report.status = `permission_profile_${availability}`; return report; }
+    // Place a synthetic auth-named file only after startup/config preflight, avoiding a login parser confound.
+    await writeFile(authPath, canary, { mode: 0o600 });
     // command/exec is the documented sandboxed native command surface. No turn or provider request is submitted.
-    const allowed = await host.request('command/exec', { command: ['/usr/bin/cat', join(workspace, 'allowed')], cwd: workspace, sandboxPolicy: policy, timeoutMs: REQUEST_MS });
+    const allowed = await host.request('command/exec', commandRequest(['/usr/bin/cat', join(workspace, 'allowed')], workspace));
     report.probes.push({ name: 'allowed_read', reply: safeReply(allowed) });
     if (allowed.error || allowed.result?.exitCode !== 0 || allowed.result?.stdout !== 'allowed fixture data\n') {
-      report.status = 'restricted_policy_unsupported'; return report;
+      report.probes.at(-1).failure = await retainPositiveStderr(allowed, root) ?? positiveCommandFailure(allowed);
+      report.status = 'named_profile_command_unsupported'; return report;
     }
-    for (const [name, path] of [
-      ['direct_protected_read', protectedPath], ['symlink_protected_read', join(workspace, 'protected-link')],
-      ['proc_protected_read', `/proc/self/root${protectedPath}`],
+    for (const [name, kind, path, target] of [
+      ['direct_protected_read', 'direct', protectedPath, protectedPath],
+      ['symlink_protected_read', 'symlink', join(workspace, 'protected-link'), protectedPath],
+      ['proc_protected_read', 'proc', `/proc/self/root${protectedPath}`, protectedPath],
+      ['codex_home_dummy_auth_read', 'codex_home', authPath, authPath],
     ]) {
-      const reply = await host.request('command/exec', { command: ['/usr/bin/cat', path], cwd: workspace, sandboxPolicy: policy, timeoutMs: REQUEST_MS });
-      const observation = classifyRead(reply, canary);
-      report.probes.push({ name, observation, reply: safeReply(reply) });
-      if (observation !== 'denied') {
-        report.status = observation === 'exposed' ? `${name}_exposed_or_implicit_temp_root` : `${name}_${observation}`;
+      const before = await hostCanaryCheck(kind, path, target, canary);
+      if (!before) { report.probes.push({ name, provenance: kind, hostBefore: false }); report.status = `${name}_host_canary_unverified`; return report; }
+      const reply = await host.request('command/exec', commandRequest(['/usr/bin/cat', path], workspace));
+      const after = await hostCanaryCheck(kind, path, target, canary);
+      const observation = classifyRead(reply, canary, { positive: true, before, after, path });
+      report.probes.push({ name, provenance: kind, hostBefore: before, hostAfter: after, observation, reply: safeReply(reply) });
+      if (!after || !['denied', 'hidden_denied'].includes(observation)) {
+        report.status = `${name}_${observation}`;
         return report;
       }
     }
     // This command result cannot qualify the separately exposed native surfaces or a worker.
-    report.status = 'whole_worker_unsupported_unchecked_surfaces';
+    report.status = 'standalone_command_policy_preliminary';
     return report;
   } catch (error) {
     report.status = 'fixture_error'; report.error = { code: typeof error?.code === 'string' ? error.code : 'UNKNOWN', stage: 'no_account_observation' };
@@ -224,7 +310,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else {
       const report = await run(bin);
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-      process.exitCode = report.status === 'whole_worker_unsupported_unchecked_surfaces' ? 0 : 1;
+      process.exitCode = report.status === 'standalone_command_policy_preliminary' ? 0 : 1;
     }
   }
 }
