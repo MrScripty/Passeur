@@ -22,6 +22,9 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape, persistOuterShellResultEvidence, inspectOuterShellResultEvidence,
   outerShellTranscript, outerShellItemMarkers, matchingOuterShellResult,
+  readFileCanaryFixture, nativeCallerGate, runNativeShellLifecycle, releaseAndStartNativeTurn,
+  spawnNativeHost,
+  guestShellRun,
   fixedNoReminderPayload, reminderCallEvents,
   approvalSummary, validateShellReady, validateShellOutcome, validateReadFileSchemaOutcome,
   validateReadFileOutcome, qualifyNativeShell, qualifyNativeReadFileSchema, qualifyNativeReadFile,
@@ -59,6 +62,110 @@ test('guest runtime selection uses exact private mounts and an empty environment
       XDG_DATA_HOME: '/mounts/home/.local/share', XDG_CACHE_HOME: '/mounts/home/.cache',
       TMPDIR: '/tmp', PATH: '/usr/bin:/bin', MUSE_NO_AUTO_UPDATE: '1', LANG: 'C.UTF-8' });
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('provider-neutral native lifecycle owns caller failure and rejects invalid endpoint before host spawn', async () => {
+  assert.deepEqual(readFileCanaryFixture(), { name: 'read-canary.txt',
+    content: 'PASSEUR_NATIVE_READ_CANARY\n' });
+  let fail;
+  const callerFailure = new Promise((_, reject) => { fail = reject; });
+  const gate = nativeCallerGate(callerFailure);
+  const waiting = gate.run(() => new Promise(() => undefined));
+  fail(Object.assign(new Error('host control EOF'), { code: 'NATIVE_HOST_CONTROL_EOF' }));
+  await assert.rejects(waiting, { code: 'NATIVE_HOST_CONTROL_EOF' });
+  assert.equal(gate.error().code, 'NATIVE_HOST_CONTROL_EOF');
+  await assert.rejects(gate.run(() => Promise.resolve('native terminal')),
+    { code: 'NATIVE_HOST_CONTROL_EOF' });
+  let invoked = 0;
+  await assert.rejects(gate.run(() => { invoked++;
+    return Promise.reject(new Error('operation must never start')); }),
+  { code: 'NATIVE_HOST_CONTROL_EOF' });
+  assert.equal(invoked, 0);
+  const absentReason = nativeCallerGate(Promise.reject(undefined));
+  await assert.rejects(absentReason.run(() => { invoked++; return 'unexpected'; }),
+    { code: 'NATIVE_CALLER_FAILED' });
+  assert.equal(invoked, 0);
+  const malformedSignal = nativeCallerGate(Promise.resolve());
+  await assert.rejects(malformedSignal.run(() => new Promise(() => undefined)),
+    { code: 'NATIVE_CALLER_FAILED' });
+  const result = await runNativeShellLifecycle({ phase: 'read-file-probe',
+    workspace: '/tmp/fixture/workspace' }, { providerPort: 0 });
+  assert.equal(result.code, 'NATIVE_PROVIDER_PORT_INVALID');
+  const prefailed = await runNativeShellLifecycle({ phase: 'read-file-probe', hostPort: 31001,
+    workspace: '/tmp/fixture/workspace' }, { providerPort: 31002,
+    callerFailure: Promise.reject(Object.assign(new Error('host already closed'),
+      { code: 'NATIVE_HOST_CONTROL_EOF' })) });
+  assert.equal(prefailed.code, 'NATIVE_HOST_CONTROL_EOF');
+});
+
+test('turn release gates SDK turn/start when caller fails between barriers', async () => {
+  let fail;
+  const gate = nativeCallerGate(new Promise((_, reject) => { fail = reject; }));
+  let starts = 0;
+  const release = async () => { fail(Object.assign(new Error('relay EOF'),
+    { code: 'NATIVE_HOST_CONTROL_EOF' })); return 'turn'; };
+  await assert.rejects(releaseAndStartNativeTurn(release, () => {
+    starts++; return Promise.reject(new Error('unexpected native turn'));
+  }, gate.run), { code: 'NATIVE_HOST_CONTROL_EOF' });
+  assert.equal(starts, 0);
+});
+
+test('native host spawn is gated at the side effect after caller failure settles', async () => {
+  let fail;
+  const gate = nativeCallerGate(new Promise((_, reject) => { fail = reject; }));
+  await gate.run(() => undefined); // Previous no-op check would already have passed.
+  fail(Object.assign(new Error('host EOF at spawn boundary'), { code: 'NATIVE_HOST_CONTROL_EOF' }));
+  let spawned = 0;
+  let owned;
+  await assert.rejects(spawnNativeHost(gate.run, () => {
+    spawned++; return { close: async () => undefined };
+  }, host => { owned = host; }), { code: 'NATIVE_HOST_CONTROL_EOF' });
+  assert.equal(spawned, 0);
+  assert.equal(owned, undefined);
+
+  const healthy = nativeCallerGate();
+  const host = { close: async () => undefined };
+  assert.equal(await spawnNativeHost(healthy.run, () => { spawned++; return host; },
+    value => { owned = value; }), host);
+  assert.equal(spawned, 1);
+  assert.equal(owned, host);
+});
+
+test('local provider adapter keeps catalog, freeze, final comparison and first rejection', async () => {
+  const requests = [{ method: 'GET', path: '/muse-code/models' }];
+  const provider = { port: 31002, requests, state: { main: 'read-result-accepted' },
+    rejection: new Promise(() => undefined), frozen: false, closed: false,
+    async freeze() { this.frozen = true; }, async close() { this.closed = true; } };
+  const config = { phase: 'read-file-probe', hostPort: 31001,
+    workspace: '/tmp/fixture/workspace', protectedRoot: '/tmp/fixture/protected',
+    canaryToken: 'protected-canary' };
+  const result = await guestShellRun(config, {
+    startProvider: async (_hostPort, _command, options) => {
+      assert.equal(options.readFileProbe, true);
+      return provider;
+    },
+    runLifecycle: async (_config, hooks) => {
+      assert.equal(hooks.providerPort, 31002);
+      assert.deepEqual(await hooks.onReady(), requests);
+      const candidate = await hooks.onCandidate({ event: { kind: 'turn_completed' } });
+      assert.equal(provider.frozen, true);
+      assert.deepEqual(candidate, requests);
+      const outcome = { kind: 'native_read_file_outcome', providerRequests: candidate };
+      await hooks.onFinal(outcome);
+      requests.push({ method: 'POST', path: '/responses', rejection: 'LATE' });
+      await assert.rejects(hooks.onFinal(outcome), { code: 'NATIVE_PROVIDER_AFTER_FREEZE' });
+      requests.pop();
+      return outcome;
+    },
+  });
+  assert.equal(result.kind, 'native_read_file_outcome');
+  assert.equal(provider.closed, true);
+  provider.state.primaryCode = 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN';
+  const failed = await guestShellRun(config, { startProvider: async () => provider,
+    runLifecycle: async () => ({ kind: 'guest_transport_error', stage: 'native_turn',
+      code: 'NATIVE_REQUEST_BUDGET_EXCEEDED', message: 'later failure', providerRequests: [] }) });
+  assert.equal(failed.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+  assert.deepEqual(failed.providerRequests, requests);
 });
 
 test('pinned native mismatch is rejected before any host launch', async () => {
@@ -3151,6 +3258,28 @@ test('held handoff shows full fixed command and guards one fresh current approva
     { status: 'accepted', commandId: options.commandId, approvalId: raw.approvalId, terminal: true } };
   const accepted = await submitHeldDecision(ackOnly, handoff, input, command, { submitted: false });
   assert.equal(accepted.ack.status, 'accepted');
+  for (const failureCode of ['NATIVE_HOST_CONTROL_EOF', 'NATIVE_PROVIDER_REJECTED']) {
+    let fail;
+    let releasePreflight;
+    const gate = nativeCallerGate(new Promise((_, reject) => { fail = reject; }));
+    const preflight = new Promise(resolve => { releasePreflight = resolve; });
+    const interruptedCalls = [];
+    const interrupted = { ...connection,
+      request: method => { interruptedCalls.push(method); return preflight; },
+      command: async method => { interruptedCalls.push(method);
+        throw new Error('unexpected native command after caller failure'); } };
+    const interruptedState = { submitted: false };
+    const decision = submitHeldDecision(interrupted, handoff, input, command,
+      interruptedState, gate.run);
+    for (let attempt = 0; attempt < 10 && interruptedCalls.length === 0; attempt++) await Promise.resolve();
+    assert.deepEqual(interruptedCalls, ['approval/listPending']);
+    fail(Object.assign(new Error('caller stopped during approval preflight'), { code: failureCode }));
+    await assert.rejects(decision, { code: failureCode });
+    releasePreflight({ approvals: [raw], userInputs: [] });
+    await Promise.resolve();
+    assert.deepEqual(interruptedCalls, ['approval/listPending']);
+    assert.equal(interruptedState.submitted, false);
+  }
   const output = [];
   assert.equal(await readHeldCliDecision(handoff, Readable.from([]), { write: value => output.push(value) }), null);
   assert.match(output[0], /native_shell_live_handoff/);

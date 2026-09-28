@@ -63,6 +63,29 @@ const REMINDER_PAYLOAD = Object.freeze({ advisory_text: null, confidence: 'low',
 const VERIFY_PAYLOAD = Object.freeze({ decision: 'none', next_step: null,
   reason: 'Disposable scripted protocol probe; no verification reminder is being proposed.' });
 
+export function readFileCanaryFixture() {
+  return { name: READ_CANARY_NAME, content: READ_CANARY_CONTENT };
+}
+
+export function nativeCallerGate(callerFailure) {
+  let error;
+  const failure = callerFailure === undefined ? new Promise(() => undefined) : new Promise((_, reject) => {
+    Promise.resolve(callerFailure).then(
+      () => { error = fault('NATIVE_CALLER_FAILED', 'caller failure signal settled without a typed failure');
+        reject(error); },
+      reason => { error = reason instanceof Error ? reason : fault('NATIVE_CALLER_FAILED',
+        'caller failure signal rejected without an Error'); reject(error); });
+  });
+  failure.catch(() => undefined);
+  return { run: async operation => {
+    await Promise.resolve(); // Let an already-settled caller signal publish its failure before side effects.
+    if (error) throw error;
+    const value = await Promise.race([operation(), failure]);
+    if (error) throw error;
+    return value;
+  }, error: () => error };
+}
+
 function fault(code, message) { return Object.assign(new Error(message), { code }); }
 function canonicalRequestDigest(value) {
   let nodes = 0;
@@ -1936,17 +1959,18 @@ export function validateHeldDecision(presentation, input, checkExpiry = true) {
   return approval.choices.find(choice => choice.choiceId === input.choiceId);
 }
 
-export async function submitHeldDecision(connection, presentation, input, command, decisionState) {
+export async function submitHeldDecision(connection, presentation, input, command, decisionState,
+  gate = operation => operation()) {
   if (decisionState.submitted) throw fault('NATIVE_HELD_DUPLICATE_DECISION', 'approval decision already submitted');
   const choice = validateHeldDecision(presentation, input);
-  const pending = await timeout('current approval/listPending', connection.request('approval/listPending',
-    { sessionId: presentation.approval.sessionId }), 5_000);
+  const pending = await timeout('current approval/listPending', gate(() => connection.request('approval/listPending',
+    { sessionId: presentation.approval.sessionId })), 5_000);
   if (pending?.approvals?.length !== 1 || pending.userInputs?.length !== 0 ||
       JSON.stringify(approvalSummary(pending.approvals[0], command)) !== JSON.stringify(presentation.approval)) {
     throw fault('NATIVE_HELD_APPROVAL_STALE', 'current loaded approval differs from presented requirement');
   }
-  const current = await timeout('current session/read', connection.command('session/read',
-    { sessionId: presentation.approval.sessionId, excludeItems: true }, { maxAttempts: 1 }), 5_000);
+  const current = await timeout('current session/read', gate(() => connection.command('session/read',
+    { sessionId: presentation.approval.sessionId, excludeItems: true }, { maxAttempts: 1 })), 5_000);
   if (current?.session?.sessionId !== presentation.approval.sessionId ||
       current.session.activeTurnId !== presentation.approval.turnId) {
     throw fault('NATIVE_HELD_APPROVAL_STALE', 'loaded session no longer holds the presented turn');
@@ -1955,11 +1979,13 @@ export async function submitHeldDecision(connection, presentation, input, comman
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(commandId)) {
     throw fault('NATIVE_HELD_COMMAND_ID_INVALID', 'SDK did not mint a UUIDv7 command ID');
   }
-  decisionState.submitted = true;
-  const ack = await timeout('approval/decide', connection.command('approval/decide', {
-    approvalId: presentation.approval.approvalId, choiceId: choice.choiceId,
-    requirementId: presentation.approval.requirementId, sessionId: presentation.approval.sessionId,
-  }, { commandId, maxAttempts: 1 }), 10_000);
+  const ack = await timeout('approval/decide', gate(() => {
+    decisionState.submitted = true;
+    return connection.command('approval/decide', {
+      approvalId: presentation.approval.approvalId, choiceId: choice.choiceId,
+      requirementId: presentation.approval.requirementId, sessionId: presentation.approval.sessionId,
+    }, { commandId, maxAttempts: 1 });
+  }), 10_000);
   if (ack?.status !== 'accepted' || ack.commandId !== commandId ||
       ack.approvalId !== presentation.approval.approvalId || typeof ack.terminal !== 'boolean') {
     throw fault('NATIVE_HELD_ACK_INVALID', 'approval decision admission acknowledgement differed');
@@ -1968,11 +1994,29 @@ export async function submitHeldDecision(connection, presentation, input, comman
     approvalId: ack.approvalId, commandId: ack.commandId } };
 }
 
-export async function guestShellRun(config) {
-  const { spawnMspConnection } = await import(pathToFileURL(`${GUEST_RUNTIME}/sdk/dist/src/index.js`).href);
+export async function releaseAndStartNativeTurn(release, startTurn, gate) {
+  if (await timeout('turn release', gate(release)) !== 'turn') {
+    throw fault('HOST_RELEASE_INVALID', 'native turn was not released by host');
+  }
+  return timeout('turn/start', gate(startTurn));
+}
+
+export async function spawnNativeHost(gate, create, own) {
+  return gate(() => {
+    const host = create();
+    own(host); // Keep the handle for bounded close even if caller failure wins the gate race.
+    return host;
+  });
+}
+
+export async function runNativeShellLifecycle(config, { providerPort, callerFailure,
+  onReady = async () => [], onCandidate = async () => [], onFinal = async () => undefined,
+} = {}) {
+  const caller = nativeCallerGate(callerFailure);
+  const withCaller = caller.run;
   const workspace = config.workspace;
   const native = `${GUEST_RUNTIME}/muse-bin-${VERSION}`;
-  const namespace = await readlink('/proc/self/ns/net');
+  let namespace;
   const outerOnly = config.phase === 'outer-held-shell';
   const held = ['held-shell', 'outer-held-shell'].includes(config.phase);
   const readFileSchemaOnly = config.phase === 'read-file-schema';
@@ -1985,7 +2029,6 @@ export async function guestShellRun(config) {
   const targetPath = dummyAuthRead ? DUMMY_AUTH_PATH : protectedRead ?
     protectedReadPath(protectedRoute, workspace, config.protectedRoot) :
     join(workspace, READ_CANARY_NAME);
-  let provider;
   let host;
   let stage = 'network';
   const commands = [];
@@ -1996,31 +2039,18 @@ export async function guestShellRun(config) {
     else observations.omitted[kind]++;
   };
   try {
+    namespace = await withCaller(() => readlink('/proc/self/ns/net'));
+    if (!Number.isSafeInteger(providerPort) || providerPort < 1 || providerPort > 65535) {
+      throw fault('NATIVE_PROVIDER_PORT_INVALID', 'guest provider port was invalid');
+    }
+    assertPortSeparation(config.hostPort, providerPort);
+    const { spawnMspConnection } = await withCaller(() => import(
+      pathToFileURL(`${GUEST_RUNTIME}/sdk/dist/src/index.js`).href));
     const loopback = spawnSync('/usr/sbin/ip', ['-o', 'link', 'show', 'lo'], { encoding: 'utf8', timeout: 2_000 });
     if (!loopbackReady(loopback)) throw fault('GUEST_LOOPBACK_UNAVAILABLE', 'guest loopback unavailable');
     const command = protectedRead ? 'NATIVE_PROTECTED_READ_ONLY' :
       dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_ONLY' :
       shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
-    provider = await startShellProvider(config.hostPort, command,
-      { readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly,
-        ...(outerOnly ? { resultEvidenceDir: GUEST_HOME } : {}),
-        workspace, protectedRoot: config.protectedRoot, canaryToken: config.canaryToken,
-        targetPath,
-        ...(boundaryRead ? { classifyProtectedRaw: async raw => {
-          process.stdout.write(`${JSON.stringify({ kind: 'guest_protected_raw',
-            callId: READ_CALL, output: raw })}\n`);
-          const line = await timeout('host protected classification', config.release(), 5_000);
-          let reply;
-          try { reply = JSON.parse(line); } catch {
-            throw fault('NATIVE_PROTECTED_CLASSIFIER_INVALID', 'host protected classification was malformed');
-          }
-          if (!isDeepStrictEqual(Object.keys(reply ?? {}).sort(), ['callId', 'class', 'kind']) ||
-              reply.kind !== 'protected_classification' || reply.callId !== READ_CALL ||
-              !['marker_exposed', 'access_denied', 'not_found', 'unknown'].includes(reply.class)) {
-            throw fault('NATIVE_PROTECTED_CLASSIFIER_INVALID', 'host protected classification identity invalid');
-          }
-          return reply.class;
-        } } : {}) });
     const sentinel = await tcpProbe('127.0.0.1', config.hostPort);
     const external = await tcpProbe('203.0.113.1', 443);
     if (sentinel.kind === 'connected' || !classifyNoRoute(external)) {
@@ -2036,7 +2066,7 @@ export async function guestShellRun(config) {
     const settings = join(GUEST_HOME, '.config', 'muse');
     await mkdir(settings, { recursive: true, mode: 0o700 });
     await writeFile(join(settings, 'settings.json'), `${JSON.stringify({ schema_version: 1,
-      endpoint_transport: { base_url: `http://127.0.0.1:${provider.port}`, auth: 'bearer' } })}\n`, { mode: 0o600 });
+      endpoint_transport: { base_url: `http://127.0.0.1:${providerPort}`, auth: 'bearer' } })}\n`, { mode: 0o600 });
     if (!dummyAuthRead) await writeFile(join(settings, 'auth.json'), `${JSON.stringify({ schema_version: 1,
       providers: { meta: { api_key: 'passeur-disposable-dummy-key' } } })}\n`, { mode: 0o600 });
     else {
@@ -2046,9 +2076,11 @@ export async function guestShellRun(config) {
       }
     }
     stage = 'host_initialize';
-    host = spawnMspConnection({ command: `${GUEST_RUNTIME}/native-host-wrapper`,
+    await spawnNativeHost(withCaller, () => spawnMspConnection({
+      command: `${GUEST_RUNTIME}/native-host-wrapper`,
       args: outerOnly ? [...OUTER_ONLY_SERVE_ARGS] : ['serve'],
-      cwd: workspace, env: guestEnvironment(), shutdownTimeoutMs: 2_000, onStderr: () => undefined });
+      cwd: workspace, env: guestEnvironment(), shutdownTimeoutMs: 2_000, onStderr: () => undefined,
+    }), value => { host = value; });
     let resolveObserved;
     const observed = new Promise(resolve => { resolveObserved = resolve; });
     const heldEvents = [];
@@ -2139,34 +2171,34 @@ export async function guestShellRun(config) {
     });
     host.onProtocolError(error => { observe('protocolErrors',
       /^[A-Z0-9_]{1,64}$/.test(error.code ?? '') ? error.code : 'PROTOCOL_ERROR'); });
-    const initialized = await timeout('initialize', host.initialize({ clientInfo: {
+    const initialized = await timeout('initialize', withCaller(() => host.initialize({ clientInfo: {
       name: 'passeur_guest_native_shell_probe', version: '0.1.0',
-    } }));
+    } })));
     const nativeIdentity = await verifiedNativeNamespace(GUEST_HOME, native, namespace);
     const nativeServe = outerOnly ? await verifyNativeServeArgs(nativeIdentity.pid,
       [native, ...OUTER_ONLY_SERVE_ARGS]) : null;
     stage = 'session_start';
     commands.push('session/start');
-    const started = await timeout('session/start', initialized.connection.command('session/start',
+    const started = await timeout('session/start', withCaller(() => initialized.connection.command('session/start',
       { workspaceRoot: workspace, modelId: SHELL_MODEL, providerId: 'meta', approvalMode: 'onRequest' },
-      { maxAttempts: 1 }));
+      { maxAttempts: 1 })));
     commands.push('session/read');
-    const read = await timeout('session/read', initialized.connection.command('session/read',
-      { sessionId: started?.session?.sessionId, excludeItems: true }, { maxAttempts: 1 }));
+    const read = await timeout('session/read', withCaller(() => initialized.connection.command('session/read',
+      { sessionId: started?.session?.sessionId, excludeItems: true }, { maxAttempts: 1 })));
     const metadata = validateIdleRead(started, read, workspace, GUEST_HOME);
     if (started.session?.approvalMode?.mode !== 'onRequest' || read.session?.approvalMode?.mode !== 'onRequest' ||
         started.session?.modelId !== SHELL_MODEL || read.session?.modelId !== SHELL_MODEL ||
         started.session?.providerId !== 'meta' || read.session?.providerId !== 'meta') {
       throw fault('NATIVE_SHELL_POSTURE_INVALID', 'native session did not retain requested model, provider and approval mode');
     }
-    if (!provider.requests.some(request => request.method === 'GET' && request.path === '/muse-code/models')) {
-      throw fault('NATIVE_CATALOG_MISSING', 'native host did not request guest catalog');
-    }
+    const readyRequests = await timeout('native ready checkpoint', withCaller(() => onReady()), 5_000);
+    if (!Array.isArray(readyRequests)) throw fault('NATIVE_PROVIDER_SNAPSHOT_INVALID',
+      'ready provider snapshot was not an array');
     const procInit = protectedRoute === 'proc' ? procIdentity(await readFile('/proc/1/stat', 'utf8')) : null;
     const procPid1 = procInit ? { pidns: await readlink('/proc/1/ns/pid'),
       pid: procInit.pid, start: procInit.start } : null;
     const ready = { kind: 'guest_shell_ready', nativeIdentity, guestNamespace: namespace,
-      nativeNamespace: nativeIdentity.namespace, hostPort: config.hostPort, guestPort: provider.port,
+      nativeNamespace: nativeIdentity.namespace, hostPort: config.hostPort, guestPort: providerPort,
       commandSha256: createHash('sha256').update(command).digest('hex'),
       ...(readFileProbe ? { readCanarySha256:
         createHash('sha256').update(READ_CANARY_CONTENT).digest('hex') } : {}),
@@ -2175,14 +2207,11 @@ export async function guestShellRun(config) {
       posture: { approvalMode: 'onRequest', modelId: SHELL_MODEL, providerId: 'meta',
         sandbox: outerOnly ? OUTER_ONLY_POSTURE : 'native_default_no_override',
         ...(nativeServe ? { nativeServeArgs: nativeServe.args } : {}) },
-      providerRequests: [...provider.requests] };
+      providerRequests: [...readyRequests] };
     process.stdout.write(`${JSON.stringify({ kind: 'guest_ready', result: ready })}\n`);
-    if (await timeout('turn release', config.release()) !== 'turn') {
-      throw fault('HOST_RELEASE_INVALID', 'native turn was not released by host');
-    }
-    stage = 'native_turn';
-    commands.push('turn/start');
-    const ack = await timeout('turn/start', initialized.connection.command('turn/start', {
+    const ack = await releaseAndStartNativeTurn(() => config.release(),
+      () => { stage = 'native_turn'; commands.push('turn/start');
+        return initialized.connection.command('turn/start', {
       sessionId: metadata.sessionId,
       input: [{ type: 'text', text: dummyAuthRead ?
         `NATIVE_DUMMY_AUTH_READ_PROBE: Use the advertised read_file tool once on ${DUMMY_AUTH_PATH} with offset 1 and limit 20. Report the result.` :
@@ -2193,32 +2222,19 @@ export async function guestShellRun(config) {
         readFileSchemaOnly ?
         'NATIVE_READ_FILE_SCHEMA_PROBE: Describe the advertised read_file arguments. Do not call any tool.' :
         'NATIVE_SHELL_PROBE: Use the advertised bash tool once to run the disposable command. Report its result.' }],
-    }, { maxAttempts: 1 }));
+    }, { maxAttempts: 1 }); }, withCaller);
     if (ack.status !== 'accepted' || ack.disposition !== 'started' || ack.startedNewTurn !== true ||
         typeof ack.turnId !== 'string') {
       throw fault('NATIVE_TURN_ACK_INVALID', 'native turn was not admitted as one fresh turn');
     }
-    const event = await timeout('native turn or approval', Promise.race([observed, provider.rejection]), 15_000);
-    if (event.kind === 'provider_rejected') {
-      throw fault(event.code, 'guest provider rejected the native Responses request');
-    }
-    if (provider.state.primaryCode) {
-      throw fault(provider.state.primaryCode, 'guest provider rejected the native Responses request');
-    }
-    if (event.kind === 'turn_completed' && provider.state.main !==
-        (readFileSchemaOnly ? 'schema-observed' : readFileTurn ?
-          'read-result-accepted' : 'result-accepted')) {
-      const late = await Promise.race([provider.rejection, pause(500).then(() => null)]);
-      if (late) throw fault(late.code, 'guest provider rejected the native Responses request');
-      throw fault('NATIVE_TOOL_RESULT_MISSING', 'native turn ended without a correlated bash result');
-    }
+    const event = await timeout('native turn or approval', withCaller(() => observed), 15_000);
     let pending = null;
     if ((readFileSchemaOnly || readFileTurn) && event.kind !== 'turn_completed') {
       throw fault('NATIVE_READ_FILE_SCHEMA_EVENT_INVALID', 'schema-only turn requested an approval or tool');
     }
     if (event.kind === 'approval') {
-      pending = await timeout('approval/listPending', initialized.connection.request('approval/listPending',
-        { sessionId: metadata.sessionId }));
+      pending = await timeout('approval/listPending', withCaller(() => initialized.connection.request('approval/listPending',
+        { sessionId: metadata.sessionId })));
       if (!Array.isArray(pending?.approvals) || !Array.isArray(pending?.userInputs) ||
           pending.userInputs.length !== 0 || pending.approvals.length !== 1 ||
           pending.approvals[0].approvalId !== event.approval.approvalId) {
@@ -2235,21 +2251,20 @@ export async function guestShellRun(config) {
         throw fault('NATIVE_HELD_APPROVAL_STALE', 'held approval differed before presentation');
       }
       process.stdout.write(`${JSON.stringify({ kind: 'guest_handoff', result: presentation })}\n`);
-      const line = await timeout('held human input', config.release(), HELD_WAIT_MS + 5_000);
+      const line = await timeout('held human input', withCaller(() => config.release()), HELD_WAIT_MS + 5_000);
       let input;
       try { input = JSON.parse(line); }
       catch { throw fault('NATIVE_HELD_INPUT_INVALID', 'held input was not JSON'); }
       if (input?.kind === 'expire' && Object.keys(input).join(',') === 'kind') {
         heldResult = { kind: 'expired', presentation };
       } else {
-        if (provider.state.primaryCode) throw fault(provider.state.primaryCode, 'provider rejected before human choice');
         const decision = await submitHeldDecision(initialized.connection, presentation,
-          input, command, { submitted: false });
+          input, command, { submitted: false }, withCaller);
         let cursor = 0;
         const next = async predicate => {
           const deadline = Date.now() + 15_000;
           while (Date.now() < deadline) {
-            if (provider.state.primaryCode) throw fault(provider.state.primaryCode, 'provider rejected held native request');
+            if (caller.error()) throw caller.error();
             if (heldEventOverflow) throw fault('NATIVE_HELD_EVENT_BUDGET', 'native held event count exceeded bound');
             if (observations.approvals.length > 1) {
               throw fault('NATIVE_HELD_ADDITIONAL_APPROVAL', 'another native approval needs a separate human choice');
@@ -2282,10 +2297,10 @@ export async function guestShellRun(config) {
         heldResult = { kind: 'decided', presentation, decision, resolved, item: item.item, terminal };
       }
     }
-    await timeout('provider freeze', provider.freeze(), 5_000);
-    if (provider.state.primaryCode) {
-      throw fault(provider.state.primaryCode, 'guest provider rejected a request before outcome publication');
-    }
+    const candidateRequests = await timeout('native candidate checkpoint',
+      withCaller(() => onCandidate({ event, observations, commands: [...commands] })), 5_000);
+    if (!Array.isArray(candidateRequests)) throw fault('NATIVE_PROVIDER_SNAPSHOT_INVALID',
+      'candidate provider snapshot was not an array');
     const result = { kind: dummyAuthRead ? 'native_dummy_auth_read_outcome' :
       protectedRead ? 'native_protected_read_outcome' :
       readFileProbe ? 'native_read_file_outcome' :
@@ -2296,30 +2311,116 @@ export async function guestShellRun(config) {
         disposition: ack.disposition, startedNewTurn: ack.startedNewTurn }, event,
       pending: pending ? { approvals: pending.approvals.map(approval => approvalSummary(approval, command)),
         userInputs: [] } : null,
-      observations, providerRequests: [...provider.requests], commands: [...commands],
+      observations, providerRequests: [...candidateRequests], commands: [...commands],
       ...(heldResult ? { held: heldResult } : {}) };
     process.stdout.write(`${JSON.stringify({ kind: 'guest_outcome', result })}\n`);
-    if (await timeout('shutdown release', config.release()) !== 'shutdown') {
+    if (await timeout('shutdown release', withCaller(() => config.release())) !== 'shutdown') {
       throw fault('HOST_RELEASE_INVALID', 'native shutdown was not released by host');
     }
-    await timeout('host close', host.close(), 5_000);
+    await timeout('host close', withCaller(() => host.close()), 5_000);
     host = undefined;
-    if (provider.state.primaryCode) {
-      throw fault(provider.state.primaryCode, 'guest provider rejected a request during native shutdown');
-    }
-    if (JSON.stringify(provider.requests) !== JSON.stringify(result.providerRequests)) {
-      throw fault('NATIVE_PROVIDER_AFTER_FREEZE', 'provider evidence changed after admission closed');
+    await timeout('native final checkpoint', withCaller(() => onFinal(result)), 5_000);
+    return result;
+  } catch (error) {
+    return { kind: 'guest_transport_error', stage, code: error.code ?? error.name,
+      message: String(error.message).slice(0, 400), guestNamespace: namespace,
+      commands, providerRequests: [], observations };
+  } finally {
+    try { if (host) await timeout('host close', host.close(), 5_000); } catch { /* stop is verified outside */ }
+  }
+}
+
+export async function guestShellRun(config, { startProvider = startShellProvider,
+  runLifecycle = runNativeShellLifecycle } = {}) {
+  const workspace = config.workspace;
+  const protectedRead = config.phase === 'protected-read';
+  const dummyAuthRead = config.phase === 'dummy-auth-read';
+  const readFileProbe = config.phase === 'read-file-probe';
+  const readFileSchemaOnly = config.phase === 'read-file-schema';
+  const outerOnly = config.phase === 'outer-held-shell';
+  const boundaryRead = protectedRead || dummyAuthRead;
+  const targetPath = dummyAuthRead ? DUMMY_AUTH_PATH : protectedRead ?
+    protectedReadPath(config.protectedRoute, workspace, config.protectedRoot) :
+    join(workspace, READ_CANARY_NAME);
+  const command = protectedRead ? 'NATIVE_PROTECTED_READ_ONLY' :
+    dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_ONLY' :
+    shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
+  let provider;
+  try {
+    provider = await startProvider(config.hostPort, command,
+      { readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly,
+        ...(outerOnly ? { resultEvidenceDir: GUEST_HOME } : {}),
+        workspace, protectedRoot: config.protectedRoot, canaryToken: config.canaryToken,
+        targetPath,
+        ...(boundaryRead ? { classifyProtectedRaw: async raw => {
+          process.stdout.write(`${JSON.stringify({ kind: 'guest_protected_raw',
+            callId: READ_CALL, output: raw })}\n`);
+          const line = await timeout('host protected classification', config.release(), 5_000);
+          let reply;
+          try { reply = JSON.parse(line); } catch {
+            throw fault('NATIVE_PROTECTED_CLASSIFIER_INVALID', 'host protected classification was malformed');
+          }
+          if (!isDeepStrictEqual(Object.keys(reply ?? {}).sort(), ['callId', 'class', 'kind']) ||
+              reply.kind !== 'protected_classification' || reply.callId !== READ_CALL ||
+              !['marker_exposed', 'access_denied', 'not_found', 'unknown'].includes(reply.class)) {
+            throw fault('NATIVE_PROTECTED_CLASSIFIER_INVALID', 'host protected classification identity invalid');
+          }
+          return reply.class;
+        } } : {}) });
+    const providerFailure = provider.rejection.then(event => {
+      throw fault(event.code, 'guest provider rejected the native Responses request');
+    });
+    const callerFailure = config.hostChannelFailure ?
+      Promise.race([providerFailure, config.hostChannelFailure]) : providerFailure;
+    callerFailure.catch(() => undefined);
+    const result = await runLifecycle(config, { providerPort: provider.port,
+      callerFailure,
+      onReady: async () => {
+        if (!provider.requests.some(request => request.method === 'GET' &&
+            request.path === '/muse-code/models')) {
+          throw fault('NATIVE_CATALOG_MISSING', 'native host did not request guest catalog');
+        }
+        return [...provider.requests];
+      },
+      onCandidate: async ({ event }) => {
+        if (provider.state.primaryCode) throw fault(provider.state.primaryCode,
+          'guest provider rejected the native Responses request');
+        if (event.kind === 'turn_completed' && provider.state.main !==
+            (readFileSchemaOnly ? 'schema-observed' : readFileProbe || boundaryRead ?
+              'read-result-accepted' : 'result-accepted')) {
+          const late = await Promise.race([provider.rejection, pause(500).then(() => null)]);
+          if (late) throw fault(late.code, 'guest provider rejected the native Responses request');
+          throw fault('NATIVE_TOOL_RESULT_MISSING', 'native turn ended without a correlated result');
+        }
+        await timeout('provider freeze', provider.freeze(), 5_000);
+        if (provider.state.primaryCode) throw fault(provider.state.primaryCode,
+          'guest provider rejected before outcome publication');
+        return [...provider.requests];
+      },
+      onFinal: async result => {
+        if (provider.state.primaryCode) throw fault(provider.state.primaryCode,
+          'guest provider rejected during native shutdown');
+        if (JSON.stringify(provider.requests) !== JSON.stringify(result.providerRequests)) {
+          throw fault('NATIVE_PROVIDER_AFTER_FREEZE', 'provider evidence changed after admission closed');
+        }
+      },
+    });
+    if (result.kind === 'guest_transport_error') {
+      const firstProviderCode = provider.state.primaryCode;
+      if (firstProviderCode && firstProviderCode !== result.code) {
+        result.code = firstProviderCode;
+        result.message = 'guest provider first rejection preceded the terminal failure';
+      }
+      result.providerRequests = [...provider.requests];
     }
     return result;
   } catch (error) {
-    const firstProviderCode = provider?.state.primaryCode;
-    return { kind: 'guest_transport_error', stage, code: firstProviderCode ?? error.code ?? error.name,
-      message: firstProviderCode && firstProviderCode !== error.code ?
-        'guest provider first rejection preceded the terminal failure' :
-        String(error.message).slice(0, 400), guestNamespace: namespace,
-      commands, providerRequests: provider?.requests ?? [], observations };
+    return { kind: 'guest_transport_error', stage: 'network', code: error.code ?? error.name,
+      message: String(error.message).slice(0, 400), commands: [],
+      providerRequests: provider?.requests ?? [], observations: { approvals: [], items: [],
+        reminders: [], protocolErrors: [], omitted: { approvals: 0, items: 0,
+          reminders: 0, protocolErrors: 0 } } };
   } finally {
-    try { if (host) await timeout('host close', host.close(), 5_000); } catch { /* stop is verified outside */ }
     try { if (provider) await provider.close(); } catch { /* retain fixture */ }
   }
 }
@@ -4127,11 +4228,26 @@ export async function qualify({ muse = '/home/jeremy/.local/bin/muse',
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   if (process.argv[2] === '--guest') {
     try {
-      const lines = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
+      const input = createInterface({ input: process.stdin });
+      const lines = input[Symbol.asyncIterator]();
+      let normalShutdown = false;
+      const hostChannelFailure = new Promise((_, reject) => {
+        input.once('close', () => setImmediate(() => {
+          if (!normalShutdown) reject(fault('HOST_CHANNEL_CLOSED',
+            'guest host control channel closed before shutdown release'));
+        }));
+      });
+      hostChannelFailure.catch(() => undefined);
       const first = await lines.next();
       if (first.done || Buffer.byteLength(first.value) > LIMIT) throw fault('GUEST_INPUT_TOO_LARGE', 'guest input missing or exceeds limit');
       const config = JSON.parse(first.value);
-      config.release = async () => (await lines.next()).value;
+      config.release = async () => {
+        const line = await lines.next();
+        if (line.done) throw fault('HOST_CHANNEL_CLOSED', 'guest host control channel closed');
+        if (line.value === 'shutdown') normalShutdown = true;
+        return line.value;
+      };
+      config.hostChannelFailure = hostChannelFailure;
       const result = ['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) ?
         await guestShellRun(config) : await guestRun(config);
       process.stdout.write(`${JSON.stringify(result)}\n`);
