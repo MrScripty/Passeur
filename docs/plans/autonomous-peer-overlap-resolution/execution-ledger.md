@@ -1,5 +1,10 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-28 — narrow description allowance exposes schema-type refusal
+
+- Operation `continue` from reviewed narrow-description commit `a3c838a`. Parent pure focused tests passed 18/18 with eight local-network skips; elevated local-only tests passed 26/26 after an automatic approval review timeout and one permitted retry. Independent Astra High cleared the escaped-surrogate P2; only index 0 of the 25-function namespace has an 8,192-byte well-formed UTF-8 description allowance, with other descriptions still capped at 2,048 bytes.
+- One fresh installed no-account synthetic host passed that description check, then rejected its first Responses POST as `NATIVE_TOOLS_INVALID`, with fixed `SCHEMA_TYPE` at function index 0. Native turn failed; exact four-process/PID-namespace stop was confirmed. Capture `/tmp/passeur-muse-native-credential-relay-H09eS5/socket/first-rejected-native-post.json` SHA-256 `7f5b1808731c6c176852f4e8e7265e4adb7d679241ea41e5c4b055c33673`; bounded `/tmp/passeur-muse-native-credential-relay-schema-type-evidence-20260928.json` SHA-256 `b668de404d94185dbdaa734e2dc278ddccd20f4ebdc8dcf790fd0a25e601da53`. The `/tmp` root remained and the reported `/dev/shm` runtime disappeared after exit. The nested schema type shape is not yet captured; no further policy change is justified. No real account, external provider, completed native turn or protected worker is claimed.
+
 ## 2026-09-28 — first installed tool description measures 7,637 bytes
 
 - Operation `continue` from reviewed description-capture commit `101a114`. Parent pure focused tests passed 18/18 with eight local-network skips and elevated local-only tests passed 26/26. Independent Astra High cleared a JSON-type P2 and confirmed that only failed description type/byte count enters the bounded artifact.
