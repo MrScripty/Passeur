@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
-import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { assertSocketIdentity, relaySandboxConfig, requestDecision, startBroker,
-  startGuestRelay, captureFixtureProcesses, verifyFixtureStop } from '../../scripts/qualify-muse-credential-relay.mjs';
+  startGuestRelay, captureFixtureProcesses, verifyFixtureStop,
+  validateNativeSse, startNativeUpstream,
+  stageNativeRuntime, guestNativeFixture } from '../../scripts/qualify-muse-credential-relay.mjs';
 import { prepareSandbox } from '../../scripts/experiment-worker-sandbox.mjs';
+import { readFileCanaryFixture, shellProbeCommand } from '../../scripts/qualify-muse-sandbox-transport.mjs';
 
 const runId = 'run_0123456789abcdef01234567';
 const model = 'fixture-relay-model';
@@ -48,6 +52,78 @@ test('exact broker method, route, run and model are the only accepted requests',
     [request('POST', '/responses', { 'content-type': 'application/json' }),
       body({ model, input: 'fixture', tools: [], extra: 'source' })],
   ]) assert.equal(requestDecision(item, payload, policy).ok, false);
+});
+
+test('native read profile is separate and forwards only canonical reviewed envelope fields', () => {
+  const native = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const envelope = { model: native.model, input: 'NATIVE_READ_FILE_PROBE', tools: [{
+    type: 'namespace', name: 'muse', tools: [{ type: 'function', name: 'submit_reminder_decision',
+      parameters: { type: 'object', properties: {} } }] }] };
+  const accepted = requestDecision(post, body(envelope), native);
+  assert.equal(accepted.ok, true);
+  assert.deepEqual(JSON.parse(accepted.body), envelope);
+  assert.equal(requestDecision(post, body(envelope), policy).ok, false);
+  const duplicate = Buffer.from(JSON.stringify(envelope).replace('"input":',
+    '"unreviewed":"secret-source","input":'));
+  assert.deepEqual(requestDecision(post, duplicate, native),
+    { ok: false, code: 'NATIVE_ENVELOPE_REJECTED' });
+  for (const changed of [
+    { ...envelope, model },
+    { ...envelope, previous_response_id: 'foreign' },
+    { ...envelope, previous_response_id: 'resp_native_shell_1' },
+    { ...envelope, input: [{ type: 'function_call_output', call_id: 'foreign', output: 'x' }] },
+    { ...envelope, input: [{ type: 'message', role: 'user', content: 'x', extra: 'source' }] },
+    { ...envelope, input: [{ type: 'message', role: 'user', content: 'unreviewed prompt' }] },
+    { ...envelope, input: [{ type: 'function_call', id: 'foreign',
+      call_id: 'call_native_read_file_1', name: 'muse.read_file', arguments: '{}' }] },
+    { ...envelope, tools: [] },
+    { ...envelope, tools: [...envelope.tools, ...envelope.tools] },
+    { ...envelope, tools: [{ ...envelope.tools[0], tools: [
+      ...envelope.tools[0].tools, { type: 'function', name: 'extra' }] }] },
+    { ...envelope, tools: [{ ...envelope.tools[0], tools: [
+      { ...envelope.tools[0].tools[0], source: 'unapproved' }] }] },
+    { ...envelope, tools: [{ ...envelope.tools[0], tools: [
+      { ...envelope.tools[0].tools[0], parameters: { type: 'object', unknown: 'source' } }] }] },
+    { ...envelope, tools: [{ ...envelope.tools[0], tools: [
+      { ...envelope.tools[0].tools[0], parameters: { type: 'object', const: { source: 'secret' } } }] }] },
+  ]) assert.equal(requestDecision(post, body(changed), native).ok, false);
+  assert.equal(requestDecision(request('GET', '/muse-code/models'), Buffer.alloc(0), native).ok, true);
+  const call = { type: 'function_call', id: 'fc_native_read_file_1',
+    call_id: 'call_native_read_file_1', name: 'muse.read_file', arguments:
+      JSON.stringify({ path: join(native.workspace, 'read-canary.txt'), offset: 1, limit: 20 }) };
+  const exact = requestDecision(post, body({ ...envelope, input: [call] }), native);
+  assert.equal(exact.ok, true);
+  const smuggled = { ...call, arguments: `{"unapproved":"secret-source",` +
+    `"path":"${join(native.workspace, 'read-canary.txt')}","offset":1,"limit":20}` };
+  assert.equal(requestDecision(post, body({ ...envelope, input: [smuggled] }), native).ok, false);
+  const duplicatePath = { ...call, arguments: `{"path":"/tmp/foreign/secret-source",` +
+    `"path":"${join(native.workspace, 'read-canary.txt')}","offset":1,"limit":20}` };
+  const canonical = requestDecision(post, body({ ...envelope, input: [duplicatePath] }), native);
+  assert.equal(canonical.ok, true);
+  assert.equal(canonical.body.toString().includes('secret-source'), false);
+  assert.equal(requestDecision(post, body({ ...envelope,
+    input: [{ ...call, arguments: JSON.stringify({ path: '/tmp/foreign/read-canary.txt',
+      offset: 1, limit: 20 }) }] }), native).ok, false);
+});
+
+test('native SSE requires complete ordered events and one completed terminal', () => {
+  const frames = [
+    { type: 'response.created', sequence_number: 1 },
+    { type: 'response.completed', sequence_number: 2, response: { status: 'completed' } },
+  ];
+  const encode = values => Buffer.from(values.map(value => `data: ${JSON.stringify(value)}\n\n`).join(''));
+  assert.deepEqual(validateNativeSse(encode(frames)), { events: 2 });
+  for (const invalid of [encode(frames).subarray(0, -1), encode(frames.slice(0, 1)),
+    encode([{ ...frames[0], type: 'response.output_item.added' }, frames[1]]),
+    encode([frames[0], { ...frames[1], sequence_number: 3 }]),
+    encode([frames[0], { ...frames[1], response: { status: 'in_progress' } }]),
+    encode([frames[0], { ...frames[1], type: 'response.unreviewed' }]),
+    Buffer.from('data: {bad}\n\n'),
+    Buffer.from('data: [DONE]\n\n')]) {
+    assert.throws(() => validateNativeSse(invalid), { code: 'NATIVE_STREAM_INVALID' });
+  }
 });
 
 test('guest headers and auth cannot select upstream authority or identity', () => {
@@ -95,6 +171,207 @@ test('relay socket is the only guest host path; network remains unshared', async
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('native stage composes pinned diagnostic runtime without an alternate artifact path', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-native-stage-contract-'));
+  try {
+    const runtime = await stageNativeRuntime(root, '/unused-pinned-muse', async (givenRoot, muse) => {
+      assert.equal(givenRoot, root);
+      assert.equal(muse, '/unused-pinned-muse');
+      const path = join(givenRoot, 'runtime');
+      await mkdir(path);
+      return path;
+    });
+    assert.equal(runtime, join(root, 'runtime'));
+    assert.match(await readFile(join(runtime, 'qualify-muse-credential-relay.mjs'), 'utf8'),
+      /stageNativeRuntime/);
+    await assert.rejects(stageNativeRuntime(root, '/unused-pinned-muse', async () => root),
+      { code: 'NATIVE_RUNTIME_STAGE_INVALID' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('native guest delegates lifecycle with relay port and always closes its endpoint', async () => {
+  const config = { phase: 'read-file-probe', runId, workspace: '/tmp/fixture/workspace' };
+  const callerFailure = new Promise(() => undefined);
+  const release = async () => 'turn';
+  let closed = 0;
+  const relayEvidence = { requests: 0 };
+  const options = { release, callerFailure, checkLoopback: () => true,
+    startRelay: async (path, id) => {
+      assert.equal(path, '/mounts/relay/relay.sock');
+      assert.equal(id, runId);
+      relayEvidence.requests = 0;
+      return { port: 43210, evidence: relayEvidence, close: async () => { closed++; } };
+    },
+    runLifecycle: async (guest, controls) => {
+      assert.equal(guest.release, release);
+      assert.equal(guest.workspace, config.workspace);
+      assert.equal(controls.providerPort, 43210);
+      assert.equal(controls.callerFailure, callerFailure);
+      relayEvidence.requests++;
+      await controls.onCandidate();
+      await controls.onFinal();
+      return { kind: 'native_read_file_outcome' };
+    } };
+  assert.deepEqual(await guestNativeFixture(config, options),
+    { kind: 'native_read_file_outcome' });
+  assert.equal(closed, 1);
+  await assert.rejects(guestNativeFixture(config, { ...options,
+    runLifecycle: async () => { throw Object.assign(new Error('runner failed'),
+      { code: 'NATIVE_RUNNER_FAILED' }); } }), { code: 'NATIVE_RUNNER_FAILED' });
+  assert.equal(closed, 2);
+  await assert.rejects(guestNativeFixture(config, { ...options,
+    runLifecycle: async (_guest, controls) => {
+      relayEvidence.requests++;
+      await controls.onCandidate();
+      relayEvidence.requests++;
+      await controls.onFinal();
+    } }), { code: 'NATIVE_RELAY_AFTER_CANDIDATE' });
+  assert.equal(closed, 3);
+  await assert.rejects(guestNativeFixture({ ...config, phase: 'shell' }, options),
+    { code: 'NATIVE_GUEST_CONFIG_INVALID' });
+  assert.equal(closed, 3);
+});
+
+test('native host retains both roots and closes fixtures after a readiness failure', async () => {
+  const { qualifyNativeRelay } = await import('../../scripts/qualify-muse-credential-relay.mjs');
+  const closed = [];
+  let aborted = 0;
+  const failure = Object.assign(new Error('injected native readiness failure'),
+    { code: 'NATIVE_READY_INJECTED' });
+  const result = await qualifyNativeRelay({
+    stagePinned: async root => {
+      const runtime = join(root, 'runtime');
+      await mkdir(runtime);
+      return runtime;
+    },
+    startSentinel: async () => ({ port: 12345,
+      close: async () => { closed.push('sentinel'); } }),
+    startUpstream: async () => ({ origin: 'http://127.0.0.1:12346/',
+      provider: { rejection: new Promise(() => undefined), requests: [], state: {},
+        close: async () => { closed.push('provider'); } },
+      seen: [], close: async () => { closed.push('upstream'); } }),
+    startSocketBroker: async ({ socketPath }) => ({ socketPath, listening: true,
+      evidence: {}, close: async function () { this.listening = false; closed.push('broker'); } }),
+    probe: async () => ({ kind: 'connected' }),
+    prepare: () => ({ executable: '/not-launched', args: [] }),
+    checkBubblewrap: () => undefined,
+    launch: () => ({ pid: 1, ready: Promise.reject(failure),
+      liveStatus: Promise.resolve({ child: 2, exit: null }),
+      abort: () => { aborted++; },
+      finished: Promise.resolve({ code: 1, statusLines: [], output: [] }) }),
+  });
+  try {
+    assert.equal(result.kind, 'native_synthetic_relay_error');
+    assert.deepEqual(result.primary, { stage: 'guest_ready', code: 'NATIVE_READY_INJECTED' });
+    assert.equal(result.stopProof.kind, 'unverified');
+    assert.equal(result.hostStarted, true);
+    assert.equal(aborted, 1);
+    assert.deepEqual(closed, ['broker', 'upstream', 'sentinel']);
+    assert.equal(result.retainedFixtures.length, 2);
+    for (const path of result.retainedFixtures) assert.equal((await lstat(path)).isDirectory(), true);
+  } finally {
+    for (const path of result.retainedFixtures ?? []) await rm(path, { recursive: true, force: true });
+  }
+});
+
+async function runInjectedNativeSuccessPath({ inspectSocket, terminalError = false,
+  providerFailureAt = null, stopUnverified = false } = {}) {
+  const { qualifyNativeRelay } = await import('../../scripts/qualify-muse-credential-relay.mjs');
+  const state = { active: 0 };
+  const catalog = { method: 'GET', path: '/muse-code/models' };
+  let reportRejection;
+  const rejection = new Promise(resolve => { reportRejection = resolve; });
+  const report = () => {
+    state.primaryCode = 'NATIVE_PROVIDER_REJECTED';
+    reportRejection({ code: state.primaryCode });
+  };
+  let removedSocket = 0;
+  const outcome = terminalError ? { kind: 'guest_transport_error', code: 'GUEST_TERMINAL_ERROR' } :
+    { kind: 'native_read_file_outcome' };
+  const canary = readFileCanaryFixture();
+  const result = await qualifyNativeRelay({
+    stagePinned: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
+    startSentinel: async () => ({ port: 12345, close: async () => undefined }),
+    startUpstream: async () => ({ origin: 'http://127.0.0.1:12346/',
+      provider: { rejection, requests: [catalog], state,
+        freeze: async () => undefined },
+      seen: [{ correctBearer: true, dummyAbsent: true }], close: async () => undefined }),
+    startSocketBroker: async () => ({ listening: true,
+      evidence: { accepted: 1, rejected: 0 },
+      close: async function () { this.listening = false; removedSocket++; } }),
+    probe: async () => ({ kind: 'connected' }),
+    prepare: () => ({ executable: '/not-launched', args: [] }),
+    checkBubblewrap: () => undefined,
+    validateReady: () => undefined,
+    validateOutcome: () => 'reviewed-native-outcome',
+    inspectSocket,
+    launch: (_prepared, config) => {
+      const ready = { kind: 'guest_shell_ready', nativeIdentity: { pid: 123, start: '1' },
+        guestNamespace: 'net:[1]', nativeNamespace: 'net:[1]',
+        readCanarySha256: createHash('sha256').update(canary.content).digest('hex'),
+        commandSha256: createHash('sha256').update(shellProbeCommand(config.workspace,
+          config.protectedRoot, config.canaryToken)).digest('hex') };
+      return { pid: 1, ready: Promise.resolve(ready),
+        liveStatus: Promise.resolve({ child: 2, exit: null }),
+        outcome: Promise.resolve(outcome),
+        releaseTurn: () => { if (providerFailureAt === 'terminal') report(); },
+        releaseShutdown: () => { if (providerFailureAt === 'shutdown') report(); },
+        abort: () => undefined,
+        finished: Promise.resolve({ code: 0, signal: null, timedOut: false, overflow: false,
+          statusClosed: true, statusLines: [JSON.stringify({ 'child-pid': 2 }),
+            JSON.stringify({ 'exit-code': 0 })], output: [JSON.stringify(ready),
+            JSON.stringify(outcome), JSON.stringify(outcome)] }) };
+    },
+    capture: async () => ({ native: { nspid: [123], netns: 'net:[1]' },
+      supervisor: { netns: 'net:[1]' }, fd: { close: async () => undefined } }),
+    stop: async () => stopUnverified ?
+      { kind: 'unverified', code: 'INJECTED_STOP_UNVERIFIED' } :
+      { kind: 'confirmed', observed: 3 },
+  });
+  return { result, removedSocket };
+}
+
+test('native success path retains both roots when socket remains or stat is uncertain', async () => {
+  for (const [inspectSocket, code] of [
+    [async () => ({ isSocket: () => true }), 'SOCKET_STILL_PRESENT'],
+    [async () => { const error = new Error('inspection failed'); error.code = 'EIO'; throw error; },
+      'SOCKET_INSPECTION_UNVERIFIED'],
+  ]) {
+    const { result, removedSocket } = await runInjectedNativeSuccessPath({ inspectSocket });
+    try {
+      assert.equal(result.kind, 'native_synthetic_relay_error');
+      assert.deepEqual(result.primary, code === 'SOCKET_INSPECTION_UNVERIFIED' ?
+        { stage: 'retirement', code, secondary: 'EIO' } : { stage: 'retirement', code });
+      assert.equal(result.stopProof.kind, 'confirmed');
+      assert.equal(removedSocket, 1);
+      assert.equal(result.retainedFixtures.length, 2);
+      for (const path of result.retainedFixtures) assert.equal((await lstat(path)).isDirectory(), true);
+    } finally {
+      for (const path of result.retainedFixtures ?? []) await rm(path, { recursive: true, force: true });
+    }
+  }
+});
+
+test('host provider rejection remains primary against native terminal and shutdown results', async () => {
+  for (const [providerFailureAt, terminalError, stopUnverified, secondary] of [
+    ['terminal', true, false, 'GUEST_TERMINAL_ERROR'],
+    ['shutdown', false, true, 'NATIVE_RELAY_STOP_INVALID'],
+    ['shutdown', false, false, undefined],
+  ]) {
+    const { result } = await runInjectedNativeSuccessPath({ providerFailureAt, terminalError,
+      stopUnverified,
+      inspectSocket: async () => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); } });
+    try {
+      assert.equal(result.kind, 'native_synthetic_relay_error');
+      assert.equal(result.primary.code, 'NATIVE_PROVIDER_REJECTED');
+      assert.equal(result.primary.secondary, secondary);
+      assert.equal(result.retainedFixtures.length, 2);
+    } finally {
+      for (const path of result.retainedFixtures ?? []) await rm(path, { recursive: true, force: true });
+    }
+  }
+});
+
 test('stop verification refuses incomplete status before resource retirement', async () => {
   const capture = { boot: 'boot-one',
     wrapper: { pid: 1, start: '1' }, statusChild: { pid: 2, start: '2' }, members: [], pidns: 'pid:[1]' };
@@ -113,6 +390,13 @@ test('stop verification refuses incomplete status before resource retirement', a
   await assert.rejects(verifyFixtureStop(capture, { child: 2, exit: 0 },
     { code: 0, signal: null, statusClosed: true, timedOut: false, overflow: false },
     { ...options, bootId: async () => 'boot-two' }), { code: 'STOP_STATUS_INVALID' });
+  const reusedFields = Array(20).fill('0');
+  reusedFields[0] = 'S';
+  reusedFields[19] = '2';
+  await assert.rejects(verifyFixtureStop(capture, { child: 2, exit: 0 },
+    { code: 0, signal: null, statusClosed: true, timedOut: false, overflow: false },
+    { ...options, readStat: async () => `1 (node) ${reusedFields.join(' ')}` }),
+  { code: 'STOP_PID_REUSED' });
   assert.equal(typeof captureFixtureProcesses, 'function');
 });
 
@@ -165,6 +449,118 @@ test('host broker substitutes synthetic bearer and streams SSE without replay', 
     if (relay) await relay.close();
     if (broker) await broker.close();
     if (upstream) await new Promise(resolveValue => upstream.close(resolveValue));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('native broker keeps separate catalog/Responses budgets and rejects canonical replay', { skip: !network }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-native-relay-policy-'));
+  let upstream;
+  let broker;
+  const bearer = 'synthetic-host-held-bearer-0123456789';
+  const nativeBody = input => JSON.stringify({ model: 'fixture-native-shell', input,
+    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters: { type: 'object' } }] }] });
+  const sendNative = (method, path, payload = '') => new Promise(resolveValue => {
+    const client = httpRequest({ socketPath: broker.socketPath, method, path,
+      headers: { host: '127.0.0.1:1', authorization: `Bearer ${dummy}`,
+        'x-passeur-run': runId, ...(method === 'POST' ?
+          { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}) } },
+    response => { response.resume(); response.once('end', () => resolveValue(response.statusCode)); });
+    client.once('error', () => resolveValue(0));
+    client.end(payload);
+  });
+  try {
+    const seen = [];
+    upstream = createServer((incoming, response) => {
+      seen.push({ route: incoming.url, bearer: incoming.headers.authorization });
+      incoming.resume();
+      if (incoming.url === '/muse-code/models') response.writeHead(200,
+        { 'content-type': 'application/json' }).end(JSON.stringify({ data: [{ id: 'fixture-native-shell' }] }));
+      else response.writeHead(200, { 'content-type': 'text/event-stream' }).end([
+        { type: 'response.created', sequence_number: 1 },
+        { type: 'response.completed', sequence_number: 2, response: { status: 'completed' } },
+      ].map(event => `data: ${JSON.stringify(event)}\n\n`).join(''));
+    });
+    upstream.listen(0, '127.0.0.1');
+    await once(upstream, 'listening');
+    broker = await startBroker({ socketPath: join(root, 'relay.sock'),
+      upstreamOrigin: `http://127.0.0.1:${upstream.address().port}/`, runId, bearer,
+      profile: 'native-read', workspace: join(root, 'workspace') });
+    for (let i = 0; i < 4; i++) assert.equal(await sendNative('GET', '/muse-code/models'), 200);
+    assert.equal(await sendNative('GET', '/muse-code/models'), 429);
+    assert.equal(await sendNative('POST', '/responses', nativeBody('NATIVE_READ_FILE_PROBE: 0')), 200);
+    assert.equal(await sendNative('POST', '/responses', nativeBody('NATIVE_READ_FILE_PROBE: 0')), 403);
+    for (let i = 1; i < 5; i++) assert.equal(await sendNative('POST', '/responses',
+      nativeBody(`NATIVE_READ_FILE_PROBE: ${i}`)), 200);
+    assert.equal(await sendNative('POST', '/responses', nativeBody('NATIVE_READ_FILE_PROBE: 5')), 429);
+    assert.equal(seen.length, 9);
+    assert.ok(seen.every(item => item.bearer === `Bearer ${bearer}`));
+  } finally {
+    if (broker) await broker.close();
+    if (upstream) await new Promise(resolveValue => upstream.close(resolveValue));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('reviewed native provider handler sees only host synthetic bearer', { skip: !network }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-native-upstream-'));
+  let upstream;
+  let broker;
+  const bearer = 'synthetic-host-held-bearer-0123456789';
+  try {
+    const workspace = join(root, 'workspace');
+    const protectedRoot = join(root, 'protected');
+    await Promise.all([workspace, protectedRoot].map(path => mkdir(path)));
+    upstream = await startNativeUpstream({ bearer, workspace, protectedRoot,
+      canaryToken: 'synthetic-canary-token', hostPort: 1 });
+    const unauthorized = await fetch(`${upstream.origin}muse-code/models`,
+      { headers: { authorization: `Bearer ${dummy}` } });
+    assert.equal(unauthorized.status, 401);
+    broker = await startBroker({ socketPath: join(root, 'relay.sock'),
+      upstreamOrigin: upstream.origin, runId, bearer, profile: 'native-read', workspace });
+    const catalog = await new Promise(resolveValue => {
+      const client = httpRequest({ socketPath: broker.socketPath, path: '/muse-code/models',
+        headers: { host: '127.0.0.1:1', authorization: `Bearer ${dummy}`,
+          'x-passeur-run': runId } }, response => {
+        response.resume(); response.once('end', () => resolveValue(response.statusCode));
+      });
+      client.once('error', () => resolveValue(0));
+      client.end();
+    });
+    assert.equal(catalog, 200);
+    const tools = Array.from({ length: 25 }, (_, index) => ({ type: 'function',
+      name: index === 1 ? 'read_file' : `native_${index}`,
+      ...(index === 1 ? { strict: false } : {}),
+      parameters: index === 1 ? { type: 'object', additionalProperties: false,
+        properties: { limit: { maximum: 2000, minimum: 1, type: 'integer' },
+          offset: { minimum: 1, type: 'integer' }, path: { type: 'string' } },
+        required: ['path'] } : { type: 'object', properties: { value: { type: 'string' } },
+        required: ['value'], additionalProperties: false } }));
+    const payload = JSON.stringify({ model: 'fixture-native-shell',
+      input: 'NATIVE_READ_FILE_PROBE', tools: [{ type: 'namespace', name: 'muse', tools }] });
+    const nativeResponse = await new Promise(resolveValue => {
+      const client = httpRequest({ socketPath: broker.socketPath, method: 'POST', path: '/responses',
+        headers: { host: '127.0.0.1:1', authorization: `Bearer ${dummy}`,
+          'x-passeur-run': runId, 'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload) } }, response => {
+        let text = '';
+        response.on('data', chunk => { text += chunk; });
+        response.once('end', () => resolveValue({ status: response.statusCode, text }));
+      });
+      client.once('error', () => resolveValue({ status: 0, text: '' }));
+      client.end(payload);
+    });
+    assert.equal(nativeResponse.status, 200);
+    assert.match(nativeResponse.text, /response\.completed/);
+    assert.deepEqual(upstream.seen.map(item => [item.correctBearer, item.dummyAbsent]),
+      [[false, false], [true, true], [true, true]]);
+    assert.equal(upstream.provider.requests.filter(item => item.method === 'GET').length, 1);
+    assert.equal(upstream.provider.requests.find(item => item.method === 'POST')?.kind,
+      'native_read_file_call');
+  } finally {
+    if (broker) await broker.close();
+    if (upstream) await upstream.close();
     await rm(root, { recursive: true, force: true });
   }
 });
