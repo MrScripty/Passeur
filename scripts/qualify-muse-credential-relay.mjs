@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readlink, readdir, rename, rm, stat, symlink, writeFile, chmod, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
@@ -223,22 +223,26 @@ export function requestDecision(request, body, policy) {
     if (policy.profile === 'native-read') {
       const keys = Object.keys(parsed ?? {}).sort();
       const allowedKeys = ['input', 'model', 'previous_response_id', 'tools'];
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
-          keys.some(key => !allowedKeys.includes(key)) ||
-          !['input', 'model', 'tools'].every(key => keys.includes(key)) ||
-          parsed.model !== NATIVE_MODEL ||
-          typeof policy.workspace !== 'string' || !policy.workspace.startsWith('/tmp/') ||
-          !nativeInputAllowed(parsed.input) ||
-          parsed.previous_response_id === undefined && Array.isArray(parsed.input) &&
+      const reject = code => ({ ok: false, code });
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        return reject('NATIVE_ENVELOPE_TYPE');
+      if (keys.some(key => !allowedKeys.includes(key)) ||
+          !['input', 'model', 'tools'].every(key => keys.includes(key)))
+        return reject('NATIVE_TOP_LEVEL_FIELDS');
+      if (parsed.model !== NATIVE_MODEL) return reject('NATIVE_MODEL_INVALID');
+      if (typeof policy.workspace !== 'string' || !policy.workspace.startsWith('/tmp/'))
+        return reject('NATIVE_WORKSPACE_INVALID');
+      if (!nativeInputAllowed(parsed.input)) return reject('NATIVE_INPUT_INVALID');
+      if (parsed.previous_response_id === undefined && Array.isArray(parsed.input) &&
             !parsed.input.some(item => item.type === 'function_call_output') &&
             !JSON.stringify(parsed.input).includes('NATIVE_READ_FILE_PROBE') &&
             !JSON.stringify(parsed.input).includes('NATIVE_READ_FILE_SCHEMA_PROBE') &&
-            !parsed.input.some(item => item.call_id !== undefined || item.id !== undefined) ||
-          parsed.previous_response_id !== undefined &&
-            !NATIVE_RESPONSE_IDS.has(parsed.previous_response_id) ||
-          !nativeToolsAllowed(parsed.tools)) {
-        return { ok: false, code: 'NATIVE_ENVELOPE_REJECTED' };
-      }
+            !parsed.input.some(item => item.call_id !== undefined || item.id !== undefined))
+        return reject('NATIVE_INITIAL_CONTEXT_INVALID');
+      if (parsed.previous_response_id !== undefined &&
+          !NATIVE_RESPONSE_IDS.has(parsed.previous_response_id))
+        return reject('NATIVE_RESPONSE_REFERENCE_INVALID');
+      if (!nativeToolsAllowed(parsed.tools)) return reject('NATIVE_TOOLS_INVALID');
       let projectedInput = parsed.input;
       if (Array.isArray(parsed.input)) {
         projectedInput = [];
@@ -282,6 +286,82 @@ export function requestDecision(request, body, policy) {
   return { ok: false, code: 'ROUTE_OR_METHOD_REJECTED' };
 }
 
+export function nativeRejectionProjection(body, { index, stage, code, complete = true,
+  receivedBytes = body.length }) {
+  const type = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  let parsed;
+  try { parsed = JSON.parse(body.toString('utf8')); } catch { /* shape remains invalid */ }
+  const object = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  const input = object?.input;
+  const items = Array.isArray(input) ? input : [];
+  const tools = Array.isArray(object?.tools) ? object.tools : [];
+  const classify = (value, allowed) => value === undefined ? 'absent' :
+    typeof value !== 'string' ? 'wrong_type' : allowed.has(value) ? 'reviewed' : 'foreign';
+  const schemaShape = schema => {
+    const result = { nodes: 0, maximumDepth: 0, properties: 0, omittedNodes: 0 };
+    const visit = (value, depth) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      if (depth > 8 || result.nodes >= 64) { result.omittedNodes++; return; }
+      result.nodes++;
+      result.maximumDepth = Math.max(result.maximumDepth, depth);
+      const properties = value.properties;
+      if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+        const children = Object.values(properties);
+        result.properties += children.length;
+        children.slice(0, 16).forEach(child => visit(child, depth + 1));
+        result.omittedNodes += Math.max(0, children.length - 16);
+      }
+      if (value.items) visit(value.items, depth + 1);
+      for (const key of ['anyOf', 'oneOf', 'allOf']) {
+        if (Array.isArray(value[key])) {
+          value[key].slice(0, 8).forEach(child => visit(child, depth + 1));
+          result.omittedNodes += Math.max(0, value[key].length - 8);
+        }
+      }
+    };
+    visit(schema, 0);
+    return result;
+  };
+  const itemClasses = items.slice(0, 8).map(item => ({
+    class: item?.type === 'message' || item?.type === 'function_call' ||
+      item?.type === 'function_call_output' || item?.type === 'reasoning' ? item.type : 'other',
+    fieldCount: item && typeof item === 'object' && !Array.isArray(item) ?
+      Math.min(Object.keys(item).length, 64) : 0,
+    id: classify(item?.id, NATIVE_ITEM_IDS),
+    callId: classify(item?.call_id, NATIVE_CALL_IDS),
+    argumentType: type(item?.arguments), outputType: type(item?.output),
+  }));
+  const toolClasses = tools.slice(0, 2).map(namespace => ({
+    class: namespace?.type === 'namespace' ? 'namespace' : 'other',
+    fieldCount: namespace && typeof namespace === 'object' && !Array.isArray(namespace) ?
+      Math.min(Object.keys(namespace).length, 64) : 0,
+    functionCount: Array.isArray(namespace?.tools) ? Math.min(namespace.tools.length, 512) : 0,
+    functionSamples: Array.isArray(namespace?.tools) ? namespace.tools.slice(0, 4).map(tool => ({
+      class: tool?.type === 'function' ? 'function' : 'other',
+      fieldCount: tool && typeof tool === 'object' && !Array.isArray(tool) ?
+        Math.min(Object.keys(tool).length, 64) : 0,
+      schemaType: type(tool?.parameters),
+      schemaFieldCount: tool?.parameters && typeof tool.parameters === 'object' &&
+        !Array.isArray(tool.parameters) ? Math.min(Object.keys(tool.parameters).length, 64) : 0,
+      schemaShape: schemaShape(tool?.parameters),
+    })) : [],
+    omittedFunctions: Array.isArray(namespace?.tools) ? Math.max(0, namespace.tools.length - 4) : 0,
+  }));
+  return { schemaVersion: 1, requestIndex: index, byteCount: receivedBytes,
+    capturedByteCount: body.length, omittedByteCount: Math.max(0, receivedBytes - body.length),
+    bodyComplete: complete, capturedSha256: createHash('sha256').update(body).digest('hex'),
+    stage, failedPredicates: [code],
+    topLevel: { class: type(parsed), knownFieldTypes: Object.fromEntries(
+      ['model', 'input', 'tools', 'previous_response_id'].map(key => [key, type(object?.[key])])),
+      unknownFieldCount: object ? Object.keys(object).filter(key =>
+        !['model', 'input', 'tools', 'previous_response_id'].includes(key)).length : 0 },
+    input: { class: type(input), itemCount: items.length, itemClasses,
+      omittedItems: Math.max(0, items.length - itemClasses.length) },
+    previousResponse: classify(object?.previous_response_id, NATIVE_RESPONSE_IDS),
+    tools: { class: type(object?.tools), namespaceCount: tools.length, toolClasses,
+      omittedNamespaces: Math.max(0, tools.length - toolClasses.length) } };
+}
+
 export async function assertSocketIdentity(socketPath, identity, inspect = lstat) {
   const current = await inspect(socketPath);
   if (!current.isSocket() || current.dev !== identity.dev || current.ino !== identity.ino ||
@@ -295,7 +375,7 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   model = MODEL, requestLimit = REQUEST_LIMIT, responseLimit = RESPONSE_LIMIT,
   concurrency = 2, deadlineMs = 3_000, allowedInputs = ['fixture'],
   perRouteBudget = 1,
-  inspectSocket = assertSocketIdentity }) {
+  inspectSocket = assertSocketIdentity, writeCapture = writeFile }) {
   if (!['controlled', 'native-read'].includes(profile)) {
     throw fault('BROKER_POLICY_INVALID', 'unknown synthetic relay profile');
   }
@@ -333,6 +413,35 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   }
   const policy = { runId, model, allowedInputs, profile, workspace };
   const evidence = { accepted: 0, rejected: 0, upstream: 0, disconnected: 0, responseLimit: 0, deadline: 0 };
+  const capturePath = join(dirname(socketPath), 'first-rejected-native-post.json');
+  let resolveFailure;
+  const failure = new Promise(resolveValue => { resolveFailure = resolveValue; });
+  let captureStarted = false;
+  let captureFinished = Promise.resolve();
+  let captureSealed = false;
+  const captureAbort = new AbortController();
+  let nativePostIndex = 0;
+  const markFailure = (code, stage, incoming, body = Buffer.alloc(0), index = null,
+    complete = true, receivedBytes = body.length) => {
+    if (profile !== 'native-read') return captureFinished;
+    if (!evidence.firstFailure) {
+      evidence.firstFailure = { code: boundedCode({ code }), stage };
+      resolveFailure(evidence.firstFailure);
+    }
+    if (incoming?.method === 'POST' && !captureStarted) {
+      captureStarted = true;
+      const projection = nativeRejectionProjection(body,
+        { index: index ?? nativePostIndex, stage, code: boundedCode({ code }), complete,
+          receivedBytes });
+      captureFinished = Promise.resolve().then(() => writeCapture(capturePath,
+        `${JSON.stringify(projection)}\n`, { flag: 'wx', mode: 0o600,
+          signal: captureAbort.signal }))
+        .then(() => { if (!captureSealed) evidence.capture = { status: 'written', path: capturePath }; }, error => {
+          if (!captureSealed) evidence.capture = { status: 'failed', code: boundedCode(error) };
+        });
+    }
+    return captureFinished;
+  };
   const routeUses = { catalog: 0, responses: 0 };
   const nativeRequestDigests = new Set();
   let aggregateRequestBytes = 0;
@@ -340,52 +449,68 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   let active = 0;
   let socketIdentity;
   const server = createServer(async (incoming, outgoing) => {
+    const postIndex = incoming.method === 'POST' && profile === 'native-read' ? ++nativePostIndex : null;
     incoming.setTimeout(deadlineMs, () => incoming.destroy(fault('GUEST_REQUEST_TIMEOUT', 'guest request timed out')));
     outgoing.setTimeout(deadlineMs, () => outgoing.destroy());
-    if (active >= concurrency) { evidence.rejected++; send(outgoing, 429, 'CONCURRENCY_LIMIT'); return; }
+    if (active >= concurrency) { evidence.rejected++;
+      await markFailure('CONCURRENCY_LIMIT', 'concurrency', incoming, Buffer.alloc(0), postIndex, false);
+      send(outgoing, 429, 'CONCURRENCY_LIMIT'); return; }
     active++;
     let upstreamRequest;
+    const chunks = [];
+    let requestBodyComplete = false;
+    let receivedBytes = 0;
+    let capturedBytes = 0;
     let deadlineExpired = false;
     let completed = false;
     const wholeDeadline = setTimeout(() => {
       if (completed) return;
       deadlineExpired = true;
       evidence.deadline++;
+      void markFailure('WHOLE_OPERATION_DEADLINE', 'deadline', incoming,
+        Buffer.concat(chunks), postIndex, requestBodyComplete, receivedBytes);
       incoming.destroy(fault('WHOLE_OPERATION_DEADLINE', 'relay operation timed out'));
       upstreamRequest?.destroy(fault('WHOLE_OPERATION_DEADLINE', 'relay operation timed out'));
       outgoing.destroy();
     }, deadlineMs);
     const finish = () => { if (completed) return; completed = true; active--; };
     outgoing.once('close', () => {
-      if (!outgoing.writableEnded) { evidence.disconnected++; upstreamRequest?.destroy(); }
+      if (!outgoing.writableEnded) { evidence.disconnected++;
+        void markFailure('GUEST_DISCONNECTED', 'disconnect', incoming,
+          Buffer.concat(chunks), postIndex, requestBodyComplete, receivedBytes);
+        upstreamRequest?.destroy(); }
       finish();
     });
     try {
       await inspectSocket(socketPath, socketIdentity);
-      let bytes = 0;
-      const chunks = [];
       for await (const chunk of incoming) {
-        bytes += chunk.length;
+        receivedBytes += chunk.length;
         if (profile === 'native-read') aggregateRequestBytes += chunk.length;
-        if (bytes > requestLimit) throw fault('REQUEST_LIMIT', 'guest request exceeded body budget');
+        const take = Math.min(chunk.length, Math.max(0, requestLimit - capturedBytes));
+        if (take > 0) { chunks.push(chunk.subarray(0, take)); capturedBytes += take; }
+        if (receivedBytes > requestLimit) throw fault('REQUEST_LIMIT', 'guest request exceeded body budget');
         if (profile === 'native-read' && aggregateRequestBytes > NATIVE_AGGREGATE_REQUEST_LIMIT) {
           throw fault('REQUEST_LIMIT', 'native aggregate request budget exceeded');
         }
-        chunks.push(chunk);
       }
+      requestBodyComplete = true;
       const body = Buffer.concat(chunks);
       const decision = requestDecision(incoming, body, policy);
-      if (!decision.ok) { evidence.rejected++; send(outgoing, 403, decision.code); return; }
+      if (!decision.ok) { evidence.rejected++;
+        await markFailure(decision.code, 'admission', incoming, body, postIndex);
+        send(outgoing, 403, decision.code); return; }
       if (profile === 'native-read' && decision.route === 'responses') {
         const digest = createHash('sha256').update(decision.body).digest('hex');
         if (nativeRequestDigests.has(digest)) {
-          evidence.rejected++; send(outgoing, 403, 'NATIVE_REQUEST_REPLAY'); return;
+          evidence.rejected++; await markFailure('NATIVE_REQUEST_REPLAY', 'replay', incoming, body, postIndex);
+          send(outgoing, 403, 'NATIVE_REQUEST_REPLAY'); return;
         }
         nativeRequestDigests.add(digest);
       }
       if (routeUses[decision.route] >=
           (profile === 'native-read' && decision.route === 'catalog' ? 4 : perRouteBudget)) {
-        evidence.rejected++; send(outgoing, 429, 'ROUTE_BUDGET'); return;
+        evidence.rejected++; await markFailure('ROUTE_BUDGET', 'budget', incoming, body, postIndex);
+        send(outgoing, 429, 'ROUTE_BUDGET'); return;
       }
       routeUses[decision.route]++;
       evidence.accepted++;
@@ -399,12 +524,16 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
           timeout: deadlineMs, agent: false }, upstreamResponse => {
           if (upstreamResponse.statusCode >= 300 && upstreamResponse.statusCode < 400 ||
               upstreamResponse.headers.location) {
-            upstreamResponse.destroy(); evidence.rejected++; send(outgoing, 502, 'UPSTREAM_REDIRECT_REJECTED');
+            upstreamResponse.destroy(); evidence.rejected++;
+            void markFailure('UPSTREAM_REDIRECT_REJECTED', 'upstream', incoming, body, postIndex);
+            send(outgoing, 502, 'UPSTREAM_REDIRECT_REJECTED');
             resolveValue(); return;
           }
           const contentType = String(upstreamResponse.headers['content-type'] ?? '').split(';')[0];
           if (upstreamResponse.statusCode !== 200 || !['application/json', 'text/event-stream'].includes(contentType)) {
-            upstreamResponse.destroy(); evidence.rejected++; send(outgoing, 502, 'UPSTREAM_RESPONSE_REJECTED');
+            upstreamResponse.destroy(); evidence.rejected++;
+            void markFailure('UPSTREAM_RESPONSE_REJECTED', 'upstream', incoming, body, postIndex);
+            send(outgoing, 502, 'UPSTREAM_RESPONSE_REJECTED');
             resolveValue(); return;
           }
           if (profile === 'native-read') {
@@ -414,7 +543,9 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
               total += chunk.length;
               aggregateResponseBytes += chunk.length;
               if (total > responseLimit || aggregateResponseBytes > RESPONSE_LIMIT) {
-                evidence.responseLimit++; upstreamRequest.destroy(); outgoing.destroy(); return;
+                evidence.responseLimit++;
+                void markFailure('RESPONSE_LIMIT', 'response_budget', incoming, body, postIndex);
+                upstreamRequest.destroy(); outgoing.destroy(); return;
               }
               chunks.push(chunk);
             });
@@ -432,10 +563,14 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
                 }
                 outgoing.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-store' });
                 outgoing.end(payload);
-              } catch { evidence.rejected++; send(outgoing, 502, 'NATIVE_UPSTREAM_INVALID'); }
+              } catch { evidence.rejected++;
+                void markFailure('NATIVE_UPSTREAM_INVALID', 'stream', incoming, body, postIndex);
+                send(outgoing, 502, 'NATIVE_UPSTREAM_INVALID'); }
               resolveValue();
             });
-            upstreamResponse.once('error', () => { outgoing.destroy(); resolveValue(); });
+            upstreamResponse.once('error', () => {
+              void markFailure('UPSTREAM_STREAM_ERROR', 'stream', incoming, body, postIndex);
+              outgoing.destroy(); resolveValue(); });
             outgoing.once('close', () => { upstreamResponse.destroy(); resolveValue(); });
             return;
           }
@@ -455,7 +590,9 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
           upstreamResponse.once('error', () => { if (!outgoing.destroyed) outgoing.destroy(); resolveValue(); });
           outgoing.once('close', () => { upstreamResponse.destroy(); resolveValue(); });
         });
-        upstreamRequest.once('error', () => { if (!outgoing.headersSent) send(outgoing, 502, 'UPSTREAM_UNAVAILABLE');
+        upstreamRequest.once('error', () => {
+          void markFailure('UPSTREAM_UNAVAILABLE', 'upstream', incoming, body, postIndex);
+          if (!outgoing.headersSent) send(outgoing, 502, 'UPSTREAM_UNAVAILABLE');
           else outgoing.destroy(); resolveValue(); });
         upstreamRequest.once('timeout', () => upstreamRequest.destroy(fault('UPSTREAM_TIMEOUT', 'upstream timed out')));
         evidence.upstream++;
@@ -463,6 +600,8 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       });
     } catch (error) {
       evidence.rejected++;
+      await markFailure(boundedCode(error), 'broker_error', incoming,
+        Buffer.concat(chunks), postIndex, requestBodyComplete, receivedBytes);
       if (!deadlineExpired) send(outgoing, error.code === 'REQUEST_LIMIT' ? 413 : 503, error.code ?? 'BROKER_UNAVAILABLE');
     } finally { clearTimeout(wholeDeadline); if (!outgoing.destroyed && !outgoing.writableEnded) outgoing.end(); finish(); }
   });
@@ -475,7 +614,15 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   const entry = await lstat(socketPath);
   socketIdentity = { dev: entry.dev, ino: entry.ino };
   await assertSocketIdentity(socketPath, socketIdentity);
-  return { socketPath, identity: socketIdentity, evidence, get listening() { return server.listening; },
+  return { socketPath, identity: socketIdentity, evidence, failure,
+    flushCapture: () => captureFinished,
+    cancelCapture: code => {
+      if (!captureStarted || evidence.capture || captureSealed) return;
+      captureSealed = true;
+      evidence.capture = { status: 'unverified', code: boundedCode({ code }) };
+      captureAbort.abort();
+    },
+    get listening() { return server.listening; },
     close: async () => {
       let replacement;
       let mismatch;
@@ -892,7 +1039,7 @@ export async function qualifyNativeRelay({
   probe = tcpProbe, prepare = prepareSandbox,
   launch = runStatusPhase, capture = captureHostIdentities, stop = verifyHostStop,
   inspectSocket = lstat, validateReady = validateShellReady,
-  validateOutcome = validateReadFileOutcome,
+  validateOutcome = validateReadFileOutcome, inspectRetainedRoot = lstat,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-native-credential-relay-'));
   let runtimeRoot;
@@ -906,6 +1053,9 @@ export async function qualifyNativeRelay({
   let stageName = 'prepare';
   let observed = null;
   let hostStarted = false;
+  const sourceFailures = { first: null };
+  let rejectProvider;
+  let rejectBroker;
   try {
     runtimeRoot = await mkdtemp('/dev/shm/passeur-muse-native-relay-runtime-');
     const workspace = join(root, 'workspace');
@@ -942,6 +1092,19 @@ export async function qualifyNativeRelay({
       canaryToken, hostPort: sentinel.port });
     broker = await startSocketBroker({ socketPath: join(socketDirectory, 'relay.sock'),
       upstreamOrigin: upstream.origin, runId, bearer, profile: 'native-read', workspace });
+    const noteSourceFailure = (source, code) => {
+      const observedFailure = { source, code: boundedCode({ code }) };
+      sourceFailures.first ??= observedFailure;
+      return fault(observedFailure.code, `${source} rejected native traffic`);
+    };
+    rejectProvider = upstream.provider.rejection.then(event => {
+      throw noteSourceFailure('provider', event.code);
+    });
+    rejectProvider.catch(() => undefined);
+    rejectBroker = (broker.failure ?? new Promise(() => undefined)).then(event => {
+      throw noteSourceFailure('broker', event.code);
+    });
+    rejectBroker.catch(() => undefined);
     const prepared = prepare(relaySandboxConfig({ workspace, runtime, home,
       protectedRoot, socketDirectory }), [`${GUEST_RUNTIME}/node`,
       `${GUEST_RUNTIME}/qualify-muse-credential-relay.mjs`, '--guest-native']);
@@ -950,12 +1113,8 @@ export async function qualifyNativeRelay({
     hostStarted = true;
     host = launch(prepared, { phase: 'read-file-probe', workspace, protectedRoot,
       canaryToken, hostPort: sentinel.port, runId });
-    const rejectProvider = upstream.provider.rejection.then(event => {
-      throw fault(event.code, 'host fake provider rejected native traffic');
-    });
-    rejectProvider.catch(() => undefined);
     const [ready, liveStatus] = await Promise.all([
-      Promise.race([host.ready, rejectProvider]), host.liveStatus,
+      Promise.race([host.ready, rejectProvider, rejectBroker]), host.liveStatus,
     ]);
     const readyRequests = structuredClone(upstream.provider.requests);
     validateReady({ ...ready, providerRequests: readyRequests }, workspace, sentinel.port);
@@ -977,7 +1136,7 @@ export async function qualifyNativeRelay({
     }
     stageName = 'native_turn';
     host.releaseTurn();
-    const outcome = await Promise.race([host.outcome, rejectProvider]);
+    const outcome = await Promise.race([host.outcome, rejectProvider, rejectBroker]);
     if (outcome.kind === 'guest_transport_error') {
       throw fault(outcome.code, 'native guest reported a bounded transport failure');
     }
@@ -991,6 +1150,9 @@ export async function qualifyNativeRelay({
     }
     await settleWithin(broker.close(), 5_000, 'BROKER_CLOSE_DEADLINE');
     await settleWithin(upstream.provider.freeze(), 5_000, 'PROVIDER_FREEZE_DEADLINE');
+    if (broker.evidence.firstFailure) {
+      throw fault(broker.evidence.firstFailure.code, 'host broker first refusal remained after closure');
+    }
     const finalRequests = structuredClone(upstream.provider.requests);
     if (upstream.provider.state.primaryCode || broker.evidence.rejected !== 0 ||
         broker.evidence.accepted !== finalRequests.length ||
@@ -1041,8 +1203,16 @@ export async function qualifyNativeRelay({
   } catch (error) {
     const reported = boundedCode(error);
     const providerCode = upstream?.provider?.state?.primaryCode;
-    primary = { stage: stageName, code: providerCode ?? reported };
-    if (providerCode && providerCode !== reported) primary.secondary = reported;
+    const brokerCode = broker?.evidence?.firstFailure?.code;
+    const firstSource = sourceFailures.first ?? (providerCode && !brokerCode ?
+      { source: 'provider', code: providerCode } : brokerCode && !providerCode ?
+        { source: 'broker', code: brokerCode } : null);
+    primary = { stage: stageName,
+      code: firstSource?.code ?? (providerCode && brokerCode ? 'SOURCE_ORDER_UNVERIFIED' : reported),
+      ...(firstSource ? { source: firstSource.source } : {}) };
+    if (primary.code !== reported) primary.secondary = reported;
+    if (providerCode && providerCode !== primary.code) primary.providerCode = providerCode;
+    if (brokerCode && brokerCode !== primary.code) primary.brokerCode = brokerCode;
   } finally {
     if (host && stopProof.kind !== 'confirmed') {
       try { host.abort(); }
@@ -1058,13 +1228,18 @@ export async function qualifyNativeRelay({
     if (captured) await captured.fd.close().catch(() => undefined);
     try { if (broker?.listening) await settleWithin(broker.close(), 5_000, 'BROKER_CLOSE_DEADLINE'); }
     catch { primary ??= { stage: 'broker_close', code: 'SOCKET_STOP_UNVERIFIED' }; }
+    try { if (broker?.flushCapture) await settleWithin(broker.flushCapture(), 5_000, 'BROKER_CAPTURE_DEADLINE'); }
+    catch (error) {
+      broker?.cancelCapture?.(boundedCode(error));
+      primary ??= { stage: 'broker_capture', code: 'BROKER_CAPTURE_UNVERIFIED' };
+    }
     try { if (upstream) await settleWithin(upstream.close(), 5_000, 'UPSTREAM_CLOSE_DEADLINE'); }
     catch { primary ??= { stage: 'upstream_close', code: 'UPSTREAM_STOP_UNVERIFIED' }; }
     try { if (sentinel) await settleWithin(sentinel.close(), 5_000, 'SENTINEL_CLOSE_DEADLINE'); }
     catch { primary ??= { stage: 'sentinel_close', code: 'SENTINEL_STOP_UNVERIFIED' }; }
   }
   let result = primary ? { kind: 'native_synthetic_relay_error', primary,
-    stopProof, hostStarted } : observed;
+    stopProof, hostStarted, ...(broker ? { broker: structuredClone(broker.evidence) } : {}) } : observed;
   if (result?.kind === 'native_synthetic_relay_observed') {
     let socketAbsent = false;
     try { await inspectSocket(join(root, 'socket', 'relay.sock')); }
@@ -1093,7 +1268,16 @@ export async function qualifyNativeRelay({
           await lstat(path).then(() => path, () => null)))).filter(Boolean) };
     }
     }
-  } else result.retainedFixtures = [root, runtimeRoot].filter(Boolean);
+  }
+  if (result.kind === 'native_synthetic_relay_error') {
+    result.retainedRoots = await Promise.all([root, runtimeRoot].filter(Boolean).map(async path => {
+      try { await inspectRetainedRoot(path); return { path, status: 'present' }; }
+      catch (error) { return { path, status: error?.code === 'ENOENT' ? 'missing' : 'unreadable',
+        ...(error?.code === 'ENOENT' ? {} : { code: boundedCode(error) }) }; }
+    }));
+    result.retainedFixtures = result.retainedRoots.filter(item => item.status === 'present')
+      .map(item => item.path);
+  }
   return result;
 }
 
