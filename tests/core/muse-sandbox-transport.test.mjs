@@ -16,8 +16,9 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   verificationReminderSchemaDiscovery, verificationReminderAssociation,
   fixedVerificationPayload, fixedReadFileCall, readFileCallEvents,
   matchingReadFileResult, readFileDecoratedOutput, readFileResultEnvelopeShape,
-  correlatedReadFileOutput, classifyProtectedOutput, protectedReadPath,
+  correlatedReadFileOutput, classifyProtectedOutput, classifyDummyAuthOutput, protectedReadPath,
   qualifyNativeProtectedRead, qualifyNativeProtectedSymlinkRead, qualifyNativeProtectedProcRead,
+  qualifyNativeDummyAuthRead,
   fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape,
   fixedNoReminderPayload, reminderCallEvents,
@@ -487,6 +488,7 @@ test('native shell provider checks advertised bash schema and exact tool result 
   assert.equal(diagnosticMode(['--native-protected-read']), 'native-protected-read');
   assert.equal(diagnosticMode(['--native-protected-read-symlink']), 'native-protected-read-symlink');
   assert.equal(diagnosticMode(['--native-protected-read-proc']), 'native-protected-read-proc');
+  assert.equal(diagnosticMode(['--native-dummy-auth-read']), 'native-dummy-auth-read');
   for (const args of [['--unknown'], ['--native-shell', '--extra']]) {
     assert.throws(() => diagnosticMode(args), { code: 'DIAGNOSTIC_MODE_INVALID' });
   }
@@ -874,6 +876,83 @@ test('protected provider accepts one fixed read and returns neutral text without
   } finally { await bounded.provider.close(); }
 });
 
+test('dummy auth read emits one exact call and a neutral result for visible, denied and unknown output', async () => {
+  const path = '/mounts/home/.config/muse/auth.json';
+  const workspace = '/tmp/fixture/workspace';
+  const marker = 'passeur-disposable-SYNTHETIC_SECRET';
+  for (const [raw, expected] of [
+    [`Read text file \`${path}\`.\n1|${marker}`, 'marker_exposed'],
+    [installedProtectedError(path, workspace), 'not_found'],
+    ['unfamiliar native error', 'unknown'],
+  ]) {
+    const h = await nativeProviderHarness({ dummyAuthRead: true, targetPath: path,
+      classifyProtectedRaw: value => classifyDummyAuthOutput(value, workspace, marker).class });
+    try {
+      const main = readFileProbeRequest(); main.input = 'NATIVE_DUMMY_AUTH_READ_PROBE';
+      const started = await h.post(main);
+      assert.equal(started.status, 200);
+      assert.deepEqual(h.provider.requests[0].argumentKeys, ['path', 'offset', 'limit']);
+      assert.equal(h.provider.requests[0].pathSha256, createHash('sha256').update(path).digest('hex'));
+      const result = readFileResultRequest(raw);
+      result.input[2].arguments = JSON.stringify({ path, offset: 1, limit: 20 });
+      const ended = await h.post(result);
+      assert.equal(ended.status, 200, JSON.stringify(h.provider.requests));
+      assert.equal(ended.body.includes(marker), false);
+      assert.equal(JSON.stringify(h.provider.requests).includes(marker), false);
+      assert.equal(h.provider.requests[1].kind, 'matching_dummy_auth_result');
+      assert.equal(classifyDummyAuthOutput(raw, workspace, marker).class, expected);
+      assert.equal(h.provider.state.main, 'read-result-accepted');
+      assert.equal((await h.post(result)).status, 422);
+    } finally { await h.provider.close(); }
+  }
+  assert.equal(classifyDummyAuthOutput(installedProtectedError(path, workspace).replace(
+    `resolved candidate "${path}"`, 'resolved candidate "/other"'), workspace, marker).class, 'unknown');
+  assert.equal(classifyDummyAuthOutput(`tool failed: ${marker}`, workspace, marker).class, 'marker_exposed');
+});
+
+test('dummy auth classification reserves result and gates a concurrent second reminder', async () => {
+  const targetPath = '/mounts/home/.config/muse/auth.json';
+  const main = readFileProbeRequest(); main.input = 'NATIVE_DUMMY_AUTH_READ_PROBE';
+  const result = readFileResultRequest(installedProtectedError(targetPath, '/tmp/fixture/workspace'));
+  result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+  for (const intruder of [structuredClone(result), { model: 'fixture-native-shell', input: [] }]) {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const h = await nativeProviderHarness({ dummyAuthRead: true, targetPath,
+      classifyProtectedRaw: () => gate });
+    try {
+      assert.equal((await h.post(main)).status, 200);
+      const pending = h.post(result);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.provider.state.main, 'read-result-classifying');
+      assert.equal((await h.post(intruder)).status, 422);
+      release('not_found');
+      assert.equal((await pending).status, 422);
+      assert.equal(h.provider.requests.some(request => request.kind === 'matching_dummy_auth_result'), false);
+    } finally { release('unknown'); await h.provider.close(); }
+  }
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = await nativeProviderHarness({ dummyAuthRead: true, targetPath,
+    classifyProtectedRaw: () => gate });
+  try {
+    const firstSkill = fixedReminderRequest(); firstSkill.input = 'NATIVE_DUMMY_AUTH_READ_PROBE first';
+    const secondSkill = fixedReminderRequest(); secondSkill.input = 'NATIVE_DUMMY_AUTH_READ_PROBE second';
+    assert.equal((await h.post(main)).status, 200);
+    assert.equal((await h.post(firstSkill)).status, 200);
+    const pending = h.post(result);
+    await new Promise(resolve => setImmediate(resolve));
+    let secondDone = false;
+    const second = h.post(secondSkill).then(value => { secondDone = true; return value; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(secondDone, false);
+    release('marker_exposed');
+    assert.equal((await pending).status, 200);
+    assert.equal((await second).status, 200);
+    assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 2);
+  } finally { release('unknown'); await h.provider.close(); }
+});
+
 test('symlink and proc providers issue one selected read path and reject route substitution', async () => {
   const workspace = '/tmp/fixture/workspace';
   const root = '/tmp/fixture/protected';
@@ -1051,11 +1130,11 @@ test('third protected skill while result and second reminder wait aborts both re
 });
 
 async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readFileProbe = false,
-  protectedRead = false, targetPath, classifyProtectedRaw } = {}) {
+  protectedRead = false, dummyAuthRead = false, targetPath, classifyProtectedRaw } = {}) {
   let handle;
   const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
   const provider = await startShellProvider(31001, command, {
-    readFileSchemaOnly, readFileProbe, protectedRead, targetPath, classifyProtectedRaw,
+    readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, targetPath, classifyProtectedRaw,
     workspace: '/tmp/fixture/workspace',
     makeServer: callback => { handle = callback; return {}; },
     waitListen: async () => 31002, shut: async () => { if (onShut) await onShut(handle); },
@@ -2581,6 +2660,95 @@ test('protected control missing before launch prevents host start', async () => 
   await rm(result.retainedFixtures[0], { recursive: true, force: true });
 });
 
+test('dummy auth controller binds fresh file, native output, full turn and confirmed stop', async () => {
+  const authPath = '/mounts/home/.config/muse/auth.json';
+  const run = async ({ output = 'denied', changeControl = false, nativeMismatch = false,
+    wrongStatus = false, approval = false, stopFails = false, substitutePath = false } = {}) => {
+    let authHostPath;
+    const result = await qualifyNativeDummyAuthRead({
+      stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
+      startSentinel: async () => ({ port: 31001, close: async () => undefined }),
+      probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+      launch: (_prepared, config) => {
+        assert.equal(config.phase, 'dummy-auth-read');
+        assert.equal(JSON.stringify(config).includes('passeur-disposable-'), false);
+        authHostPath = join(config.workspace, '..', 'home', '.config', 'muse', 'auth.json');
+        const ready = shellReadyFixture(config.workspace);
+        ready.commandSha256 = createHash('sha256').update('NATIVE_DUMMY_AUTH_READ_ONLY').digest('hex');
+        const guest = readFileProbeOutcomeFixture(ready);
+        guest.kind = 'native_dummy_auth_read_outcome';
+        const main = guest.providerRequests.find(request => request.kind === 'native_read_file_call');
+        main.pathSha256 = createHash('sha256').update(substitutePath ?
+          join(config.workspace, 'read-canary.txt') : authPath).digest('hex');
+        const reported = guest.providerRequests.find(request => request.kind === 'matching_read_file_result');
+        reported.kind = 'matching_dummy_auth_result';
+        reported.exactCanary = false;
+        const rawPromise = readFile(authHostPath, 'utf8').then(content => {
+          const marker = JSON.parse(content).providers.meta.api_key;
+          const raw = output === 'visible' ? `Read text file \`${authPath}\`.\n1|${marker}` :
+            output === 'denied' ? installedProtectedError(authPath, config.workspace) :
+              'unfamiliar native error';
+          reported.outputBytes = Buffer.byteLength(raw);
+          reported.outputSha256 = createHash('sha256').update(raw).digest('hex');
+          guest.observations.items[0].status = wrongStatus ? 'completed' :
+            output === 'visible' ? 'completed' : 'failed';
+          guest.observations.items[0].exactCanary = false;
+          guest.observations.items[0].outputShape = { type: 'string', bytes: Buffer.byteLength(raw),
+            sha256: createHash('sha256').update(nativeMismatch ? `${raw.slice(0, -1)}X` : raw).digest('hex') };
+          if (approval) guest.observations.approvals.push({ kind: 'unexpected_read_approval' });
+          return config.classifyProtectedOutput(raw);
+        });
+        const done = rawPromise.then(() => ({ code: 0, signal: null, timedOut: false,
+          overflow: false, statusClosed: true, statusLines: ['{"child-pid":101}', '{"exit-code":0}'],
+          stderr: '', output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
+            JSON.stringify({ kind: 'guest_outcome', result: guest }), JSON.stringify(guest)] }));
+        return { pid: 100, ready: Promise.resolve(ready),
+          liveStatus: Promise.resolve({ child: 101, exit: null }), outcome: done.then(() => guest),
+          protectedResult: rawPromise, protectedFrameError: () => null,
+          releaseTurn: () => undefined, releaseShutdown: () => undefined, abort: () => undefined,
+          finished: done };
+      },
+      capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
+        supervisor: { netns: 'net:[2]' }, pidns: 'pid:[fixture]', boot: 'boot-a',
+        fd: { close: async () => undefined } }),
+      stop: async () => { if (changeControl) await writeFile(authHostPath, 'changed');
+        if (stopFails) throw Object.assign(new Error('survivor'), { code: 'STOP_SURVIVOR' });
+        return { kind: 'confirmed', pidns: 'pid:[fixture]' }; },
+    });
+    assert.equal(JSON.stringify(result).includes('passeur-disposable-'), false);
+    await rm(result.retainedFixtures[0], { recursive: true, force: true });
+    return result;
+  };
+  assert.equal((await run({ output: 'visible' })).kind, 'dummy_auth_visible');
+  assert.equal((await run()).kind, 'dummy_auth_denied');
+  assert.equal((await run({ output: 'other' })).kind, 'dummy_auth_unknown');
+  assert.equal((await run({ wrongStatus: true })).kind, 'dummy_auth_unknown');
+  assert.equal((await run({ nativeMismatch: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+  assert.equal((await run({ substitutePath: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+  assert.equal((await run({ approval: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+  assert.equal((await run({ changeControl: true })).code, 'NATIVE_DUMMY_AUTH_CONTROL_CHANGED');
+  assert.equal((await run({ stopFails: true })).code, 'STOP_SURVIVOR');
+});
+
+test('dummy auth prelaunch rejects changed host file and mixed diagnostic modes', async () => {
+  let launched = false;
+  const result = await qualifyNativeDummyAuthRead({
+    stage: async root => {
+      const path = join(root, 'home', '.config', 'muse', 'auth.json');
+      await writeFile(path, 'changed');
+      const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime;
+    },
+    startSentinel: async () => ({ port: 31001, close: async () => undefined }),
+    probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+    launch: () => { launched = true; assert.fail('changed auth file must not launch'); },
+  });
+  assert.equal(result.code, 'NATIVE_DUMMY_AUTH_CONTROL_INVALID');
+  assert.equal(launched, false);
+  await rm(result.retainedFixtures[0], { recursive: true, force: true });
+  await assert.rejects(qualifyNativeShell({ protectedRead: true, dummyAuthRead: true }),
+    { code: 'NATIVE_DIAGNOSTIC_MODE_INVALID' });
+});
+
 test('native approval presentation binds the exact fixed bash arguments without deciding it', () => {
   const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
   const approval = { approvalId: 'approval-1', sessionId: 'session-1', turnId: 'turn-1',
@@ -3250,6 +3418,47 @@ exit 1
     await assert.rejects(exited.protectedResult, { code: 'NATIVE_PROTECTED_FRAME_MISSING' });
     await assert.rejects(exited.outcome, { code: 'GUEST_OUTPUT_INVALID' });
     assert.equal((await exited.finished).code, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('dummy auth transport keeps raw marker out of retained output through turn and shutdown', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-dummy-auth-transport-'));
+  try {
+    const marker = 'passeur-disposable-SYNTHETIC_SECRET';
+    const target = '/mounts/home/.config/muse/auth.json';
+    const raw = `Read text file \`${target}\`.\n1|${marker}`;
+    const fake = join(root, 'host');
+    const frame = JSON.stringify({ kind: 'guest_protected_raw',
+      callId: 'call_native_read_file_1', output: raw });
+    await writeFile(fake, `#!/bin/sh
+read config
+case "$config" in *SYNTHETIC_SECRET*) exit 8 ;; esac
+printf '{"child-pid":123}\\n' >&3
+printf '{"kind":"guest_ready","result":{"kind":"guest_shell_ready"}}\\n'
+read turn
+printf '%s\\n' '${frame}'
+read classification
+case "$classification" in *protected_classification*) ;; *) exit 9 ;; esac
+printf '{"kind":"guest_outcome","result":{"kind":"native_dummy_auth_read_outcome"}}\\n'
+read shutdown
+printf '{"kind":"native_dummy_auth_read_outcome"}\\n'
+printf '{"exit-code":0}\\n' >&3
+`, { mode: 0o700 });
+    const host = runStatusPhase({ executable: fake, args: ['--', 'ignored'] },
+      { phase: 'dummy-auth-read', classifyProtectedOutput: value =>
+        classifyDummyAuthOutput(value, '/tmp/fixture/workspace', marker),
+      protectedMarkerPresent: line => line.includes(marker) });
+    await host.ready;
+    await host.liveStatus;
+    host.releaseTurn();
+    assert.equal((await host.protectedResult).class, 'marker_exposed');
+    assert.equal((await host.outcome).kind, 'native_dummy_auth_read_outcome');
+    host.releaseShutdown();
+    const done = await host.finished;
+    assert.equal(done.code, 0);
+    assert.equal(done.output.length, 3);
+    assert.equal(JSON.stringify(done).includes(marker), false);
+    assert.equal(host.protectedFrameError(), null);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

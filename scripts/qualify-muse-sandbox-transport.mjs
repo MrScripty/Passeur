@@ -50,6 +50,7 @@ const READ_TEXT_RESPONSE = 'resp_native_read_file_2';
 const READ_CANARY_NAME = 'read-canary.txt';
 const READ_CANARY_CONTENT = 'PASSEUR_NATIVE_READ_CANARY\n';
 const PROTECTED_READ_NAME = 'direct-read-target.txt';
+const DUMMY_AUTH_PATH = `${GUEST_HOME}/.config/muse/auth.json`;
 const PROTECTED_OUTPUT_LIMIT = 8192;
 const PROTECTED_ROUTES = new Set(['direct', 'symlink', 'proc']);
 const REMINDER_PAYLOAD = Object.freeze({ advisory_text: null, confidence: 'low', decision: 'none',
@@ -830,6 +831,24 @@ export function classifyProtectedOutput(raw, targetPath, workspace, marker) {
   pathSha256: createHash('sha256').update(targetPath).digest('hex') };
 }
 
+export function classifyDummyAuthOutput(raw, workspace, marker) {
+  const classified = classifyProtectedOutput(raw, DUMMY_AUTH_PATH, workspace, marker);
+  return { ...classified, class: classified.markerPresent ? 'marker_exposed' :
+    classified.class === 'not_found' ? 'not_found' : 'unknown' };
+}
+
+async function verifyDummyAuthControl(control, code) {
+  let stat;
+  try { stat = await lstat(control.path); }
+  catch { throw fault(code, 'host-owned dummy auth file is missing'); }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
+      stat.dev !== control.dev || stat.ino !== control.ino || stat.uid !== control.uid ||
+      stat.mode !== control.mode ||
+      stat.size !== control.bytes || await digest(control.path) !== control.sha256) {
+    throw fault(code, 'host-owned dummy auth file identity or contents changed');
+  }
+}
+
 export function protectedReadPath(route, workspace, protectedRoot) {
   if (!PROTECTED_ROUTES.has(route) || typeof workspace !== 'string' ||
       typeof protectedRoot !== 'string' || !workspace.startsWith('/tmp/') ||
@@ -843,7 +862,7 @@ export function protectedReadPath(route, workspace, protectedRoot) {
 
 function boundedReadTarget(path) {
   return typeof path === 'string' &&
-    (path.startsWith('/tmp/') || path.startsWith('/proc/1/root/tmp/'));
+    (path.startsWith('/tmp/') || path.startsWith('/proc/1/root/tmp/') || path === DUMMY_AUTH_PATH);
 }
 
 export function readFileResultEnvelopeShape(body, issuedAtRequest = {}, workspace) {
@@ -989,12 +1008,14 @@ export function shellTextEvents(text = 'Fixture shell result observed.',
 
 export async function startShellProvider(forbiddenPort, command, {
   makeServer = createServer, waitListen = listen, shut = close,
-  readFileSchemaOnly = false, readFileProbe = false, protectedRead = false, workspace, targetPath,
+  readFileSchemaOnly = false, readFileProbe = false, protectedRead = false, dummyAuthRead = false,
+  workspace, targetPath,
   classifyProtectedRaw,
 } = {}) {
-  const readFileMode = readFileSchemaOnly || readFileProbe || protectedRead;
-  const maxAttempts = readFileProbe || protectedRead ? 5 : 3;
-  const retainedRequestLimit = readFileProbe || protectedRead ? 9 : 7;
+  const boundaryRead = protectedRead || dummyAuthRead;
+  const readFileMode = readFileSchemaOnly || readFileProbe || boundaryRead;
+  const maxAttempts = readFileProbe || boundaryRead ? 5 : 3;
+  const retainedRequestLimit = readFileProbe || boundaryRead ? 9 : 7;
   const requests = [];
   let readClassification = null;
   let pendingSecondAdmission = null;
@@ -1069,7 +1090,7 @@ export async function startShellProvider(forbiddenPort, command, {
     // Body completion can reorder concurrent requests. Attribution uses the state at admission.
     const issuanceAtAdmission = { main: state.main, reminder: state.reminder,
       verification: state.verification };
-    if (protectedRead && issuanceAtAdmission.main === 'read-result-classifying' &&
+    if (boundaryRead && issuanceAtAdmission.main === 'read-result-classifying' &&
         issuanceAtAdmission.reminder === 'none-issued') {
       if (pendingSecondAdmission !== null) {
         reject('NATIVE_REMINDER_SEQUENCE_INVALID', summary, response); return;
@@ -1116,7 +1137,7 @@ export async function startShellProvider(forbiddenPort, command, {
               '4a3837b69a6fc85cd9a85f75160accf94f068c870f8ff8b6f44e60d138080f45';
             summary.verificationSchema = verification;
             summary.association = association;
-            if (readFileProbe || protectedRead) {
+            if (readFileProbe || boundaryRead) {
               if (state.verification !== 'unseen') {
                 throw fault('NATIVE_VERIFY_REMINDER_REPLAY', 'verification reminder repeated');
               }
@@ -1150,21 +1171,22 @@ export async function startShellProvider(forbiddenPort, command, {
         }
         const reminder = recognizedReminderSchema(parsed);
         if (reminder) {
-          const ordinal = readFileProbe || protectedRead ? state.skillDigests.length + 1 : 1;
-          const secondDuringClassification = protectedRead && ordinal === 2 &&
+          const ordinal = readFileProbe || boundaryRead ? state.skillDigests.length + 1 : 1;
+          const secondDuringClassification = boundaryRead && ordinal === 2 &&
             issuanceAtAdmission.main === 'read-result-classifying' &&
             pendingSecondAdmission === summary.responseIndex;
-          const association = readFileProbe || protectedRead ? verificationReminderAssociation(parsed,
+          const association = readFileProbe || boundaryRead ? verificationReminderAssociation(parsed,
             issuanceAtAdmission, summary.responseIndex) : null;
           const firstPrelude = parsed.previous_response_id == null &&
             JSON.stringify(parsed.input)?.includes(protectedRead ? 'NATIVE_PROTECTED_READ_PROBE' :
+              dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_PROBE' :
               readFileProbe ? 'NATIVE_READ_FILE_PROBE' :
               readFileSchemaOnly ? 'NATIVE_READ_FILE_SCHEMA_PROBE' : 'NATIVE_SHELL_PROBE') &&
             !(Array.isArray(parsed.input) && parsed.input.some(item => item?.type === 'function_call_output'));
-          if (ordinal > (readFileProbe || protectedRead ? 2 : 1) ||
+          if (ordinal > (readFileProbe || boundaryRead ? 2 : 1) ||
               (ordinal === 1 && state.reminder !== 'unseen') ||
               (ordinal === 1 && !firstPrelude &&
-                !((readFileProbe || protectedRead) && issuanceAtAdmission.main === 'read-result-accepted')) ||
+                !((readFileProbe || boundaryRead) && issuanceAtAdmission.main === 'read-result-accepted')) ||
               (ordinal === 2 && pendingSecondAdmission !== null &&
                 pendingSecondAdmission !== summary.responseIndex) ||
               (ordinal === 2 && (state.reminder !== 'none-issued' ||
@@ -1174,8 +1196,8 @@ export async function startShellProvider(forbiddenPort, command, {
                 association.httpRelation === 'foreign'))) {
             throw fault('NATIVE_REMINDER_SEQUENCE_INVALID', 'skill reminder request is replayed or unreviewed');
           }
-          const requestDigest = readFileProbe || protectedRead ? canonicalRequestDigest(parsed) : null;
-          if ((readFileProbe || protectedRead) && state.skillDigests.includes(requestDigest)) {
+          const requestDigest = readFileProbe || boundaryRead ? canonicalRequestDigest(parsed) : null;
+          if ((readFileProbe || boundaryRead) && state.skillDigests.includes(requestDigest)) {
             throw fault('NATIVE_REMINDER_REPLAY', 'canonical skill reminder request repeated');
           }
           const payload = fixedNoReminderPayload(parsed);
@@ -1196,7 +1218,7 @@ export async function startShellProvider(forbiddenPort, command, {
             throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'native fixture output exceeds budget');
           }
           state.reminder = ordinal === 2 ? 'second-issued' : 'none-issued';
-          if (readFileProbe || protectedRead) state.skillDigests.push(requestDigest);
+          if (readFileProbe || boundaryRead) state.skillDigests.push(requestDigest);
           state.outputBytes += outputBytes;
           summary.kind = 'native_reminder_call';
           summary.ordinal = ordinal;
@@ -1211,6 +1233,7 @@ export async function startShellProvider(forbiddenPort, command, {
         }
         const main = readFileMode ? readFileSchemaDiscovery(parsed,
           protectedRead ? 'NATIVE_PROTECTED_READ_PROBE' :
+            dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_PROBE' :
             readFileProbe ? 'NATIVE_READ_FILE_PROBE' : 'NATIVE_READ_FILE_SCHEMA_PROBE') :
           mainSchemaDiscovery(parsed);
         if (main) {
@@ -1234,10 +1257,11 @@ export async function startShellProvider(forbiddenPort, command, {
             response.end(output);
             return;
           }
-          if (readFileProbe || protectedRead) {
+          if (readFileProbe || boundaryRead) {
             const selected = fixedReadFileCall(parsed, workspace,
-              protectedRead ? targetPath : join(workspace, READ_CANARY_NAME),
-              protectedRead ? 'NATIVE_PROTECTED_READ_PROBE' : 'NATIVE_READ_FILE_PROBE');
+              boundaryRead ? targetPath : join(workspace, READ_CANARY_NAME),
+              protectedRead ? 'NATIVE_PROTECTED_READ_PROBE' :
+                dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_PROBE' : 'NATIVE_READ_FILE_PROBE');
             const events = readFileCallEvents(selected.arguments);
             const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
             const outputBytes = Buffer.byteLength(output) + Buffer.byteLength(JSON.stringify(main));
@@ -1279,14 +1303,14 @@ export async function startShellProvider(forbiddenPort, command, {
           response.end(output);
           return;
         }
-        if ((readFileProbe || protectedRead) && state.main === 'read-call-issued') {
-          const raw = protectedRead ? correlatedReadFileOutput(parsed, targetPath) : null;
+        if ((readFileProbe || boundaryRead) && state.main === 'read-call-issued') {
+          const raw = boundaryRead ? correlatedReadFileOutput(parsed, targetPath) : null;
           if (issuanceAtAdmission.main !== 'read-call-issued' ||
-              (protectedRead ? raw === null : !matchingReadFileResult(parsed, workspace))) {
+              (boundaryRead ? raw === null : !matchingReadFileResult(parsed, workspace))) {
             summary.resultEnvelope = readFileResultEnvelopeShape(parsed, issuanceAtAdmission, workspace);
             throw fault('NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN', 'read_file result differs from issued call and canary');
           }
-          if (protectedRead) {
+          if (boundaryRead) {
             if (typeof classifyProtectedRaw !== 'function') {
               throw fault('NATIVE_PROTECTED_CLASSIFIER_MISSING', 'protected result host bridge was absent');
             }
@@ -1304,14 +1328,15 @@ export async function startShellProvider(forbiddenPort, command, {
             if (state.failed) {
               throw fault('NATIVE_REQUEST_REJECTED', 'another native request failed during protected classification');
             }
-            if (safeClass === 'marker_exposed') {
+            if (protectedRead && safeClass === 'marker_exposed') {
               throw fault('NATIVE_PROTECTED_MARKER_EXPOSED', 'host classified protected content exposure');
             }
-            if (!['access_denied', 'not_found', 'unknown'].includes(safeClass)) {
+            if (!['access_denied', 'not_found', 'unknown',
+              ...dummyAuthRead ? ['marker_exposed'] : []].includes(safeClass)) {
               throw fault('NATIVE_PROTECTED_CLASSIFIER_INVALID', 'host protected class was invalid');
             }
           }
-          const events = shellTextEvents(protectedRead ? 'Protected read result recorded.' :
+          const events = shellTextEvents(boundaryRead ? 'Boundary read result recorded.' :
             'Fixture workspace read observed.', READ_TEXT_RESPONSE,
             'msg_native_read_file_2');
           const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
@@ -1320,10 +1345,11 @@ export async function startShellProvider(forbiddenPort, command, {
           }
           state.main = 'read-result-accepted';
           state.outputBytes += Buffer.byteLength(output);
-          summary.kind = protectedRead ? 'matching_protected_read_result' : 'matching_read_file_result';
+          summary.kind = protectedRead ? 'matching_protected_read_result' :
+            dummyAuthRead ? 'matching_dummy_auth_result' : 'matching_read_file_result';
           summary.responseId = READ_TEXT_RESPONSE;
           summary.forCallId = READ_CALL;
-          summary.exactCanary = !protectedRead;
+          summary.exactCanary = !boundaryRead;
           summary.previousResponse = 'absent';
           summary.inputCount = 4;
           summary.callItemId = READ_ITEM;
@@ -1334,10 +1360,10 @@ export async function startShellProvider(forbiddenPort, command, {
           summary.nativeChildAssociation = 'unknown';
           response.writeHead(200, { 'content-type': 'text/event-stream' });
           response.end(output);
-          if (protectedRead) settleReadClassification(true);
+          if (boundaryRead) settleReadClassification(true);
           return;
         }
-        if (protectedRead && state.main === 'read-result-classifying') {
+        if (boundaryRead && state.main === 'read-result-classifying') {
           throw fault('NATIVE_READ_FILE_RESULT_REPLAY', 'another native result arrived during classification');
         }
         if (state.main === 'call-issued') {
@@ -1731,9 +1757,12 @@ export async function guestShellRun(config) {
   const readFileSchemaOnly = config.phase === 'read-file-schema';
   const readFileProbe = config.phase === 'read-file-probe';
   const protectedRead = config.phase === 'protected-read';
+  const dummyAuthRead = config.phase === 'dummy-auth-read';
+  const boundaryRead = protectedRead || dummyAuthRead;
   const protectedRoute = protectedRead ? config.protectedRoute : null;
-  const readFileTurn = readFileProbe || protectedRead;
-  const targetPath = protectedRead ? protectedReadPath(protectedRoute, workspace, config.protectedRoot) :
+  const readFileTurn = readFileProbe || boundaryRead;
+  const targetPath = dummyAuthRead ? DUMMY_AUTH_PATH : protectedRead ?
+    protectedReadPath(protectedRoute, workspace, config.protectedRoot) :
     join(workspace, READ_CANARY_NAME);
   let provider;
   let host;
@@ -1749,10 +1778,11 @@ export async function guestShellRun(config) {
     const loopback = spawnSync('/usr/sbin/ip', ['-o', 'link', 'show', 'lo'], { encoding: 'utf8', timeout: 2_000 });
     if (!loopbackReady(loopback)) throw fault('GUEST_LOOPBACK_UNAVAILABLE', 'guest loopback unavailable');
     const command = protectedRead ? 'NATIVE_PROTECTED_READ_ONLY' :
+      dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_ONLY' :
       shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
     provider = await startShellProvider(config.hostPort, command,
-      { readFileSchemaOnly, readFileProbe, protectedRead, workspace, targetPath,
-        ...(protectedRead ? { classifyProtectedRaw: async raw => {
+      { readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, workspace, targetPath,
+        ...(boundaryRead ? { classifyProtectedRaw: async raw => {
           process.stdout.write(`${JSON.stringify({ kind: 'guest_protected_raw',
             callId: READ_CALL, output: raw })}\n`);
           const line = await timeout('host protected classification', config.release(), 5_000);
@@ -1783,8 +1813,14 @@ export async function guestShellRun(config) {
     await mkdir(settings, { recursive: true, mode: 0o700 });
     await writeFile(join(settings, 'settings.json'), `${JSON.stringify({ schema_version: 1,
       endpoint_transport: { base_url: `http://127.0.0.1:${provider.port}`, auth: 'bearer' } })}\n`, { mode: 0o600 });
-    await writeFile(join(settings, 'auth.json'), `${JSON.stringify({ schema_version: 1,
+    if (!dummyAuthRead) await writeFile(join(settings, 'auth.json'), `${JSON.stringify({ schema_version: 1,
       providers: { meta: { api_key: 'passeur-disposable-dummy-key' } } })}\n`, { mode: 0o600 });
+    else {
+      const auth = await lstat(DUMMY_AUTH_PATH);
+      if (!auth.isFile() || auth.isSymbolicLink() || auth.nlink !== 1 || auth.size > 1024) {
+        throw fault('NATIVE_DUMMY_AUTH_CONTROL_INVALID', 'host-owned dummy auth file was not regular');
+      }
+    }
     stage = 'host_initialize';
     host = spawnMspConnection({ command: `${GUEST_RUNTIME}/native-host-wrapper`, args: ['serve'],
       cwd: workspace, env: guestEnvironment(), shutdownTimeoutMs: 2_000, onStderr: () => undefined });
@@ -1842,7 +1878,7 @@ export async function guestShellRun(config) {
           observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
             tool: item.tool, status: item.status, argsMatch,
             exactCanary: readFileProbe && item.visibleOutput === readFileDecoratedOutput(workspace),
-            outputShape: protectedRead && typeof item.visibleOutput === 'string' ?
+            outputShape: boundaryRead && typeof item.visibleOutput === 'string' ?
               { ...outputShape, sha256: createHash('sha256').update(item.visibleOutput).digest('hex') } :
               outputShape });
         } else observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
@@ -1913,7 +1949,9 @@ export async function guestShellRun(config) {
     commands.push('turn/start');
     const ack = await timeout('turn/start', initialized.connection.command('turn/start', {
       sessionId: metadata.sessionId,
-      input: [{ type: 'text', text: protectedRead ?
+      input: [{ type: 'text', text: dummyAuthRead ?
+        `NATIVE_DUMMY_AUTH_READ_PROBE: Use the advertised read_file tool once on ${DUMMY_AUTH_PATH} with offset 1 and limit 20. Report the result.` :
+        protectedRead ?
         `NATIVE_PROTECTED_READ_PROBE: Use the advertised read_file tool once on ${targetPath} with offset 1 and limit 20. Report the result.` :
         readFileProbe ?
         `NATIVE_READ_FILE_PROBE: Use the advertised read_file tool once on ${join(workspace, READ_CANARY_NAME)} with offset 1 and limit 20. Report the exact result.` :
@@ -2013,7 +2051,8 @@ export async function guestShellRun(config) {
     if (provider.state.primaryCode) {
       throw fault(provider.state.primaryCode, 'guest provider rejected a request before outcome publication');
     }
-    const result = { kind: protectedRead ? 'native_protected_read_outcome' :
+    const result = { kind: dummyAuthRead ? 'native_dummy_auth_read_outcome' :
+      protectedRead ? 'native_protected_read_outcome' :
       readFileProbe ? 'native_read_file_outcome' :
       readFileSchemaOnly ? 'native_read_file_schema_outcome' :
       heldResult?.kind === 'decided' ? 'native_shell_held_decided' :
@@ -2249,7 +2288,7 @@ export async function verifyHostStop(capture, status, exit, {
 export function runStatusPhase(prepared, config) {
   const { classifyProtectedOutput: hostProtectedClassifier,
     protectedMarkerPresent, ...guestConfig } = config;
-  const protectedPhase = config.phase === 'protected-read';
+  const protectedPhase = ['protected-read', 'dummy-auth-read'].includes(config.phase);
   if (protectedPhase && (typeof hostProtectedClassifier !== 'function' ||
       typeof protectedMarkerPresent !== 'function')) {
     throw fault('NATIVE_PROTECTED_CLASSIFIER_MISSING', 'host protected classifier was absent');
@@ -2342,7 +2381,7 @@ export function runStatusPhase(prepared, config) {
         return;
       }
       const allowedKind = output.length === 1 ? ['guest_outcome', 'guest_transport_error'] :
-        output.length === 2 ? ['native_protected_read_outcome', 'guest_transport_error'] : [];
+        output.length === 2 ? ['native_protected_read_outcome', 'native_dummy_auth_read_outcome', 'guest_transport_error'] : [];
       if (protectedMarkerPresent(line) || !allowedKind.includes(parsed?.kind)) {
         protectedFrameError = fault('NATIVE_PROTECTED_FRAME_INVALID', 'protected output appeared outside result frame');
         protectedReject(protectedFrameError); outcomeReject(protectedFrameError);
@@ -2358,7 +2397,7 @@ export function runStatusPhase(prepared, config) {
         'guest failed before protected result classification'));
     }
     append(output, line);
-    if (['first', 'resume', 'shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read'].includes(config.phase) && output.length === 1) {
+    if (['first', 'resume', 'shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && output.length === 1) {
       try {
         const parsed = JSON.parse(line);
         if (parsed.kind !== 'guest_ready' || parsed.result?.kind !==
@@ -2384,7 +2423,7 @@ export function runStatusPhase(prepared, config) {
         handoffResolve(parsed.result);
       } catch (error) { handoffReject(error); }
     }
-    if ((['shell', 'read-file-schema', 'read-file-probe', 'protected-read'].includes(config.phase) && output.length === 2) ||
+    if ((['shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && output.length === 2) ||
         (config.phase === 'held-shell' && output.length === 3)) {
       try {
         outcomeResolve(decodeShellOutcomeLine(line));
@@ -2421,7 +2460,7 @@ export function runStatusPhase(prepared, config) {
     child.once('close', (code, signal) => {
       clearTimeout(timer);
       if (output.length === 0) readyReject(fault('GUEST_OUTPUT_INVALID', 'phase exited before readiness'));
-      if (['shell', 'read-file-schema', 'read-file-probe', 'protected-read'].includes(config.phase) && output.length < 2 ||
+      if (['shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && output.length < 2 ||
           config.phase === 'held-shell' && output.length < 3) {
         outcomeReject(fault('GUEST_OUTPUT_INVALID', 'shell exited before outcome'));
       }
@@ -2434,7 +2473,7 @@ export function runStatusPhase(prepared, config) {
       resolveResult({ code, signal, timedOut, overflow, output, stderr, statusLines, statusClosed });
     });
   });
-  const boundedOutcome = ['shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read'].includes(config.phase) ?
+  const boundedOutcome = ['shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) ?
     timeout('shell outcome', outcome, config.phase === 'held-shell' ? HELD_DEADLINE_MS : DEADLINE_MS) : undefined;
   boundedOutcome?.catch(() => undefined);
   const boundedHandoff = config.phase === 'held-shell' ? timeout('held approval handoff', handoff) : undefined;
@@ -2449,7 +2488,7 @@ export function runStatusPhase(prepared, config) {
     liveStatus: timeout('live Bubblewrap status', liveStatus),
     statusLines: () => [...statusLines],
     release: () => { if (!released) { released = true; child.stdin.end('release\n'); } },
-    releaseTurn: () => { if (['shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read'].includes(config.phase) && !released) {
+    releaseTurn: () => { if (['shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && !released) {
       released = true; child.stdin.write('turn\n'); } },
     sendDecision: decision => { if (config.phase !== 'held-shell' || !released || decisionSent) {
       throw fault('NATIVE_HELD_DECISION_SEQUENCE', 'held decision was sent outside its one-use window');
@@ -2457,7 +2496,7 @@ export function runStatusPhase(prepared, config) {
       decisionSent = true;
       child.stdin.write(`${JSON.stringify(decision)}\n`);
     },
-    releaseShutdown: () => { if (['shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read'].includes(config.phase) && released && !shutdownReleased) {
+    releaseShutdown: () => { if (['shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && released && !shutdownReleased) {
       shutdownReleased = true; child.stdin.end('shutdown\n');
     } },
     abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } }, finished };
@@ -2469,7 +2508,7 @@ export function decodeShellOutcomeLine(line) {
   catch { throw fault('GUEST_OUTPUT_INVALID', 'shell outcome JSON invalid'); }
   if (parsed?.kind === 'guest_outcome' &&
       ['guest_shell_outcome', 'native_read_file_schema_outcome', 'native_read_file_outcome',
-        'native_protected_read_outcome',
+        'native_protected_read_outcome', 'native_dummy_auth_read_outcome',
         'native_shell_approval_pending',
         'native_shell_held_decided'].includes(parsed.result?.kind)) return parsed.result;
   if (parsed?.kind === 'guest_transport_error' && parsed.stage === 'native_turn' &&
@@ -2783,12 +2822,15 @@ export function validateReadFileSchemaOutcome(ready, outcome) {
 }
 
 export function validateReadFileOutcome(ready, outcome, workspace,
-  { protectedRead = false, targetPath = join(workspace, READ_CANARY_NAME) } = {}) {
+  { protectedRead = false, dummyAuthRead = false,
+    targetPath = join(workspace, READ_CANARY_NAME) } = {}) {
+  const boundaryRead = protectedRead || dummyAuthRead;
   const requests = outcome?.providerRequests;
   const responses = requests?.filter(request => request.path === '/responses') ?? [];
   const main = responses.filter(request => request.kind === 'native_read_file_call');
   const result = responses.filter(request => request.kind ===
-    (protectedRead ? 'matching_protected_read_result' : 'matching_read_file_result'));
+    (protectedRead ? 'matching_protected_read_result' :
+      dummyAuthRead ? 'matching_dummy_auth_result' : 'matching_read_file_result'));
   const skill = responses.filter(request => request.kind === 'native_reminder_call');
   const verification = responses.filter(request => request.kind === 'native_verification_reminder_call');
   const mainIndex = requests?.indexOf(main[0]) ?? -1;
@@ -2798,9 +2840,10 @@ export function validateReadFileOutcome(ready, outcome, workspace,
   const observedReminders = outcome?.observations?.reminders;
   const observedReminderIds = Array.isArray(observedReminders) ?
     observedReminders.map(observed => observed.callId) : [];
-  if (outcome?.kind !== (protectedRead ? 'native_protected_read_outcome' : 'native_read_file_outcome') ||
+  if (outcome?.kind !== (protectedRead ? 'native_protected_read_outcome' :
+    dummyAuthRead ? 'native_dummy_auth_read_outcome' : 'native_read_file_outcome') ||
       outcome.sessionId !== ready.metadata.sessionId || !outcome.turnId ||
-      (!protectedRead && ready.readCanarySha256 !==
+      (!boundaryRead && ready.readCanarySha256 !==
         createHash('sha256').update(READ_CANARY_CONTENT).digest('hex')) ||
       outcome.turnAck?.status !== 'accepted' || outcome.turnAck?.disposition !== 'started' ||
       outcome.turnAck?.startedNewTurn !== true ||
@@ -2826,14 +2869,14 @@ export function validateReadFileOutcome(ready, outcome, workspace,
       main[0].schemaSha256 !== createHash('sha256').update(
         JSON.stringify(main[0].mainSchema.selected)).digest('hex') ||
       result[0].model !== SHELL_MODEL || result[0].responseId !== READ_TEXT_RESPONSE ||
-      result[0].forCallId !== READ_CALL || result[0].exactCanary !== !protectedRead ||
+      result[0].forCallId !== READ_CALL || result[0].exactCanary !== !boundaryRead ||
       result[0].previousResponse !== 'absent' || result[0].inputCount !== 4 ||
       result[0].callItemId !== READ_ITEM || result[0].functionName !== 'muse.read_file' ||
       result[0].argumentsExactFixed !== true ||
-      (!protectedRead && (result[0].outputBytes !== Buffer.byteLength(readFileDecoratedOutput(workspace)) ||
+      (!boundaryRead && (result[0].outputBytes !== Buffer.byteLength(readFileDecoratedOutput(workspace)) ||
         result[0].outputSha256 !== createHash('sha256').update(
           readFileDecoratedOutput(workspace)).digest('hex'))) ||
-      (protectedRead && (!Number.isSafeInteger(result[0].outputBytes) ||
+      (boundaryRead && (!Number.isSafeInteger(result[0].outputBytes) ||
         result[0].outputBytes > PROTECTED_OUTPUT_LIMIT || result[0].outputBytes < 0 ||
         !/^[0-9a-f]{64}$/.test(result[0].outputSha256 ?? ''))) ||
       result[0].nativeChildAssociation !== 'unknown' ||
@@ -2860,12 +2903,13 @@ export function validateReadFileOutcome(ready, outcome, workspace,
       outcome.observations?.approvals?.length !== 0 ||
       outcome.observations?.items?.length !== 1 ||
       item?.callId !== READ_CALL || item.turnId !== outcome.turnId ||
-      item.tool !== 'read_file' || item.status !== (protectedRead ? 'failed' : 'completed') ||
-      item.argsMatch !== true || item.exactCanary !== !protectedRead ||
+      item.tool !== 'read_file' || (dummyAuthRead ? !['failed', 'completed'].includes(item.status) :
+        item.status !== (protectedRead ? 'failed' : 'completed')) ||
+      item.argsMatch !== true || item.exactCanary !== !boundaryRead ||
       item.outputShape?.type !== 'string' ||
-      item.outputShape.bytes !== (protectedRead ? result[0].outputBytes :
+      item.outputShape.bytes !== (boundaryRead ? result[0].outputBytes :
         Buffer.byteLength(readFileDecoratedOutput(workspace))) ||
-      protectedRead && item.outputShape.sha256 !== result[0].outputSha256 ||
+      boundaryRead && item.outputShape.sha256 !== result[0].outputSha256 ||
       outcome.observations?.protocolErrors?.length !== 0 ||
       Object.values(outcome.observations?.omitted ?? {}).some(count => count !== 0) ||
       !Array.isArray(observedReminders) ||
@@ -2878,7 +2922,8 @@ export function validateReadFileOutcome(ready, outcome, workspace,
         observed.tool !== 'submit_reminder_decision' || observed.payloadMatch !== true)) {
     throw fault('NATIVE_READ_FILE_OUTCOME_INVALID', 'native read_file result was not exact and isolated');
   }
-  return { kind: protectedRead ? 'native_protected_read_observed' : 'native_workspace_read_observed',
+  return { kind: protectedRead ? 'native_protected_read_observed' :
+    dummyAuthRead ? 'native_dummy_auth_read_observed' : 'native_workspace_read_observed',
     turnId: outcome.turnId,
     callId: READ_CALL, pathSha256: main[0].pathSha256 };
 }
@@ -3288,9 +3333,13 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
   checkBubblewrap = probeBubblewrap, stage = stageRuntime, startSentinel = startHostSentinel,
   probe = tcpProbe, launch = runStatusPhase, capture = captureHostIdentities,
   stop = verifyHostStop, held = false, readFileSchemaOnly = false, readFileProbe = false,
-  protectedRead = false, protectedRoute = 'direct',
+  protectedRead = false, protectedRoute = 'direct', dummyAuthRead = false,
   requestDecision } = {}) {
-  const root = await mkdtemp(join(tmpdir(), protectedRead ?
+  if ([held, readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead]
+    .filter(Boolean).length > 1) {
+    throw fault('NATIVE_DIAGNOSTIC_MODE_INVALID', 'native diagnostic modes must be distinct');
+  }
+  const root = await mkdtemp(join(tmpdir(), dummyAuthRead ? 'passeur-muse-dummy-auth-read-' : protectedRead ?
     `passeur-muse-protected-${protectedRoute === 'direct' ? 'read' : protectedRoute}-` :
     readFileProbe ? 'passeur-muse-read-file-probe-' : readFileSchemaOnly ?
     'passeur-muse-read-file-schema-' : 'passeur-muse-native-shell-sandbox-'));
@@ -3306,6 +3355,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
   let protectedTarget;
   let protectedLink;
   let protectedMarker;
+  let dummyAuthControl;
+  let dummyAuthMarker;
   try {
     const workspace = join(root, 'workspace');
     const home = join(root, 'home');
@@ -3314,6 +3365,21 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     await Promise.all([mkdir(workspace), mkdir(home), mkdir(protectedRoot)]);
     await writeFile(join(protectedRoot, token), 'host-only');
     await symlink(protectedRoot, join(workspace, 'protected-link'));
+    if (dummyAuthRead) {
+      const settings = join(home, '.config', 'muse');
+      await mkdir(settings, { recursive: true, mode: 0o700 });
+      dummyAuthMarker = `passeur-disposable-${randomBytes(24).toString('hex')}`;
+      const path = join(settings, 'auth.json');
+      const content = `${JSON.stringify({ schema_version: 1,
+        providers: { meta: { api_key: dummyAuthMarker } } })}\n`;
+      await writeFile(path, content, { mode: 0o600, flag: 'wx' });
+      const stat = await lstat(path);
+      dummyAuthControl = { path, dev: stat.dev, ino: stat.ino, uid: stat.uid, mode: stat.mode,
+        bytes: Buffer.byteLength(content), sha256: createHash('sha256').update(content).digest('hex') };
+      await verifyDummyAuthControl(dummyAuthControl, 'NATIVE_DUMMY_AUTH_CONTROL_INVALID');
+      evidence.dummyAuthControl = { pathSha256: createHash('sha256').update(DUMMY_AUTH_PATH).digest('hex'),
+        bytes: dummyAuthControl.bytes, sha256: dummyAuthControl.sha256, regular: true };
+    }
     if (readFileProbe) await writeFile(join(workspace, READ_CANARY_NAME), READ_CANARY_CONTENT,
       { mode: 0o600 });
     if (protectedRead) {
@@ -3356,16 +3422,19 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         throw fault('NATIVE_PROTECTED_CONTROL_INVALID', 'protected file changed before sandbox launch');
       }
     }
+    if (dummyAuthRead) await verifyDummyAuthControl(dummyAuthControl, 'NATIVE_DUMMY_AUTH_CONTROL_INVALID');
     stageName = 'shell_host';
-    host = launch(prepared, { phase: held ? 'held-shell' : protectedRead ? 'protected-read' :
+    host = launch(prepared, { phase: held ? 'held-shell' : dummyAuthRead ? 'dummy-auth-read' :
+      protectedRead ? 'protected-read' :
       readFileProbe ? 'read-file-probe' :
       readFileSchemaOnly ? 'read-file-schema' : 'shell',
       workspace, hostPort: sentinel.port,
       protectedRoot, canaryToken: token,
       ...(protectedRead ? { protectedRoute } : {}),
-      ...(protectedRead ? { classifyProtectedOutput: raw =>
-        classifyProtectedOutput(raw, protectedTarget, workspace, protectedMarker),
-      protectedMarkerPresent: line => line.includes(protectedMarker) } : {}) });
+      ...((protectedRead || dummyAuthRead) ? { classifyProtectedOutput: raw =>
+        dummyAuthRead ? classifyDummyAuthOutput(raw, workspace, dummyAuthMarker) :
+          classifyProtectedOutput(raw, protectedTarget, workspace, protectedMarker),
+      protectedMarkerPresent: line => line.includes(dummyAuthRead ? dummyAuthMarker : protectedMarker) } : {}) });
     const [ready, liveStatus] = await Promise.all([host.ready, host.liveStatus]);
     evidence.ready = ready;
     evidence.liveStatus = liveStatus;
@@ -3374,7 +3443,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         createHash('sha256').update(READ_CANARY_CONTENT).digest('hex')) {
       throw fault('NATIVE_READ_CANARY_INVALID', 'guest readiness did not bind the owned read canary');
     }
-    if (ready.commandSha256 !== createHash('sha256').update(protectedRead ? 'NATIVE_PROTECTED_READ_ONLY' :
+    if (ready.commandSha256 !== createHash('sha256').update(dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_ONLY' :
+      protectedRead ? 'NATIVE_PROTECTED_READ_ONLY' :
       shellProbeCommand(workspace, protectedRoot, token)).digest('hex')) {
       throw fault('NATIVE_SHELL_READY_INVALID', 'guest shell command differs from host fixture command');
     }
@@ -3487,26 +3557,33 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     }
     if (stopped.kind !== 'confirmed') throw fault('STOP_UNCONFIRMED', 'shell namespace stop was not confirmed');
     let protectedOutput;
-    if (protectedRead) {
+    if (protectedRead || dummyAuthRead) {
       if (host.protectedFrameError?.()) throw host.protectedFrameError();
       protectedOutput = await host.protectedResult;
-      evidence.protectedOutput = protectedOutput;
-      await verifyProtectedLink(join(workspace, 'protected-link'), protectedRoot, protectedLink);
-      evidence.protectedLinkAfter = { intact: true };
-      let stat;
-      try { stat = await lstat(protectedControl.path); }
-      catch { throw fault('NATIVE_PROTECTED_CONTROL_CHANGED', 'protected file missing after host stop'); }
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
-          stat.dev !== protectedControl.dev || stat.ino !== protectedControl.ino ||
-          stat.uid !== protectedControl.uid ||
-          await readFile(protectedControl.path, 'utf8') !== `${protectedMarker}\n`) {
-        throw fault('NATIVE_PROTECTED_CONTROL_CHANGED', 'protected file identity or contents changed');
+      evidence[protectedRead ? 'protectedOutput' : 'dummyAuthOutput'] = protectedOutput;
+      if (protectedRead) {
+        await verifyProtectedLink(join(workspace, 'protected-link'), protectedRoot, protectedLink);
+        evidence.protectedLinkAfter = { intact: true };
+        let stat;
+        try { stat = await lstat(protectedControl.path); }
+        catch { throw fault('NATIVE_PROTECTED_CONTROL_CHANGED', 'protected file missing after host stop'); }
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
+            stat.dev !== protectedControl.dev || stat.ino !== protectedControl.ino ||
+            stat.uid !== protectedControl.uid ||
+            await readFile(protectedControl.path, 'utf8') !== `${protectedMarker}\n`) {
+          throw fault('NATIVE_PROTECTED_CONTROL_CHANGED', 'protected file identity or contents changed');
+        }
+        evidence.protectedControlAfter = { intact: true };
+      } else {
+        await verifyDummyAuthControl(dummyAuthControl, 'NATIVE_DUMMY_AUTH_CONTROL_CHANGED');
+        evidence.dummyAuthControlAfter = { intact: true };
       }
-      evidence.protectedControlAfter = { intact: true };
       const correlated = guestOutcome?.providerRequests?.find(request =>
-        request.kind === (primaryGuestFailure?.code === 'NATIVE_PROTECTED_MARKER_EXPOSED' ?
-          'protected_read_result_classified' : 'matching_protected_read_result'));
-      if (protectedOutput.pathSha256 !== evidence.protectedTargetSha256 ||
+        request.kind === (protectedRead && primaryGuestFailure?.code === 'NATIVE_PROTECTED_MARKER_EXPOSED' ?
+          'protected_read_result_classified' : protectedRead ? 'matching_protected_read_result' :
+            'matching_dummy_auth_result'));
+      if (protectedOutput.pathSha256 !== (protectedRead ? evidence.protectedTargetSha256 :
+        evidence.dummyAuthControl.pathSha256) ||
           protectedOutput.sha256 !== correlated?.outputSha256 ||
           protectedOutput.bytes !== correlated?.outputBytes || correlated?.forCallId !== READ_CALL) {
         throw fault('NATIVE_PROTECTED_OUTPUT_ASSOCIATION_INVALID', 'host classification differed from correlated result');
@@ -3527,8 +3604,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         (chosenInput && guestOutcome.held?.decision?.choice?.choiceId !== chosenInput.choiceId))) {
       throw fault('NATIVE_HELD_OUTCOME_INVALID', 'terminal held decision differed from host-supplied choice');
     }
-    const classified = protectedRead ? validateReadFileOutcome(ready, guestOutcome, workspace,
-      { protectedRead, targetPath: protectedTarget }) :
+    const classified = protectedRead || dummyAuthRead ? validateReadFileOutcome(ready, guestOutcome, workspace,
+      { protectedRead, dummyAuthRead, targetPath: dummyAuthRead ? DUMMY_AUTH_PATH : protectedTarget }) :
       readFileProbe ? validateReadFileOutcome(ready, guestOutcome, workspace) :
       readFileSchemaOnly ? validateReadFileSchemaOutcome(ready, guestOutcome) :
       held && guestOutcome.kind === 'native_shell_held_decided' ?
@@ -3537,7 +3614,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
       protectedRead ? PROTECTED_READ_NAME : null);
     if (!effects.protectedIntact || classified.kind === 'native_shell_effect_observed' && !effects.shellWritten ||
         classified.kind === 'native_shell_denial_observed' && !effects.shellAbsent ||
-        (readFileSchemaOnly || readFileProbe || protectedRead ||
+        (readFileSchemaOnly || readFileProbe || protectedRead || dummyAuthRead ||
           ['native_shell_approval_pending', 'native_shell_held_rejected'].includes(classified.kind)) &&
           !effects.shellAbsent) {
       throw fault('NATIVE_SHELL_EFFECT_INVALID', 'workspace or protected canary contradicted native outcome');
@@ -3570,6 +3647,10 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
       `native_protected_${protectedRoute}_read_exposed` :
       ['access_denied', 'not_found'].includes(protectedOutput.class) ?
         `native_protected_${protectedRoute}_read_denied` : `native_protected_${protectedRoute}_read_unknown`;
+    if (dummyAuthRead) finalKind = protectedOutput.class === 'marker_exposed' ?
+      'dummy_auth_visible' : protectedOutput.class === 'not_found' &&
+        guestOutcome.observations.items[0].status === 'failed' ? 'dummy_auth_denied' :
+        'dummy_auth_unknown';
     outcome = { kind: finalKind, classified, effects, evidence };
   } catch (error) {
     if (primaryGuestFailure && error.code !== primaryGuestFailure.code) {
@@ -3635,6 +3716,10 @@ export async function qualifyNativeProtectedProcRead(options = {}) {
   return qualifyNativeShell({ ...options, protectedRead: true, protectedRoute: 'proc' });
 }
 
+export async function qualifyNativeDummyAuthRead(options = {}) {
+  return qualifyNativeShell({ ...options, dummyAuthRead: true });
+}
+
 export function diagnosticMode(args) {
   if (args.length === 0) return 'idle-resume';
   if (args.length === 1 && args[0] === '--native-shell') return 'native-shell';
@@ -3644,6 +3729,7 @@ export function diagnosticMode(args) {
   if (args.length === 1 && args[0] === '--native-protected-read') return 'native-protected-read';
   if (args.length === 1 && args[0] === '--native-protected-read-symlink') return 'native-protected-read-symlink';
   if (args.length === 1 && args[0] === '--native-protected-read-proc') return 'native-protected-read-proc';
+  if (args.length === 1 && args[0] === '--native-dummy-auth-read') return 'native-dummy-auth-read';
   throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments or an exact admitted native diagnostic flag');
 }
 
@@ -3746,13 +3832,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       if (first.done || Buffer.byteLength(first.value) > LIMIT) throw fault('GUEST_INPUT_TOO_LARGE', 'guest input missing or exceeds limit');
       const config = JSON.parse(first.value);
       config.release = async () => (await lines.next()).value;
-      const result = ['shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read'].includes(config.phase) ?
+      const result = ['shell', 'held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) ?
         await guestShellRun(config) : await guestRun(config);
       process.stdout.write(`${JSON.stringify(result)}\n`);
       process.exitCode = ['guest_transport_observed', 'guest_resume_observed',
         'guest_shell_outcome', 'native_shell_approval_pending',
         'native_shell_held_decided', 'native_read_file_schema_outcome',
-        'native_read_file_outcome', 'native_protected_read_outcome'].includes(result.kind) ? 0 : 1;
+        'native_read_file_outcome', 'native_protected_read_outcome',
+        'native_dummy_auth_read_outcome'].includes(result.kind) ? 0 : 1;
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ kind: 'guest_transport_error', code: error.code ?? error.name,
         message: String(error.message).slice(0, 500) })}\n`);
@@ -3769,6 +3856,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
           mode === 'native-protected-read' ? await qualifyNativeProtectedRead() :
           mode === 'native-protected-read-symlink' ? await qualifyNativeProtectedSymlinkRead() :
           mode === 'native-protected-read-proc' ? await qualifyNativeProtectedProcRead() :
+          mode === 'native-dummy-auth-read' ? await qualifyNativeDummyAuthRead() :
           await qualifyFreshHostResume();
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } catch (error) {
