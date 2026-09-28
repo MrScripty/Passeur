@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -10,10 +10,13 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   verifiedNativeNamespace, loopbackReady, parseBubblewrapStatus, verifyHostStop,
   validateResumeOutcome, qualifyFreshHostResume,
   assertHostAssociation,
-  advertisedBash, matchingShellResult, shellOutputMarkers, shellProbeCommand,
+  matchingShellResult, shellOutputMarkers, shellProbeCommand,
   rejectedToolSchemaShape, summarizedShellModel, recognizedReminderSchema, decodeShellOutcomeLine,
-  startShellProvider, mainSchemaDiscovery, fixedNoReminderPayload, reminderCallEvents,
-  validateShellReady, validateShellOutcome, qualifyNativeShell,
+  startShellProvider, mainSchemaDiscovery, fixedBashCall, bashCallEvents, shellTextEvents,
+  shellResultEnvelopeShape,
+  fixedNoReminderPayload, reminderCallEvents,
+  approvalSummary, validateShellReady, validateShellOutcome, qualifyNativeShell,
+  classifyDurableApprovalLog, readDurableApprovalLog,
   diagnosticMode,
   runStatusPhase,
 } from '../../scripts/qualify-muse-sandbox-transport.mjs';
@@ -476,19 +479,8 @@ test('native shell provider checks advertised bash schema and exact tool result 
   assert.match(command, /shell-canary/);
   assert.match(command, /dummy-auth=visible/);
   assert.match(command, /\/mounts\/home\/\.config\/muse\/auth\.json/);
-  const tool = { type: 'function', name: 'bash', parameters: { type: 'object',
-    properties: { command: { type: 'string' } }, required: ['command'] } };
-  assert.deepEqual(advertisedBash({ model: 'fixture-native-shell', tools: [tool], fixtureCommand: command }),
-    { name: 'bash', arguments: { command } });
-  for (const malformed of [
-    { ...tool, name: 'shell' },
-    { ...tool, parameters: { ...tool.parameters, required: ['command', 'unknown'] } },
-    { ...tool, parameters: { ...tool.parameters, properties: { command: { type: 'number' } } } },
-    { ...tool, parameters: { ...tool.parameters, properties: { command: { type: 'string', enum: ['different'] } } } },
-    { ...tool, parameters: { ...tool.parameters, not: {} } },
-  ]) assert.throws(() => advertisedBash({ model: 'fixture-native-shell', tools: [malformed], fixtureCommand: command }),
-    { code: 'NATIVE_TOOL_SCHEMA_INVALID' });
-  const result = { input: [{ type: 'function_call_output', call_id: 'call_native_shell_1',
+  const result = { model: 'fixture-native-shell', previous_response_id: 'resp_native_shell_1',
+    input: [{ type: 'function_call_output', call_id: 'call_native_shell_1',
     output: 'workspace=ok\ndirect=denied\nsymlink=denied\nproc=denied\ndummy-auth=visible\n' }] };
   assert.equal(matchingShellResult(result), true);
   assert.deepEqual(shellOutputMarkers(result.input[0].output), { workspaceWritten: true, dummyAuthVisible: true });
@@ -500,6 +492,7 @@ test('native shell provider checks advertised bash schema and exact tool result 
     output: result.input[0].output.replace('dummy-auth=visible', 'dummy-auth=leaked') }] }), false);
   assert.equal(matchingShellResult({ input: [result.input[0], { type: 'function_call_output',
     call_id: 'unrelated', output: result.input[0].output }] }), false);
+  assert.equal(matchingShellResult({ ...result, input: [{ ...result.input[0], extra: 'unknown' }] }), false);
   for (const extra of ['direct=visible\n', 'symlink=visible\n', 'proc=visible\n', 'unknown=extra\n', 'direct=denied\n']) {
     assert.equal(shellOutputMarkers(result.input[0].output + extra), null);
   }
@@ -661,17 +654,25 @@ function mainNativeRequest() {
   return { model: 'fixture-native-shell', input: 'NATIVE_SHELL_PROBE', tools: [{
     type: 'namespace', name: 'muse', tools: Array.from({ length: 25 }, (_, index) => ({
       type: 'function', name: index === 11 ? 'bash' : index === 12 ? 'bash_input' : `native_${index}`,
-      parameters: { type: 'object', properties: index === 11 ?
-        { command: { type: 'string' } } : { value: { type: 'string' } },
-      required: [index === 11 ? 'command' : 'value'], additionalProperties: false },
+      ...(index === 11 ? { strict: false } : {}),
+      parameters: { ...(index === 11 ? { additionalProperties: false } : {}),
+        properties: index === 11 ? { command: { type: 'string' }, description: { type: 'string' },
+          login: { type: 'boolean' }, max_output_tokens: { minimum: 1, type: 'integer' },
+          sandbox_permissions: { enum: ['use_default', 'require_escalated'], type: 'string' },
+          shell: { type: 'string' }, timeout_ms: { minimum: 1, type: 'integer' },
+          tty: { type: 'boolean' }, workdir: { type: 'string' },
+          yield_time_ms: { minimum: 0, type: 'integer' } } : { value: { type: 'string' } },
+        required: index === 11 ? ['command', 'description'] : ['value'], type: 'object',
+        ...(index === 11 ? {} : { additionalProperties: false }) },
     })) }] };
 }
 
-async function nativeProviderHarness() {
+async function nativeProviderHarness({ onShut } = {}) {
   let handle;
-  const provider = await startShellProvider(31001, 'printf never-issued', {
+  const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
+  const provider = await startShellProvider(31001, command, {
     makeServer: callback => { handle = callback; return {}; },
-    waitListen: async () => 31002, shut: async () => undefined,
+    waitListen: async () => 31002, shut: async () => { if (onShut) await onShut(handle); },
   });
   const postRaw = async raw => {
     const request = Readable.from([raw]);
@@ -681,10 +682,16 @@ async function nativeProviderHarness() {
     await handle(request, response);
     return response;
   };
-  return { provider, handle, postRaw, post: body => postRaw(JSON.stringify(body)) };
+  return { provider, handle, command, postRaw, post: body => postRaw(JSON.stringify(body)) };
 }
 
-test('main request discovers all 25 functions without a shell call or raw values', async () => {
+function shellResultRequest(overrides = {}) {
+  return { model: 'fixture-native-shell', previous_response_id: 'resp_native_shell_1',
+    input: [{ type: 'function_call_output', call_id: 'call_native_shell_1',
+      output: 'workspace=ok\ndirect=denied\nsymlink=denied\nproc=denied\ndummy-auth=absent\n' }], ...overrides };
+}
+
+test('main schema projector redacts drift and provider refuses a call', async () => {
   const secret = 'sk_test_12345_SUPPOSED_SECRET';
   const main = mainNativeRequest();
   main.tools[0].tools[0].name = secret;
@@ -698,7 +705,7 @@ test('main request discovers all 25 functions without a shell call or raw values
   assert.equal(summary.functions[12].name, '[other]');
   assert.equal(summary.identityValid, true);
   assert.equal(summary.selectedComplete, false);
-  assert.deepEqual(summary.selected.schema.required, ['command']);
+  assert.deepEqual(summary.selected.schema.required, ['command', 'description']);
   assert.equal(summary.functions[0].name, '[other]');
   assert.equal(JSON.stringify(summary).includes(secret), false);
   assert.ok(Buffer.byteLength(JSON.stringify(summary)) <= 16_384);
@@ -716,9 +723,9 @@ test('main request discovers all 25 functions without a shell call or raw values
   const response = await h.post(main);
   assert.equal(response.status, 422);
   assert.equal(response.body, '');
-  assert.equal(h.provider.requests[0].kind, 'native_main_schema_discovery');
+  assert.equal(h.provider.requests[0].rejection, 'NATIVE_BASH_SCHEMA_INVALID');
   assert.equal(h.provider.requests[0].callId, undefined);
-  assert.deepEqual(await h.provider.rejection, { kind: 'provider_rejected', code: 'NATIVE_MAIN_SCHEMA_ONLY' });
+  assert.deepEqual(await h.provider.rejection, { kind: 'provider_rejected', code: 'NATIVE_BASH_SCHEMA_INVALID' });
   await h.provider.close();
 });
 
@@ -744,12 +751,14 @@ test('selected bash schema retains distinct safe names, nested constraints and e
   const summary = mainSchemaDiscovery(body);
   assert.equal(summary.selectedComplete, true);
   assert.equal(summary.selected.strict, true);
-  assert.deepEqual(summary.selected.schema.required, ['command', 'alpha_feature', 'beta_feature']);
-  assert.deepEqual(summary.selected.schema.properties.map(field => field.name),
-    ['command', 'alpha_feature', 'beta_feature', 'max_output_tokens']);
-  assert.deepEqual(summary.selected.schema.properties[1].schema.enum, ['fast', 'slow', null]);
-  assert.deepEqual(summary.selected.schema.properties[2].schema.items.anyOf[0].minimum, -1.5);
-  assert.deepEqual(summary.selected.schema.properties[3],
+  assert.deepEqual(summary.selected.schema.required,
+    ['command', 'description', 'alpha_feature', 'beta_feature']);
+  assert.deepEqual(summary.selected.schema.properties.slice(-2).map(field => field.name),
+    ['alpha_feature', 'beta_feature']);
+  assert.deepEqual(summary.selected.schema.properties.find(field => field.name === 'alpha_feature').schema.enum,
+    ['fast', 'slow', null]);
+  assert.deepEqual(summary.selected.schema.properties.find(field => field.name === 'beta_feature').schema.items.anyOf[0].minimum, -1.5);
+  assert.deepEqual(summary.selected.schema.properties.find(field => field.name === 'max_output_tokens'),
     { name: 'max_output_tokens', schema: { minimum: 1, type: 'integer' } });
   assert.equal(JSON.stringify(summary).includes('hidden prompt'), false);
 });
@@ -784,30 +793,123 @@ test('unsafe identifiers, unsupported constraints, depth and budget remain incom
   assert.equal(bounded.selectedTruncated, true);
 });
 
-test('main and reminder streams accept either order and concurrent arrival without cross-stream correlation', async () => {
-  for (const order of ['main-first', 'reminder-first', 'concurrent']) {
+test('reviewed bash schema admits only fixed command and description in six namespaced frames', async () => {
+  const h = await nativeProviderHarness();
+  const selected = fixedBashCall(mainNativeRequest(), h.command);
+  assert.deepEqual(selected.arguments,
+    { command: h.command, description: 'Disposable native shell qualification' });
+  const events = bashCallEvents(selected.arguments);
+  assert.deepEqual(events.map(event => event.type), ['response.created', 'response.output_item.added',
+    'response.function_call_arguments.delta', 'response.function_call_arguments.done',
+    'response.output_item.done', 'response.completed']);
+  assert.equal(events[1].item.namespace, 'muse');
+  assert.equal(events[1].item.name, 'bash');
+  assert.equal(events[1].item.call_id, 'call_native_shell_1');
+  assert.equal(events[2].delta, events[3].arguments);
+  assert.equal(events[3].arguments, events[4].item.arguments);
+  const response = await h.post(mainNativeRequest());
+  assert.equal(response.status, 200);
+  assert.equal((response.body.match(/data: /g) ?? []).length, 6);
+  assert.equal(h.provider.requests[0].namespace, 'muse');
+  assert.deepEqual(h.provider.requests[0].argumentKeys, ['command', 'description']);
+  assert.equal(h.provider.requests[0].commandSha256, createHash('sha256').update(h.command).digest('hex'));
+  await h.provider.close();
+});
+
+test('assistant SSE content part reconstructs before delta and completed item', () => {
+  const events = shellTextEvents();
+  assert.deepEqual(events.map(event => event.type), ['response.created', 'response.output_item.added',
+    'response.content_part.added', 'response.output_text.delta', 'response.output_text.done',
+    'response.content_part.done', 'response.output_item.done', 'response.completed']);
+  const item = structuredClone(events[1].item);
+  const added = events[2];
+  assert.equal(added.item_id, item.id);
+  assert.equal(added.content_index, 0);
+  assert.deepEqual(added.part, { type: 'output_text', text: '', annotations: [] });
+  item.content[added.content_index] = structuredClone(added.part);
+  const delta = events[3];
+  item.content[delta.content_index].text += delta.delta;
+  assert.equal(item.content[0].text, events[4].text);
+  assert.deepEqual(item.content[0], events[5].part);
+  assert.deepEqual(item.content, events[6].item.content);
+  assert.deepEqual(events[7].response.output[0], events[6].item);
+});
+
+test('bash schema drift and unknown result envelopes reject without assistant text', async () => {
+  for (const alter of [
+    body => { body.tools[0].tools[11].strict = true; },
+    body => { body.tools[0].tools[11].parameters.required.pop(); },
+    body => { body.tools[0].tools[11].parameters.properties.login.type = 'string'; },
+    body => { body.tools[0].tools[11].parameters.properties.sandbox_permissions.enum.pop(); },
+    body => { body.tools[0].tools[11].parameters.properties.timeout_ms.minimum = 0; },
+  ]) {
+    const h = await nativeProviderHarness();
+    const body = mainNativeRequest(); alter(body);
+    assert.throws(() => fixedBashCall(body, h.command), { code: 'NATIVE_BASH_SCHEMA_INVALID' });
+    const response = await h.post(body);
+    assert.equal(response.status, 422);
+    assert.equal(response.body, '');
+    assert.equal(h.provider.requests[0].callId, undefined);
+    await h.provider.close();
+  }
+  const h = await nativeProviderHarness();
+  assert.equal((await h.post(mainNativeRequest())).status, 200);
+  const unknown = shellResultRequest({ input: [{ type: 'function_call_output',
+    call_id: 'call_native_shell_1', output: { secret: 'sk_test_12345_SUPPOSED_SECRET' } }] });
+  assert.equal(matchingShellResult(unknown), false);
+  assert.equal(shellResultEnvelopeShape(unknown).items[0].outputType, 'object');
+  const response = await h.post(unknown);
+  assert.equal(response.status, 422);
+  assert.equal(response.body, '');
+  assert.equal(h.provider.requests[1].rejection, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+  assert.equal(JSON.stringify(h.provider.requests).includes('sk_test_12345_SUPPOSED_SECRET'), false);
+  assert.equal((await h.post(shellResultRequest())).status, 429);
+  await h.provider.close();
+  const crossed = await nativeProviderHarness();
+  assert.equal((await crossed.post(mainNativeRequest())).status, 200);
+  const crossResult = await crossed.post(shellResultRequest({ previous_response_id: 'resp_native_reminder_1' }));
+  assert.equal(crossResult.status, 422);
+  assert.equal(crossed.provider.requests[1].resultEnvelope.previousResponse, 'reminder');
+  await crossed.provider.close();
+});
+
+test('main call, result and reminder accept independent orders and overlap', async () => {
+  for (const order of ['main-first', 'reminder-first', 'concurrent', 'reminder-after-result',
+    'result-reminder-overlap']) {
     const h = await nativeProviderHarness();
     const main = mainNativeRequest();
     const reminder = fixedReminderRequest();
-    const results = order === 'main-first' ? [await h.post(main),
-      await new Promise(resolve => setTimeout(resolve, 10)).then(() => h.post(reminder))] :
+    const results = order === 'main-first' ? [await h.post(main), await h.post(reminder)] :
       order === 'reminder-first' ? [await h.post(reminder), await h.post(main)] :
-        await Promise.all([h.post(main), h.post(reminder)]);
-    assert.deepEqual(results.map(result => result.status).sort(), [200, 422]);
-    const reminderResponse = results.find(result => result.status === 200);
+        order === 'concurrent' ? await Promise.all([h.post(main), h.post(reminder)]) :
+          order === 'result-reminder-overlap' ? [await h.post(main),
+            ...await Promise.all([h.post(shellResultRequest()), h.post(reminder)])] :
+            [await h.post(main), await h.post(shellResultRequest()), await h.post(reminder)];
+    assert.ok(results.every(result => result.status === 200));
+    const reminderResponse = results.find(result => result.body.includes('submit_reminder_decision'));
     assert.equal((reminderResponse.body.match(/data: /g) ?? []).length, 6);
     assert.deepEqual(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 1);
-    assert.deepEqual(h.provider.requests.filter(request => request.kind === 'native_main_schema_discovery').length, 1);
-    assert.equal(h.provider.state.main, 'discovered');
+    assert.deepEqual(h.provider.requests.filter(request => request.kind === 'native_tool_call').length, 1);
+    assert.equal(h.provider.state.main, ['reminder-after-result', 'result-reminder-overlap'].includes(order) ?
+      'result-accepted' : 'call-issued');
     assert.equal(h.provider.state.reminder, 'none-issued');
     assert.equal(h.provider.state.failed, false);
+    if (!['reminder-after-result', 'result-reminder-overlap'].includes(order)) {
+      const result = await h.post(shellResultRequest());
+      assert.equal(result.status, 200);
+      assert.match(result.body, /Fixture shell result observed/);
+    }
+    assert.equal(h.provider.state.main, 'result-accepted');
+    assert.equal(h.provider.requests.filter(request => request.kind === 'matching_tool_result').length, 1);
+    assert.equal((await h.post(shellResultRequest())).status, 429);
+    assert.equal(h.provider.requests[3].bytes, 0);
     await h.provider.close();
   }
 });
 
 test('duplicate, unknown and malformed requests fail closed under attempt and byte caps', async () => {
   const mainReplay = await nativeProviderHarness();
-  assert.equal((await mainReplay.post(mainNativeRequest())).status, 422);
+  assert.equal((await mainReplay.post(mainNativeRequest())).status, 200);
   assert.equal((await mainReplay.post(mainNativeRequest())).status, 422);
   assert.equal(mainReplay.provider.requests[1].rejection, 'NATIVE_MAIN_REPLAY');
   assert.equal(mainReplay.provider.state.failed, true);
@@ -844,6 +946,15 @@ test('duplicate, unknown and malformed requests fail closed under attempt and by
   assert.equal((await near.post({ ...fixedReminderRequest(), input: `NATIVE_SHELL_PROBE${'x'.repeat(92_000)}` })).status, 200);
   assert.ok(near.provider.requests[0].bytes > 91_989);
   await near.provider.close();
+  const installedSized = await nativeProviderHarness();
+  assert.equal((await installedSized.post({ ...mainNativeRequest(),
+    input: `NATIVE_SHELL_PROBE${'m'.repeat(92_000)}` })).status, 200);
+  assert.equal((await installedSized.post({ ...fixedReminderRequest(),
+    input: `NATIVE_SHELL_PROBE${'r'.repeat(43_000)}` })).status, 200);
+  assert.equal((await installedSized.post(shellResultRequest())).status, 200);
+  assert.ok(installedSized.provider.state.inputBytes > 135_000);
+  assert.ok(installedSized.provider.state.outputBytes < 65_536);
+  await installedSized.provider.close();
   const oversized = await nativeProviderHarness();
   assert.equal((await oversized.postRaw('x'.repeat(262_145))).status, 413);
   assert.equal(oversized.provider.requests[0].rejection, 'REQUEST_TOO_LARGE');
@@ -870,6 +981,65 @@ test('active native request cap rejects a third request before consuming its bod
   second.request.push(JSON.stringify(fixedReminderRequest())); second.request.push(null);
   await Promise.all([first.handling, second.handling]);
   assert.equal(h.provider.state.failed, true);
+  await h.provider.close();
+});
+
+test('provider freeze rejects and records a request arriving during shutdown hold', async () => {
+  let lateStatus;
+  const h = await nativeProviderHarness({ onShut: async handle => {
+    const request = Readable.from([JSON.stringify(fixedReminderRequest())]);
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, writeHead(status) { this.status = status; return this; },
+      end() { return this; } };
+    await handle(request, response);
+    lateStatus = response.status;
+  } });
+  assert.equal((await h.post(mainNativeRequest())).status, 200);
+  assert.equal((await h.post(shellResultRequest())).status, 200);
+  await h.provider.freeze();
+  assert.equal(lateStatus, 429);
+  assert.equal(h.provider.state.primaryCode, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+  assert.equal(h.provider.requests[2].rejection, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+  assert.equal(h.provider.state.main, 'result-accepted');
+  await h.provider.close();
+});
+
+test('provider freeze drains an admitted reminder whose body completes during shutdown', async () => {
+  let pending;
+  const h = await nativeProviderHarness({ onShut: async () => {
+    assert.equal(h.provider.state.admissionClosed, true);
+    assert.equal(h.provider.state.active, 1);
+    pending.request.push(JSON.stringify(fixedReminderRequest()));
+    pending.request.push(null);
+  } });
+  assert.equal((await h.post(mainNativeRequest())).status, 200);
+  const request = new Readable({ read() {} });
+  request.method = 'POST'; request.url = '/responses';
+  const response = { status: null, body: null, writeHead(status) { this.status = status; return this; },
+    end(value = '') { this.body = value; return this; } };
+  pending = { request, handling: h.handle(request, response) };
+  assert.equal(h.provider.state.active, 1);
+  await h.provider.freeze();
+  await pending.handling;
+  assert.equal(response.status, 200);
+  assert.match(response.body, /submit_reminder_decision/);
+  assert.equal(h.provider.state.active, 0);
+  assert.equal(h.provider.state.failed, false);
+  assert.equal(h.provider.state.primaryCode, undefined);
+  assert.deepEqual(h.provider.requests.map(item => item.kind),
+    ['native_tool_call', 'native_reminder_call']);
+  await h.provider.close();
+});
+
+test('provider freeze bars a new request while attempt budget remains', async () => {
+  const h = await nativeProviderHarness();
+  assert.equal((await h.post(mainNativeRequest())).status, 200);
+  await h.provider.freeze();
+  const late = await h.post(fixedReminderRequest());
+  assert.equal(late.status, 429);
+  assert.equal(h.provider.requests[1].bytes, 0);
+  assert.equal(h.provider.requests[1].rejection, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+  assert.equal(h.provider.state.primaryCode, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
   await h.provider.close();
 });
 
@@ -921,6 +1091,7 @@ function shellReadyFixture(workspace) {
 
 function shellOutcomeFixture(ready, approval = false, workspaceReportedWritten = true) {
   const turnId = '0199aabb-ccdd-7eef-8abc-0123456789ac';
+  const mainSchema = mainSchemaDiscovery(mainNativeRequest());
   const approvalValue = { approvalId: 'approval-1', sessionId: ready.metadata.sessionId,
     turnId, toolCallId: 'call_native_shell_1', toolName: 'bash', commandMatch: true,
     requirementId: { approvalId: 'approval-1', sourceIndex: 1 },
@@ -935,14 +1106,32 @@ function shellOutcomeFixture(ready, approval = false, workspaceReportedWritten =
     providerRequests: [{ method: 'GET', path: '/muse-code/models' },
       { method: 'POST', path: '/responses', kind: 'native_tool_call', model: 'fixture-native-shell',
         responseId: 'resp_native_shell_1', itemId: 'fc_native_shell_1', callId: 'call_native_shell_1',
+        namespace: 'muse', argumentKeys: ['command', 'description'], mainSchema,
+        schemaSha256: createHash('sha256').update(JSON.stringify(mainSchema.selected)).digest('hex'),
         commandSha256: ready.commandSha256 },
       ...approval ? [] : [{ method: 'POST', path: '/responses', kind: 'matching_tool_result',
-        model: 'fixture-native-shell', responseId: 'resp_native_shell_2', forCallId: 'call_native_shell_1' }]],
+        model: 'fixture-native-shell', responseId: 'resp_native_shell_2', forCallId: 'call_native_shell_1',
+        outputMarkers: { workspaceWritten: workspaceReportedWritten, dummyAuthVisible: false } }]],
     observations: { approvals: approval ? [approvalValue] : [], protocolErrors: [],
       items: approval ? [] : [{ itemId: 'item-1', turnId, callId: 'call_native_shell_1',
         tool: 'bash', status: 'completed', commandMatch: true, outputMarkers: true,
         dummyAuthVisible: false, workspaceReportedWritten }] } };
 }
+
+test('native approval presentation binds the exact fixed bash arguments without deciding it', () => {
+  const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
+  const approval = { approvalId: 'approval-1', sessionId: 'session-1', turnId: 'turn-1',
+    toolCallId: 'call_native_shell_1', toolName: 'bash',
+    currentRequirementId: { approvalId: 'approval-1', sourceIndex: 0 },
+    availableChoices: [{ choiceId: 'deny', decision: 'denied', scope: 'once', label: 'Deny' }],
+    rawArgs: JSON.stringify({ command, description: 'Disposable native shell qualification' }) };
+  assert.equal(approvalSummary(approval, command).commandMatch, true);
+  for (const rawArgs of [JSON.stringify({ command }),
+    JSON.stringify({ command, description: 'Disposable native shell qualification', sandbox_permissions: 'require_escalated' }),
+    JSON.stringify({ command: 'other', description: 'Disposable native shell qualification' })]) {
+    assert.throws(() => approvalSummary({ ...approval, rawArgs }, command), { code: 'NATIVE_APPROVAL_INVALID' });
+  }
+});
 
 test('native shell outcome rejects wrong turn, extra provider call and unanswered approval mismatch', () => {
   const ready = shellReadyFixture('/tmp/fixture/workspace');
@@ -985,18 +1174,171 @@ test('native shell outcome rejects wrong turn, extra provider call and unanswere
     { observations: { ...shellOutcomeFixture(ready).observations, items: [{ ...shellOutcomeFixture(ready).observations.items[0], callId: 'wrong' }] } },
     { providerRequests: shellOutcomeFixture(ready).providerRequests.map(request =>
       request.kind === 'native_tool_call' ? { ...request, commandSha256: '0'.repeat(64) } : request) },
+    { providerRequests: shellOutcomeFixture(ready).providerRequests.map(request =>
+      request.kind === 'native_tool_call' ? { ...request, namespace: 'other' } : request) },
+    { observations: { ...shellOutcomeFixture(ready).observations, omitted: { items: 1 } } },
   ]) assert.throws(() => validateShellOutcome(ready, { ...shellOutcomeFixture(ready), ...variant }),
     { code: 'NATIVE_SHELL_OUTCOME_INVALID' });
   assert.throws(() => validateShellOutcome(ready, { ...shellOutcomeFixture(ready, true),
     pending: { approvals: [], userInputs: [] } }), { code: 'NATIVE_APPROVAL_INVALID' });
 });
 
-test('native shell controller verifies effects and requires stop even for pending approval', async () => {
+function durableApprovalFixture({ sessionId, turnId, approvalId, command, workspace }) {
+  const wrap = (sequence, kind, record, payloadType = 'runtime.session') => ({
+    schema_version: 1, record_type: 'event', durability: 'durable',
+    stream: { kind: 'session', id: sessionId }, sequence,
+    payload_type: payloadType, payload_schema_version: kind === 'approval' ? 3 : 1,
+    payload: { kind, run_id: turnId,
+      ...(['approval_wait_effect', 'session_end'].includes(kind) ? { record } : { event: record }) },
+  });
+  return [
+    wrap(1, 'approval', { kind: 'requested', pending_action_id: approvalId,
+      tool_call_id: 'call_native_shell_1', tool_name: 'bash',
+      run_stream: { kind: 'run', id: turnId }, session_stream: { kind: 'session', id: sessionId },
+      approval_subject: { kind: 'shell_command', raw_command: command,
+        canonical_workspace_root: workspace } }),
+    wrap(2, 'approval_wait_effect', { kind: 'started', pending_action_id: approvalId,
+      tool_call_id: 'call_native_shell_1', tool_name: 'bash', run_stream: { kind: 'run', id: turnId } },
+    'approval_wait.effect.started'),
+    wrap(3, 'approval', { kind: 'decision_applied', pending_action_id: approvalId,
+      decision: 'abort', session_stream: { kind: 'session', id: sessionId } }),
+    wrap(4, 'approval_wait_effect', { kind: 'terminal', pending_action_id: approvalId,
+      outcome: { kind: 'aborted' } }, 'approval_wait.effect.terminal'),
+    wrap(5, 'run', { kind: 'tool_result_batch_committed', results: [{
+      tool_call_id: 'call_native_shell_1', text: 'tool denied: approval aborted' }] }),
+    wrap(6, 'run', { kind: 'terminal', terminal: 'cancelled' }),
+    wrap(7, 'session_end', { schema_version: 1, session_id: sessionId,
+      exit_reason: 'clean' }, 'session.end'),
+  ];
+}
+
+function durableBytes(entries) { return Buffer.from(`${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`); }
+
+function durablePermissionFrame(sessionId) {
+  const child = (index, payloadType, payload) => ({ child_index: index,
+    record_json: JSON.stringify({ schema_version: 1, record_type: 'event', durability: 'durable',
+      stream: { kind: 'session', id: sessionId }, sequence: index + 1,
+      payload_type: payloadType, payload_schema_version: 1, payload }) });
+  return { retained_frame: 'session_permission_transaction', frame_schema_version: 1,
+    outer_log_ordinal: 1, transaction_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    children: [child(0, 'runtime.session.permission_format_declared',
+      { format: 'profile_v1', schema_version: 1 }),
+    child(1, 'runtime.session.permission_profile_committed', {
+      actor: null, cause: null, command: null, definition_sha256: null,
+      managed_ancestor_sha256: null, managed_enforcement: null,
+      pending_action_cancellations: null, permission_epoch: 1,
+      resolved_snapshot: null, resulting_snapshot_sha256: null,
+      schema_version: 1, source: null,
+    })], content_sha256: `sha256:${'0'.repeat(64)}` };
+}
+
+test('durable approval terminal requires exact ordered abort chain and bounded identity', () => {
+  const identity = { sessionId: '0199aabb-ccdd-7eef-8abc-0123456789ab',
+    turnId: '0199aabb-ccdd-7eef-8abc-0123456789ac', approvalId: 'approval-1',
+    command: 'fixed command', workspace: '/tmp/fixture/workspace' };
+  const entries = durableApprovalFixture(identity);
+  const accepted = classifyDurableApprovalLog(durableBytes(entries), identity);
+  assert.equal(accepted.kind, 'native_shell_approval_aborted_on_shutdown');
+  assert.equal(accepted.sequences.run_terminal, 6);
+  assert.throws(() => classifyDurableApprovalLog(durableBytes(entries.slice(0, -2)), identity),
+    { code: 'NATIVE_APPROVAL_LOG_TERMINAL_UNKNOWN' });
+  const duplicate = structuredClone(entries);
+  duplicate.splice(1, 0, { ...structuredClone(entries[0]), sequence: 2 });
+  duplicate.slice(2).forEach(entry => { entry.sequence++; });
+  assert.throws(() => classifyDurableApprovalLog(durableBytes(duplicate), identity),
+    { code: 'NATIVE_APPROVAL_LOG_AMBIGUOUS' });
+  const mismatched = structuredClone(entries);
+  mismatched[2].payload.event.pending_action_id = 'other-approval';
+  assert.throws(() => classifyDurableApprovalLog(durableBytes(mismatched), identity),
+    { code: 'NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH' });
+  for (const edit of [
+    rows => { rows[0].schema_version = 999; },
+    rows => { rows[0].payload_schema_version = 999; },
+    rows => { rows[0].payload.event.run_stream.kind = 'session'; },
+    rows => { rows[0].payload.event.session_stream.kind = 'run'; },
+    rows => { rows[1].payload.record.run_stream.kind = 'session'; },
+    rows => { rows[6].payload.record.exit_reason = 'crashed'; },
+    rows => { rows[6].payload.kind = 'other'; },
+    rows => { rows[6].payload.record.session_id = 'other-session'; },
+    rows => { rows[0].payload.record = structuredClone(rows[0].payload.event); },
+  ]) {
+    const changed = structuredClone(entries);
+    edit(changed);
+    assert.throws(() => classifyDurableApprovalLog(durableBytes(changed), identity),
+      { code: 'NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH' });
+  }
+  const appended = structuredClone(entries);
+  appended.push({ ...structuredClone(entries[1]), sequence: 8 });
+  assert.throws(() => classifyDurableApprovalLog(durableBytes(appended), identity),
+    { code: 'NATIVE_APPROVAL_LOG_AMBIGUOUS' });
+  const frame = durablePermissionFrame(identity.sessionId);
+  const framedEntries = entries.map(entry => ({ ...structuredClone(entry), sequence: entry.sequence + 2 }));
+  assert.equal(classifyDurableApprovalLog(durableBytes([frame, ...framedEntries]), identity).kind,
+    'native_shell_approval_aborted_on_shutdown');
+  for (const edit of [
+    candidate => { candidate.children.pop(); },
+    candidate => { candidate.children[0].record_json = '{'; },
+    candidate => { const child = JSON.parse(candidate.children[0].record_json);
+      child.stream.id = 'foreign-session'; candidate.children[0].record_json = JSON.stringify(child); },
+    candidate => { candidate.children[0].record_json = JSON.stringify({
+      ...structuredClone(framedEntries[0]), sequence: 1 }); },
+  ]) {
+    const changedFrame = structuredClone(frame);
+    edit(changedFrame);
+    assert.throws(() => classifyDurableApprovalLog(durableBytes([changedFrame, ...framedEntries]), identity),
+      { code: /^NATIVE_APPROVAL_LOG_/ });
+  }
+  const afterRunTerminal = structuredClone(entries);
+  afterRunTerminal[6].sequence = 8;
+  afterRunTerminal.splice(6, 0, { ...structuredClone(entries[5]), sequence: 7,
+    payload: { kind: 'run', run_id: identity.turnId, event: { kind: 'started' } } });
+  assert.throws(() => classifyDurableApprovalLog(durableBytes(afterRunTerminal), identity),
+    { code: 'NATIVE_APPROVAL_LOG_AMBIGUOUS' });
+  assert.throws(() => classifyDurableApprovalLog(Buffer.alloc(1_048_577), identity),
+    { code: 'NATIVE_APPROVAL_LOG_BOUNDS' });
+  assert.throws(() => classifyDurableApprovalLog(Buffer.from('{}\n'), identity),
+    { code: 'NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH' });
+});
+
+test('durable approval reader confines the guest log path to its owned session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-approval-log-'));
+  const identity = { sessionId: '0199aabb-ccdd-7eef-8abc-0123456789ab',
+    turnId: '0199aabb-ccdd-7eef-8abc-0123456789ac', approvalId: 'approval-1',
+    command: 'fixed command', workspace: join(root, 'workspace') };
+  const guestPath = `/mounts/home/.local/share/muse/sessions/2026/09/28/${identity.sessionId}/session.jsonl`;
+  const logPath = join(root, 'home', '.local', 'share', 'muse', 'sessions', '2026', '09', '28',
+    identity.sessionId, 'session.jsonl');
+  try {
+    await mkdir(join(root, 'home', '.local', 'share', 'muse', 'sessions', '2026', '09', '28',
+      identity.sessionId), { recursive: true });
+    await writeFile(logPath, durableBytes(durableApprovalFixture(identity)));
+    assert.equal((await readDurableApprovalLog(root, guestPath, identity)).kind,
+      'native_shell_approval_aborted_on_shutdown');
+    await assert.rejects(readDurableApprovalLog(root, '/mounts/home/../../etc/passwd', identity),
+      { code: 'NATIVE_APPROVAL_LOG_PATH_INVALID' });
+    await assert.rejects(readDurableApprovalLog(root, guestPath.replace(identity.sessionId, 'other-session'), identity),
+      { code: 'NATIVE_APPROVAL_LOG_PATH_INVALID' });
+    await writeFile(logPath, Buffer.alloc(1_048_577));
+    await assert.rejects(readDurableApprovalLog(root, guestPath, identity),
+      { code: 'NATIVE_APPROVAL_LOG_BOUNDS' });
+    await rm(logPath);
+    await symlink('/etc/passwd', logPath);
+    await assert.rejects(readDurableApprovalLog(root, guestPath, identity),
+      { code: 'NATIVE_APPROVAL_LOG_PATH_INVALID' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('native shell controller verifies effects, stop and durable approval terminal', async () => {
   const run = async ({ approval = false, writeShell = false, stopFails = false,
     workspaceReportedWritten = true, dummyAuthVisible = false, guestFailure = false,
-    finishedReject = false, terminalInvalid = false } = {}) => {
+    finishedReject = false, terminalInvalid = false, lateGuestFailure = false,
+    approvalLog = 'abort' } = {}) => {
+    let fixtureRoot;
+    let fixtureReady;
+    let fixtureOutcome;
     const result = await qualifyNativeShell({
       stage: async root => {
+        fixtureRoot = root;
         const runtime = join(root, 'runtime');
         await mkdir(runtime);
         if (writeShell) await writeFile(join(root, 'workspace', 'shell-canary'), 'native-write');
@@ -1006,19 +1348,32 @@ test('native shell controller verifies effects and requires stop even for pendin
       probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
       launch: (_prepared, config) => {
         const ready = shellReadyFixture(config.workspace);
+        if (approval) ready.metadata.durableLogPath =
+          `/mounts/home/.local/share/muse/sessions/2026/09/28/${ready.metadata.sessionId}/session.jsonl`;
         const outcome = guestFailure ? { kind: 'guest_transport_error', stage: 'native_turn',
-          code: 'NATIVE_MAIN_SCHEMA_ONLY', message: 'schema-only stop',
-          providerRequests: [{ method: 'POST', path: '/responses', kind: 'native_main_schema_discovery' }] } :
+          code: 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN', message: 'unknown result envelope',
+          providerRequests: [{ method: 'POST', path: '/responses', kind: 'native_tool_call' },
+            { method: 'POST', path: '/responses', rejection: 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN' }] } :
           shellOutcomeFixture(ready, approval, workspaceReportedWritten);
-        if (!approval && !guestFailure) outcome.observations.items[0].dummyAuthVisible = dummyAuthVisible;
+        fixtureReady = ready;
+        fixtureOutcome = outcome;
+        if (!approval && !guestFailure) {
+          outcome.observations.items[0].dummyAuthVisible = dummyAuthVisible;
+          outcome.providerRequests.find(request => request.kind === 'matching_tool_result').outputMarkers.dummyAuthVisible =
+            dummyAuthVisible;
+        }
+        const finalOutcome = lateGuestFailure ? { kind: 'guest_transport_error', stage: 'native_turn',
+          code: 'NATIVE_REQUEST_BUDGET_EXCEEDED', message: 'late provider request after provisional outcome',
+          providerRequests: [...outcome.providerRequests,
+            { method: 'POST', path: '/responses', rejection: 'NATIVE_REQUEST_BUDGET_EXCEEDED' }] } : outcome;
         const finished = finishedReject ? Promise.reject(Object.assign(new Error('host exit timed out'),
-          { code: 'PROBE_DEADLINE' })) : Promise.resolve({ code: guestFailure ? 1 : 0, signal: null,
+          { code: 'PROBE_DEADLINE' })) : Promise.resolve({ code: guestFailure || lateGuestFailure ? 1 : 0, signal: null,
           timedOut: false, overflow: false, statusClosed: true,
           statusLines: terminalInvalid ? ['{"child-pid":101}', 'bad-json'] :
-            ['{"child-pid":101}', `{"exit-code":${guestFailure ? 1 : 0}}`], stderr: '',
+            ['{"child-pid":101}', `{"exit-code":${guestFailure || lateGuestFailure ? 1 : 0}}`], stderr: '',
           output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
             JSON.stringify(guestFailure ? outcome : { kind: 'guest_outcome', result: outcome }),
-            JSON.stringify(outcome)] });
+            JSON.stringify(finalOutcome)] });
         finished.catch(() => undefined);
         return { pid: 100, ready: Promise.resolve(ready),
           liveStatus: Promise.resolve({ child: 101, exit: null }), outcome: Promise.resolve(outcome),
@@ -1029,6 +1384,20 @@ test('native shell controller verifies effects and requires stop even for pendin
         supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
       stop: async () => {
         if (stopFails) throw Object.assign(new Error('survivor'), { code: 'STOP_SURVIVOR' });
+        if (approval && approvalLog !== 'absent') {
+          const identity = { sessionId: fixtureReady.metadata.sessionId,
+            turnId: fixtureOutcome.turnId, approvalId: fixtureOutcome.event.approval.approvalId,
+            command: shellProbeCommand(join(fixtureRoot, 'workspace'), join(fixtureRoot, 'protected'),
+              'protected-canary'), workspace: join(fixtureRoot, 'workspace') };
+          const entries = durableApprovalFixture(identity);
+          if (approvalLog === 'mismatch') entries[2].payload.event.pending_action_id = 'other-approval';
+          if (approvalLog === 'ambiguous') entries.splice(1, 0, structuredClone(entries[0]));
+          if (approvalLog === 'incomplete') entries.splice(2, 1);
+          const path = join(fixtureRoot, 'home', '.local', 'share', 'muse', 'sessions',
+            '2026', '09', '28', identity.sessionId);
+          await mkdir(path, { recursive: true });
+          await writeFile(join(path, 'session.jsonl'), durableBytes(entries));
+        }
         return { kind: 'confirmed', pidns: 'pid:[1]' };
       },
     });
@@ -1043,26 +1412,40 @@ test('native shell controller verifies effects and requires stop even for pendin
   assert.equal((await run({ writeShell: true, dummyAuthVisible: true })).code,
     'NATIVE_SHELL_AUTH_VISIBLE');
   const pending = await run({ approval: true });
-  assert.equal(pending.kind, 'native_shell_approval_pending');
+  assert.equal(pending.kind, 'native_shell_approval_aborted_on_shutdown');
+  assert.equal(pending.classified.kind, 'native_shell_approval_pending');
   assert.equal(pending.evidence.guestOutcome.pending.approvals.length, 1);
+  assert.equal(pending.evidence.approvalTerminal.sequences.run_terminal, 6);
+  for (const approvalLog of ['absent', 'mismatch', 'ambiguous', 'incomplete']) {
+    const unknown = await run({ approval: true, approvalLog });
+    assert.equal(unknown.kind, 'native_shell_approval_terminal_unknown');
+    assert.equal(unknown.evidence.stop.kind, 'confirmed');
+    assert.equal(unknown.classified.kind, 'native_shell_approval_pending');
+    assert.match(unknown.evidence.approvalTerminalError.code, /^NATIVE_APPROVAL_LOG_/);
+  }
   assert.equal((await run({ approval: true, writeShell: true })).code, 'NATIVE_SHELL_EFFECT_INVALID');
   const uncertain = await run({ writeShell: true, stopFails: true });
   assert.equal(uncertain.code, 'STOP_SURVIVOR');
   assert.equal(uncertain.stopProof, 'unconfirmed');
   const primary = await run({ guestFailure: true, stopFails: true });
-  assert.equal(primary.code, 'NATIVE_MAIN_SCHEMA_ONLY');
-  assert.equal(primary.evidence.primaryGuestFailure.code, 'NATIVE_MAIN_SCHEMA_ONLY');
+  assert.equal(primary.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+  assert.equal(primary.evidence.primaryGuestFailure.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(primary.evidence.stopError.code, 'STOP_SURVIVOR');
   assert.equal(primary.stopProof, 'unconfirmed');
   const completionFailed = await run({ guestFailure: true, finishedReject: true });
-  assert.equal(completionFailed.code, 'NATIVE_MAIN_SCHEMA_ONLY');
-  assert.equal(completionFailed.evidence.primaryGuestFailure.code, 'NATIVE_MAIN_SCHEMA_ONLY');
+  assert.equal(completionFailed.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+  assert.equal(completionFailed.evidence.primaryGuestFailure.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(completionFailed.evidence.secondaryError.code, 'PROBE_DEADLINE');
   assert.equal(completionFailed.stopProof, 'unconfirmed');
   const terminalFailed = await run({ guestFailure: true, terminalInvalid: true });
-  assert.equal(terminalFailed.code, 'NATIVE_MAIN_SCHEMA_ONLY');
+  assert.equal(terminalFailed.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(terminalFailed.evidence.terminalError.code, 'BWRAP_STATUS_INVALID');
   assert.equal(terminalFailed.stopProof, 'unconfirmed');
+  const late = await run({ writeShell: true, lateGuestFailure: true });
+  assert.equal(late.code, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+  assert.equal(late.evidence.primaryGuestFailure.code, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+  assert.equal(late.evidence.stop.kind, 'confirmed');
+  assert.equal(late.evidence.guestOutcome.kind, 'guest_shell_outcome');
 });
 
 test('early shell child failure settles an unread bounded outcome without unhandled rejection', async () => {

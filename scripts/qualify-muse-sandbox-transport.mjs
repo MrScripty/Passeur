@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, readdir, symlink, writeFile } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { constants, createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -21,6 +21,7 @@ const NODE_SHA256 = '16143bdaa79716e871d3d9b2f50ce680bca293eba7f0c3fc1d004ed2258
 const MODEL = 'fixture-transport-only';
 const LIMIT = 65_536;
 const PROVIDER_INPUT_LIMIT = 262_144;
+const APPROVAL_LOG_LIMIT = 1_048_576;
 const DEADLINE_MS = 25_000;
 const GUEST_RUNTIME = '/mounts/runtime';
 const GUEST_HOME = '/mounts/home';
@@ -171,33 +172,6 @@ export function shellProbeCommand(workspace, protectedRoot, token) {
       `if [ -e ${shellQuote(path)} ] || (printf forbidden > ${shellQuote(path)} 2>/dev/null); then printf '${label}=visible\\n'; else printf '${label}=denied\\n'; fi`),
     `if [ -r ${shellQuote(`${GUEST_HOME}/.config/muse/auth.json`)} ]; then printf 'dummy-auth=visible\\n'; else printf 'dummy-auth=absent\\n'; fi`,
   ].join('; ');
-}
-
-export function advertisedBash(body) {
-  if (body?.model !== SHELL_MODEL || !Array.isArray(body.tools) || body.tools.length > 64) {
-    throw fault('NATIVE_TOOL_SCHEMA_INVALID', 'native Responses model or tools invalid');
-  }
-  const bash = body.tools.filter(tool => (tool?.name ?? tool?.function?.name) === 'bash');
-  if (bash.length !== 1) throw fault('NATIVE_TOOL_SCHEMA_INVALID', 'exactly one advertised bash tool required');
-  const tool = bash[0];
-  const parameters = tool.parameters ?? tool.function?.parameters;
-  const supportedString = schema => schema?.type === 'string' &&
-    Object.keys(schema).every(key => ['type', 'description', 'title'].includes(key));
-  if (tool.type !== 'function' || parameters?.type !== 'object' ||
-      Object.keys(parameters).some(key => !['type', 'properties', 'required', 'additionalProperties',
-        'description', 'title'].includes(key)) ||
-      !parameters.properties || Object.keys(parameters.properties).some(key =>
-        !['command', 'description'].includes(key)) ||
-      (parameters.additionalProperties !== undefined && typeof parameters.additionalProperties !== 'boolean') ||
-      !supportedString(parameters.properties?.command) ||
-      !Array.isArray(parameters.required) || !parameters.required.includes('command') ||
-      parameters.required.some(name => !['command', 'description'].includes(name)) ||
-      (parameters.properties?.description && !supportedString(parameters.properties.description)) ||
-      (parameters.required.includes('description') && !supportedString(parameters.properties?.description))) {
-    throw fault('NATIVE_TOOL_SCHEMA_INVALID', 'advertised bash arguments are not the reviewed command shape');
-  }
-  return { name: 'bash', arguments: { command: body.fixtureCommand,
-    ...(parameters.required.includes('description') ? { description: 'Disposable native shell qualification' } : {}) } };
 }
 
 // Rejection evidence describes structure only. Values such as prompts, descriptions,
@@ -544,6 +518,51 @@ export function mainSchemaDiscovery(body) {
   return summary;
 }
 
+const FIXED_BASH_SCHEMA = Object.freeze({ index: 11, name: 'bash', type: 'function', strict: false,
+  schema: { additionalProperties: false, propertyCount: 10, properties: [
+    { name: 'command', schema: { type: 'string' } },
+    { name: 'description', schema: { type: 'string' } },
+    { name: 'login', schema: { type: 'boolean' } },
+    { name: 'max_output_tokens', schema: { minimum: 1, type: 'integer' } },
+    { name: 'sandbox_permissions', schema: { enumCount: 2,
+      enum: ['use_default', 'require_escalated'], type: 'string' } },
+    { name: 'shell', schema: { type: 'string' } },
+    { name: 'timeout_ms', schema: { minimum: 1, type: 'integer' } },
+    { name: 'tty', schema: { type: 'boolean' } },
+    { name: 'workdir', schema: { type: 'string' } },
+    { name: 'yield_time_ms', schema: { minimum: 0, type: 'integer' } },
+  ], requiredCount: 2, required: ['command', 'description'], type: 'object' } });
+
+export function fixedBashCall(body, command) {
+  const observed = mainSchemaDiscovery(body);
+  if (!observed?.selectedComplete || !observed.identityValid ||
+      JSON.stringify(observed.selected) !== JSON.stringify(FIXED_BASH_SCHEMA) ||
+      typeof command !== 'string' || !command) {
+    throw fault('NATIVE_BASH_SCHEMA_INVALID', 'advertised native bash schema differs from reviewed contract');
+  }
+  return { namespace: 'muse', name: 'bash', arguments: {
+    command, description: 'Disposable native shell qualification' }, schema: observed };
+}
+
+export function bashCallEvents(args) {
+  const serialized = JSON.stringify(args);
+  const item = status => ({ type: 'function_call', id: SHELL_ITEM, call_id: SHELL_CALL,
+    namespace: 'muse', name: 'bash', arguments: status === 'completed' ? serialized : '', status });
+  const frame = (status, output) => ({ id: SHELL_RESPONSE, object: 'response',
+    model: SHELL_MODEL, status, output });
+  return [
+    { type: 'response.created', sequence_number: 1, response: frame('in_progress', []) },
+    { type: 'response.output_item.added', sequence_number: 2, output_index: 0, item: item('in_progress') },
+    { type: 'response.function_call_arguments.delta', sequence_number: 3, output_index: 0,
+      item_id: SHELL_ITEM, delta: serialized },
+    { type: 'response.function_call_arguments.done', sequence_number: 4, output_index: 0,
+      item_id: SHELL_ITEM, namespace: 'muse', name: 'bash', arguments: serialized },
+    { type: 'response.output_item.done', sequence_number: 5, output_index: 0, item: item('completed') },
+    { type: 'response.completed', sequence_number: 6, response: {
+      ...frame('completed', [item('completed')]), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+  ];
+}
+
 export function shellOutputMarkers(output) {
   if (typeof output !== 'string' || Buffer.byteLength(output) > LIMIT) return null;
   const lines = output.endsWith('\n') ? output.slice(0, -1).split('\n') : output.split('\n');
@@ -554,18 +573,65 @@ export function shellOutputMarkers(output) {
 }
 
 export function matchingShellResult(body) {
-  if (!Array.isArray(body?.input)) return false;
-  if (body.input.length !== 1 || body.input[0]?.type !== 'function_call_output' ||
-      body.input[0].call_id !== SHELL_CALL) return false;
-  const output = body.input[0].output;
-  return shellOutputMarkers(output) !== null;
+  return body?.model === SHELL_MODEL && body.previous_response_id === SHELL_RESPONSE &&
+    Array.isArray(body.input) && body.input.length === 1 &&
+    body.input[0]?.type === 'function_call_output' && body.input[0].call_id === SHELL_CALL &&
+    Object.keys(body.input[0]).sort().join(',') === 'call_id,output,type' &&
+    shellOutputMarkers(body.input[0].output) !== null;
+}
+
+export function shellResultEnvelopeShape(body) {
+  const input = body?.input;
+  const items = Array.isArray(input) ? input.slice(0, 4).map(item => ({
+    type: item?.type === 'function_call_output' ? 'function_call_output' : 'other',
+    fieldCount: item && typeof item === 'object' && !Array.isArray(item) ? Object.keys(item).length : null,
+    unknownFieldCount: item && typeof item === 'object' && !Array.isArray(item) ?
+      Object.keys(item).filter(key => !['type', 'call_id', 'output'].includes(key)).length : null,
+    callId: item?.call_id === SHELL_CALL ? 'issued_shell' :
+      item?.call_id === REMINDER_CALL ? 'reminder' : 'other',
+    outputType: typeof item?.output,
+    outputBytes: typeof item?.output === 'string' ? Buffer.byteLength(item.output) : null,
+    bareMarkers: shellOutputMarkers(item?.output) !== null,
+  })) : [];
+  return { model: summarizedShellModel(body?.model),
+    previousResponse: body?.previous_response_id === SHELL_RESPONSE ? 'issued_shell' :
+      body?.previous_response_id === REMINDER_RESPONSE ? 'reminder' : 'other',
+    inputType: Array.isArray(input) ? 'array' : typeof input,
+    inputCount: Array.isArray(input) ? input.length : null,
+    omittedItems: Array.isArray(input) ? Math.max(0, input.length - 4) : 0, items };
+}
+
+export function shellTextEvents() {
+  const text = 'Fixture shell result observed.';
+  const part = value => ({ type: 'output_text', text: value, annotations: [] });
+  const textItem = status => ({ type: 'message', id: 'msg_native_shell_2', role: 'assistant',
+    status, content: status === 'completed' ?
+      [part(text)] : [] });
+  const frame = (status, output) => ({ id: SHELL_TEXT_RESPONSE, object: 'response',
+    model: SHELL_MODEL, status, output });
+  return [
+    { type: 'response.created', sequence_number: 1, response: frame('in_progress', []) },
+    { type: 'response.output_item.added', sequence_number: 2, output_index: 0, item: textItem('in_progress') },
+    { type: 'response.content_part.added', sequence_number: 3, output_index: 0,
+      item_id: 'msg_native_shell_2', content_index: 0, part: part('') },
+    { type: 'response.output_text.delta', sequence_number: 4, output_index: 0,
+      item_id: 'msg_native_shell_2', content_index: 0, delta: text },
+    { type: 'response.output_text.done', sequence_number: 5, output_index: 0,
+      item_id: 'msg_native_shell_2', content_index: 0, text },
+    { type: 'response.content_part.done', sequence_number: 6, output_index: 0,
+      item_id: 'msg_native_shell_2', content_index: 0, part: part(text) },
+    { type: 'response.output_item.done', sequence_number: 7, output_index: 0, item: textItem('completed') },
+    { type: 'response.completed', sequence_number: 8, response: {
+      ...frame('completed', [textItem('completed')]),
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+  ];
 }
 
 export async function startShellProvider(forbiddenPort, command, {
   makeServer = createServer, waitListen = listen, shut = close,
 } = {}) {
   const requests = [];
-  const state = { main: 'unseen', reminder: 'unseen', failed: false, closed: false,
+  const state = { main: 'unseen', reminder: 'unseen', failed: false, admissionClosed: false,
     active: 0, attempts: 0, catalogAttempts: 0, inputBytes: 0, outputBytes: 0,
     omittedRequests: 0 };
   const record = summary => {
@@ -581,6 +647,7 @@ export async function startShellProvider(forbiddenPort, command, {
   const rejection = new Promise(resolve => { reportRejection = resolve; });
   const reject = (code, summary, response, status = 422) => {
     state.failed = true;
+    state.primaryCode ??= code;
     if (summary) summary.rejection = code;
     if (!rejectionReported) {
       rejectionReported = true;
@@ -589,7 +656,7 @@ export async function startShellProvider(forbiddenPort, command, {
     response.writeHead(status).end();
   };
   const server = makeServer(async (request, response) => {
-    if (request.method === 'GET' && request.url === '/muse-code/models' && !state.closed) {
+    if (request.method === 'GET' && request.url === '/muse-code/models' && !state.admissionClosed) {
       const summary = { method: 'GET', path: '/muse-code/models', bytes: 0, model: 'invalid' };
       state.catalogAttempts++;
       record(summary);
@@ -620,7 +687,7 @@ export async function startShellProvider(forbiddenPort, command, {
       summary.path = 'invalid';
       reject('NATIVE_REQUEST_PATH_INVALID', summary, response, 404); return;
     }
-    if (state.failed || state.closed || state.attempts > 2 || state.active >= 2) {
+    if (state.failed || state.admissionClosed || state.attempts > 3 || state.active >= 2) {
       reject('NATIVE_REQUEST_BUDGET_EXCEEDED', summary, response, 429); return;
     }
     state.active++;
@@ -631,7 +698,7 @@ export async function startShellProvider(forbiddenPort, command, {
           const size = Buffer.byteLength(chunk);
           summary.bytes += size;
           state.inputBytes += size;
-          if (summary.bytes > PROVIDER_INPUT_LIMIT || state.inputBytes > PROVIDER_INPUT_LIMIT * 2) {
+          if (summary.bytes > PROVIDER_INPUT_LIMIT || state.inputBytes > PROVIDER_INPUT_LIMIT * 3) {
             throw fault('REQUEST_TOO_LARGE', 'native provider request exceeds bounded input budget');
           }
           body += chunk;
@@ -644,7 +711,9 @@ export async function startShellProvider(forbiddenPort, command, {
       try { parsed = JSON.parse(body); }
       catch { reject('REQUEST_JSON_INVALID', summary, response, 400); return; }
       summary.model = summarizedShellModel(parsed?.model);
-      if (state.failed || state.closed) { reject('NATIVE_REQUEST_REJECTED', summary, response); return; }
+      // Admission was reserved before the body arrived. Freeze bars new requests but lets
+      // this already-admitted stream finish under its original permission.
+      if (state.failed) { reject('NATIVE_REQUEST_REJECTED', summary, response); return; }
       try {
         const reminder = recognizedReminderSchema(parsed);
         if (reminder) {
@@ -674,21 +743,47 @@ export async function startShellProvider(forbiddenPort, command, {
         const main = mainSchemaDiscovery(parsed);
         if (main) {
           if (state.main !== 'unseen') throw fault('NATIVE_MAIN_REPLAY', 'duplicate main request');
-          const serialized = JSON.stringify(main);
-          const outputBytes = Buffer.byteLength(serialized);
-          if (state.outputBytes + outputBytes > LIMIT) {
-            throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'native schema evidence exceeds budget');
-          }
-          state.main = 'discovered';
-          state.outputBytes += outputBytes;
-          summary.kind = 'native_main_schema_discovery';
           summary.mainSchema = main;
-          // No shell call is issued until the exact installed declaration is reviewed.
-          if (!rejectionReported) {
-            rejectionReported = true;
-            reportRejection({ kind: 'provider_rejected', code: 'NATIVE_MAIN_SCHEMA_ONLY' });
+          const selected = fixedBashCall(parsed, command);
+          const events = bashCallEvents(selected.arguments);
+          const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+          const outputBytes = Buffer.byteLength(output) + Buffer.byteLength(JSON.stringify(main));
+          if (state.outputBytes + outputBytes > LIMIT) {
+            throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'native shell response exceeds budget');
           }
-          response.writeHead(422).end();
+          state.main = 'call-issued';
+          state.outputBytes += outputBytes;
+          summary.kind = 'native_tool_call';
+          summary.namespace = 'muse';
+          summary.responseId = SHELL_RESPONSE;
+          summary.itemId = SHELL_ITEM;
+          summary.callId = SHELL_CALL;
+          summary.argumentKeys = Object.keys(selected.arguments);
+          summary.commandSha256 = createHash('sha256').update(command).digest('hex');
+          summary.schemaSha256 = createHash('sha256').update(JSON.stringify(main.selected)).digest('hex');
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(output);
+          return;
+        }
+        if (state.main === 'call-issued') {
+          if (!matchingShellResult(parsed)) {
+            summary.resultEnvelope = shellResultEnvelopeShape(parsed);
+            throw fault('NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN', 'native result envelope differs from reviewed call identity');
+          }
+          const events = shellTextEvents();
+          const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+          const outputBytes = Buffer.byteLength(output);
+          if (state.outputBytes + outputBytes > LIMIT) {
+            throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'native result response exceeds budget');
+          }
+          state.main = 'result-accepted';
+          state.outputBytes += outputBytes;
+          summary.kind = 'matching_tool_result';
+          summary.responseId = SHELL_TEXT_RESPONSE;
+          summary.forCallId = SHELL_CALL;
+          summary.outputMarkers = shellOutputMarkers(parsed.input[0].output);
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(output);
           return;
         }
         throw fault('NATIVE_REQUEST_UNCLASSIFIED', 'native request is neither reviewed stream');
@@ -701,8 +796,22 @@ export async function startShellProvider(forbiddenPort, command, {
   const port = await waitListen(server);
   try { assertPortSeparation(forbiddenPort, port); }
   catch (error) { await shut(server); throw error; }
+  let closing;
+  const freeze = () => {
+    if (!closing) {
+      state.admissionClosed = true;
+      closing = (async () => {
+        await shut(server);
+        for (let attempt = 0; state.active > 0 && attempt < 100; attempt++) await pause(10);
+        if (state.active !== 0) {
+          throw fault('NATIVE_PROVIDER_DRAIN_UNCONFIRMED', 'provider still has an admitted request after close');
+        }
+      })();
+    }
+    return closing;
+  };
   return { port, requests, rejection, state,
-    close: async () => { state.closed = true; await shut(server); } };
+    freeze, close: freeze };
 }
 
 export async function tcpProbe(address, port, ms = 700) {
@@ -931,7 +1040,7 @@ export async function guestRun(config) {
   }
 }
 
-function approvalSummary(value, command) {
+export function approvalSummary(value, command) {
   if (typeof value?.approvalId !== 'string' || typeof value?.sessionId !== 'string' ||
       typeof value?.turnId !== 'string' || typeof value?.toolCallId !== 'string' ||
       value.toolName !== 'bash' || !Array.isArray(value.availableChoices) ||
@@ -943,7 +1052,14 @@ function approvalSummary(value, command) {
     throw fault('NATIVE_APPROVAL_INVALID', 'native approval identity or choices invalid');
   }
   let commandMatch = false;
-  try { commandMatch = JSON.parse(value.rawArgs)?.command === command; } catch { /* rejected below */ }
+  try {
+    if (typeof value.rawArgs === 'string' && Buffer.byteLength(value.rawArgs) <= LIMIT) {
+      const args = JSON.parse(value.rawArgs);
+      commandMatch = args && typeof args === 'object' && !Array.isArray(args) &&
+        Object.keys(args).sort().join(',') === 'command,description' &&
+        args.command === command && args.description === 'Disposable native shell qualification';
+    }
+  } catch { /* rejected below */ }
   if (!commandMatch) throw fault('NATIVE_APPROVAL_INVALID', 'approval command differs from reviewed shell call');
   return { approvalId: value.approvalId, sessionId: value.sessionId, turnId: value.turnId,
     toolCallId: value.toolCallId, toolName: value.toolName, commandMatch,
@@ -962,7 +1078,12 @@ export async function guestShellRun(config) {
   let host;
   let stage = 'network';
   const commands = [];
-  const observations = { approvals: [], items: [], reminders: [], protocolErrors: [] };
+  const observations = { approvals: [], items: [], reminders: [], protocolErrors: [],
+    omitted: { approvals: 0, items: 0, reminders: 0, protocolErrors: 0 } };
+  const observe = (kind, value) => {
+    if (observations[kind].length < 8) observations[kind].push(value);
+    else observations.omitted[kind]++;
+  };
   try {
     const loopback = spawnSync('/usr/sbin/ip', ['-o', 'link', 'show', 'lo'], { encoding: 'utf8', timeout: 2_000 });
     if (!loopbackReady(loopback)) throw fault('GUEST_LOOPBACK_UNAVAILABLE', 'guest loopback unavailable');
@@ -991,7 +1112,7 @@ export async function guestShellRun(config) {
     host.onServerRequest(async request => {
       if (request.method !== 'approval/request') throw fault('NATIVE_REQUEST_UNEXPECTED', 'unexpected native request');
       const approval = approvalSummary(request.params, command);
-      observations.approvals.push(approval);
+      observe('approvals', approval);
       resolveObserved({ kind: 'approval', approval });
       return {}; // Presentation receipt only. No approval/decide is sent.
     });
@@ -999,11 +1120,15 @@ export async function guestShellRun(config) {
       const params = notification.params;
       if (notification.method === 'item/completed' && params?.item?.kind === 'toolCall') {
         const item = params.item;
+        const outputShape = { type: item.visibleOutput === null ? 'null' : typeof item.visibleOutput,
+          bytes: typeof item.visibleOutput === 'string' ? Buffer.byteLength(item.visibleOutput) : null,
+          lines: typeof item.visibleOutput === 'string' && Buffer.byteLength(item.visibleOutput) <= LIMIT ?
+            item.visibleOutput.split('\n').length : null };
         if (item.callId === REMINDER_CALL) {
-          observations.reminders.push({ itemId: item.itemId, turnId: item.turnId,
+          observe('reminders', { itemId: item.itemId, turnId: item.turnId,
             callId: item.callId, status: item.status });
-        } else observations.items.push({ itemId: item.itemId, turnId: item.turnId, callId: item.callId,
-          tool: item.tool, status: item.status, commandMatch: (() => {
+        } else observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
+          tool: item.tool, status: item.status, outputShape, commandMatch: (() => {
             try { return JSON.parse(item.args)?.command === command; } catch { return false; }
           })(), outputMarkers: shellOutputMarkers(item.visibleOutput) !== null,
           workspaceReportedWritten: shellOutputMarkers(item.visibleOutput)?.workspaceWritten ?? null,
@@ -1015,7 +1140,8 @@ export async function guestShellRun(config) {
           errorKind: params?.error?.kind ?? null });
       }
     });
-    host.onProtocolError(error => { observations.protocolErrors.push(String(error.message).slice(0, 200)); });
+    host.onProtocolError(error => { observe('protocolErrors',
+      /^[A-Z0-9_]{1,64}$/.test(error.code ?? '') ? error.code : 'PROTOCOL_ERROR'); });
     const initialized = await timeout('initialize', host.initialize({ clientInfo: {
       name: 'passeur_guest_native_shell_probe', version: '0.1.0',
     } }));
@@ -1060,15 +1186,15 @@ export async function guestShellRun(config) {
     }
     const event = await timeout('native turn or approval', Promise.race([observed, provider.rejection]), 15_000);
     if (event.kind === 'provider_rejected') {
-      // The reminder stream is independent and can arrive just after the main
-      // request's schema-only response. Keep its bounded fixture open briefly.
-      if (event.code === 'NATIVE_MAIN_SCHEMA_ONLY') {
-        await new Promise(resolve => setTimeout(resolve, 1_500));
-      }
       throw fault(event.code, 'guest provider rejected the native Responses request');
     }
-    if (provider.state.main === 'discovered') {
-      throw fault('NATIVE_MAIN_SCHEMA_ONLY', 'main native request was observed without an approved shell contract');
+    if (provider.state.primaryCode) {
+      throw fault(provider.state.primaryCode, 'guest provider rejected the native Responses request');
+    }
+    if (event.kind === 'turn_completed' && provider.state.main !== 'result-accepted') {
+      const late = await Promise.race([provider.rejection, pause(500).then(() => null)]);
+      if (late) throw fault(late.code, 'guest provider rejected the native Responses request');
+      throw fault('NATIVE_TOOL_RESULT_MISSING', 'native turn ended without a correlated bash result');
     }
     let pending = null;
     if (event.kind === 'approval') {
@@ -1080,6 +1206,10 @@ export async function guestShellRun(config) {
         throw fault('NATIVE_APPROVAL_INVALID', 'read-only pending list differs from observed approval');
       }
     }
+    await timeout('provider freeze', provider.freeze(), 5_000);
+    if (provider.state.primaryCode) {
+      throw fault(provider.state.primaryCode, 'guest provider rejected a request before outcome publication');
+    }
     const result = { kind: event.kind === 'approval' ? 'native_shell_approval_pending' : 'guest_shell_outcome',
       stage, sessionId: metadata.sessionId, turnId: ack.turnId, turnAck: { status: ack.status,
         disposition: ack.disposition, startedNewTurn: ack.startedNewTurn }, event,
@@ -1089,6 +1219,14 @@ export async function guestShellRun(config) {
     process.stdout.write(`${JSON.stringify({ kind: 'guest_outcome', result })}\n`);
     if (await timeout('shutdown release', config.release()) !== 'shutdown') {
       throw fault('HOST_RELEASE_INVALID', 'native shutdown was not released by host');
+    }
+    await timeout('host close', host.close(), 5_000);
+    host = undefined;
+    if (provider.state.primaryCode) {
+      throw fault(provider.state.primaryCode, 'guest provider rejected a request during native shutdown');
+    }
+    if (JSON.stringify(provider.requests) !== JSON.stringify(result.providerRequests)) {
+      throw fault('NATIVE_PROVIDER_AFTER_FREEZE', 'provider evidence changed after admission closed');
     }
     return result;
   } catch (error) {
@@ -1686,6 +1824,7 @@ export function validateShellOutcome(ready, outcome) {
         request.method === 'GET' && request.path === '/muse-code/models' ||
         request.method === 'POST' && request.path === '/responses') ||
         request.rejection !== undefined) ||
+      Object.values(outcome.observations?.omitted ?? {}).some(count => count !== 0) ||
       outcome.observations?.protocolErrors?.length !== 0) {
     throw fault('NATIVE_SHELL_OUTCOME_INVALID', 'native turn or provider sequence was invalid');
   }
@@ -1698,6 +1837,10 @@ export function validateShellOutcome(ready, outcome) {
   if (shell?.kind !== 'native_tool_call' || shell?.model !== SHELL_MODEL ||
       shell?.responseId !== SHELL_RESPONSE || shell?.itemId !== SHELL_ITEM ||
       shell?.callId !== SHELL_CALL || shell?.commandSha256 !== ready.commandSha256 ||
+      shell.namespace !== 'muse' || shell.argumentKeys?.join(',') !== 'command,description' ||
+      shell.mainSchema?.selectedComplete !== true || shell.mainSchema?.identityValid !== true ||
+      JSON.stringify(shell.mainSchema?.selected) !== JSON.stringify(FIXED_BASH_SCHEMA) ||
+      shell.schemaSha256 !== createHash('sha256').update(JSON.stringify(FIXED_BASH_SCHEMA)).digest('hex') ||
       shell.afterReminderCallId !== undefined) {
     throw fault('NATIVE_SHELL_OUTCOME_INVALID', 'first native response was not the reviewed tool call');
   }
@@ -1729,6 +1872,8 @@ export function validateShellOutcome(ready, outcome) {
       shellResult?.model !== SHELL_MODEL ||
       shellResult?.responseId !== SHELL_TEXT_RESPONSE ||
       shellResult?.forCallId !== SHELL_CALL ||
+      shellResult.outputMarkers?.workspaceWritten !== tool?.[0]?.workspaceReportedWritten ||
+      shellResult.outputMarkers?.dummyAuthVisible !== tool?.[0]?.dummyAuthVisible ||
       tool?.length !== 1 ||
       tool[0].turnId !== outcome.turnId || tool[0].callId !== SHELL_CALL ||
       tool[0].tool !== 'bash' || tool[0].status !== 'completed' ||
@@ -1752,6 +1897,214 @@ async function shellEffects(workspace, protectedRoot, token) {
   return { shellWritten: shell === 'native-write', shellAbsent: shell === null,
     protectedIntact: protectedBytes === 'host-only' && protectedNames.length === 1 &&
       protectedNames[0] === token && link.isSymbolicLink() };
+}
+
+export function classifyDurableApprovalLog(bytes, { sessionId, turnId, approvalId,
+  callId = SHELL_CALL, command, workspace }) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > APPROVAL_LOG_LIMIT) {
+    throw fault('NATIVE_APPROVAL_LOG_BOUNDS', 'durable approval log was empty or exceeded the read bound');
+  }
+  const lines = bytes.toString('utf8').split('\n');
+  if (lines.at(-1) !== '' || lines.length > 1025) {
+    throw fault('NATIVE_APPROVAL_LOG_BOUNDS', 'durable approval log had an incomplete or excessive line set');
+  }
+  lines.pop();
+  const entries = [];
+  const frameKeys = ['children', 'content_sha256', 'frame_schema_version',
+    'outer_log_ordinal', 'retained_frame', 'transaction_id'];
+  const childTypes = ['runtime.session.permission_format_declared',
+    'runtime.session.permission_profile_committed'];
+  for (const line of lines) {
+    let entry;
+    try { entry = JSON.parse(line); }
+    catch { throw fault('NATIVE_APPROVAL_LOG_INVALID', 'durable approval log contained malformed JSON'); }
+    if (entry?.retained_frame !== undefined) {
+      if (entries.length || entry.retained_frame !== 'session_permission_transaction' ||
+          entry.frame_schema_version !== 1 || entry.outer_log_ordinal !== 1 ||
+          Object.keys(entry).sort().join(',') !== frameKeys.sort().join(',') ||
+          !/^[0-9a-f-]{36}$/i.test(entry.transaction_id ?? '') ||
+          !/^sha256:[0-9a-f]{64}$/.test(entry.content_sha256 ?? '') ||
+          !Array.isArray(entry.children) || entry.children.length !== 2) {
+        throw fault('NATIVE_APPROVAL_LOG_FRAME_INVALID', 'durable permission frame differed');
+      }
+      for (let index = 0; index < 2; index++) {
+        const child = entry.children[index];
+        if (child?.child_index !== index ||
+            Object.keys(child).sort().join(',') !== 'child_index,record_json' ||
+            typeof child.record_json !== 'string') {
+          throw fault('NATIVE_APPROVAL_LOG_FRAME_INVALID', 'durable permission child differed');
+        }
+        let decoded;
+        try { decoded = JSON.parse(child.record_json); }
+        catch { throw fault('NATIVE_APPROVAL_LOG_FRAME_INVALID', 'durable permission child was malformed'); }
+        if (decoded?.payload_type !== childTypes[index] || decoded.payload_schema_version !== 1 ||
+            decoded.payload?.schema_version !== 1 || decoded.payload?.run_id !== undefined ||
+            decoded.payload?.event !== undefined || decoded.payload?.record !== undefined ||
+            decoded.payload?.kind !== undefined ||
+            (index === 0 && (Object.keys(decoded.payload).sort().join(',') !== 'format,schema_version' ||
+              decoded.payload.format !== 'profile_v1')) ||
+            (index === 1 && Object.keys(decoded.payload).sort().join(',') !==
+              'actor,cause,command,definition_sha256,managed_ancestor_sha256,managed_enforcement,pending_action_cancellations,permission_epoch,resolved_snapshot,resulting_snapshot_sha256,schema_version,source')) {
+          throw fault('NATIVE_APPROVAL_LOG_FRAME_INVALID', 'durable permission child content differed');
+        }
+        entries.push(decoded);
+      }
+    } else entries.push(entry);
+  }
+  if (entries.length > 1024) {
+    throw fault('NATIVE_APPROVAL_LOG_BOUNDS', 'durable approval log had too many decoded records');
+  }
+  const seen = new Map();
+  let lastSequence = 0;
+  for (const entry of entries) {
+    if (seen.has('session_end')) {
+      throw fault('NATIVE_APPROVAL_LOG_AMBIGUOUS', 'durable session log continued after clean end');
+    }
+    if (entry?.schema_version !== 1 || entry.record_type !== 'event' ||
+        entry.durability !== 'durable' ||
+        !Number.isSafeInteger(entry?.sequence) || entry.sequence <= lastSequence ||
+        entry.stream?.kind !== 'session' || entry.stream.id !== sessionId) {
+      throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable approval log envelope or session differed');
+    }
+    lastSequence = entry.sequence;
+    const payload = entry.payload;
+    if (entry.payload_type === 'session.end') {
+      if (entry.payload_schema_version !== 1 || payload?.kind !== 'session_end' ||
+          payload.event !== undefined ||
+          payload?.record?.schema_version !== 1 || payload.record.session_id !== sessionId ||
+          payload.record.exit_reason !== 'clean' || seen.has('session_end')) {
+        throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable session end identity differed');
+      }
+      seen.set('session_end', entry.sequence);
+      continue;
+    }
+    const record = payload?.record ?? payload?.event;
+    if (seen.has('run_terminal') && payload?.run_id === turnId) {
+      throw fault('NATIVE_APPROVAL_LOG_AMBIGUOUS', 'durable run continued after cancelled terminal');
+    }
+    if (payload?.run_id !== turnId) {
+      if (['approval', 'approval_wait_effect'].includes(payload?.kind) &&
+          (record?.pending_action_id === approvalId || record?.tool_call_id === callId)) {
+        throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable approval belonged to another run');
+      }
+      continue;
+    }
+    if ((payload?.kind === 'approval' &&
+         !['requested', 'decision_applied'].includes(record?.kind)) ||
+        (payload?.kind === 'approval_wait_effect' &&
+         !['started', 'terminal'].includes(record?.kind))) {
+      throw fault('NATIVE_APPROVAL_LOG_TERMINAL_UNKNOWN', 'durable approval contained an unreviewed event');
+    }
+    let key;
+    if (payload.kind === 'approval' && record?.kind === 'requested') {
+      key = 'requested';
+      if (entry.payload_type !== 'runtime.session' || entry.payload_schema_version !== 3 ||
+          payload.record !== undefined || payload.event !== record ||
+          record.pending_action_id !== approvalId || record.tool_call_id !== callId ||
+          record.tool_name !== 'bash' || record.run_stream?.kind !== 'run' ||
+          record.run_stream.id !== turnId || record.session_stream?.kind !== 'session' ||
+          record.session_stream.id !== sessionId ||
+          record.approval_subject?.kind !== 'shell_command' ||
+          record.approval_subject?.raw_command !== command ||
+          record.approval_subject?.canonical_workspace_root !== workspace) {
+        throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable approval request differed');
+      }
+    } else if (payload.kind === 'approval_wait_effect' && record?.kind === 'started') {
+      key = 'wait_started';
+      if (entry.payload_type !== 'approval_wait.effect.started' || entry.payload_schema_version !== 1 ||
+          payload.event !== undefined || payload.record !== record ||
+          record.pending_action_id !== approvalId || record.tool_call_id !== callId ||
+          record.tool_name !== 'bash' || record.run_stream?.kind !== 'run' ||
+          record.run_stream.id !== turnId) {
+        throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable approval wait differed');
+      }
+    } else if (payload.kind === 'approval' && record?.kind === 'decision_applied') {
+      key = 'decision';
+      if (entry.payload_type !== 'runtime.session' || entry.payload_schema_version !== 3 ||
+          payload.record !== undefined || payload.event !== record ||
+          record.pending_action_id !== approvalId || record.decision !== 'abort' ||
+          record.session_stream?.kind !== 'session' || record.session_stream.id !== sessionId) {
+        throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable approval decision differed');
+      }
+    } else if (payload.kind === 'approval_wait_effect' && record?.kind === 'terminal') {
+      key = 'wait_terminal';
+      if (entry.payload_type !== 'approval_wait.effect.terminal' || entry.payload_schema_version !== 1 ||
+          payload.event !== undefined || payload.record !== record ||
+          record.pending_action_id !== approvalId || record.outcome?.kind !== 'aborted') {
+        throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable approval wait terminal differed');
+      }
+    } else if (payload.kind === 'run' && record?.kind === 'tool_result_batch_committed') {
+      key = 'tool_result';
+      if (entry.payload_type !== 'runtime.session' || entry.payload_schema_version !== 1 ||
+          payload.record !== undefined || payload.event !== record ||
+          record.results?.length !== 1 || record.results[0]?.tool_call_id !== callId ||
+          record.results[0]?.text !== 'tool denied: approval aborted') {
+        throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable tool result differed');
+      }
+    } else if (payload.kind === 'run' && record?.kind === 'terminal') {
+      key = 'run_terminal';
+      if (entry.payload_type !== 'runtime.session' || entry.payload_schema_version !== 1 ||
+          payload.record !== undefined || payload.event !== record ||
+          record.terminal !== 'cancelled') {
+        throw fault('NATIVE_APPROVAL_LOG_IDENTITY_MISMATCH', 'durable run terminal differed');
+      }
+    }
+    if (key) {
+      if (seen.has(key)) throw fault('NATIVE_APPROVAL_LOG_AMBIGUOUS', 'durable approval event was duplicated');
+      seen.set(key, entry.sequence);
+    }
+  }
+  const ordered = ['requested', 'wait_started', 'decision', 'wait_terminal',
+    'tool_result', 'run_terminal', 'session_end'];
+  if (ordered.some(key => !seen.has(key)) ||
+      ordered.some((key, index) => index > 0 && seen.get(key) <= seen.get(ordered[index - 1]))) {
+    throw fault('NATIVE_APPROVAL_LOG_TERMINAL_UNKNOWN', 'durable approval terminal chain was incomplete');
+  }
+  return { kind: 'native_shell_approval_aborted_on_shutdown', sessionId, turnId,
+    approvalId, callId, sequences: Object.fromEntries(ordered.map(key => [key, seen.get(key)])) };
+}
+
+export async function readDurableApprovalLog(root, guestPath, identity) {
+  const prefix = `${GUEST_HOME}/.local/share/muse/sessions/`;
+  const suffix = typeof guestPath === 'string' && guestPath.startsWith(prefix) ? guestPath.slice(prefix.length) : '';
+  if (!/^\d{4}\/\d{2}\/\d{2}\/[0-9a-f-]{36}\/session\.jsonl$/i.test(suffix) ||
+      suffix.split('/')[3] !== identity.sessionId) {
+    throw fault('NATIVE_APPROVAL_LOG_PATH_INVALID', 'durable approval log path is outside the owned session');
+  }
+  const home = join(root, 'home');
+  const parts = ['.local', 'share', 'muse', 'sessions', ...suffix.split('/')];
+  let path = home;
+  for (let index = -1; index < parts.length; index++) {
+    if (index >= 0) path = join(path, parts[index]);
+    let stat;
+    try { stat = await lstat(path); }
+    catch (error) {
+      if (error.code === 'ENOENT') throw fault('NATIVE_APPROVAL_LOG_ABSENT', 'durable approval log is absent');
+      throw error;
+    }
+    if (stat.uid !== process.getuid() || stat.isSymbolicLink() ||
+        (index === parts.length - 1 ? !stat.isFile() : !stat.isDirectory())) {
+      throw fault('NATIVE_APPROVAL_LOG_PATH_INVALID', 'durable approval log path is not owned regular storage');
+    }
+    if (index === parts.length - 1 && (stat.size === 0 || stat.size > APPROVAL_LOG_LIMIT)) {
+      throw fault('NATIVE_APPROVAL_LOG_BOUNDS', 'durable approval log exceeded the read bound');
+    }
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.uid !== process.getuid() || stat.size > APPROVAL_LOG_LIMIT) {
+      throw fault('NATIVE_APPROVAL_LOG_PATH_INVALID', 'durable approval log changed before read');
+    }
+    const buffer = Buffer.alloc(APPROVAL_LOG_LIMIT + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    return classifyDurableApprovalLog(buffer.subarray(0, length), identity);
+  } finally { await file.close(); }
 }
 
 export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse',
@@ -1818,6 +2171,22 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     evidence.completion = { code: done.code, signal: done.signal, timedOut: done.timedOut,
       overflow: done.overflow, statusClosed: done.statusClosed, statusLines: done.statusLines,
       output: done.output, stderr: done.stderr };
+    if (done.output.length === 3) {
+      try {
+        const finalLine = JSON.parse(done.output[2]);
+        if (finalLine?.kind === 'guest_transport_error') {
+          const finalFailure = decodeShellOutcomeLine(done.output[2]);
+          evidence.terminalGuestFailure = { stage: finalFailure.stage, code: finalFailure.code,
+            message: finalFailure.message, providerRequests: finalFailure.providerRequests };
+          primaryGuestFailure ??= { stage: finalFailure.stage, code: finalFailure.code,
+            message: finalFailure.message };
+          evidence.primaryGuestFailure ??= primaryGuestFailure;
+        }
+      } catch (error) {
+        evidence.terminalGuestError = { code: error.code ?? error.name,
+          message: String(error.message).slice(0, 300) };
+      }
+    }
     let terminal;
     try { terminal = parseBubblewrapStatus(done.statusLines); }
     catch (error) { evidence.terminalError = { code: error.code ?? error.name,
@@ -1854,7 +2223,22 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     if ((await probe('127.0.0.1', sentinel.port)).kind !== 'connected') {
       throw fault('HOST_SENTINEL_UNAVAILABLE', 'host sentinel unavailable after shell host');
     }
-    outcome = { kind: classified.kind, classified, effects, evidence };
+    let finalKind = classified.kind;
+    if (classified.kind === 'native_shell_approval_pending') {
+      try {
+        evidence.approvalTerminal = await readDurableApprovalLog(root, ready.metadata.durableLogPath, {
+          sessionId: ready.metadata.sessionId, turnId: guestOutcome.turnId,
+          approvalId: classified.approval.approvalId, callId: SHELL_CALL,
+          command: shellProbeCommand(workspace, protectedRoot, token), workspace,
+        });
+        finalKind = evidence.approvalTerminal.kind;
+      } catch (error) {
+        evidence.approvalTerminalError = { code: error.code ?? error.name,
+          message: String(error.message).slice(0, 300) };
+        finalKind = 'native_shell_approval_terminal_unknown';
+      }
+    }
+    outcome = { kind: finalKind, classified, effects, evidence };
   } catch (error) {
     if (primaryGuestFailure && error.code !== primaryGuestFailure.code) {
       evidence.secondaryError = { code: error.code ?? error.name,
