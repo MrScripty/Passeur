@@ -37,6 +37,9 @@ const SHELL_CALL = 'call_native_shell_1';
 const REMINDER_RESPONSE = 'resp_native_reminder_1';
 const REMINDER_ITEM = 'fc_native_reminder_1';
 const REMINDER_CALL = 'call_native_reminder_1';
+const REMINDER_RESPONSE2 = 'resp_native_reminder_2';
+const REMINDER_ITEM2 = 'fc_native_reminder_2';
+const REMINDER_CALL2 = 'call_native_reminder_2';
 const VERIFY_RESPONSE = 'resp_native_verify_reminder_1';
 const VERIFY_ITEM = 'fc_native_verify_reminder_1';
 const VERIFY_CALL = 'call_native_verify_reminder_1';
@@ -53,6 +56,19 @@ const VERIFY_PAYLOAD = Object.freeze({ decision: 'none', next_step: null,
   reason: 'Disposable scripted protocol probe; no verification reminder is being proposed.' });
 
 function fault(code, message) { return Object.assign(new Error(message), { code }); }
+function canonicalRequestDigest(value) {
+  let nodes = 0;
+  const ordered = (entry, depth = 0) => {
+    if (++nodes > 20_000 || depth > 64) {
+      throw fault('NATIVE_REMINDER_CANONICAL_BUDGET', 'reminder request exceeded canonical comparison bound');
+    }
+    if (Array.isArray(entry)) return entry.map(item => ordered(item, depth + 1));
+    if (entry && typeof entry === 'object') return Object.fromEntries(
+      Object.keys(entry).sort().map(key => [key, ordered(entry[key], depth + 1)]));
+    return entry;
+  };
+  return createHash('sha256').update(JSON.stringify(ordered(value))).digest('hex');
+}
 function pause(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 async function timeout(stage, promise, ms = DEADLINE_MS) {
   let timer;
@@ -621,12 +637,17 @@ export function verificationReminderAssociation(body, state, requestIndex) {
   const issuedReadCall = ['read-call-issued', 'read-result-accepted'].includes(state.main);
   const issuedReadResult = state.main === 'read-result-accepted';
   const issuedMain = issuedSchema || issuedReadCall;
-  const issuedReminder = state.reminder === 'none-issued';
+  const issuedReminder = ['none-issued', 'second-issued'].includes(state.reminder);
+  const issuedReminder2 = state.reminder === 'second-issued';
+  const issuedVerification = state.verification === 'none-issued';
   const previous = body?.previous_response_id == null ? 'absent' :
     body.previous_response_id === 'resp_native_read_file_schema_1' && issuedSchema ? 'issued_main' :
       body.previous_response_id === READ_RESPONSE && issuedReadCall ? 'issued_main' :
         body.previous_response_id === READ_TEXT_RESPONSE && issuedReadResult ? 'issued_main' :
-      body.previous_response_id === REMINDER_RESPONSE && issuedReminder ? 'issued_reminder' : 'foreign';
+      body.previous_response_id === REMINDER_RESPONSE && issuedReminder ? 'issued_reminder' :
+        body.previous_response_id === REMINDER_RESPONSE2 && issuedReminder2 ? 'issued_reminder_2' :
+          body.previous_response_id === VERIFY_RESPONSE && issuedVerification ?
+            'issued_verification' : 'foreign';
   const input = body?.input;
   const items = Array.isArray(input) ? input : [];
   const itemFacts = items.slice(0, 16).map(item => ({
@@ -636,24 +657,34 @@ export function verificationReminderAssociation(body, state, requestIndex) {
       item.id === 'msg_native_read_file_schema_1' && issuedSchema ? 'issued_main' :
         item.id === READ_ITEM && issuedReadCall ? 'issued_main' :
           item.id === 'msg_native_read_file_2' && issuedReadResult ? 'issued_main' :
-        item.id === REMINDER_ITEM && issuedReminder ? 'issued_reminder' : 'foreign',
+        item.id === REMINDER_ITEM && issuedReminder ? 'issued_reminder' :
+          item.id === REMINDER_ITEM2 && issuedReminder2 ? 'issued_reminder_2' :
+            item.id === VERIFY_ITEM && issuedVerification ? 'issued_verification' : 'foreign',
     callId: item?.call_id == null ? 'absent' :
       item.call_id === READ_CALL && issuedReadCall ? 'issued_main' :
-      item.call_id === REMINDER_CALL && issuedReminder ? 'issued_reminder' : 'foreign',
+      item.call_id === REMINDER_CALL && issuedReminder ? 'issued_reminder' :
+        item.call_id === REMINDER_CALL2 && issuedReminder2 ? 'issued_reminder_2' :
+          item.call_id === VERIFY_CALL && issuedVerification ? 'issued_verification' : 'foreign',
   }));
   const foreign = previous === 'foreign' || itemFacts.some(item =>
     item.itemId === 'foreign' || item.callId === 'foreign');
   const mainReference = previous === 'issued_main' || itemFacts.some(item =>
     item.itemId === 'issued_main' || item.callId === 'issued_main');
-  const reminderReference = previous === 'issued_reminder' || itemFacts.some(item =>
-    item.itemId === 'issued_reminder' || item.callId === 'issued_reminder');
+  const reminderReference = ['issued_reminder', 'issued_reminder_2'].includes(previous) ||
+    itemFacts.some(item => ['issued_reminder', 'issued_reminder_2'].includes(item.itemId) ||
+      ['issued_reminder', 'issued_reminder_2'].includes(item.callId));
+  const verifyReference = previous === 'issued_verification' || itemFacts.some(item =>
+    item.itemId === 'issued_verification' || item.callId === 'issued_verification');
   return { requestIndex, previousResponse: previous,
     inputKind: Array.isArray(input) ? 'array' : typeof input === 'string' ? 'string' : '[other]',
     inputCount: Array.isArray(input) ? input.length : null, itemFacts,
     omittedItems: Math.max(0, items.length - 16),
-    issuedAtRequest: { main: issuedMain, reminder: issuedReminder },
-    httpRelation: foreign ? 'foreign' : mainReference && reminderReference ? 'ambiguous' :
-      mainReference ? 'issued_main' : reminderReference ? 'issued_reminder' : 'unknown',
+    issuedAtRequest: { main: issuedMain, reminder: issuedReminder,
+      reminder2: issuedReminder2, verification: issuedVerification },
+    httpRelation: foreign ? 'foreign' :
+      [mainReference, reminderReference, verifyReference].filter(Boolean).length > 1 ? 'ambiguous' :
+        mainReference ? 'issued_main' : reminderReference ? 'issued_reminder' :
+          verifyReference ? 'issued_verification' : 'unknown',
     nativeReminderChildRelation: 'unknown' };
 }
 
@@ -779,7 +810,8 @@ export function readFileResultEnvelopeShape(body, issuedAtRequest = {}, workspac
     'output_audio', 'refusal']);
   const readIssued = ['read-call-issued', 'read-result-accepted'].includes(issuedAtRequest.main);
   const textIssued = issuedAtRequest.main === 'read-result-accepted';
-  const skillIssued = issuedAtRequest.reminder === 'none-issued';
+  const skillIssued = ['none-issued', 'second-issued'].includes(issuedAtRequest.reminder);
+  const secondSkillIssued = issuedAtRequest.reminder === 'second-issued';
   const verifyIssued = issuedAtRequest.verification === 'none-issued';
   const references = new Map([
     [READ_RESPONSE, [readIssued, 'issued_read_response']],
@@ -789,6 +821,9 @@ export function readFileResultEnvelopeShape(body, issuedAtRequest = {}, workspac
     [REMINDER_RESPONSE, [skillIssued, 'issued_skill_response']],
     [REMINDER_ITEM, [skillIssued, 'issued_skill_item']],
     [REMINDER_CALL, [skillIssued, 'issued_skill_call']],
+    [REMINDER_RESPONSE2, [secondSkillIssued, 'issued_skill_response_2']],
+    [REMINDER_ITEM2, [secondSkillIssued, 'issued_skill_item_2']],
+    [REMINDER_CALL2, [secondSkillIssued, 'issued_skill_call_2']],
     [VERIFY_RESPONSE, [verifyIssued, 'issued_verify_response']],
     [VERIFY_ITEM, [verifyIssued, 'issued_verify_item']],
     [VERIFY_CALL, [verifyIssued, 'issued_verify_call']],
@@ -846,7 +881,7 @@ export function readFileResultEnvelopeShape(body, issuedAtRequest = {}, workspac
   const shape = { model: summarizedShellModel(body?.model),
     previousResponse: reference(body?.previous_response_id),
     issuedAtRequest: { read: readIssued, readText: textIssued,
-      skill: skillIssued, verification: verifyIssued },
+      skill: skillIssued, skill2: secondSkillIssued, verification: verifyIssued },
     nativeChildAssociation: 'unknown',
     inputKind: Array.isArray(input) ? 'array' : typeof input,
     inputCount: Array.isArray(input) ? input.length : null,
@@ -911,10 +946,11 @@ export async function startShellProvider(forbiddenPort, command, {
   readFileSchemaOnly = false, readFileProbe = false, workspace,
 } = {}) {
   const readFileMode = readFileSchemaOnly || readFileProbe;
-  const maxAttempts = readFileProbe ? 4 : 3;
-  const retainedRequestLimit = readFileProbe ? 8 : 7;
+  const maxAttempts = readFileProbe ? 5 : 3;
+  const retainedRequestLimit = readFileProbe ? 9 : 7;
   const requests = [];
   const state = { main: 'unseen', reminder: 'unseen', verification: 'unseen',
+    skillDigests: [],
     failed: false, admissionClosed: false,
     active: 0, attempts: 0, catalogAttempts: 0, inputBytes: 0, outputBytes: 0,
     omittedRequests: 0 };
@@ -1051,25 +1087,47 @@ export async function startShellProvider(forbiddenPort, command, {
         }
         const reminder = recognizedReminderSchema(parsed);
         if (reminder) {
-          if (state.reminder !== 'unseen' || parsed.previous_response_id != null ||
-              !JSON.stringify(parsed.input)?.includes(readFileProbe ? 'NATIVE_READ_FILE_PROBE' :
-                readFileSchemaOnly ? 'NATIVE_READ_FILE_SCHEMA_PROBE' : 'NATIVE_SHELL_PROBE') ||
-              (Array.isArray(parsed.input) && parsed.input.some(item => item?.type === 'function_call_output'))) {
-            throw fault('NATIVE_REMINDER_SEQUENCE_INVALID', 'duplicate or correlated reminder request');
+          const ordinal = readFileProbe ? state.skillDigests.length + 1 : 1;
+          const association = readFileProbe ? verificationReminderAssociation(parsed,
+            issuanceAtAdmission, summary.responseIndex) : null;
+          const firstPrelude = parsed.previous_response_id == null &&
+            JSON.stringify(parsed.input)?.includes(readFileProbe ? 'NATIVE_READ_FILE_PROBE' :
+              readFileSchemaOnly ? 'NATIVE_READ_FILE_SCHEMA_PROBE' : 'NATIVE_SHELL_PROBE') &&
+            !(Array.isArray(parsed.input) && parsed.input.some(item => item?.type === 'function_call_output'));
+          if (ordinal > (readFileProbe ? 2 : 1) ||
+              (ordinal === 1 && state.reminder !== 'unseen') ||
+              (ordinal === 1 && !firstPrelude &&
+                !(readFileProbe && issuanceAtAdmission.main === 'read-result-accepted')) ||
+              (ordinal === 2 && (state.reminder !== 'none-issued' ||
+                issuanceAtAdmission.main !== 'read-result-accepted' ||
+                state.main !== 'read-result-accepted')) ||
+              (association && (association.omittedItems !== 0 ||
+                association.httpRelation === 'foreign'))) {
+            throw fault('NATIVE_REMINDER_SEQUENCE_INVALID', 'skill reminder request is replayed or unreviewed');
+          }
+          const requestDigest = readFileProbe ? canonicalRequestDigest(parsed) : null;
+          if (readFileProbe && state.skillDigests.includes(requestDigest)) {
+            throw fault('NATIVE_REMINDER_REPLAY', 'canonical skill reminder request repeated');
           }
           const payload = fixedNoReminderPayload(parsed);
-          const events = reminderCallEvents(payload);
+          const identities = ordinal === 2 ? { responseId: REMINDER_RESPONSE2,
+            itemId: REMINDER_ITEM2, callId: REMINDER_CALL2 } :
+            { responseId: REMINDER_RESPONSE, itemId: REMINDER_ITEM, callId: REMINDER_CALL };
+          const events = reminderCallEvents(payload, identities);
           const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
           const outputBytes = Buffer.byteLength(output);
           if (state.outputBytes + outputBytes > LIMIT) {
             throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'native fixture output exceeds budget');
           }
-          state.reminder = 'none-issued';
+          state.reminder = ordinal === 2 ? 'second-issued' : 'none-issued';
+          if (readFileProbe) state.skillDigests.push(requestDigest);
           state.outputBytes += outputBytes;
           summary.kind = 'native_reminder_call';
-          summary.responseId = REMINDER_RESPONSE;
-          summary.itemId = REMINDER_ITEM;
-          summary.callId = REMINDER_CALL;
+          summary.ordinal = ordinal;
+          summary.responseId = identities.responseId;
+          summary.itemId = identities.itemId;
+          summary.callId = identities.callId;
+          if (ordinal === 2) summary.association = association;
           summary.payloadSha256 = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
           response.writeHead(200, { 'content-type': 'text/event-stream' });
           response.end(output);
@@ -1635,8 +1693,8 @@ export async function guestShellRun(config) {
           bytes: typeof item.visibleOutput === 'string' ? Buffer.byteLength(item.visibleOutput) : null,
           lines: typeof item.visibleOutput === 'string' && Buffer.byteLength(item.visibleOutput) <= LIMIT ?
             item.visibleOutput.split('\n').length : null };
-        if ([REMINDER_CALL, VERIFY_CALL].includes(item.callId)) {
-          const expected = item.callId === REMINDER_CALL ? REMINDER_PAYLOAD : VERIFY_PAYLOAD;
+        if ([REMINDER_CALL, REMINDER_CALL2, VERIFY_CALL].includes(item.callId)) {
+          const expected = item.callId === VERIFY_CALL ? VERIFY_PAYLOAD : REMINDER_PAYLOAD;
           let payloadMatch = false;
           try { payloadMatch = isDeepStrictEqual(JSON.parse(item.args), expected); }
           catch { /* unmatched below */ }
@@ -2526,8 +2584,8 @@ export function validateReadFileOutcome(ready, outcome, workspace) {
       outcome.event?.kind !== 'turn_completed' || outcome.event.terminal !== 'completed' ||
       outcome.event.turnId !== outcome.turnId || outcome.event.sessionId !== outcome.sessionId ||
       outcome.pending !== null || outcome.commands?.join(',') !== 'session/start,session/read,turn/start' ||
-      !Array.isArray(requests) || requests.length > 8 || responses.length > 4 ||
-      main.length !== 1 || result.length !== 1 || skill.length > 1 || verification.length !== 1 ||
+      !Array.isArray(requests) || requests.length > 9 || responses.length > 5 ||
+      main.length !== 1 || result.length !== 1 || skill.length > 2 || verification.length !== 1 ||
       responses.length !== main.length + result.length + skill.length + verification.length ||
       mainIndex < 0 || resultIndex <= mainIndex ||
       requests.some(request => request.rejection !== undefined || !(
@@ -2561,9 +2619,18 @@ export function validateReadFileOutcome(ready, outcome, workspace) {
       verification[0].payloadSha256 !== createHash('sha256').update(JSON.stringify(VERIFY_PAYLOAD)).digest('hex') ||
       verification[0].association?.httpRelation === 'foreign' ||
       verification[0].association?.omittedItems !== 0 ||
-      skill.some(request => request.responseId !== REMINDER_RESPONSE || request.itemId !== REMINDER_ITEM ||
-        request.callId !== REMINDER_CALL || request.payloadSha256 !==
-          createHash('sha256').update(JSON.stringify(REMINDER_PAYLOAD)).digest('hex')) ||
+      skill.some((request, index) => request.ordinal !== index + 1 ||
+        request.responseId !== (index ? REMINDER_RESPONSE2 : REMINDER_RESPONSE) ||
+        request.itemId !== (index ? REMINDER_ITEM2 : REMINDER_ITEM) ||
+        request.callId !== (index ? REMINDER_CALL2 : REMINDER_CALL) ||
+        request.payloadSha256 !==
+          createHash('sha256').update(JSON.stringify(REMINDER_PAYLOAD)).digest('hex') ||
+        index === 1 && (requests.indexOf(request) <= resultIndex ||
+          request.association?.omittedItems !== 0 ||
+          request.association?.httpRelation === 'foreign' ||
+          request.association?.issuedAtRequest?.main !== true ||
+          request.association?.issuedAtRequest?.reminder !== true ||
+          request.association?.issuedAtRequest?.reminder2 !== false)) ||
       outcome.observations?.approvals?.length !== 0 ||
       outcome.observations?.items?.length !== 1 ||
       item?.callId !== READ_CALL || item.turnId !== outcome.turnId ||
@@ -2577,7 +2644,8 @@ export function validateReadFileOutcome(ready, outcome, workspace) {
       observedReminders.length > skill.length + verification.length ||
       new Set(observedReminderIds).size !== observedReminderIds.length ||
       observedReminders.some(observed =>
-        observed.callId !== VERIFY_CALL && !(skill.length && observed.callId === REMINDER_CALL) ||
+        observed.callId !== VERIFY_CALL && !(skill.length && observed.callId === REMINDER_CALL) &&
+          !(skill.length === 2 && observed.callId === REMINDER_CALL2) ||
         observed.turnId !== outcome.turnId || observed.status !== 'completed' ||
         observed.tool !== 'submit_reminder_decision' || observed.payloadMatch !== true)) {
     throw fault('NATIVE_READ_FILE_OUTCOME_INVALID', 'native read_file result was not exact and isolated');

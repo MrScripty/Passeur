@@ -937,6 +937,13 @@ test('verification reminder association exposes only issued references and unkno
   { main: 'read-result-accepted', reminder: 'unseen' }, 4).httpRelation, 'issued_main');
   assert.equal(verificationReminderAssociation({ ...body, previous_response_id: 'resp_native_read_file_1' },
     { main: 'unseen', reminder: 'unseen' }, 1).httpRelation, 'foreign');
+  const afterSecond = verificationReminderAssociation({ ...body,
+    previous_response_id: 'resp_native_reminder_2',
+    input: [{ type: 'function_call_output', call_id: 'call_native_reminder_2' }] },
+  { main: 'read-result-accepted', reminder: 'second-issued', verification: 'unseen' }, 5);
+  assert.equal(afterSecond.previousResponse, 'issued_reminder_2');
+  assert.equal(afterSecond.httpRelation, 'issued_reminder');
+  assert.equal(afterSecond.issuedAtRequest.reminder2, true);
 });
 
 test('verification reminder provider captures a bounded schema and emits no variant function response', async () => {
@@ -1035,7 +1042,8 @@ test('verification association is bound at request admission across paused body 
     const recorded = h.provider.requests[0];
     assert.equal(recorded.responseIndex, 1);
     assert.equal(recorded.association.requestIndex, 1);
-    assert.deepEqual(recorded.association.issuedAtRequest, { main: false, reminder: false });
+    assert.deepEqual(recorded.association.issuedAtRequest,
+      { main: false, reminder: false, reminder2: false, verification: false });
     assert.equal(recorded.association.previousResponse, 'foreign');
     assert.equal(h.provider.requests[1].kind, 'native_read_file_schema');
   } finally { await h.provider.close(); }
@@ -1102,7 +1110,7 @@ test('read_file mismatch projects four native items without retaining arbitrary 
   assert.equal(shape.items[3].outputSha256, createHash('sha256').update(output).digest('hex'));
   assert.equal(shape.items[3].exactCanary, false);
   assert.deepEqual(shape.issuedAtRequest,
-    { read: true, readText: false, skill: false, verification: false });
+    { read: true, readText: false, skill: false, skill2: false, verification: false });
   assert.equal(JSON.stringify(shape).includes(secret), false);
   assert.equal(readFileResultEnvelopeShape({ ...body, previous_response_id: secret })
     .previousResponse, 'foreign');
@@ -1235,7 +1243,7 @@ test('probe provider accepts one workspace read and both independent reminder sc
       assert.equal(readBody.includes('"name":"read_file"'), true);
       assert.equal(readBody.includes('/tmp/fixture/workspace/read-canary.txt'), true);
       assert.equal(readBody.includes('protected-canary'), false);
-      assert.equal((await h.post(readFileProbeRequest())).status, 429);
+      assert.equal((await h.post(readFileProbeRequest())).status, 422);
     } finally { await h.provider.close(); }
   }
 });
@@ -1261,6 +1269,119 @@ test('probe retains four catalog and four Responses requests including the final
     assert.equal(h.provider.requests[7].kind, 'matching_read_file_result');
     assert.equal(h.provider.requests[6].association.httpRelation, 'issued_main');
     assert.equal(h.provider.state.omittedRequests, 0);
+  } finally { await h.provider.close(); }
+});
+
+test('probe accepts one distinct second skill reminder after read result in either verification order', async () => {
+  const firstSkill = { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE first skill' };
+  const secondSkill = { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE second skill' };
+  for (const verifyFirst of [true, false]) {
+    const h = await nativeProviderHarness({ readFileProbe: true });
+    try {
+      assert.equal((await h.post(firstSkill)).status, 200);
+      assert.equal((await h.post(readFileProbeRequest())).status, 200);
+      assert.equal((await h.post(readFileResultRequest())).status, 200);
+      const tail = verifyFirst ? [verifiedVerificationRequest(), secondSkill] :
+        [secondSkill, verifiedVerificationRequest()];
+      const tailResponses = [];
+      for (const body of tail) tailResponses.push(await h.post(body));
+      assert.deepEqual(tailResponses.map(response => response.status), [200, 200]);
+      const secondBody = tailResponses[verifyFirst ? 1 : 0].body;
+      for (const identity of ['resp_native_reminder_2', 'fc_native_reminder_2',
+        'call_native_reminder_2']) assert.equal(secondBody.includes(identity), true);
+      const reminders = h.provider.requests.filter(request => request.kind === 'native_reminder_call');
+      assert.deepEqual(reminders.map(request => [request.ordinal, request.responseId,
+        request.itemId, request.callId]), [
+        [1, 'resp_native_reminder_1', 'fc_native_reminder_1', 'call_native_reminder_1'],
+        [2, 'resp_native_reminder_2', 'fc_native_reminder_2', 'call_native_reminder_2'],
+      ]);
+      assert.equal(reminders[0].payloadSha256, reminders[1].payloadSha256);
+      assert.equal(reminders[1].association.issuedAtRequest.main, true);
+      assert.equal(h.provider.requests.length, 5);
+      assert.equal((await h.post(secondSkill)).status, 429);
+    } finally { await h.provider.close(); }
+  }
+});
+
+test('probe second skill gate rejects early, replayed and foreign requests', async () => {
+  const first = { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE same skill' };
+  const fresh = { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE fresh skill' };
+  for (const variant of ['early', 'replay', 'foreign', 'drift']) {
+    const h = await nativeProviderHarness({ readFileProbe: true });
+    try {
+      assert.equal((await h.post(first)).status, 200);
+      assert.equal((await h.post(readFileProbeRequest())).status, 200);
+      if (variant !== 'early') assert.equal((await h.post(readFileResultRequest())).status, 200);
+      const second = variant === 'replay' ? Object.fromEntries(Object.entries(first).reverse()) :
+        structuredClone(fresh);
+      if (variant === 'foreign') second.previous_response_id = 'foreign';
+      if (variant === 'drift') second.tools[0].tools[0].parameters.properties.reason.type = 'integer';
+      assert.equal((await h.post(second)).status, 422);
+      assert.equal(h.provider.requests.at(-1).kind === 'native_reminder_call', false);
+      assert.equal((await h.post(verifiedVerificationRequest())).status, 429);
+    } finally { await h.provider.close(); }
+  }
+  const repeated = await nativeProviderHarness({ readFileProbe: true });
+  try {
+    assert.equal((await repeated.post({ ...fixedReminderRequest(),
+      input: 'NATIVE_READ_FILE_PROBE first skill' })).status, 200);
+    assert.equal((await repeated.post(readFileProbeRequest())).status, 200);
+    assert.equal((await repeated.post(readFileResultRequest())).status, 200);
+    assert.equal((await repeated.post(verifiedVerificationRequest())).status, 200);
+    assert.equal((await repeated.post(verifiedVerificationRequest())).status, 422);
+    assert.equal(repeated.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_REPLAY');
+  } finally { await repeated.provider.close(); }
+});
+
+test('second skill and verification overlap after result within five POST and four GET', async () => {
+  const h = await nativeProviderHarness({ readFileProbe: true });
+  try {
+    for (let index = 0; index < 4; index++) {
+      const request = Readable.from([]);
+      request.method = 'GET'; request.url = '/muse-code/models';
+      const response = { status: null, writeHead(status) { this.status = status; return this; },
+        end() { return this; } };
+      await h.handle(request, response);
+      assert.equal(response.status, 200);
+    }
+    assert.equal((await h.post({ ...fixedReminderRequest(),
+      input: 'NATIVE_READ_FILE_PROBE first skill' })).status, 200);
+    assert.equal((await h.post(readFileProbeRequest())).status, 200);
+    assert.equal((await h.post(readFileResultRequest())).status, 200);
+    const [skill, verification] = await Promise.all([
+      h.post({ ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE second skill' }),
+      h.post(verifiedVerificationRequest()),
+    ]);
+    assert.deepEqual([skill.status, verification.status], [200, 200]);
+    assert.equal(h.provider.requests.length, 9);
+    assert.equal(h.provider.state.omittedRequests, 0);
+    assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 2);
+    assert.equal((await h.post(verifiedVerificationRequest())).status, 429);
+  } finally { await h.provider.close(); }
+});
+
+test('second skill admitted before read result cannot become eligible after delayed body', async () => {
+  const h = await nativeProviderHarness({ readFileProbe: true });
+  try {
+    assert.equal((await h.post({ ...fixedReminderRequest(),
+      input: 'NATIVE_READ_FILE_PROBE first skill' })).status, 200);
+    assert.equal((await h.post(readFileProbeRequest())).status, 200);
+    const request = new Readable({ read() {} });
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, writeHead(status) { this.status = status; return this; },
+      end(value = '') { this.body = value; return this; } };
+    const handling = h.handle(request, response);
+    assert.equal(h.provider.state.active, 1);
+    assert.equal((await h.post(readFileResultRequest())).status, 200);
+    request.push(JSON.stringify({ ...fixedReminderRequest(),
+      input: 'NATIVE_READ_FILE_PROBE second skill' }));
+    request.push(null);
+    await handling;
+    assert.equal(response.status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+    assert.equal(h.provider.requests[2].responseIndex, 3);
+    assert.equal(h.provider.requests[2].kind === 'native_reminder_call', false);
+    assert.equal(h.provider.state.reminder, 'none-issued');
   } finally { await h.provider.close(); }
 });
 
@@ -1335,7 +1456,7 @@ test('read result admitted before its call stays unissued when its body arrives 
     assert.equal(h.provider.requests[0].resultEnvelope.previousResponse, 'absent');
     assert.equal(h.provider.requests[0].resultEnvelope.items[2].callId, 'known_unissued');
     assert.deepEqual(h.provider.requests[0].resultEnvelope.issuedAtRequest,
-      { read: false, readText: false, skill: false, verification: false });
+      { read: false, readText: false, skill: false, skill2: false, verification: false });
     assert.equal(h.provider.state.main, 'read-call-issued');
   } finally { await h.provider.close(); }
 });
@@ -1820,6 +1941,48 @@ test('read_file outcome requires exact call, result, reminders, turn and no appr
     value => { value.observations.reminders = [{ callId: 'call_native_reminder_1',
       turnId: value.turnId, status: 'completed', tool: 'submit_reminder_decision', payloadMatch: true }]; },
     value => { value.event.turnId = 'foreign'; },
+  ]) {
+    const changed = structuredClone(outcome);
+    edit(changed);
+    assert.throws(() => validateReadFileOutcome(ready, changed, ready.metadata.workspaceRoot),
+      { code: 'NATIVE_READ_FILE_OUTCOME_INVALID' });
+  }
+});
+
+test('read_file outcome correlates two distinct skill reminders around the accepted result', () => {
+  const ready = shellReadyFixture('/tmp/fixture/workspace');
+  ready.readCanarySha256 = createHash('sha256').update('PASSEUR_NATIVE_READ_CANARY\n').digest('hex');
+  const outcome = readFileProbeOutcomeFixture(ready);
+  const payloadSha256 = createHash('sha256').update(JSON.stringify(
+    fixedNoReminderPayload(fixedReminderRequest()))).digest('hex');
+  const first = { method: 'POST', path: '/responses', kind: 'native_reminder_call',
+    model: 'fixture-native-shell', ordinal: 1, responseId: 'resp_native_reminder_1',
+    itemId: 'fc_native_reminder_1', callId: 'call_native_reminder_1', payloadSha256 };
+  const second = { method: 'POST', path: '/responses', kind: 'native_reminder_call',
+    model: 'fixture-native-shell', ordinal: 2, responseId: 'resp_native_reminder_2',
+    itemId: 'fc_native_reminder_2', callId: 'call_native_reminder_2', payloadSha256,
+    association: { omittedItems: 0, httpRelation: 'issued_main',
+      issuedAtRequest: { main: true, reminder: true, reminder2: false, verification: true } } };
+  outcome.providerRequests.splice(1, 0, first);
+  outcome.providerRequests.push(second);
+  outcome.observations.reminders = [
+    { callId: 'call_native_reminder_1', turnId: outcome.turnId, status: 'completed',
+      tool: 'submit_reminder_decision', payloadMatch: true },
+    { callId: 'call_native_reminder_2', turnId: outcome.turnId, status: 'completed',
+      tool: 'submit_reminder_decision', payloadMatch: true },
+  ];
+  assert.equal(validateReadFileOutcome(ready, outcome, ready.metadata.workspaceRoot).kind,
+    'native_workspace_read_observed');
+  const verificationAfter = structuredClone(outcome);
+  const [verification] = verificationAfter.providerRequests.splice(3, 1);
+  verificationAfter.providerRequests.push(verification);
+  assert.equal(validateReadFileOutcome(ready, verificationAfter, ready.metadata.workspaceRoot).kind,
+    'native_workspace_read_observed');
+  for (const edit of [
+    value => { value.providerRequests.at(-1).callId = 'call_native_reminder_1'; },
+    value => { value.providerRequests.at(-1).association.issuedAtRequest.main = false; },
+    value => { value.providerRequests.at(-1).association.httpRelation = 'foreign'; },
+    value => { value.observations.reminders[1].callId = 'call_native_reminder_1'; },
   ]) {
     const changed = structuredClone(outcome);
     edit(changed);
