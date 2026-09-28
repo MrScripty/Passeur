@@ -1,0 +1,26 @@
+# G2 real-provider transport dossier — 2026-09-28
+
+**Status:** design evidence only. The accepted production protected host completed one installed task with a synthetic provider, dummy guest auth and no real account. This dossier does not authorize a live task or private-capability registration.
+
+## Pinned local facts
+
+- Installed Muse Code reports `1.4.0-R4302.1`; the locally staged `@muse-code/sdk` is `1.3.0`, Zod is `4.1.11`, and Node is `24.12.0`. The installed no-account production-host task succeeded with that exact artifact combination; it establishes this conversation's observed compatibility, not general supported version pairing. The local SDK README recommends version lockstep, so supported 1.4 SDK availability remains to be resolved before production registration.
+- Public installed `muse --help` offers `meta`, `echo` and `local` providers, a `--model` selector and `--base-url` for Meta. `muse auth --help` exposes an API-key-stdin path and `muse login --help` a browser/device flow; neither command was used to authenticate here. No personal auth or configuration file was inspected.
+- The accepted protected guest writes task-owned `settings.json` with a loopback `endpoint_transport` and reads a **dummy** auth file. The host's synthetic broker alone has its upstream bearer. The guest relay currently has 5-second socket deadlines, 32 total requests, four active requests and a 262,144-byte request cap. Its fixed conversation and broker policy are synthetic qualification behavior, not live service limits.
+
+## Public provider facts and candidate
+
+- Meta documents Model API at `https://api.meta.ai/v1`, including `GET /v1/models` and `POST /v1/responses`. Its documented direct API request uses bearer authentication. A standard-tier candidate model is `muse-spark-1.3`; Muse Code's documented default is `muse-spark-1.2`. These are public candidate values, not proof that this installed Muse/account can route the selected model. [Meta Model API overview](https://dev.meta.ai/docs/overview), [model catalog](https://dev.meta.ai/docs/models), [Responses API reference](https://dev.meta.ai/docs/api-reference/responses/create-response), [Muse Code configuration](https://dev.meta.ai/docs/muse-code/configuration).
+- Meta documents Muse Code's credential precedence as `META_API_KEY`, stored key, then browser session, and describes token-based usage billing. That describes the CLI; it does not make the user's existing interactive session a safe credential source for Passeur. No credential value or account status was read. [Muse Code authentication and billing](https://dev.meta.ai/docs/muse-code/auth).
+- Meta documents Responses streaming and its role in long generations. The native fixture's observed Meta-like relative requests and the public direct API are separate observations; the exact installed Muse 1.4 upstream route set and auth/refresh behavior still need explicit qualification. [Responses API guide](https://dev.meta.ai/docs/protocols/responses), [Choosing an API](https://dev.meta.ai/docs/protocols).
+
+## Contract decisions before offline transport implementation
+
+1. Select the exact provider/model/version and fixed HTTPS origin and route allowlist. For **offline transport tests**, use fixed `https://api.meta.ai`, `GET /v1/models` and `POST /v1/responses` as the candidate contract, with `muse-spark-1.3` as a candidate model. Actual installed Muse route compatibility and account model availability remain unproved. Reject URL overrides, redirects, DNS/peer changes outside the fixed origin and guest-supplied destination headers.
+2. Select a host-only credential source. A transport interface may accept a host callback that supplies a short-lived bearer; the guest receives only a task-local dummy credential. The host must replace guest Authorization on the approved TLS request and must never place a real bearer in the guest filesystem, environment, argv, logs, errors or retained evidence. Browser-session refresh is unsupported until a reviewed host-owned refresh contract exists; expiration must fail closed.
+3. Set bounded request/body/response/stream sizes, concurrency, connection lifetime, cancellation and backpressure from actual native/provider behavior. A timed-out or partially delivered inference response has uncertain disposition and cannot be blindly replayed. Record only route, status class, byte counts and sanitized usage, without prompts, responses or auth values.
+4. Select allowed disclosure and spend before live use. The planned first live task should use a disposable nonsensitive repository and exact model, maximum requests/tokens and monetary bound. The accepted synthetic task supplies no evidence of the user's account tier, billing state or pricing entitlement.
+
+## Remaining evidence
+
+The current `continue` operation admits host transport design and offline controlled tests. Those tests must prove header stripping, fixed TLS peer/route, redirect refusal, bounded streaming, cancellation, ambiguous delivery, expired credential and socket retirement with synthetic keys. A later plan revision must specify the exact live credential source and task, permitted disclosure and spend before one real-provider installed attempt. Real G2, autonomous G3/G4 and repeated G5 language acceptance remain open.

@@ -9,10 +9,13 @@ import { peerOperationResultPrompt, peerProposalCorrectionPrompt, peerProposalRe
 import type { WorkerAdapter, WorkerRun } from "../agents/types.js";
 import type { PeerDeliveryEnvelope } from "../contracts/peer-delivery.js";
 import type { MuseOptions } from "./config.js";
+import { protectedLaunch, startProtectedClient, type ProtectedRuntimeConfig } from "./protected-runtime.js";
 export type ClientStartup = {
   ready: Promise<MuseClient>; close: () => Promise<unknown>;
   /** The production starter observes host exit and connection closure independently of a turn. */
   failure?: Promise<never>;
+  /** Only the owner of a captured process namespace may certify its retirement. */
+  stopProof?: () => Promise<boolean>;
 };
 export type ClientStarter = (options: MuseClientSpawnOptions) => ClientStartup;
 function startOwnedClient(options: MuseClientSpawnOptions): ClientStartup {
@@ -80,7 +83,8 @@ function peerContinuationPrompt(envelope: PeerDeliveryEnvelope): string {
 }
 
 export class MuseSdkAdapter implements WorkerAdapter {
-  constructor(private readonly options: MuseOptions, private readonly startClient: ClientStarter = startOwnedClient) {}
+  constructor(private readonly options: MuseOptions, private readonly startClient: ClientStarter = startOwnedClient,
+    private readonly protectedRuntime?: ProtectedRuntimeConfig) {}
   async run(input: Parameters<WorkerAdapter["run"]>[0]): Promise<WorkerRun> {
     if (input.signal.aborted) return cancelledRun(input.signal, "not_started");
     const lifetime = new AbortController(), signal = AbortSignal.any([input.signal, lifetime.signal]);
@@ -88,6 +92,7 @@ export class MuseSdkAdapter implements WorkerAdapter {
     if (input.request.mode === "review") args.push("--disable-write", "--disable-shell", "--sandbox-network", this.options.review.sandbox_network);
     else args.push("--sandbox-network", this.options.implementation.sandbox_network);
     let client: MuseClient | undefined, startup: ClientStartup | undefined;
+    let stopProof: ClientStartup["stopProof"];
     let stopped: WorkerRun["worker_stop"] = "unconfirmed", consume: Promise<void> | undefined, consumeError: unknown, eventError: unknown;
     let cleanupDeadline = 0, stderrNoted = false;
     let reportedModel: string | undefined;
@@ -119,14 +124,29 @@ export class MuseSdkAdapter implements WorkerAdapter {
     const stop = async () => {
       const owned = client ?? startup;
       client = undefined; startup = undefined;
-      if (owned) stopped = await settlesWithin(Promise.resolve().then(() => owned.close()), remaining()) ? "confirmed" : "unconfirmed";
+      if (owned) {
+        const closeSettled = await settlesWithin(Promise.resolve().then(() => owned.close()), remaining());
+        const independentlyStopped = stopProof &&
+          await settlesWithin(Promise.resolve().then(() => stopProof!()).then(proved => {
+            if (!proved) throw new BridgeError("MUSE_STOP_UNCONFIRMED", "Protected namespace retirement was not observed");
+          }), remaining());
+        stopped = closeSettled && independentlyStopped ? "confirmed" : "unconfirmed";
+      }
     };
     let result: WorkerRun;
     try {
-      startup = this.startClient({ museBin: this.options.muse_bin, args, cwd: input.workspace, env: childEnvironment(),
+      const launch = input.private_git ? protectedLaunch(input, this.protectedRuntime ??
+        (() => { throw new BridgeError("MUSE_PROTECTED_UNAVAILABLE", "Protected runtime is not configured"); })(),
+        ["serve", "--disable-sandbox"]) : undefined;
+      startup = launch ? startProtectedClient({ ...launch.hostOptions,
+        shutdownTimeoutMs: input.policy.stop_grace_ms,
+        onStderr: () => { if (!stderrNoted) { stderrNoted = true; void emit({ kind: "evidence_omitted", reason: "Native stderr excluded from persisted diagnostics" }); } },
+      }, launch.statusFile, launch.guestMuseExecutable, this.protectedRuntime!.museExecutable,
+      this.protectedRuntime) : this.startClient({ museBin: this.options.muse_bin, args, cwd: input.workspace, env: childEnvironment(),
         clientInfo: { name: "muse_bridge", version: "0.1.0" }, shutdownTimeoutMs: input.policy.stop_grace_ms,
         onStderr: () => { if (!stderrNoted) { stderrNoted = true; void emit({ kind: "evidence_omitted", reason: "Native stderr excluded from persisted diagnostics" }); } },
       });
+      stopProof = startup.stopProof;
       nativeFailure = startup.failure;
       client = await wait(startup.ready); startup = undefined;
       throwIfAborted(signal);

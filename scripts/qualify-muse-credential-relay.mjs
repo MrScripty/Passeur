@@ -1441,7 +1441,8 @@ export async function stageNativeRuntime(root, muse, stagePinned = stageRuntime)
 }
 
 const ADAPTER_CLOSURE = Object.freeze([
-  'muse/adapter.js', 'core/errors.js', 'core/async.js', 'agents/report.js',
+  'muse/adapter.js', 'muse/protected-runtime.js', 'muse/protected-host.js',
+  'core/errors.js', 'core/async.js', 'agents/report.js',
   'agents/report-format.js', 'contracts/peer-delivery.js',
   'contracts/peer-operations.js', 'coordination/peer-resolution.js',
 ]);

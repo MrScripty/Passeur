@@ -33,7 +33,8 @@ test('SDK adapter mode stages only the built runtime import closure and pinned v
     await cp('node_modules/@muse-code/sdk/dist', join(runtime, 'sdk/dist'), { recursive: true });
     await copyFile('node_modules/@muse-code/sdk/package.json', join(runtime, 'sdk/package.json'));
     assert.equal(await stageAdapterRuntime(root, 'unused', async () => runtime), runtime);
-    for (const relative of ['muse/adapter.js', 'core/errors.js', 'core/async.js',
+    for (const relative of ['muse/adapter.js', 'muse/protected-runtime.js',
+      'muse/protected-host.js', 'core/errors.js', 'core/async.js',
       'agents/report.js', 'agents/report-format.js', 'contracts/peer-delivery.js',
       'contracts/peer-operations.js', 'coordination/peer-resolution.js']) {
       assert.deepEqual(await readFile(join(runtime, 'adapter', relative)),
@@ -45,7 +46,7 @@ test('SDK adapter mode stages only the built runtime import closure and pinned v
     assert.equal(manifest.adapter, 'MuseSdkAdapter.run');
     assert.equal(manifest.sdk_version, '1.3.0');
     assert.equal(manifest.zod_version, '4.1.11');
-    assert.equal(manifest.closure.length, 8);
+    assert.equal(manifest.closure.length, 10);
     for (const entry of manifest.closure) assert.equal(entry.sha256,
       createHash('sha256').update(await readFile(join('dist/src', entry.path))).digest('hex'));
     const module = await import(pathToFileURL(join(runtime, 'adapter/muse/adapter.js')).href);

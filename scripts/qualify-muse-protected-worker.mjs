@@ -703,13 +703,201 @@ async function runProtectedAdapter(input, options) {
     hostStarted, [root, runtimeRoot], null, null);
 }
 
+export async function settleProductionProtectedOutcome({ result, validated, primaryError,
+  resources, cancelled, hostStarted, roots }, closeResource = resource =>
+    within(resource.close(), 5_000, 'NATIVE_TASK_RESOURCE_STOP_UNCONFIRMED')) {
+  let error = primaryError;
+  for (const resource of resources) if (resource) {
+    try { await closeResource(resource); }
+    catch (cause) { error ??= cause; }
+  }
+  const outcome = validated && !error ? { ...result, worker_stop: 'confirmed' } :
+    stoppedResult(cancelled ? 'cancelled' : 'failed',
+      result?.worker_stop === 'confirmed' ? { kind: 'confirmed' } : null,
+      error, hostStarted, roots, null, null);
+  return { outcome, error };
+}
+
+async function runProductionProtectedAdapter(input, options) {
+  const { muse, stage, sentinelStart, upstreamStart, brokerStart, probe,
+    onPending, onRetained } = options;
+  const root = await mkdtemp(join(tmpdir(), 'passeur-muse-production-protected-'));
+  const runtimeRoot = await mkdtemp('/dev/shm/passeur-muse-production-runtime-');
+  const home = join(root, 'home'), protectedRoot = join(root, 'protected');
+  const socketDirectory = join(root, 'socket');
+  let sentinel, upstream, broker, token, result, error, commit;
+  let validated = false;
+  let hostStarted = false;
+  let outcome;
+  const notifications = [], events = [];
+  let captured;
+  let preStopJournal, preStopIdentity;
+  try {
+    await onRetained({ taskId: input.task_id, root, runtimeRoot });
+    await Promise.all([home, protectedRoot, socketDirectory].map(path => mkdir(path, { mode: 0o700 })));
+    token = randomBytes(12).toString('hex');
+    await writeFile(join(protectedRoot, token), 'protected-no-account-canary', { mode: 0o600, flag: 'wx' });
+    await symlink(protectedRoot, join(input.workspace, 'protected-link'));
+    const runtime = await stage(runtimeRoot, muse);
+    await mkdir(join(home, '.config', 'muse'), { recursive: true, mode: 0o700 });
+    await writeFile(join(home, '.config', 'muse', 'auth.json'), JSON.stringify({ schema_version: 1,
+      providers: { meta: { api_key: 'passeur-disposable-dummy-key' } } }), { mode: 0o600 });
+    probe();
+    sentinel = await sentinelStart();
+    const runId = `run_${randomBytes(12).toString('hex')}`;
+    const bearer = randomBytes(32).toString('hex');
+    upstream = await upstreamStart({ bearer, workspace: input.workspace,
+      protectedRoot, canaryToken: token, hostPort: sentinel.port,
+      shell: true, taskCommit: true, adapterMode: true });
+    const command = shellCommitCommand(input.workspace, protectedRoot, token);
+    broker = await brokerStart({ socketPath: join(socketDirectory, 'relay.sock'),
+      upstreamOrigin: upstream.origin, runId, bearer, profile: 'native-shell',
+      workspace: input.workspace, shellCommand: command });
+    const { MuseSdkAdapter } = await import('../dist/src/muse/adapter.js');
+    const nativeExe = join(runtime, 'muse-bin-1.4.0-R4302.1');
+    const adapter = new MuseSdkAdapter({ muse_bin: nativeExe, model: 'fixture-native-shell',
+      implementation: { sandbox_network: 'none' }, review: { sandbox_network: 'none' } },
+    undefined, { runtimeRoot: runtime, home, relayDirectory: socketDirectory,
+      protectedRoots: [protectedRoot, dirname(input.private_git.view.private_common_dir)],
+      nodeExecutable: join(runtime, 'node'), museExecutable: nativeExe,
+      hostScript: join(runtime, 'adapter', 'muse', 'protected-host.js'),
+      relayHeaders: { 'x-passeur-run': runId },
+      onNativeNotification: value => { if (notifications.length < 512) notifications.push(value);
+        else throw fault('NATIVE_TASK_OPERATION_UNCERTAIN', 'native notification budget exceeded'); },
+      onCapture: value => { captured = value; } });
+    input.signal.throwIfAborted();
+    hostStarted = true;
+    result = await adapter.run({ ...input,
+      prompt: 'NATIVE_SHELL_PROBE: Use the advertised bash tool once to run the disposable command. ' +
+        'Report its result. Finish with PASSEUR_MESSAGE followed by a version 2 final JSON object.',
+      onEvent: async event => { if (events.length < 512) events.push(event);
+        else throw fault('NATIVE_TASK_OPERATION_UNCERTAIN', 'adapter event budget exceeded');
+        await input.onEvent(event);
+        if (event.kind === 'turn_settled' && event.terminal === 'completed') {
+          const correlated = events.find(value => value?.kind === 'turn_correlated' &&
+            value.turn_id === event.turn_id);
+          if (!correlated?.native_session_id) throw fault('NATIVE_TASK_SETTLEMENT_INVALID',
+            'production turn ended without native correlation');
+          const coverage = createTaskCommitCoverage();
+          coverage.bindSession(correlated.native_session_id);
+          coverage.bindTurn(correlated.turn_id);
+          for (const notification of notifications) {
+            if (notification?.method === 'turn/completed') coverage.finish(notification.params);
+            else coverage.accept(notification?.method, notification?.params);
+          }
+          const native = coverage.snapshot();
+          if (native.children.length !== 3) throw fault('NATIVE_TASK_SETTLEMENT_INVALID',
+            'production turn ended before three known native children settled');
+          const calls = ['call_native_reminder_1', 'call_native_reminder_2',
+            'call_native_verify_reminder_1'];
+          preStopIdentity = { sessionId: correlated.native_session_id, turnId: correlated.turn_id,
+            expected: native.children.map((child, index) => ({ ...child, callId: calls[index] })) };
+          preStopJournal = await readTaskReminderJournal(root,
+            await ownedAdapterJournal(root, preStopIdentity.sessionId), preStopIdentity);
+        }
+      },
+      approve: async (approval, signal) => {
+        const native = approval?.subject?.native;
+        let args;
+        try { args = JSON.parse(approval.raw_args); } catch { /* rejected below */ }
+        if (approval.tool !== 'bash' || args?.command !== command ||
+            args?.description !== 'Disposable native shell qualification' ||
+            native?.session_id === undefined || native?.turn_id === undefined ||
+            !approval.choices.some(choice => choice.scope === 'once' && choice.decision === 'approved')) {
+          throw fault('NATIVE_TASK_APPROVAL_INVALID', 'production runtime offered a different native command');
+        }
+        await onPending({ taskId: input.task_id, runId, approval, root, runtimeRoot,
+          processIdentities: captured });
+        return input.approve(approval, signal);
+      },
+    });
+    if (result?.status !== 'completed' || result.worker_assessment !== 'met' ||
+        result.worker_stop !== 'confirmed') throw fault(result?.error?.code ?? 'NATIVE_ADAPTER_RESULT_INVALID',
+      'production protected adapter did not complete and independently stop');
+    await broker.close();
+    const brokerEvidence = broker.evidence;
+    broker = undefined;
+    await upstream.provider.freeze();
+    const requests = upstream.provider.requests;
+    const responses = requests.filter(value => value.path === '/responses');
+    if (upstream.provider.state?.primaryCode || upstream.provider.state?.failed ||
+        upstream.provider.state?.active !== 0 || responses.length !== 5 ||
+        requests.filter(value => value.kind === 'native_tool_call').length !== 1 ||
+        requests.filter(value => value.kind === 'native_reminder_call').length !== 2 ||
+        requests.filter(value => value.kind === 'native_verification_reminder_call').length !== 1 ||
+        requests.filter(value => value.kind === 'matching_tool_result').length !== 1 ||
+        brokerEvidence?.firstFailure || brokerEvidence?.rejected !== 0 ||
+        brokerEvidence?.accepted !== requests.length ||
+        upstream.seen?.length !== requests.length ||
+        upstream.seen.some(value => !value.correctBearer || !value.dummyAbsent)) {
+      throw fault('NATIVE_TASK_PROVIDER_INVALID', 'production provider request sequence differed');
+    }
+    const correlated = events.find(value => value?.kind === 'turn_correlated');
+    const settled = events.find(value => value?.kind === 'turn_settled' &&
+      value.turn_id === correlated?.turn_id);
+    if (!correlated?.native_session_id || !settled ||
+        !events.some(value => value?.kind === 'operation_finished')) throw fault(
+      'NATIVE_TASK_SETTLEMENT_INVALID', 'production adapter lacks correlated native settlement');
+    const coverage = createTaskCommitCoverage();
+    coverage.bindSession(correlated.native_session_id);
+    coverage.bindTurn(correlated.turn_id);
+    for (const notification of notifications) {
+      if (notification?.method === 'turn/completed') coverage.finish(notification.params);
+      else coverage.accept(notification?.method, notification?.params);
+    }
+    const native = coverage.snapshot();
+    if (native.completed.length !== 1 || native.completed[0].callId !== 'call_native_shell_1' ||
+        native.children.length !== 3) throw fault('NATIVE_TASK_SETTLEMENT_INVALID',
+      'production native child or tool coverage differs');
+    const shell = notifications.find(value => value?.method === 'item/completed' &&
+      value.params?.item?.callId === 'call_native_shell_1')?.params?.item;
+    const markers = commitShellItemMarkers(shell?.visibleOutput, input.workspace, protectedRoot, token);
+    if (shell?.status !== 'completed' || shell?.turnId !== correlated.turn_id ||
+        requests.find(value => value.kind === 'matching_tool_result')?.outputMarkers?.commit !== markers?.commit ||
+        !markers?.outputMarkers || !markers.workspaceReportedWritten ||
+        !/^[0-9a-f]{40}$/.test(markers.commit ?? '')) throw fault('NATIVE_TASK_COMMIT_INVALID',
+      'production native shell lacked an exact private commit');
+    commit = markers.commit;
+    const calls = ['call_native_reminder_1', 'call_native_reminder_2',
+      'call_native_verify_reminder_1'];
+    const journalIdentity = { sessionId: correlated.native_session_id,
+      turnId: correlated.turn_id,
+      expected: native.children.map((child, index) => ({ ...child, callId: calls[index] })) };
+    if (!preStopJournal || JSON.stringify(preStopIdentity) !== JSON.stringify(journalIdentity))
+      throw fault('NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN',
+        'production native child join was absent before stop');
+    const finalJournal = await readTaskReminderJournal(root,
+      await ownedAdapterJournal(root, journalIdentity.sessionId), journalIdentity);
+    if (JSON.stringify(preStopJournal) !== JSON.stringify(finalJournal)) throw fault(
+      'NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN', 'production native child join changed after stop');
+    if (await readFile(join(input.workspace, 'qualified-change.txt'), 'utf8') !==
+        'native committed change\n') throw fault('NATIVE_TASK_WORKSPACE_INVALID',
+      'production private workspace differs after stop');
+    await verifyStoppedPrivateCommit(input, commit);
+    if (await readFile(join(protectedRoot, token), 'utf8') !== 'protected-no-account-canary')
+      throw fault('NATIVE_TASK_CANARY_INVALID', 'protected canary changed');
+    validated = true;
+  } catch (cause) { error = cause; }
+  finally {
+    const settled = await settleProductionProtectedOutcome({ result, validated,
+      primaryError: error, resources: [broker, upstream, sentinel],
+      cancelled: input.signal.aborted, hostStarted, roots: [root, runtimeRoot] });
+    error = settled.error;
+    outcome = settled.outcome;
+  }
+  if (error) await writeFile(join(root, 'adapter-failure.json'), `${JSON.stringify({
+    schema_version: 1, error_code: error.code ?? 'NATIVE_TASK_FAILED',
+  }, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+  return outcome;
+}
+
 export function protectedMuseWorker({ muse = '/home/jeremy/.local/bin/muse',
   stage = stageNativeRuntime, sentinelStart = startHostSentinel,
   upstreamStart = startNativeUpstream, brokerStart = startBroker,
   prepare = prepareSandbox, probe = probeBubblewrap, launch = runStatusPhase,
   capture = captureHostIdentities, verifyStop = verifyHostStop,
   validateReady = validateShellReady,
-  commitTask = false, adapterMode = false,
+  commitTask = false, adapterMode = false, productionRuntimeMode = false,
   adapterStage = stageAdapterRuntime, adapterLaunch = runAdapterStatusPhase,
   adapterCapture = captureAdapterHostIdentities,
   onPending = async () => undefined,
@@ -723,6 +911,12 @@ export function protectedMuseWorker({ muse = '/home/jeremy/.local/bin/muse',
           input.signal.aborted || typeof input.workspace !== 'string' ||
           !input.workspace.startsWith('/tmp/')) {
         throw fault('NATIVE_TASK_INPUT_INVALID', 'protected worker needs one live Coordinator-owned private task');
+      }
+      if (productionRuntimeMode) {
+        if (!commitTask) throw fault('NATIVE_ADAPTER_CONFIG_INVALID',
+          'production protected runtime requires private commit mode');
+        return runProductionProtectedAdapter(input, { muse, stage: adapterStage,
+          sentinelStart, upstreamStart, brokerStart, probe, onPending, onRetained });
       }
       if (adapterMode) {
         if (!commitTask) throw fault('NATIVE_ADAPTER_CONFIG_INVALID',

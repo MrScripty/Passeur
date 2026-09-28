@@ -15,7 +15,8 @@ import { prepareWorkspace, preparePrivateGitView } from '../../.passeur-core/src
 import { nativeTaskDecision, settledCommitOutcome, protectedApprovalRequest,
   protectedMuseWorker, protectedAdapterApproval, verifySettledStop, verifyStoppedPrivateCommit,
   inspectTaskFinalAndStop, awaitTaskHostFinished, boundedGuestFailure,
-  primaryNativeFailure, nativeFailureArtifact } from '../../scripts/qualify-muse-protected-worker.mjs';
+  primaryNativeFailure, nativeFailureArtifact,
+  settleProductionProtectedOutcome } from '../../scripts/qualify-muse-protected-worker.mjs';
 import { createTaskCommitCoverage, runStatusPhase, shellProbeCommand,
   shellCommitCommand, fixedVerificationPayloadSha256 } from '../../scripts/qualify-muse-sandbox-transport.mjs';
 import { relaySandboxConfig } from '../../scripts/qualify-muse-credential-relay.mjs';
@@ -78,6 +79,49 @@ test('actual-SDK fixture rejects premature host close before any private publica
     assert.equal(cancellations, 1);
     assert.ok(retained?.root);
   } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('production installed mode selects the production runtime branch before the SDK fixture', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'passeur-production-branch-test-'));
+  let retained;
+  const worker = protectedMuseWorker({ commitTask: true, adapterMode: true,
+    productionRuntimeMode: true,
+    adapterStage: async () => { throw Object.assign(new Error('controlled production stage stop'),
+      { code: 'PRODUCTION_STAGE_SELECTED' }); },
+    adapterLaunch: () => { throw Error('fixture SDK launch must not run'); },
+    onRetained: observation => { retained = observation; } });
+  try {
+    const result = await worker.run({ task_id: randomUUID(), workspace,
+      private_git: { schema_version: 1, mount_kind: 'canonical_common_dir',
+        view: { private_common_dir: join(workspace, 'unused', 'private-git') } },
+      signal: new AbortController().signal, onEvent: async () => {},
+      approve: async () => { throw Error('no approval before stage'); } });
+    assert.equal(result.error?.code, 'PRODUCTION_STAGE_SELECTED');
+    assert.match(retained.root, /passeur-muse-production-protected-/);
+    assert.match(retained.runtimeRoot, /passeur-muse-production-runtime-/);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('production cleanup failure revokes success and still retires every owned resource', async () => {
+  const result = { status: 'completed', worker_stop: 'confirmed', summary: 'native settled',
+    worker_assessment: 'met', blockers: [], questions: [], checks: [] };
+  const resources = ['socket', 'provider', 'sentinel'];
+  const seen = [];
+  const cleanup = async resource => { seen.push(resource);
+    if (resource === 'socket') throw Object.assign(Error('socket retirement uncertain'),
+      { code: 'SOCKET_STOP_UNVERIFIED' }); };
+  const settled = await settleProductionProtectedOutcome({ result, validated: true,
+    primaryError: null, resources, cancelled: false, hostStarted: true,
+    roots: ['/tmp/retained'] }, cleanup);
+  assert.deepEqual(seen, resources);
+  assert.equal(settled.outcome.status, 'failed');
+  assert.equal(settled.outcome.worker_stop, 'confirmed');
+  assert.equal(settled.outcome.error.code, 'SOCKET_STOP_UNVERIFIED');
+  const primary = Object.assign(Error('native failure'), { code: 'NATIVE_PRIMARY' });
+  const preserved = await settleProductionProtectedOutcome({ result, validated: true,
+    primaryError: primary, resources, cancelled: false, hostStarted: true,
+    roots: ['/tmp/retained'] }, cleanup);
+  assert.equal(preserved.outcome.error.code, 'NATIVE_PRIMARY');
 });
 
 test('SDK host death during pending human input withdraws that invocation', async () => {
@@ -1554,7 +1598,7 @@ test('installed no-account protected task survives old diagnostic deadline and s
     if (failure) throw failure;
   });
 
-async function runInstalledPrivateCommit(adapterMode) {
+async function runInstalledPrivateCommit(adapterMode, productionRuntimeMode = false) {
     if (!process.stdin.isTTY) throw Error('installed commit needs a persistent terminal input channel');
     if (process.env.PASSEUR_MUSE_COMMIT_CHANNEL_DRY_RUN === '1') {
       console.log(JSON.stringify({ kind: 'native_commit_channel_dry_run', stdin_tty: true }));
@@ -1565,7 +1609,8 @@ async function runInstalledPrivateCommit(adapterMode) {
     const evidencePath = join(retained, 'qualification.json');
     const evidence = { kind: adapterMode ? 'installed_no_account_muse_sdk_adapter_private_commit' :
       'installed_no_account_native_private_commit',
-      adapter_composition: adapterMode ? 'actual MuseSdkAdapter.run with fixture real-SDK ClientStarter' :
+      adapter_composition: productionRuntimeMode ? 'built MuseSdkAdapter.run with production protected host and stop observer' :
+        adapterMode ? 'actual MuseSdkAdapter.run with fixture real-SDK ClientStarter' :
         'raw MSP fixture',
       retained_root: retained, started_at: new Date().toISOString(), checkpoints: [] };
     const save = async () => writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`,
@@ -1594,7 +1639,7 @@ async function runInstalledPrivateCommit(adapterMode) {
     const store = new TaskStore(join(retained, 'state'));
     await store.initialize();
     let pendingObservation, retainedObservation;
-    const worker = protectedMuseWorker({ commitTask: true, adapterMode,
+    const worker = protectedMuseWorker({ commitTask: true, adapterMode, productionRuntimeMode,
       onRetained: observation => { retainedObservation = observation; },
       onPending: observation => { pendingObservation = observation; } });
     const coordinator = new Coordinator(project, 'protected-commit-fixture', policy, store,
@@ -1817,3 +1862,7 @@ test('installed no-account native private commit awaits a forwarded host human c
 test('installed no-account actual Muse SDK adapter commits only after confirmed stop',
   { skip: process.env.PASSEUR_MUSE_INSTALLED_SDK_ADAPTER_TASK !== '1' },
   () => runInstalledPrivateCommit(true));
+
+test('installed no-account production protected Muse runtime commits only after observed stop',
+  { skip: process.env.PASSEUR_MUSE_INSTALLED_PRODUCTION_RUNTIME_TASK !== '1' },
+  () => runInstalledPrivateCommit(true, true));
