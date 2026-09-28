@@ -22,6 +22,8 @@ in the existing three-worker Runtime fixture; its isolated target and full
 244/244; full `npx vitest run` passed 191 with six installed-native skips.
 These counts supersede the historical G1 counts above for this local candidate.
 
+The latest installed G2 no-account outer-only shell attempt used a fresh human `Allow once` for one exact disposable command. The command wrote its workspace canary, reported direct/symlink/guest-PID1 proc protected denial and exposed dummy auth. Its unreviewed HTTP tool-result envelope was rejected before native turn completion, and strict host stop remained unconfirmed. Bounded evidence `/tmp/passeur-muse-outer-held-shell-evidence-20260928.json` SHA-256 `3425544a428c887fa31892ddc0424a67309ff8854c8bacd2279aed42e2f43c46`. This qualifies narrow observed shell effects only; G2 protected worker admission, real credential secrecy, accepted native shell result and completed turn remain open.
+
 | Claim | Required evidence | Current evidence | Disposition |
 | --- | --- | --- | --- |
 | G1 worker-only controlled composition | Actual managed edits, passive case establishment, concrete adapter delivery, first/counter proposal, independent consent, guarded application and independent oracle | `tests/integration/peer-worker-composition.test.ts` 3/3; `peer-stale-consent.test.mjs` 1/1; `peer-effect-race.test.mjs` 2/2; source-only/no-hook wait, real parser limitation, full-envelope budget and exact replay regressions; final packaged suite counts above; independent Astra High review clear | Controlled local gate passed; installed/live and repeated claims remain open |
