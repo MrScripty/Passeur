@@ -12,7 +12,7 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   verifiedNativeNamespace, verifyNativeServeArgs, loopbackReady, parseBubblewrapStatus, verifyHostStop,
   validateResumeOutcome, qualifyFreshHostResume,
   assertHostAssociation,
-  matchingShellResult, shellOutputMarkers, shellProbeCommand,
+  matchingShellResult, shellOutputMarkers, shellProbeCommand, shellCommitCommand,
   rejectedToolSchemaShape, summarizedShellModel, recognizedReminderSchema, decodeShellOutcomeLine,
   startShellProvider, mainSchemaDiscovery, readFileSchemaDiscovery,
   verificationReminderSchemaDiscovery, verificationReminderAssociation,
@@ -23,14 +23,19 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   qualifyNativeDummyAuthRead,
   fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape, persistOuterShellResultEvidence, inspectOuterShellResultEvidence,
-  outerShellTranscript, outerShellItemMarkers, matchingOuterShellResult,
+  providerReminderRejectionShape, persistProviderReminderRejectionEvidence,
+  outerShellTranscript, outerShellItemMarkers, matchingOuterShellResult, commitShellItemMarkers,
   readFileCanaryFixture, nativeCallerGate, runNativeShellLifecycle, releaseAndStartNativeTurn,
   spawnNativeHost, awaitRecordedNativeTurn, writeTurnAcknowledgement,
+  writeNativeDecision,
+  createTaskCommitCoverage,
+  scanHeldEvents,
   guestShellRun,
   fixedNoReminderPayload, reminderCallEvents,
   approvalSummary, validateShellReady, validateShellOutcome, validateReadFileSchemaOutcome,
   validateReadFileOutcome, qualifyNativeShell, qualifyNativeReadFileSchema, qualifyNativeReadFile,
   classifyDurableApprovalLog, readDurableApprovalLog,
+  classifyTaskReminderJournal, readTaskReminderJournal,
   heldApprovalPresentation, validateHeldDecision, validateHeldInitialApproval, submitHeldDecision,
   validateHeldHandoff, validateHeldShellOutcome, qualifyNativeShellHeld,
   qualifyNativeOuterOnlyShellHeld, readHeldCliDecision,
@@ -1400,13 +1405,16 @@ test('third protected skill while result and second reminder wait aborts both re
 });
 
 async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readFileProbe = false,
-  protectedRead = false, dummyAuthRead = false, outerOnly = false,
-  resultEvidenceDir = null, persistResultEvidence, targetPath, classifyProtectedRaw } = {}) {
+  protectedRead = false, dummyAuthRead = false, outerOnly = false, taskCommit = false,
+  resultEvidenceDir = null, persistResultEvidence, persistReminderRejectionEvidence,
+  targetPath, classifyProtectedRaw } = {}) {
   let handle;
-  const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
+  const command = (taskCommit ? shellCommitCommand : shellProbeCommand)(
+    '/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
   const provider = await startShellProvider(31001, command, {
-    readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly,
+    readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly, taskCommit,
     resultEvidenceDir, ...(persistResultEvidence ? { persistResultEvidence } : {}),
+    ...(persistReminderRejectionEvidence ? { persistReminderRejectionEvidence } : {}),
     targetPath, classifyProtectedRaw,
     workspace: '/tmp/fixture/workspace', protectedRoot: '/tmp/fixture/protected',
     canaryToken: 'protected-canary',
@@ -1444,6 +1452,40 @@ function outerShellResultRequest(command, workspace = '/tmp/fixture/workspace',
         description: 'Disposable native shell qualification' }) },
     { type: 'function_call_output', call_id: 'call_native_shell_1', output: decorated },
   ] };
+}
+
+function taskCommitResultRequest(command, transcript =
+  `direct=denied\nsymlink=denied\nproc=denied\ndummy-auth=visible\ncommit=${'a'.repeat(40)}\n`) {
+  const decorated = JSON.stringify({ chunk_id: 'exec-1-1', command, exit_code: 0,
+    terminal_status: 'completed', output: transcript,
+    original_output_bytes: Buffer.byteLength(transcript), original_output_tokens: 20,
+    truncated: false }, null, 2);
+  return { model: 'fixture-native-shell', input: [
+    { type: 'message', role: 'developer', content: 'disposable developer context' },
+    { type: 'message', role: 'user', content: 'disposable user context' },
+    { type: 'function_call', id: 'fc_native_shell_1', call_id: 'call_native_shell_1',
+      name: 'muse.bash', arguments: JSON.stringify({ command,
+        description: 'Disposable native shell qualification' }) },
+    { type: 'function_call_output', call_id: 'call_native_shell_1', output: decorated },
+  ] };
+}
+
+function taskCommitOutputLines(workspace, protectedRoot, token, commit = 'a'.repeat(40)) {
+  const direct = join(protectedRoot, token);
+  const stderr = [direct, join(workspace, 'protected-link', token), `/proc/1/root${direct}`]
+    .map(path => `/bin/sh: 1: cannot create ${path}: Directory nonexistent`);
+  const stdout = ['direct=denied', 'symlink=denied', 'proc=denied',
+    'dummy-auth=visible', `commit=${commit}`];
+  return { stdout, stderr };
+}
+
+function stableLineMerges(stdout, stderr) {
+  if (!stdout.length) return [stderr];
+  if (!stderr.length) return [stdout];
+  return [
+    ...stableLineMerges(stdout.slice(1), stderr).map(rest => [stdout[0], ...rest]),
+    ...stableLineMerges(stdout, stderr.slice(1)).map(rest => [stderr[0], ...rest]),
+  ];
 }
 
 test('main schema projector redacts drift and provider refuses a call', async () => {
@@ -2388,6 +2430,113 @@ test('outer shell accepts only the captured decorated four-item result', async (
   } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('task commit provider accepts one correlated commit transcript and rejects substituted output', async () => {
+  const makeResult = (command, output) => {
+    const body = outerShellResultRequest(command);
+    const decorated = JSON.parse(body.input[3].output);
+    decorated.output = output;
+    decorated.original_output_bytes = Buffer.byteLength(output);
+    body.input[3].output = JSON.stringify(decorated, null, 2);
+    return body;
+  };
+  const commit = 'a'.repeat(40);
+  const output = `direct=denied\nsymlink=denied\nproc=denied\ndummy-auth=visible\ncommit=${commit}\n`;
+  const root = await mkdtemp(join(tmpdir(), 'passeur-task-commit-result-'));
+  try {
+    const h = await nativeProviderHarness({ outerOnly: true, taskCommit: true,
+      resultEvidenceDir: root });
+    try {
+      assert.match(h.command, /git -c user\.name=.* commit -m/);
+      assert.match(h.command, /git status --porcelain/);
+      assert.match(h.command, /rm -- protected-link/);
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      const body = makeResult(h.command, output);
+      assert.deepEqual(commitShellItemMarkers(output, '/tmp/fixture/workspace',
+        '/tmp/fixture/protected', 'protected-canary'), { outputMarkers: true,
+        workspaceReportedWritten: true, dummyAuthVisible: true, commit });
+      assert.equal((await h.post(body)).status, 200);
+      assert.equal(h.provider.requests[1].outputMarkers.commit, commit);
+      assert.equal((await h.post(body)).status, 422);
+    } finally { await h.provider.close(); }
+    const changed = await nativeProviderHarness({ outerOnly: true, taskCommit: true,
+      resultEvidenceDir: root });
+    try {
+      assert.equal((await changed.post(mainNativeRequest())).status, 200);
+      const invalid = makeResult(changed.command, output.replace('proc=denied', 'proc=visible'));
+      assert.equal((await changed.post(invalid)).status, 422);
+      assert.equal(changed.provider.state.primaryCode, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+    } finally { await changed.provider.close(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('task commit transcript accepts exactly all 56 ordered stdout and path-bound stderr merges', () => {
+  const workspace = '/tmp/fixture/workspace';
+  const protectedRoot = '/tmp/fixture/protected';
+  const token = 'protected-canary';
+  const commit = 'a'.repeat(40);
+  const command = shellCommitCommand(workspace, protectedRoot, token);
+  const { stdout, stderr } = taskCommitOutputLines(workspace, protectedRoot, token, commit);
+  const merges = stableLineMerges(stdout, stderr);
+  assert.equal(merges.length, 56);
+  const check = output => {
+    const body = taskCommitResultRequest(command, output);
+    const provider = matchingOuterShellResult(body, command, workspace, protectedRoot, token, true);
+    const native = commitShellItemMarkers(output, workspace, protectedRoot, token);
+    assert.equal(provider?.commit ?? null, native.commit);
+    return { provider, native };
+  };
+  for (const lines of merges) {
+    const output = `${lines.join('\n')}\n`;
+    const { provider, native } = check(output);
+    assert.equal(provider.commit, commit);
+    assert.equal(provider.innerOutputBytes, Buffer.byteLength(output));
+    assert.equal(provider.innerOutputSha256, createHash('sha256').update(output).digest('hex'));
+    assert.equal(native.outputMarkers, true);
+  }
+  assert.equal(check(`${stdout.join('\n')}\n`).provider.commit, commit);
+  const observed = [...merges[0]];
+  for (const invalid of [
+    observed.map(line => line === stderr[0] ?
+      '/bin/sh: 1: cannot create /foreign: Directory nonexistent' : line),
+    [...observed, stderr[0]],
+    observed.filter(line => line !== stderr[1]),
+    [observed[1], observed[0], ...observed.slice(2)],
+    [...observed.slice(0, 5), observed[6], observed[5], observed[7]],
+    observed.map(line => line === stderr[0] ? `${line} ` : line),
+    observed.map(line => line === stderr[0] ? line.replace('/bin/sh:', '/bin/zsh:') : line),
+    observed.map(line => line === stderr[0] ? 'arbitrary stderr' : line),
+    observed.map(line => line === stdout[4] ? `commit=${'g'.repeat(40)}` : line),
+    observed.map(line => line === stdout[4] ? `commit=${'a'.repeat(41)}` : line),
+  ]) {
+    const { provider, native } = check(`${invalid.join('\n')}\n`);
+    assert.equal(provider, null);
+    assert.equal(native.outputMarkers, false);
+  }
+  for (const invalid of [`${observed.join('\n')}\r\n`, observed.join('\n')]) {
+    const { provider, native } = check(invalid);
+    assert.equal(provider, null);
+    assert.equal(native.outputMarkers, false);
+  }
+  const exactBody = taskCommitResultRequest(command, `${observed.join('\n')}\n`);
+  for (const change of [
+    value => { value.exit_code = 1; },
+    value => { value.original_output_bytes--; },
+    value => { value.command = 'different command'; },
+    value => { value.truncated = true; },
+  ]) {
+    const altered = structuredClone(exactBody);
+    const decorated = JSON.parse(altered.input[3].output);
+    change(decorated);
+    altered.input[3].output = JSON.stringify(decorated, null, 2);
+    assert.equal(matchingOuterShellResult(altered, command, workspace, protectedRoot,
+      token, true), null);
+  }
+  const changedCall = structuredClone(exactBody);
+  changedCall.input[3].call_id = 'foreign-call';
+  assert.equal(matchingOuterShellResult(changedCall, command, workspace, protectedRoot,
+    token, true), null);
+});
+
 test('outer shell result and independent reminder use the three-request budget in either order', async () => {
   for (const order of ['reminder-before', 'reminder-after']) {
     const root = await mkdtemp(join(tmpdir(), 'passeur-shell-result-order-'));
@@ -2614,6 +2763,547 @@ test('duplicate, unknown and malformed requests fail closed under attempt and by
   assert.equal(oversized.provider.requests[0].rejection, 'REQUEST_TOO_LARGE');
   assert.equal((await oversized.post(fixedReminderRequest())).status, 429);
   await oversized.provider.close();
+});
+
+test('task provider response 3 records a bounded rejected reminder without admitting it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-reminder-reject-'));
+  const poison = 'POISON_SECRET_PROMPT_OUTPUT_ARGUMENT_77';
+  try {
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+      resultEvidenceDir: root });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      const input = [{ type: 'message', role: 'user', content: poison },
+        { type: 'function_call', id: 'fc_native_shell_1', call_id: 'call_native_shell_1',
+          name: poison, arguments: poison },
+        { type: 'function_call_output', call_id: 'call_native_shell_1', output: poison },
+        ...Array.from({ length: 9 }, () => ({ type: 'message', content: poison }))];
+      const rejected = await h.post({ ...fixedReminderRequest(),
+        previous_response_id: 'resp_native_shell_1', input });
+      assert.equal(rejected.status, 422);
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+      assert.equal(h.provider.requests[2].responseIndex, 3);
+      assert.equal(h.provider.requests[2].rejection, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+      const shape = h.provider.requests[2].reminderRejection;
+      assert.equal(shape.providerResponseIndex, 3);
+      assert.equal(shape.relayRequestIndex, null);
+      assert.equal(shape.issuanceAtAdmission.reminder, 'none-issued');
+      assert.equal(shape.predicate, 'second_state_invalid');
+      assert.equal(shape.ordinal, 2);
+      assert.equal(shape.firstPrelude, false);
+      assert.equal(shape.previousResponse, 'issued_shell_response');
+      assert.deepEqual(shape.input.items.slice(1, 3).map(item => [item.id, item.callId]),
+        [['issued_shell_item', 'issued_shell_call'], ['absent', 'issued_shell_call']]);
+      assert.equal(shape.input.count, 12);
+      assert.equal(shape.input.omittedItems, 4);
+      assert.equal(shape.nativeChildAssociation, 'unknown');
+      const artifact = join(root, 'provider-response-3-reminder-rejection.json');
+      const bytes = await readFile(artifact);
+      assert.ok(bytes.length <= 4096);
+      assert.equal((await lstat(artifact)).mode & 0o777, 0o600);
+      assert.equal(JSON.parse(bytes).providerResponseIndex, 3);
+      assert.equal(bytes.includes(poison), false);
+      assert.equal(JSON.stringify(h.provider.requests).includes(poison), false);
+      assert.equal(h.provider.requests[2].reminderRejectionEvidence.bytes, bytes.length);
+    } finally { await h.provider.close(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('task commit provider issues two exact no-op reminders around an independent shell result', async () => {
+  const second = { ...fixedReminderRequest(), input: [
+    { type: 'message', role: 'developer', content: 'bounded reminder context' },
+    { type: 'message', role: 'user', content: 'NATIVE_SHELL_PROBE: bounded reminder context' },
+  ] };
+  for (const resultFirst of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), 'passeur-task-provider-four-'));
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+      resultEvidenceDir: root });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      const result = taskCommitResultRequest(h.command);
+      if (resultFirst) assert.equal((await h.post(result)).status, 200);
+      assert.equal((await h.post(second)).status, 200);
+      if (!resultFirst) assert.equal((await h.post(result)).status, 200);
+      assert.deepEqual(h.provider.requests.filter(request => request.kind === 'native_reminder_call')
+        .map(request => [request.ordinal, request.responseId, request.itemId, request.callId]), [
+          [1, 'resp_native_reminder_1', 'fc_native_reminder_1', 'call_native_reminder_1'],
+          [2, 'resp_native_reminder_2', 'fc_native_reminder_2', 'call_native_reminder_2']]);
+      assert.equal(h.provider.requests.find(request => request.kind === 'matching_tool_result')
+        .responseIndex, resultFirst ? 3 : 4);
+      const evidence = join(root, `outer-shell-result-${resultFirst ? 3 : 4}.json`);
+      assert.equal((await lstat(evidence)).mode & 0o777, 0o600);
+      assert.ok((await readFile(evidence)).length <= 8192);
+      assert.equal((await inspectOuterShellResultEvidence(root,
+        { maxRequestIndex: 4 })).some(file => file.name ===
+          `outer-shell-result-${resultFirst ? 3 : 4}.json`), true);
+      assert.equal(h.provider.state.failed, false);
+      assert.equal(h.provider.state.main, 'result-accepted');
+      assert.equal(h.provider.state.reminder, 'second-issued');
+      const verifier = verifiedVerificationRequest();
+      verifier.input = [{ type: 'message', role: 'user', content: 'bounded verifier context' }];
+      assert.equal((await h.post(verifier)).status, 200);
+      assert.equal(h.provider.requests[4].kind, 'native_verification_reminder_call');
+      assert.equal(h.provider.requests[4].nativeChildAssociation, 'unknown');
+      assert.equal((await h.post(second)).status, 429);
+      assert.equal(h.provider.requests[5].bytes, 0);
+    } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('task commit verifier fifth body remains reserved until it completes', async () => {
+  const second = { ...fixedReminderRequest(), input: [
+    { type: 'message', role: 'developer', content: 'bounded reminder context' },
+    { type: 'message', role: 'user', content: 'NATIVE_SHELL_PROBE: bounded reminder context' },
+  ] };
+  const verifier = verifiedVerificationRequest();
+  verifier.input = [{ type: 'message', role: 'user', content: 'bounded verifier context' }];
+  for (const delayed of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), 'passeur-task-verifier-'));
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+      resultEvidenceDir: root });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      assert.equal((await h.post(taskCommitResultRequest(h.command))).status, 200);
+      // The verifier cannot reserve a fifth response before the second skill is issued.
+      assert.equal((await h.post(second)).status, 200);
+      let release;
+      const bodyGate = new Promise(resolve => { release = resolve; });
+      const request = Readable.from((async function* () { await bodyGate;
+        yield JSON.stringify(verifier); })());
+      request.method = 'POST'; request.url = '/responses';
+      const response = { status: null, writeHead(status) { this.status = status; return this; },
+        end() { return this; } };
+      const pending = h.handle(request, response);
+      await new Promise(resolve => setImmediate(resolve));
+      if (delayed) await new Promise(resolve => setImmediate(resolve));
+      release();
+      await pending;
+      assert.equal(response.status, 200);
+      assert.equal(h.provider.requests[4].kind, 'native_verification_reminder_call');
+      assert.equal(h.provider.requests[4].nativeChildAssociation, 'unknown');
+      assert.equal(h.provider.state.failed, false);
+    } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('task commit verifier refuses pre-issuance, foreign references and schema drift', async () => {
+  const exact = () => { const body = verifiedVerificationRequest();
+    body.input = [{ type: 'message', role: 'user', content: 'bounded verifier context' }];
+    return body; };
+  const second = { ...fixedReminderRequest(), input: [
+    { type: 'message', role: 'developer', content: 'bounded reminder context' },
+    { type: 'message', role: 'user', content: 'NATIVE_SHELL_PROBE: bounded reminder context' },
+  ] };
+  for (const [changed, code] of [
+    [body => { body.previous_response_id = 'resp_native_reminder_2'; },
+      'NATIVE_VERIFY_REMINDER_SEQUENCE_INVALID'],
+    [body => { body.input[0].call_id = 'call_native_reminder_2'; },
+      'NATIVE_VERIFY_REMINDER_SEQUENCE_INVALID'],
+    [body => { body.input.push({ type: 'function_call_output',
+      call_id: 'call_native_shell_1', output: 'foreign' }); },
+    'NATIVE_VERIFY_REMINDER_SEQUENCE_INVALID'],
+    [body => { body.tools[0].tools[0].parameters.required.pop(); },
+      'NATIVE_VERIFY_REMINDER_SCHEMA_INVALID'],
+  ]) {
+    const root = await mkdtemp(join(tmpdir(), 'passeur-task-verify-refuse-'));
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+      resultEvidenceDir: root });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      assert.equal((await h.post(taskCommitResultRequest(h.command))).status, 200);
+      assert.equal((await h.post(second)).status, 200);
+      const body = exact(); changed(body);
+      assert.equal((await h.post(body)).status, 422);
+      assert.equal(h.provider.state.failed, true);
+      assert.equal(h.provider.state.primaryCode, code);
+      assert.equal(h.provider.requests[4].responseIndex, 5);
+      assert.equal(h.provider.requests[4].rejection, code);
+      assert.equal(h.provider.requests.some(value =>
+        value.kind === 'native_verification_reminder_call'), false);
+    } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+  }
+  const root = await mkdtemp(join(tmpdir(), 'passeur-task-verify-early-'));
+  const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+    resultEvidenceDir: root });
+  try {
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    assert.equal((await h.post(fixedReminderRequest())).status, 200);
+    assert.equal((await h.post(taskCommitResultRequest(h.command))).status, 200);
+    assert.equal((await h.post(exact())).status, 422);
+    assert.equal(h.provider.state.failed, true);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_SEQUENCE_INVALID');
+    assert.equal(h.provider.requests[3].responseIndex, 4);
+    assert.equal(h.provider.requests[3].rejection, 'NATIVE_VERIFY_REMINDER_SEQUENCE_INVALID');
+  } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('task commit pending fifth verifier cannot settle after a competing sixth request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-task-verify-veto-'));
+  const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+    resultEvidenceDir: root });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  try {
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    assert.equal((await h.post(fixedReminderRequest())).status, 200);
+    assert.equal((await h.post(taskCommitResultRequest(h.command))).status, 200);
+    const second = { ...fixedReminderRequest(), input: [
+      { type: 'message', role: 'developer', content: 'bounded reminder context' },
+      { type: 'message', role: 'user', content: 'NATIVE_SHELL_PROBE: bounded reminder context' },
+    ] };
+    assert.equal((await h.post(second)).status, 200);
+    const verifier = verifiedVerificationRequest();
+    verifier.input = [{ type: 'message', role: 'user', content: 'bounded verifier context' }];
+    const request = Readable.from((async function* () { await gate;
+      yield JSON.stringify(verifier); })());
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, writeHead(status) { this.status = status; return this; },
+      end() { return this; } };
+    const pending = h.handle(request, response);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.provider.requests[4].responseIndex, 5);
+    assert.equal(h.provider.state.active, 1);
+    assert.equal((await h.post(second)).status, 429);
+    assert.equal(h.provider.requests[5].responseIndex, 6);
+    assert.equal(h.provider.requests[5].bytes, 0);
+    assert.equal(h.provider.requests[5].rejection, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+    release();
+    await pending;
+    assert.equal(response.status, 422);
+    assert.equal(h.provider.requests[4].rejection, 'NATIVE_REQUEST_REJECTED');
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+    assert.equal(h.provider.requests.some(value =>
+      value.kind === 'native_verification_reminder_call'), false);
+  } finally { release(); await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('task commit second reminder waits for a classifying shell result and keeps its first failure', async () => {
+  const second = { ...fixedReminderRequest(), input: [
+    { type: 'message', role: 'developer', content: 'bounded reminder context' },
+    { type: 'message', role: 'user', content: 'NATIVE_SHELL_PROBE: bounded reminder context' },
+  ] };
+  for (const writeFails of [false, true]) {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+      persistResultEvidence: async () => {
+        await gate;
+        if (writeFails) throw Object.assign(new Error('fixture write failure'),
+          { code: 'NATIVE_RESULT_EVIDENCE_WRITE_FAILED' });
+        return { name: 'bounded-fixture-evidence' };
+      } });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      const result = h.post(taskCommitResultRequest(h.command));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.provider.state.main, 'shell-result-classifying');
+      let secondDone = false;
+      const reminder = h.post(second).then(value => { secondDone = true; return value; });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(secondDone, false);
+      release();
+      assert.equal((await result).status, writeFails ? 422 : 200);
+      assert.equal((await reminder).status, writeFails ? 422 : 200);
+      assert.equal(h.provider.state.primaryCode,
+        writeFails ? 'NATIVE_RESULT_EVIDENCE_WRITE_FAILED' : undefined);
+      assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length,
+        writeFails ? 1 : 2);
+    } finally { release(); await h.provider.close(); }
+  }
+});
+
+test('task commit response 3 exact merged transcript settles before concurrent reminder 4', async () => {
+  const { stdout, stderr } = taskCommitOutputLines('/tmp/fixture/workspace',
+    '/tmp/fixture/protected', 'protected-canary');
+  const exact = `${stableLineMerges(stdout, stderr)[27].join('\n')}\n`;
+  const second = { ...fixedReminderRequest(), input: [
+    { type: 'message', role: 'developer', content: 'bounded reminder context' },
+    { type: 'message', role: 'user', content: 'NATIVE_SHELL_PROBE: bounded reminder context' },
+  ] };
+  for (const invalid of [false, true]) {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+      persistResultEvidence: async () => { await gate; return { name: 'bounded-fixture-evidence' }; } });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      const output = invalid ? exact.replace('direct=denied', 'direct=visible') : exact;
+      const result = h.post(taskCommitResultRequest(h.command, output));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.provider.state.main, 'shell-result-classifying');
+      const reminder = h.post(second);
+      await new Promise(resolve => setImmediate(resolve));
+      release();
+      assert.equal((await result).status, invalid ? 422 : 200);
+      assert.equal((await reminder).status, invalid ? 422 : 200);
+      assert.equal(h.provider.state.primaryCode,
+        invalid ? 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN' : undefined);
+      assert.equal(h.provider.requests[2].kind, invalid ? undefined : 'matching_tool_result');
+      assert.equal(h.provider.requests[3].kind, invalid ? undefined : 'native_reminder_call');
+    } finally { release(); await h.provider.close(); }
+  }
+});
+
+test('task commit delayed second reminder body keeps its call-issued admission across shell classification',
+  async () => {
+  for (const bodyAfterResult of [false, true]) for (const writeFails of [false, true]) {
+    let releaseBody, releaseEvidence;
+    const bodyGate = new Promise(resolve => { releaseBody = resolve; });
+    const evidenceGate = new Promise(resolve => { releaseEvidence = resolve; });
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+      persistResultEvidence: async () => {
+        await evidenceGate;
+        if (writeFails) throw Object.assign(new Error('fixture write failure'),
+          { code: 'NATIVE_RESULT_EVIDENCE_WRITE_FAILED' });
+        return { name: 'bounded-fixture-evidence' };
+      } });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      const second = { ...fixedReminderRequest(), input: [
+        { type: 'message', role: 'developer', content: 'bounded reminder context' },
+        { type: 'message', role: 'user', content: 'NATIVE_SHELL_PROBE: bounded reminder context' },
+      ] };
+      const request = Readable.from((async function* () {
+        await bodyGate;
+        yield JSON.stringify(second);
+      })());
+      request.method = 'POST'; request.url = '/responses';
+      const response = { status: null, writeHead(status) { this.status = status; return this; },
+        end() { return this; } };
+      const pendingReminder = h.handle(request, response);
+      await new Promise(resolve => setImmediate(resolve));
+      const result = h.post(taskCommitResultRequest(h.command));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.provider.state.main, 'shell-result-classifying');
+      if (!bodyAfterResult) {
+        releaseBody();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(response.status, null);
+      }
+      releaseEvidence();
+      assert.equal((await result).status, writeFails ? 422 : 200);
+      if (bodyAfterResult) releaseBody();
+      await pendingReminder;
+      assert.equal(response.status, writeFails ? 422 : 200);
+      assert.equal(h.provider.state.primaryCode,
+        writeFails ? 'NATIVE_RESULT_EVIDENCE_WRITE_FAILED' : undefined);
+      assert.equal(h.provider.requests.filter(value => value.kind === 'native_reminder_call').length,
+        writeFails ? 1 : 2);
+    } finally { releaseBody(); releaseEvidence(); await h.provider.close(); }
+  }
+  });
+
+test('task commit second reminder refuses foreign context and canonical replay', async () => {
+  const second = { ...fixedReminderRequest(), input: [
+    { type: 'message', role: 'developer', content: 'bounded context' },
+    { type: 'message', role: 'user', content: 'NATIVE_SHELL_PROBE: bounded context' },
+  ] };
+  for (const changed of [
+    value => { value.previous_response_id = 'resp_native_shell_1'; },
+    value => { value.input[0].role = 'assistant'; },
+    value => { value.input[1].call_id = 'call_native_shell_1'; },
+    value => { value.input.push({ type: 'message', role: 'user', content: 'extra' }); },
+  ]) {
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      const invalid = structuredClone(second); changed(invalid);
+      assert.equal((await h.post(invalid)).status, 422);
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+      assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 1);
+    } finally { await h.provider.close(); }
+  }
+  const replay = await nativeProviderHarness({ taskCommit: true, outerOnly: true });
+  try {
+    assert.equal((await replay.post(mainNativeRequest())).status, 200);
+    assert.equal((await replay.post(second)).status, 200);
+    assert.equal((await replay.post(second)).status, 422);
+    assert.equal(replay.provider.state.primaryCode, 'NATIVE_REMINDER_REPLAY');
+  } finally { await replay.provider.close(); }
+});
+
+test('rejected reminder reference classes and evidence write errors preserve refusal', async () => {
+  const issuance = { main: 'unseen', reminder: 'unseen', verification: 'unseen' };
+  const body = { input: [{ type: 'function_call', id: 'fc_native_shell_1',
+    call_id: 'call_native_reminder_1' }, { type: 'function_call_output',
+    call_id: 'foreign-call' }, { type: 'function_call_output', call_id: 'x'.repeat(257) }] };
+  const shape = providerReminderRejectionShape(body, 3, issuance, 'prelude_invalid', false,
+    1, issuance);
+  assert.equal(shape.previousResponse, 'absent');
+  assert.deepEqual(shape.input.items.map(item => [item.id, item.callId]), [
+    ['unissued_shell_item', 'unissued_reminder_call'], ['absent', 'foreign'],
+    ['absent', 'invalid']]);
+  assert.ok(Buffer.byteLength(JSON.stringify(shape)) < 4096);
+  await assert.rejects(persistProviderReminderRejectionEvidence(shape, '/tmp', {
+    write: async () => { throw Object.assign(new Error('closed'), { code: 'EACCES' }); },
+  }), { code: 'EACCES' });
+  await assert.rejects(persistProviderReminderRejectionEvidence({ ...shape,
+    providerResponseIndex: 4 }, '/tmp'), { code: 'NATIVE_REMINDER_EVIDENCE_INVALID' });
+  const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+    persistReminderRejectionEvidence: async () => { throw new Error('storage refused'); } });
+  try {
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    assert.equal((await h.post(fixedReminderRequest())).status, 200);
+    assert.equal((await h.post(fixedReminderRequest())).status, 422);
+    assert.equal(h.provider.requests[2].rejection, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+    assert.equal(h.provider.requests[2].reminderRejectionEvidenceError,
+      'NATIVE_REMINDER_EVIDENCE_WRITE_FAILED');
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+  } finally { await h.provider.close(); }
+});
+
+test('provider response 3 keeps admission identity while its body completes during freeze', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-reminder-freeze-'));
+  let pending;
+  const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+    resultEvidenceDir: root, onShut: async () => {
+      assert.equal(h.provider.state.admissionClosed, true);
+      assert.equal(h.provider.state.active, 1);
+      pending.request.push(JSON.stringify(fixedReminderRequest()));
+      pending.request.push(null);
+    } });
+  try {
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    assert.equal((await h.post(fixedReminderRequest())).status, 200);
+    const request = new Readable({ read() {} });
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, writeHead(status) { this.status = status; return this; },
+      end() { return this; } };
+    pending = { request, handling: h.handle(request, response) };
+    await h.provider.freeze();
+    await pending.handling;
+    assert.equal(response.status, 422);
+    assert.equal(h.provider.requests[2].reminderRejection.providerResponseIndex, 3);
+    assert.equal(h.provider.requests[2].reminderRejection.issuanceAtAdmission.reminder,
+      'none-issued');
+    assert.equal(h.provider.requests[2].reminderRejection.predicate, 'second_state_invalid');
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+    assert.equal((await readFile(join(root, 'provider-response-3-reminder-rejection.json'), 'utf8'))
+      .includes('"providerResponseIndex":3'), true);
+  } finally {
+    await h.provider.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('owned parent journal joins each reminder call to its exact serial child', async () => {
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const turnId = '22222222-2222-4222-8222-222222222222';
+  const expected = [
+    { reminderAgentId: 'skill-reminder', generationId: 1, callId: 'call_native_reminder_1',
+      childSessionId: 'child-session-1', taskId: 'child-task-1' },
+    { reminderAgentId: 'skill-reminder', generationId: 2, callId: 'call_native_reminder_2',
+      childSessionId: 'child-session-2', taskId: 'child-task-2' },
+    { reminderAgentId: 'verify-reminder', generationId: 1,
+      callId: 'call_native_verify_reminder_1',
+      childSessionId: 'verify-session-1', taskId: 'verify-task-1' },
+  ];
+  const entry = (sequence, event) => ({ schema_version: 1, sequence,
+    record_type: 'event', durability: 'durable', stream: { kind: 'session', id: sessionId },
+    payload_type: 'runtime.session', payload_schema_version: 1,
+    payload: { kind: 'run', run_id: turnId, event } });
+  const link = target => ({ kind: 'memory_reminder_child_session_linked',
+    generation_id: target.generationId, reminder_agent_id: target.reminderAgentId,
+    parent_run_id: turnId, parent_session_id: sessionId,
+    child_session_id: target.childSessionId, task_id: target.taskId,
+    task_stream: { kind: 'task', id: target.taskId } });
+  const proposal = target => ({ kind: 'reminder_proposal', generation_id: target.generationId,
+    reminder_agent_id: target.reminderAgentId, decision_call_id: target.callId,
+    decision_run_stream: { kind: 'run', id: target.childSessionId } });
+  const records = [entry(1, link(expected[0])), entry(2, proposal(expected[0])),
+    entry(3, link(expected[1])), entry(4, link(expected[2])),
+    entry(5, proposal(expected[2])), entry(6, proposal(expected[1]))];
+  const bytes = values => Buffer.from(`${values.map(value => JSON.stringify(value)).join('\n')}\n`);
+  const identity = { sessionId, turnId, expected };
+  assert.deepEqual(classifyTaskReminderJournal(bytes(records), identity).joins, expected);
+  const skillProposalFirst = [...records.slice(0, 4),
+    { ...entry(5, proposal(expected[1])) }, { ...entry(6, proposal(expected[2])) }];
+  assert.deepEqual(classifyTaskReminderJournal(bytes(skillProposalFirst), identity).joins,
+    expected);
+  const status = { ...entry(7, { kind: 'tool_delta' }), record_type: 'status',
+    durability: 'ephemeral' };
+  assert.deepEqual(classifyTaskReminderJournal(bytes([...records, status]), identity).joins,
+    expected);
+  assert.throws(() => classifyTaskReminderJournal(bytes([...records,
+    { ...status, payload: { ...status.payload, event: proposal(expected[1]) } }]), identity),
+  { code: 'NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN' });
+  for (const changed of [
+    values => values.pop(),
+    values => { values[4].payload.event.decision_call_id = 'call_native_reminder_1'; },
+    values => { values[4].payload.event.decision_run_stream.id = expected[0].childSessionId; },
+    values => { values[2].payload.event.task_id = expected[0].taskId; },
+    values => { values[2].payload.event.parent_session_id = 'foreign'; },
+    values => values.push({ ...structuredClone(values[5]), sequence: 7 }),
+    values => { const moved = values.splice(3, 1)[0]; values.push(moved); },
+  ]) {
+    const invalid = structuredClone(records); changed(invalid);
+    assert.throws(() => classifyTaskReminderJournal(bytes(invalid), identity),
+      { code: 'NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN' });
+  }
+  assert.throws(() => classifyTaskReminderJournal(Buffer.from(JSON.stringify(records[0])), identity),
+    { code: 'NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN' });
+  const root = await mkdtemp(join(tmpdir(), 'passeur-parent-journal-'));
+  try {
+    const relative = `2026/09/28/${sessionId}/session.jsonl`;
+    const path = join(root, 'home', '.local', 'share', 'muse', 'sessions', relative);
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, bytes(records), { mode: 0o600 });
+    assert.deepEqual((await readTaskReminderJournal(root,
+      `/mounts/home/.local/share/muse/sessions/${relative}`, identity)).joins, expected);
+    await assert.rejects(readTaskReminderJournal(root,
+      `/mounts/home/.local/share/muse/sessions/2026/09/28/foreign/session.jsonl`, identity),
+    { code: 'NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a blocked response 3 evidence write latches its refusal ahead of a fourth request', async () => {
+  for (const writeFails of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), 'passeur-reminder-race-'));
+    let entered, release;
+    const started = new Promise(resolve => { entered = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    const h = await nativeProviderHarness({ taskCommit: true, outerOnly: true,
+      resultEvidenceDir: root,
+      persistReminderRejectionEvidence: async (shape, directory) => {
+        entered();
+        await held;
+        if (writeFails) throw Object.assign(new Error('write failed'), { code: 'EIO' });
+        return persistProviderReminderRejectionEvidence(shape, directory);
+      } });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      const third = h.post(fixedReminderRequest());
+      await started;
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+      assert.deepEqual(await h.provider.rejection,
+        { kind: 'provider_rejected', code: 'NATIVE_REMINDER_SEQUENCE_INVALID' });
+      assert.equal((await h.post(fixedReminderRequest())).status, 429);
+      assert.equal(h.provider.requests[3].rejection, 'NATIVE_REQUEST_BUDGET_EXCEEDED');
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+      release();
+      assert.equal((await third).status, 422);
+      assert.equal(h.provider.requests[2].rejection, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+      assert.equal(h.provider.requests[2].reminderRejectionEvidenceError,
+        writeFails ? 'EIO' : undefined);
+      assert.equal(await readFile(join(root, 'provider-response-3-reminder-rejection.json'), 'utf8')
+        .then(() => true, () => false), !writeFails);
+    } finally {
+      release();
+      await h.provider.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test('active native request cap rejects a third request before consuming its body', async () => {
@@ -4340,6 +5030,256 @@ printf '{"exit-code":0}\\n' >&3
     assert.equal(JSON.stringify(done).includes(marker), false);
     assert.equal(host.protectedFrameError(), null);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('native decision write observes stream error and never retries after uncertainty', async () => {
+  class DecisionStream extends EventEmitter {
+    destroyed = false;
+    writableEnded = false;
+    writes = [];
+    write(frame, callback) { this.writes.push({ frame, callback }); return true; }
+  }
+  const stream = new DecisionStream();
+  const pending = writeNativeDecision(stream, '{"kind":"choice"}\n');
+  assert.equal(stream.writes.length, 1);
+  stream.emit('error', Error('broken pipe'));
+  await assert.rejects(pending, { code: 'NATIVE_HELD_DECISION_UNCERTAIN' });
+  stream.writes[0].callback();
+  assert.equal(stream.writes.length, 1);
+  const closed = new DecisionStream();
+  const failed = writeNativeDecision(closed, 'choice\n');
+  closed.emit('close');
+  await assert.rejects(failed, { code: 'NATIVE_HELD_DECISION_UNCERTAIN' });
+  assert.equal(closed.writes.length, 1);
+});
+
+test('task commit native fold rejects outstanding, foreign and failed operations at turn terminal', () => {
+  const coverage = () => {
+    const fold = createTaskCommitCoverage();
+    fold.bindSession('session'); fold.bindTurn('turn');
+    return fold;
+  };
+  const shell = { kind: 'toolCall', itemId: 'shell', callId: 'call_native_shell_1',
+    turnId: 'turn', status: 'completed' };
+  const reminder = { kind: 'toolCall', itemId: 'reminder', callId: 'call_native_reminder_1',
+    turnId: 'turn', status: 'completed' };
+  const event = item => ({ sessionId: 'session', item });
+  const terminal = { sessionId: 'session', turnId: 'turn', terminal: 'completed' };
+  const accepted = coverage();
+  accepted.accept('item/started', event({ ...shell, status: 'inProgress' }));
+  accepted.accept('item/updated', event({ ...shell, status: 'inProgress' }));
+  accepted.accept('item/completed', event(shell));
+  accepted.accept('item/completed', event(reminder));
+  accepted.finish(terminal);
+  assert.equal(accepted.snapshot().completed.length, 2);
+  for (const changed of [
+    fold => fold.accept('view/gap', {}),
+    fold => fold.accept('item/started', event({ ...shell, itemId: 'foreign', callId: 'other', status: 'inProgress' })),
+    fold => fold.accept('item/completed', event({ ...reminder, status: 'failed' })),
+    fold => fold.accept('item/completed', event({ ...reminder, turnId: 'other' })),
+    fold => fold.accept('item/completed', { sessionId: 'other', item: reminder }),
+    fold => fold.finish(terminal),
+    fold => { fold.accept('item/started', event({ ...reminder, status: 'inProgress' }));
+      fold.accept('item/completed', event(shell)); fold.finish(terminal); },
+    fold => { fold.accept('item/completed', event(shell));
+      fold.finish({ ...terminal, terminal: 'unknown' }); },
+  ]) assert.throws(() => changed(coverage()), { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+});
+
+test('task commit fold tracks one reminder child through current-turn completion', () => {
+  const fresh = () => { const fold = createTaskCommitCoverage();
+    fold.bindSession('session'); fold.bindTurn('turn'); return fold; };
+  const shell = { kind: 'toolCall', itemId: 'native-shell-task',
+    callId: 'call_native_shell_1', turnId: 'turn', status: 'completed' };
+  const child = { kind: 'reminderChild', itemId: 'opaque-native-child',
+    callId: null, turnId: 'turn', status: 'inProgress', generationId: 1,
+    reminderAgentId: 'skill-reminder', childSessionId: 'child-session', taskId: 'child-task' };
+  const event = item => ({ sessionId: 'session', item });
+  const terminal = { sessionId: 'session', turnId: 'turn', terminal: 'completed' };
+  const fold = fresh();
+  fold.accept('item/started', event(child));
+  fold.accept('item/updated', event({ ...child, childSessionId: 'child-session' }));
+  fold.accept('item/completed', event({ ...child, childSessionId: 'child-session',
+    status: 'completed' }));
+  fold.accept('item/completed', event(shell));
+  fold.finish(terminal);
+  assert.deepEqual(fold.snapshot().children, [{ itemId: 'opaque-native-child', turnId: 'turn',
+    status: 'completed', childSessionId: 'child-session', reminderAgentId: 'skill-reminder',
+    taskId: 'child-task', generationId: 1 }]);
+  const singleShot = fresh();
+  singleShot.accept('item/completed', event({ ...child, status: 'completed' }));
+  singleShot.accept('item/completed', event(shell));
+  singleShot.finish(terminal);
+  assert.equal(singleShot.snapshot().children.length, 1);
+  for (const changed of [
+    current => { current.accept('item/started', event(child));
+      current.accept('item/completed', event(shell)); current.finish(terminal); },
+    current => current.accept('item/completed', event({ ...child, status: 'failed' })),
+    current => current.accept('item/completed', event({ ...child, status: 'cancelled' })),
+    current => current.accept('item/completed', event({ ...child, status: 'unknown' })),
+    current => { current.accept('item/started', event(child));
+      current.accept('item/started', event({ ...child, itemId: 'second' })); },
+    current => { current.accept('item/completed', event({ ...child, status: 'completed' }));
+      current.accept('item/completed', event({ ...child, status: 'completed' })); },
+    current => { current.accept('item/completed', event(shell));
+      current.accept('item/completed', event({ ...child, itemId: shell.itemId,
+        status: 'completed' })); },
+    current => { current.accept('item/completed', event({ ...child, status: 'completed' }));
+      current.accept('item/completed', event({ ...shell, itemId: child.itemId })); },
+    current => { current.accept('item/started', event(child));
+      current.accept('item/completed', event({ ...shell, itemId: child.itemId })); },
+    current => { current.accept('item/started', event({ kind: 'agentMessage',
+      itemId: child.itemId })); current.accept('item/started', event(child)); },
+    current => { current.accept('item/started', event(child));
+      current.accept('item/completed', event({ kind: 'agentMessage', itemId: child.itemId })); },
+    current => current.accept('item/started', { sessionId: 'foreign', item: child }),
+    current => current.accept('item/started', event({ ...child, turnId: 'foreign' })),
+    current => { current.accept('item/started', event(child));
+      current.accept('item/updated', event({ ...child, generationId: 2 })); },
+    current => { current.accept('item/started', event({ ...child, childSessionId: 'first' }));
+      current.accept('item/updated', event({ ...child, childSessionId: 'second' })); },
+    current => { current.accept('item/started', event({ ...child, taskId: 'first' }));
+      current.accept('item/updated', event({ ...child, taskId: 'second' })); },
+    current => { current.accept('item/started', event(child));
+      current.accept('item/updated', event({ ...child, reminderAgentId: undefined })); },
+    current => current.accept('view/gap', { sessionId: 'session' }),
+    current => { current.accept('item/completed', event(shell)); current.finish(terminal);
+      current.accept('item/started', event(child)); },
+    current => current.accept('item/started', event({ ...child, kind: 'subagent' })),
+    current => current.accept('item/started', event({ ...child, kind: 'unknownOperation' })),
+  ]) assert.throws(() => changed(fresh()), { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+});
+
+test('task commit fold admits exactly two serial skill-reminder generations with complete identities', () => {
+  const sessionId = 'session', turnId = 'turn';
+  const first = { kind: 'reminderChild', itemId: 'first-child', callId: null,
+    turnId, status: 'inProgress', generationId: 1,
+    reminderAgentId: 'skill-reminder', childSessionId: 'first-session', taskId: 'first-task' };
+  const second = { ...first, itemId: 'second-child', generationId: 2,
+    childSessionId: 'second-session', taskId: 'second-task' };
+  const event = item => ({ sessionId, item });
+  const fresh = () => { const fold = createTaskCommitCoverage();
+    fold.bindSession(sessionId); fold.bindTurn(turnId); return fold; };
+  const firstDone = fold => {
+    fold.accept('item/started', event(first));
+    fold.accept('item/completed', event({ ...first, status: 'completed' }));
+  };
+  const shell = { kind: 'toolCall', itemId: 'shell', callId: 'call_native_shell_1',
+    turnId, status: 'completed' };
+  const settled = fresh();
+  firstDone(settled);
+  settled.accept('item/started', event(second));
+  settled.accept('item/completed', event({ ...second, status: 'completed' }));
+  settled.accept('item/completed', event(shell));
+  settled.finish({ sessionId, turnId, terminal: 'completed' });
+  assert.deepEqual(settled.snapshot().children.map(child => [child.generationId,
+    child.itemId, child.status]), [[1, 'first-child', 'completed'],
+    [2, 'second-child', 'completed']]);
+  const unfinished = fresh();
+  unfinished.accept('item/started', event(first));
+  assert.throws(() => unfinished.accept('item/started', event(second)),
+    { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+  for (const changed of [
+    { ...second, generationId: 1 },
+    { ...second, generationId: 3 },
+    { ...second, itemId: first.itemId },
+    { ...second, childSessionId: first.childSessionId },
+    { ...second, taskId: first.taskId },
+    { ...second, reminderAgentId: 'other-agent' },
+  ]) {
+    const fold = fresh(); firstDone(fold);
+    assert.throws(() => { fold.accept('item/started', event(changed));
+      fold.accept('item/completed', event({ ...changed, status: 'completed' })); },
+    { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+  }
+  const foreign = fresh(); firstDone(foreign);
+  assert.throws(() => foreign.accept('item/started', { sessionId: 'foreign', item: second }),
+    { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+  assert.throws(() => foreign.accept('item/started', event({ ...second, turnId: 'foreign' })),
+    { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+  const incomplete = fresh(); firstDone(incomplete);
+  incomplete.accept('item/started', event(second));
+  incomplete.accept('item/completed', event(shell));
+  assert.throws(() => incomplete.finish({ sessionId, turnId, terminal: 'completed' }),
+    { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+  const tooMany = fresh(); firstDone(tooMany);
+  tooMany.accept('item/started', event(second));
+  tooMany.accept('item/completed', event({ ...second, status: 'completed' }));
+  assert.throws(() => tooMany.accept('item/started', event({ ...second,
+    itemId: 'third-child', generationId: 3, childSessionId: 'third-session', taskId: 'third-task' })),
+  { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+  assert.deepEqual(tooMany.childDiagnostic({ generationId: 3, itemId: 'third-child' }),
+    { attemptedGeneration: 3, acceptedChildren: 2, priorGeneration: 1,
+      priorStatus: 'completed', sameFirstItem: false });
+});
+
+test('task commit fold permits verifier generation one while skill generation two is unfinished', () => {
+  const sessionId = 'session', turnId = 'turn';
+  const event = item => ({ sessionId, item });
+  const child = (agent, generation, status = 'inProgress') => ({ kind: 'reminderChild',
+    itemId: `${agent}-${generation}`, callId: null, turnId, status,
+    generationId: generation, reminderAgentId: agent,
+    childSessionId: `${agent}-session-${generation}`, taskId: `${agent}-task-${generation}` });
+  const shell = { kind: 'toolCall', itemId: 'shell', callId: 'call_native_shell_1',
+    turnId, status: 'completed' };
+  const fresh = () => { const fold = createTaskCommitCoverage();
+    fold.bindSession(sessionId); fold.bindTurn(turnId); return fold; };
+  for (const verifyFirst of [false, true]) {
+    const fold = fresh();
+    fold.accept('item/completed', event(child('skill-reminder', 1, 'completed')));
+    fold.accept('item/completed', event(shell));
+    fold.accept('item/started', event(child('skill-reminder', 2)));
+    fold.accept('item/started', event(child('verify-reminder', 1)));
+    const order = verifyFirst ? ['verify-reminder', 'skill-reminder'] :
+      ['skill-reminder', 'verify-reminder'];
+    for (const agent of order) fold.accept('item/completed', event(child(agent,
+      agent === 'skill-reminder' ? 2 : 1, 'completed')));
+    fold.finish({ sessionId, turnId, terminal: 'completed' });
+    assert.deepEqual(fold.snapshot().children.map(value =>
+      [value.reminderAgentId, value.generationId, value.status]), [
+        ['skill-reminder', 1, 'completed'], ['skill-reminder', 2, 'completed'],
+        ['verify-reminder', 1, 'completed']]);
+  }
+  const unfinished = fresh();
+  unfinished.accept('item/completed', event(child('skill-reminder', 1, 'completed')));
+  unfinished.accept('item/completed', event(shell));
+  unfinished.accept('item/started', event(child('skill-reminder', 2)));
+  unfinished.accept('item/started', event(child('verify-reminder', 1)));
+  unfinished.accept('item/completed', event(child('verify-reminder', 1, 'completed')));
+  assert.throws(() => unfinished.finish({ sessionId, turnId, terminal: 'completed' }),
+    { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+  for (const changed of [
+    { ...child('verify-reminder', 1), generationId: 2 },
+    { ...child('verify-reminder', 1), itemId: 'skill-reminder-2' },
+    { ...child('verify-reminder', 1), childSessionId: 'skill-reminder-session-2' },
+    { ...child('verify-reminder', 1), taskId: 'skill-reminder-task-2' },
+  ]) {
+    const fold = fresh();
+    fold.accept('item/completed', event(child('skill-reminder', 1, 'completed')));
+    fold.accept('item/completed', event(shell));
+    fold.accept('item/started', event(child('skill-reminder', 2)));
+    assert.throws(() => fold.accept('item/started', event(changed)),
+      { code: 'NATIVE_TASK_OPERATION_UNCERTAIN' });
+  }
+});
+
+test('held approval wait fails when a valid shell item and completed turn lack resolution', () => {
+  const coverage = createTaskCommitCoverage();
+  coverage.bindSession('session'); coverage.bindTurn('turn');
+  coverage.accept('item/completed', { sessionId: 'session', item: { kind: 'toolCall',
+    itemId: 'shell', callId: 'call_native_shell_1', turnId: 'turn', status: 'completed' } });
+  coverage.finish({ sessionId: 'session', turnId: 'turn', terminal: 'completed' });
+  assert.equal(coverage.snapshot().completed.length, 1);
+  const events = [{ kind: 'approval_request', approvalId: 'approval' },
+    { kind: 'tool_item', item: { callId: 'call_native_shell_1', status: 'completed' } },
+    { kind: 'turn_completed', sessionId: 'session', turnId: 'turn', terminal: 'completed' }];
+  assert.throws(() => scanHeldEvents(events, 0, 'resolution'),
+    { code: 'NATIVE_HELD_RESOLUTION_MISSING' });
+  const resolved = [{ kind: 'approval/resolved', approvalId: 'approval' }, events[2]];
+  const first = scanHeldEvents(resolved, 0, 'resolution');
+  assert.equal(first.event.kind, 'approval/resolved');
+  assert.throws(() => scanHeldEvents(resolved, first.cursor, 'item'),
+    { code: 'NATIVE_HELD_TOOL_MISSING' });
 });
 
 test('held transport keeps the child alive until one host decision and explicit shutdown', async () => {

@@ -10,11 +10,13 @@ import { dirname, join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+import { isDeepStrictEqual } from 'node:util';
 import { prepareSandbox, probeBubblewrap } from './experiment-worker-sandbox.mjs';
 import { pinnedNode, tcpProbe, classifyNoRoute, loopbackReady, parseBubblewrapStatus,
   startShellProvider, stageRuntime, startHostSentinel, runStatusPhase,
   captureHostIdentities, verifyHostStop, validateShellReady, validateReadFileOutcome,
-  readFileCanaryFixture, shellProbeCommand } from './qualify-muse-sandbox-transport.mjs';
+  readFileCanaryFixture, shellProbeCommand, shellCommitCommand, bashCallEvents,
+  verificationReminderSchemaDiscovery, fixedVerificationPayload } from './qualify-muse-sandbox-transport.mjs';
 import { spawnSync } from 'node:child_process';
 
 const DUMMY = 'passeur-disposable-dummy-key';
@@ -107,6 +109,36 @@ function nativeInputAllowed(input, shell = false) {
         (typeof item.summary !== 'string' || Buffer.byteLength(item.summary) > 4_096)) return false;
     return true;
   });
+}
+const SHELL_ISSUED = Object.freeze({ responseId: 'resp_native_shell_1',
+  itemId: 'fc_native_shell_1', callId: 'call_native_shell_1' });
+export function issuedShellDescriptorFromSse(bytes, command) {
+  validateNativeSse(bytes);
+  if (typeof command !== 'string' || !command || Buffer.byteLength(command) > 4096) return null;
+  const actual = bytes.toString('utf8').slice(0, -2).split('\n\n')
+    .map(frame => JSON.parse(frame.slice(6)));
+  const expected = bashCallEvents({ command,
+    description: 'Disposable native shell qualification' });
+  return isDeepStrictEqual(actual, expected) ? Object.freeze({ ...SHELL_ISSUED,
+    command }) : null;
+}
+function issuedShellHistory(input, descriptor) {
+  if (!descriptor || !Array.isArray(input) || input.length !== 4) return false;
+  const [developer, user, call, result] = input;
+  const keys = value => value && typeof value === 'object' && !Array.isArray(value) ?
+    Object.keys(value).sort().join(',') : '';
+  const message = (item, role) => keys(item) === 'content,role,type' &&
+    item.type === 'message' && item.role === role && typeof item.content === 'string' &&
+    Buffer.byteLength(item.content) <= 32_768;
+  const fixedArgs = JSON.stringify({ command: descriptor.command,
+    description: 'Disposable native shell qualification' });
+  return message(developer, 'developer') && message(user, 'user') &&
+    keys(call) === 'arguments,call_id,id,name,type' && call.type === 'function_call' &&
+    call.id === descriptor.itemId && call.call_id === descriptor.callId &&
+    call.name === 'muse.bash' && call.arguments === fixedArgs &&
+    keys(result) === 'call_id,output,type' && result.type === 'function_call_output' &&
+    result.call_id === descriptor.callId && typeof result.output === 'string' &&
+    Buffer.byteLength(result.output) <= 8_192;
 }
 function wellFormedUtf8(value) {
   return Buffer.from(value, 'utf8').toString('utf8') === value;
@@ -316,7 +348,11 @@ export function requestDecision(request, body, policy) {
       if (parsed.model !== NATIVE_MODEL) return reject('NATIVE_MODEL_INVALID');
       if (typeof policy.workspace !== 'string' || !policy.workspace.startsWith('/tmp/'))
         return reject('NATIVE_WORKSPACE_INVALID');
-      if (!nativeInputAllowed(parsed.input, policy.profile === 'native-shell')) return reject('NATIVE_INPUT_INVALID');
+      const shellHistory = policy.profile === 'native-shell' &&
+        issuedShellHistory(parsed.input, policy.issuedShell) &&
+        parsed.previous_response_id === undefined;
+      if (!shellHistory && !nativeInputAllowed(parsed.input, policy.profile === 'native-shell'))
+        return reject('NATIVE_INPUT_INVALID');
       if (parsed.previous_response_id === undefined && Array.isArray(parsed.input) &&
             !parsed.input.some(item => item.type === 'function_call_output') &&
             !(policy.profile === 'native-shell' ?
@@ -351,7 +387,8 @@ export function requestDecision(request, body, policy) {
       }
       // The reviewed provider validates each selected schema and issued call.
       // Canonicalizing here removes duplicate keys and unreviewed wire bytes.
-      return { ok: true, route: 'responses', body: Buffer.from(JSON.stringify({
+      return { ok: true, route: 'responses', shellHistory,
+        body: Buffer.from(JSON.stringify({
         model: NATIVE_MODEL, input: projectedInput, tools: parsed.tools,
         ...(parsed.previous_response_id === undefined ? {} :
           { previous_response_id: parsed.previous_response_id }),
@@ -372,8 +409,8 @@ export function requestDecision(request, body, policy) {
   return { ok: false, code: 'ROUTE_OR_METHOD_REJECTED' };
 }
 
-export function nativeRejectionProjection(body, { index, stage, code, complete = true,
-  receivedBytes = body.length }) {
+export function nativeRejectionProjection(body, { index, stage, code, profile = 'native-read', complete = true,
+  receivedBytes = body.length, issuedShell = null }) {
   const type = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
   let parsed;
   try { parsed = JSON.parse(body.toString('utf8')); } catch { /* shape remains invalid */ }
@@ -383,6 +420,8 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
   const tools = Array.isArray(object?.tools) ? object.tools : [];
   const classify = (value, allowed) => value === undefined ? 'absent' :
     typeof value !== 'string' ? 'wrong_type' : allowed.has(value) ? 'reviewed' : 'foreign';
+  const knownItems = issuedShell ? new Set([...NATIVE_ITEM_IDS, issuedShell.itemId]) : NATIVE_ITEM_IDS;
+  const knownCalls = issuedShell ? new Set([...NATIVE_CALL_IDS, issuedShell.callId]) : NATIVE_CALL_IDS;
   const metadataShape = root => {
     const result = { entries: 0, maximumDepth: 0, omittedEntries: 0 };
     const pending = [{ value: root, depth: 0 }];
@@ -403,8 +442,8 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       item?.type === 'function_call_output' || item?.type === 'reasoning' ? item.type : 'other',
     fieldCount: item && typeof item === 'object' && !Array.isArray(item) ?
       Math.min(Object.keys(item).length, 64) : 0,
-    id: classify(item?.id, NATIVE_ITEM_IDS),
-    callId: classify(item?.call_id, NATIVE_CALL_IDS),
+    id: classify(item?.id, knownItems),
+    callId: classify(item?.call_id, knownCalls),
     argumentType: type(item?.arguments), outputType: type(item?.output),
   }));
   const toolClasses = tools.slice(0, 2).map(namespace => ({
@@ -423,6 +462,48 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
     })) : [],
     omittedFunctions: Array.isArray(namespace?.tools) ? Math.max(0, namespace.tools.length - 4) : 0,
   }));
+  const post5Verification = profile === 'native-shell' && index === 5 ? (() => {
+    const fullyCaptured = complete && receivedBytes === body.length &&
+      receivedBytes <= NATIVE_REQUEST_LIMIT;
+    const selected = fullyCaptured && object ? verificationReminderSchemaDiscovery(object) : null;
+    let exact = false;
+    if (selected?.selectedComplete && selected.identityValid) {
+      try { fixedVerificationPayload(object); exact = true; }
+      catch { /* the bounded mismatch is retained below */ }
+    }
+    const knownName = name => name === 'decision' || name === 'next_step' || name === 'reason' ?
+      name : 'other';
+    const role = value => value === undefined ? 'absent' :
+      ['developer', 'user', 'assistant', 'system'].includes(value) ? value : 'other';
+    return { nativeChildAssociation: 'unknown', fullyCaptured,
+      bodyBytes: Math.min(receivedBytes, NATIVE_REQUEST_LIMIT + 1),
+      capturedBytes: Math.min(body.length, NATIVE_REQUEST_LIMIT),
+      input: { class: type(input), count: Math.min(items.length, 16),
+        omitted: Math.max(0, items.length - 8),
+        items: items.slice(0, 8).map(item => ({
+          class: item?.type === 'message' || item?.type === 'function_call' ||
+            item?.type === 'function_call_output' || item?.type === 'reasoning' ? item.type : 'other',
+          fields: item && typeof item === 'object' && !Array.isArray(item) ?
+            Object.keys(item).sort().join(',') === 'content,role,type' ? 'message_exact' : 'other' : 'invalid',
+          role: role(item?.role), idRef: classify(item?.id, knownItems),
+          callRef: classify(item?.call_id, knownCalls),
+          contentType: type(item?.content),
+          contentBytes: typeof item?.content === 'string' ?
+            Math.min(Buffer.byteLength(item.content), 32_769) : null,
+        })) },
+      previousResponse: classify(object?.previous_response_id, NATIVE_RESPONSE_IDS),
+      verificationSchema: { classification: !fullyCaptured ? 'unexamined_incomplete' :
+        exact ? 'exact' : !selected ? 'not_recognized' :
+          !selected.identityValid ? 'identity_invalid' :
+            !selected.selectedComplete ? 'selected_incomplete' : 'fixed_schema_mismatch',
+      identityValid: selected?.identityValid ?? null,
+      selectedComplete: selected?.selectedComplete ?? null,
+      propertyCount: selected?.selected?.schema?.propertyCount ?? null,
+      requiredCount: selected?.selected?.schema?.requiredCount ?? null,
+      properties: selected?.selected?.schema?.properties?.slice(0, 8)
+        .map(property => knownName(property.name)) ?? [],
+      required: selected?.selected?.schema?.required?.slice(0, 8).map(knownName) ?? [] } };
+  })() : null;
   const baseFields = new Set(['model', 'input', 'tools', 'previous_response_id']);
   const extraFields = object ? Object.keys(object).filter(key => !baseFields.has(key)) : [];
   const include = object?.include;
@@ -511,7 +592,9 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       blocked('input');
     } else if (Array.isArray(input)) {
       diagnostic.coverage.inputItems = input.length;
-      const inputAllowed = nativeInputAllowed(input);
+      const inputAllowed = nativeInputAllowed(input, profile === 'native-shell') ||
+        profile === 'native-shell' && object.previous_response_id === undefined &&
+          issuedShellHistory(input, issuedShell);
       if (!inputAllowed) note('NATIVE_INPUT_INVALID');
       for (const [inputIndex, item] of input.entries()) {
         if (!item || typeof item !== 'object' || Array.isArray(item) ||
@@ -520,9 +603,9 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
           blocked('inputItem');
           continue;
         }
-        if (item.id !== undefined && !NATIVE_ITEM_IDS.has(item.id) &&
+        if (item.id !== undefined && !knownItems.has(item.id) &&
             item.id !== 'msg_native_read_file_2' ||
-            item.call_id !== undefined && !NATIVE_CALL_IDS.has(item.call_id))
+            item.call_id !== undefined && !knownCalls.has(item.call_id))
           note('NATIVE_INPUT_REFERENCE_INVALID', { inputIndex });
         if (typeof item.arguments === 'string' && Buffer.byteLength(item.arguments) > 4_096 ||
             typeof item.output === 'string' && Buffer.byteLength(item.output) > 8_192)
@@ -542,11 +625,13 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
         diagnostic.coverage.unexaminedInitialContextChecks++;
       } else if (object.previous_response_id === undefined &&
           !input.some(item => item?.type === 'function_call_output') &&
-          !JSON.stringify(input).includes('NATIVE_READ_FILE_PROBE') &&
-          !JSON.stringify(input).includes('NATIVE_READ_FILE_SCHEMA_PROBE') &&
+          !(profile === 'native-shell' ?
+            JSON.stringify(input).includes('NATIVE_SHELL_PROBE') :
+            JSON.stringify(input).includes('NATIVE_READ_FILE_PROBE') ||
+            JSON.stringify(input).includes('NATIVE_READ_FILE_SCHEMA_PROBE')) &&
           !input.some(item => item?.call_id !== undefined || item?.id !== undefined))
         note('NATIVE_INITIAL_CONTEXT_INVALID');
-    } else if (!nativeInputAllowed(input)) note('NATIVE_INPUT_INVALID',
+    } else if (!nativeInputAllowed(input, profile === 'native-shell')) note('NATIVE_INPUT_INVALID',
       { class: 'string', byteCount: Math.min(Buffer.byteLength(input), 32_769) });
     if (!Array.isArray(object.tools)) {
       note('NAMESPACE_COUNT', { class: type(object.tools) });
@@ -641,6 +726,7 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       omittedItems: Math.max(0, items.length - itemClasses.length) },
     previousResponse: classify(object?.previous_response_id, NATIVE_RESPONSE_IDS),
     diagnostic,
+    ...(post5Verification ? { post5Verification } : {}),
     tools: { class: type(object?.tools), namespaceCount: tools.length, toolClasses,
       omittedNamespaces: Math.max(0, tools.length - toolClasses.length),
       failure: code === 'NATIVE_TOOLS_INVALID' ? nativeToolsFailure(object?.tools) : null } };
@@ -675,7 +761,7 @@ export async function assertSocketIdentity(socketPath, identity, inspect = lstat
 }
 
 export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
-  profile = 'controlled', workspace = null,
+  profile = 'controlled', workspace = null, shellCommand = null,
   model = MODEL, requestLimit = REQUEST_LIMIT, responseLimit = RESPONSE_LIMIT,
   concurrency = 2, deadlineMs = 3_000, allowedInputs = ['fixture'],
   perRouteBudget = 1,
@@ -700,6 +786,11 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
     perRouteBudget = 5;
     deadlineMs = 5_000;
   }
+  if (shellCommand !== null && (profile !== 'native-shell' ||
+      typeof shellCommand !== 'string' || !shellCommand ||
+      Buffer.byteLength(shellCommand) > 4096)) {
+    throw fault('BROKER_POLICY_INVALID', 'issued shell command descriptor is invalid');
+  }
   const upstream = new URL(upstreamOrigin);
   if (upstream.protocol !== 'http:' || upstream.hostname !== '127.0.0.1' ||
       !Number.isSafeInteger(Number(upstream.port)) || Number(upstream.port) < 1 ||
@@ -716,7 +807,8 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       !Number.isSafeInteger(deadlineMs) || deadlineMs < 100 || deadlineMs > 5_000) {
     throw fault('BROKER_POLICY_INVALID', 'synthetic broker origin, run or bearer invalid');
   }
-  const policy = { runId, model, allowedInputs, profile, workspace };
+  const policy = { runId, model, allowedInputs, profile, workspace, issuedShell: null };
+  let shellResultReserved = false;
   const evidence = { accepted: 0, rejected: 0, upstream: 0, disconnected: 0, responseLimit: 0, deadline: 0 };
   const capturePath = join(dirname(socketPath), 'first-rejected-native-post.json');
   let resolveFailure;
@@ -758,7 +850,8 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       let projection;
       try {
         projection = projectCapture(body,
-          { index: postIndex, stage, code: boundedCode({ code }), complete, receivedBytes });
+          { index: postIndex, stage, code: boundedCode({ code }), profile, complete,
+            receivedBytes, issuedShell: policy.issuedShell });
       } catch (error) {
         settleCapture(record, { status: 'failed', code: boundedCode(error) });
         return captureFinished;
@@ -781,6 +874,8 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   let socketIdentity;
   const server = createServer(async (incoming, outgoing) => {
     const postIndex = incoming.method === 'POST' && nativeProfile(profile) ? ++nativePostIndex : null;
+    // A body that arrived before issuance cannot acquire authority while it is still uploading.
+    const issuedShellAtAdmission = policy.issuedShell;
     incoming.setTimeout(deadlineMs, () => incoming.destroy(fault('GUEST_REQUEST_TIMEOUT', 'guest request timed out')));
     outgoing.setTimeout(deadlineMs, () => outgoing.destroy());
     if (active >= concurrency) { evidence.rejected++;
@@ -826,10 +921,18 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       }
       requestBodyComplete = true;
       const body = Buffer.concat(chunks);
-      const decision = requestDecision(incoming, body, policy);
+      const decision = requestDecision(incoming, body,
+        { ...policy, issuedShell: issuedShellAtAdmission });
       if (!decision.ok) { evidence.rejected++;
         await markFailure(decision.code, 'admission', incoming, body, postIndex);
         send(outgoing, 403, decision.code); return; }
+      if (decision.shellHistory) {
+        if (shellResultReserved) { evidence.rejected++;
+          await markFailure('NATIVE_SHELL_RESULT_REPLAY', 'admission', incoming, body, postIndex);
+          send(outgoing, 403, 'NATIVE_SHELL_RESULT_REPLAY'); return; }
+        // The reservation precedes every forwarding await and survives uncertainty.
+        shellResultReserved = true;
+      }
       if (nativeProfile(profile) && decision.route === 'responses') {
         const digest = createHash('sha256').update(decision.body).digest('hex');
         if (nativeRequestDigests.has(digest)) {
@@ -884,7 +987,17 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
               if (outgoing.destroyed) { resolveValue(); return; }
               try {
                 const payload = Buffer.concat(chunks);
-                if (contentType === 'text/event-stream') validateNativeSse(payload);
+                if (contentType === 'text/event-stream') {
+                  validateNativeSse(payload);
+                  if (profile === 'native-shell' && shellCommand !== null) {
+                    const issued = issuedShellDescriptorFromSse(payload, shellCommand);
+                    if (issued) {
+                      if (policy.issuedShell) throw fault('NATIVE_SHELL_ISSUANCE_REPLAY',
+                        'synthetic provider issued another shell call');
+                      policy.issuedShell = issued;
+                    }
+                  }
+                }
                 else {
                   const catalog = JSON.parse(payload.toString('utf8'));
                   if (catalog?.data?.[0]?.id !== NATIVE_MODEL ||
@@ -1044,16 +1157,19 @@ async function fakeUpstream(bearer) {
 }
 
 export async function startNativeUpstream({ bearer, workspace, protectedRoot,
-  canaryToken, hostPort, shell = false }) {
+  canaryToken, hostPort, shell = false, taskCommit = false }) {
   if (typeof bearer !== 'string' || bearer.length < 24 || bearer === DUMMY ||
       typeof workspace !== 'string' || !workspace.startsWith('/tmp/') ||
-      typeof protectedRoot !== 'string' || typeof canaryToken !== 'string') {
+      typeof protectedRoot !== 'string' || typeof canaryToken !== 'string' ||
+      taskCommit && !shell) {
     throw fault('NATIVE_UPSTREAM_CONFIG_INVALID', 'native fake provider config invalid');
   }
   const seen = [];
   const provider = await startShellProvider(hostPort,
-    shell ? shellProbeCommand(workspace, protectedRoot, canaryToken) : 'NATIVE_READ_FILE_ONLY', {
-    ...(shell ? { outerOnly: true } : { readFileProbe: true }),
+    shell ? taskCommit ? shellCommitCommand(workspace, protectedRoot, canaryToken) :
+      shellProbeCommand(workspace, protectedRoot, canaryToken) : 'NATIVE_READ_FILE_ONLY', {
+    ...(shell ? { outerOnly: true, taskCommit,
+      ...(taskCommit ? { resultEvidenceDir: protectedRoot } : {}) } : { readFileProbe: true }),
     workspace, protectedRoot, canaryToken,
     makeServer: handler => createServer((request, response) => {
       const correctBearer = request.headers.authorization === `Bearer ${bearer}`;
@@ -1811,6 +1927,7 @@ export function nativeGuestControl(lines) {
     let extraLine = false;
     let releaseCount = 0;
     let checkpointMode = false;
+    let commitMode = false;
     let rejectCaller;
     const callerFailure = new Promise((_, reject) => { rejectCaller = reject; });
     callerFailure.catch(() => undefined);
@@ -1819,7 +1936,7 @@ export function nativeGuestControl(lines) {
         extraLine = true;
         rejectCaller(fault('HOST_RELEASE_INVALID', 'extra native control line followed shutdown'));
       } else if (line === 'shutdown') {
-        if (releaseCount === (checkpointMode ? 3 : 2)) normalEnd = true;
+        if (releaseCount === (commitMode ? 4 : checkpointMode ? 3 : 2)) normalEnd = true;
         else rejectCaller(fault('HOST_RELEASE_INVALID', 'early native shutdown line'));
       }
     });
@@ -1828,7 +1945,7 @@ export function nativeGuestControl(lines) {
     });
     const release = async () => {
       releaseCount++;
-      if (releaseCount > (checkpointMode ? 3 : 2)) {
+      if (releaseCount > (commitMode ? 4 : checkpointMode ? 3 : 2)) {
         throw fault('HOST_RELEASE_INVALID', 'extra native release requested');
       }
       const line = await iterator.next();
@@ -1846,7 +1963,21 @@ export function nativeGuestControl(lines) {
           throw fault('NATIVE_TURN_RECORD_INVALID', 'turn acknowledgement frame was invalid');
         }
       }
-      if (releaseCount === (checkpointMode ? 3 : 2)) {
+      if (commitMode && releaseCount === 3) {
+        if (Buffer.byteLength(line.value) > 4_096) {
+          throw fault('NATIVE_HELD_INPUT_INVALID', 'task decision frame exceeded bound');
+        }
+        let decision;
+        try { decision = JSON.parse(line.value); }
+        catch { throw fault('NATIVE_HELD_INPUT_INVALID', 'task decision was not JSON'); }
+        if (!decision || Array.isArray(decision) || typeof decision !== 'object' ||
+            Object.keys(decision).sort().join(',') !==
+            'approvalId,callId,choiceId,handoffId,kind,requirementId,sessionId,turnId' ||
+            decision.kind !== 'choice') {
+          throw fault('NATIVE_HELD_INPUT_INVALID', 'task decision frame was invalid');
+        }
+      }
+      if (releaseCount === (commitMode ? 4 : checkpointMode ? 3 : 2)) {
         if (line.value !== 'shutdown') throw fault('HOST_RELEASE_INVALID', 'native shutdown release was not exact');
         const trailing = await iterator.next();
         if (!trailing.done || extraLine) {
@@ -1862,6 +1993,11 @@ export function nativeGuestControl(lines) {
         throw fault('GUEST_INPUT_LIMIT', 'native guest config too large');
       const config = JSON.parse(first.value);
       checkpointMode = config.turnCheckpointId !== undefined;
+      commitMode = config.taskCommit === true;
+      if (commitMode && (config.taskOwned !== true || !checkpointMode ||
+          config.phase !== 'outer-held-shell')) {
+        throw fault('NATIVE_TASK_MODE_INVALID', 'private commit requires a task-owned checkpointed outer shell');
+      }
       return config;
     } };
 }

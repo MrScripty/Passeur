@@ -63,6 +63,9 @@ const REMINDER_PAYLOAD = Object.freeze({ advisory_text: null, confidence: 'low',
   skill_id: null, visible_for_steps: 1 });
 const VERIFY_PAYLOAD = Object.freeze({ decision: 'none', next_step: null,
   reason: 'Disposable scripted protocol probe; no verification reminder is being proposed.' });
+export function fixedVerificationPayloadSha256() {
+  return createHash('sha256').update(JSON.stringify(VERIFY_PAYLOAD)).digest('hex');
+}
 
 export function readFileCanaryFixture() {
   return { name: READ_CANARY_NAME, content: READ_CANARY_CONTENT };
@@ -242,6 +245,27 @@ export function shellProbeCommand(workspace, protectedRoot, token) {
     ...[['direct', direct], ['symlink', linked], ['proc', proc]].map(([label, path]) =>
       `if [ -e ${shellQuote(path)} ] || (printf forbidden > ${shellQuote(path)} 2>/dev/null); then printf '${label}=visible\\n'; else printf '${label}=denied\\n'; fi`),
     `if [ -r ${shellQuote(`${GUEST_HOME}/.config/muse/auth.json`)} ]; then printf 'dummy-auth=visible\\n'; else printf 'dummy-auth=absent\\n'; fi`,
+  ].join('; ');
+}
+
+// The private Git common directory is mounted at its canonical path by the caller.
+// This command alone creates the task result; the host only observes it.
+export function shellCommitCommand(workspace, protectedRoot, token) {
+  const direct = join(protectedRoot, token);
+  const linked = join(workspace, 'protected-link', token);
+  const proc = `/proc/1/root${direct}`;
+  return [
+    'set -eu', `cd ${shellQuote(workspace)}`,
+    `printf 'native committed change\\n' > qualified-change.txt`,
+    "test \"$(cat qualified-change.txt)\" = 'native committed change'",
+    ...[['direct', direct], ['symlink', linked], ['proc', proc]].map(([label, path]) =>
+      `if [ -e ${shellQuote(path)} ] || (printf forbidden > ${shellQuote(path)} 2>/dev/null); then printf '${label}=visible\\n'; exit 20; else printf '${label}=denied\\n'; fi`),
+    `if [ -r ${shellQuote(`${GUEST_HOME}/.config/muse/auth.json`)} ]; then printf 'dummy-auth=visible\\n'; else printf 'dummy-auth=absent\\n'; exit 21; fi`,
+    'rm -- protected-link',
+    'git add -- qualified-change.txt',
+    "git -c user.name='Passeur Fixture' -c user.email='passeur-fixture@example.invalid' commit -m 'Qualify native private commit' >/dev/null",
+    'test -z "$(git status --porcelain)"',
+    'printf "commit=%s\\n" "$(git rev-parse HEAD)"',
   ].join('; ');
 }
 
@@ -808,9 +832,42 @@ export function outerShellItemMarkers(output, workspace, protectedRoot, token) {
     dummyAuthVisible: exact ? true : null };
 }
 
+function taskCommitTranscript(output, workspace, protectedRoot, token) {
+  if (typeof output !== 'string' || Buffer.byteLength(output) > PROTECTED_OUTPUT_LIMIT ||
+      !output.endsWith('\n') || [workspace, protectedRoot, token].some(value =>
+        typeof value !== 'string' || !value)) return null;
+  const direct = join(protectedRoot, token);
+  const denialLines = [direct, join(workspace, 'protected-link', token),
+    `/proc/1/root${direct}`].map(path =>
+    `/bin/sh: 1: cannot create ${path}: Directory nonexistent`);
+  const lines = output.slice(0, -1).split('\n');
+  if (lines.length !== 5 && lines.length !== 8) return null;
+  const stdout = ['direct=denied', 'symlink=denied', 'proc=denied', 'dummy-auth=visible'];
+  let stdoutIndex = 0;
+  let denialIndex = 0;
+  let commit = null;
+  for (const line of lines) {
+    const commitMatch = stdoutIndex === 4 ? /^commit=([0-9a-f]{40}|[0-9a-f]{64})$/.exec(line) : null;
+    if (line === stdout[stdoutIndex] || commitMatch) {
+      if (commitMatch) commit = commitMatch[1];
+      stdoutIndex++;
+    } else if (line === denialLines[denialIndex]) {
+      denialIndex++;
+    } else return null;
+  }
+  return stdoutIndex === 5 && (denialIndex === 0 || denialIndex === 3) ? commit : null;
+}
+
+export function commitShellItemMarkers(output, workspace, protectedRoot, token) {
+  const commit = taskCommitTranscript(output, workspace, protectedRoot, token);
+  return { outputMarkers: commit !== null, workspaceReportedWritten: commit !== null,
+    dummyAuthVisible: commit !== null, commit };
+}
+
 // The installed outer-only host sends a decorated JSON result, while the native
 // completed item reports the inner shell transcript. Keep both identities separate.
-export function matchingOuterShellResult(body, command, workspace, protectedRoot, token) {
+export function matchingOuterShellResult(body, command, workspace, protectedRoot, token,
+  taskCommit = false) {
   if (body?.model !== SHELL_MODEL || Object.hasOwn(body, 'previous_response_id') ||
       !Array.isArray(body.input) || body.input.length !== 4 ||
       typeof command !== 'string' || typeof workspace !== 'string' ||
@@ -833,7 +890,9 @@ export function matchingOuterShellResult(body, command, workspace, protectedRoot
   try { args = JSON.parse(call.arguments); decorated = JSON.parse(result.output); }
   catch { return null; }
   const expectedArgs = { command, description: 'Disposable native shell qualification' };
-  const transcript = outerShellTranscript(workspace, protectedRoot, token);
+  const transcript = taskCommit ? decorated?.output : outerShellTranscript(workspace, protectedRoot, token);
+  const taskCommitId = taskCommit ? taskCommitTranscript(transcript, workspace,
+    protectedRoot, token) : null;
   if (!isDeepStrictEqual(args, expectedArgs) ||
       call.arguments !== JSON.stringify(expectedArgs) ||
       !isDeepStrictEqual(Object.keys(decorated ?? {}), ['chunk_id', 'command', 'exit_code',
@@ -841,12 +900,13 @@ export function matchingOuterShellResult(body, command, workspace, protectedRoot
       result.output !== JSON.stringify(decorated, null, 2) ||
       decorated.chunk_id !== 'exec-1-1' || decorated.command !== command ||
       decorated.exit_code !== 0 || decorated.terminal_status !== 'completed' ||
-      decorated.output !== transcript ||
+      (taskCommit ? taskCommitId === null : decorated.output !== transcript) ||
       decorated.original_output_bytes !== Buffer.byteLength(transcript) ||
       !Number.isInteger(decorated.original_output_tokens) ||
       decorated.original_output_tokens < 1 || decorated.original_output_tokens > 1024 ||
       decorated.truncated !== false) return null;
   return { workspaceWritten: true, dummyAuthVisible: true,
+    ...(taskCommit ? { commit: taskCommitId } : {}),
     innerOutputBytes: Buffer.byteLength(transcript),
     innerOutputSha256: createHash('sha256').update(transcript).digest('hex') };
 }
@@ -1127,9 +1187,10 @@ export function shellResultEnvelopeShape(body, issuanceAtAdmission = {}, command
 }
 
 export async function persistOuterShellResultEvidence(projection, requestIndex, directory, {
-  write = writeFile,
+  write = writeFile, maxRequestIndex = 3,
 } = {}) {
-  if (!Number.isInteger(requestIndex) || requestIndex < 1 || requestIndex > 3 ||
+  if (!Number.isInteger(requestIndex) || requestIndex < 1 ||
+      ![3, 4].includes(maxRequestIndex) || requestIndex > maxRequestIndex ||
       typeof directory !== 'string' || !directory.startsWith('/')) {
     throw fault('NATIVE_RESULT_EVIDENCE_INVALID', 'outer shell result evidence destination was invalid');
   }
@@ -1142,9 +1203,67 @@ export async function persistOuterShellResultEvidence(projection, requestIndex, 
   return { name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
 }
 
-export async function inspectOuterShellResultEvidence(directory, { openFile = open } = {}) {
+const REMINDER_REJECTION_LIMIT = 4096;
+const REMINDER_CAPTURE_ITEMS = 8;
+function knownNativeReference(value, identities, issued) {
+  if (value == null) return 'absent';
+  if (typeof value !== 'string' || value.length > 256) return 'invalid';
+  for (const [name, identity] of identities) {
+    if (value === identity) return issued[name] ? `issued_${name}` : `unissued_${name}`;
+  }
+  return 'foreign';
+}
+export function providerReminderRejectionShape(body, providerResponseIndex, issuance, predicate,
+  firstPrelude, ordinal, classification) {
+  const issued = { shell_response: issuance.main !== 'unseen',
+    shell_item: issuance.main !== 'unseen', shell_call: issuance.main !== 'unseen',
+    reminder_response: issuance.reminder === 'none-issued' || issuance.reminder === 'second-issued',
+    reminder_item: issuance.reminder === 'none-issued' || issuance.reminder === 'second-issued',
+    reminder_call: issuance.reminder === 'none-issued' || issuance.reminder === 'second-issued' };
+  const responseIds = [['shell_response', SHELL_RESPONSE], ['reminder_response', REMINDER_RESPONSE]];
+  const itemIds = [['shell_item', SHELL_ITEM], ['reminder_item', REMINDER_ITEM]];
+  const callIds = [['shell_call', SHELL_CALL], ['reminder_call', REMINDER_CALL]];
+  const items = Array.isArray(body?.input) ? body.input : [];
+  const type = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  return { schemaVersion: 1, providerResponseIndex, relayRequestIndex: null,
+    issuanceAtAdmission: { main: issuance.main, reminder: issuance.reminder,
+      verification: issuance.verification },
+    classificationState: { main: classification.main, reminder: classification.reminder },
+    schemaClass: 'recognized_reminder', predicate, ordinal, firstPrelude: firstPrelude === true,
+    previousResponse: knownNativeReference(body?.previous_response_id, responseIds, issued),
+    input: { class: type(body?.input), count: items.length,
+      omittedItems: Math.max(0, items.length - REMINDER_CAPTURE_ITEMS),
+      items: items.slice(0, REMINDER_CAPTURE_ITEMS).map(item => ({
+        type: ['message', 'function_call', 'function_call_output'].includes(item?.type) ? item.type :
+          type(item?.type) === 'string' ? 'other' : type(item?.type),
+        id: knownNativeReference(item?.id, itemIds, issued),
+        callId: knownNativeReference(item?.call_id, callIds, issued),
+      })) },
+    nativeChildAssociation: 'unknown' };
+}
+export async function persistProviderReminderRejectionEvidence(projection, directory, {
+  write = writeFile,
+} = {}) {
+  if (projection?.providerResponseIndex !== 3 ||
+      typeof directory !== 'string' || !directory.startsWith('/')) {
+    throw fault('NATIVE_REMINDER_EVIDENCE_INVALID', 'provider reminder evidence destination was invalid');
+  }
+  const name = 'provider-response-3-reminder-rejection.json';
+  const bytes = Buffer.from(`${JSON.stringify(projection)}\n`);
+  if (bytes.length > REMINDER_REJECTION_LIMIT) {
+    throw fault('NATIVE_REMINDER_EVIDENCE_BUDGET', 'provider reminder evidence exceeded its bound');
+  }
+  await write(join(directory, name), bytes, { mode: 0o600, flag: 'wx' });
+  return { name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+export async function inspectOuterShellResultEvidence(directory, { openFile = open,
+  maxRequestIndex = 3 } = {}) {
+  if (![3, 4].includes(maxRequestIndex)) {
+    throw fault('NATIVE_RESULT_EVIDENCE_INVALID', 'outer shell evidence index bound was invalid');
+  }
   const files = [];
-  for (let requestIndex = 1; requestIndex <= 3; requestIndex++) {
+  for (let requestIndex = 1; requestIndex <= maxRequestIndex; requestIndex++) {
     const name = `outer-shell-result-${requestIndex}.json`;
     const path = join(directory, name);
     let file;
@@ -1217,22 +1336,33 @@ export function shellTextEvents(text = 'Fixture shell result observed.',
 export async function startShellProvider(forbiddenPort, command, {
   makeServer = createServer, waitListen = listen, shut = close,
   readFileSchemaOnly = false, readFileProbe = false, protectedRead = false, dummyAuthRead = false,
-  outerOnly = false, resultEvidenceDir = null,
+  outerOnly = false, taskCommit = false, resultEvidenceDir = null,
   persistResultEvidence = persistOuterShellResultEvidence,
+  persistReminderRejectionEvidence = persistProviderReminderRejectionEvidence,
   workspace, protectedRoot, canaryToken, targetPath,
   classifyProtectedRaw,
 } = {}) {
   const boundaryRead = protectedRead || dummyAuthRead;
   const readFileMode = readFileSchemaOnly || readFileProbe || boundaryRead;
-  const maxAttempts = readFileProbe || boundaryRead ? 5 : 3;
-  const retainedRequestLimit = readFileProbe || boundaryRead ? 9 : 7;
+  if (taskCommit && !outerOnly) throw fault('NATIVE_TASK_MODE_INVALID',
+    'private commit provider requires the outer-only shell result contract');
+  const maxAttempts = readFileProbe || boundaryRead || taskCommit ? 5 : 3;
+  const retainedRequestLimit = readFileProbe || boundaryRead ? 9 : taskCommit ? 8 : 7;
   const requests = [];
   let readClassification = null;
+  let shellClassification = null;
   let pendingSecondAdmission = null;
+  let pendingVerificationAdmission = null;
   const settleReadClassification = accepted => {
     if (readClassification && !readClassification.settled) {
       readClassification.settled = true;
       readClassification.resolve(accepted);
+    }
+  };
+  const settleShellClassification = accepted => {
+    if (shellClassification && !shellClassification.settled) {
+      shellClassification.settled = true;
+      shellClassification.resolve(accepted);
     }
   };
   const state = { main: 'unseen', reminder: 'unseen', verification: 'unseen',
@@ -1251,15 +1381,19 @@ export async function startShellProvider(forbiddenPort, command, {
   let reportRejection;
   let rejectionReported = false;
   const rejection = new Promise(resolve => { reportRejection = resolve; });
-  const reject = (code, summary, response, status = 422) => {
+  const latchRejection = (code, summary) => {
     state.failed = true;
     state.primaryCode ??= code;
     settleReadClassification(false);
+    settleShellClassification(false);
     if (summary) summary.rejection = code;
     if (!rejectionReported) {
       rejectionReported = true;
       reportRejection({ kind: 'provider_rejected', code });
     }
+  };
+  const reject = (code, summary, response, status = 422) => {
+    latchRejection(code, summary);
     response.writeHead(status).end();
   };
   const server = makeServer(async (request, response) => {
@@ -1300,7 +1434,14 @@ export async function startShellProvider(forbiddenPort, command, {
     // Body completion can reorder concurrent requests. Attribution uses the state at admission.
     const issuanceAtAdmission = { main: state.main, reminder: state.reminder,
       verification: state.verification };
-    if (boundaryRead && issuanceAtAdmission.main === 'read-result-classifying' &&
+    if (taskCommit && summary.responseIndex === 5 &&
+        issuanceAtAdmission.main === 'result-accepted' &&
+        issuanceAtAdmission.reminder === 'second-issued' &&
+        issuanceAtAdmission.verification === 'unseen') {
+      pendingVerificationAdmission = summary.responseIndex;
+    }
+    if ((boundaryRead && issuanceAtAdmission.main === 'read-result-classifying' ||
+        taskCommit && issuanceAtAdmission.main === 'shell-result-classifying') &&
         issuanceAtAdmission.reminder === 'none-issued') {
       if (pendingSecondAdmission !== null) {
         reject('NATIVE_REMINDER_SEQUENCE_INVALID', summary, response); return;
@@ -1332,7 +1473,7 @@ export async function startShellProvider(forbiddenPort, command, {
       // this already-admitted stream finish under its original permission.
       if (state.failed) { reject('NATIVE_REQUEST_REJECTED', summary, response); return; }
       try {
-        if (readFileMode) {
+        if (readFileMode || taskCommit) {
           const verification = verificationReminderSchemaDiscovery(parsed);
           if (verification) {
             const association = verificationReminderAssociation(parsed, issuanceAtAdmission,
@@ -1347,11 +1488,28 @@ export async function startShellProvider(forbiddenPort, command, {
               '4a3837b69a6fc85cd9a85f75160accf94f068c870f8ff8b6f44e60d138080f45';
             summary.verificationSchema = verification;
             summary.association = association;
-            if (readFileProbe || boundaryRead) {
+            if (readFileProbe || boundaryRead || taskCommit) {
+              if (taskCommit && (pendingVerificationAdmission !== summary.responseIndex ||
+                  issuanceAtAdmission.main !== 'result-accepted' ||
+                  issuanceAtAdmission.reminder !== 'second-issued' ||
+                  issuanceAtAdmission.verification !== 'unseen' ||
+                  state.main !== 'result-accepted' || state.reminder !== 'second-issued' ||
+                  summary.responseIndex !== 5 || parsed.previous_response_id !== undefined ||
+                  !Array.isArray(parsed.input) || parsed.input.length !== 1 ||
+                  !parsed.input[0] || typeof parsed.input[0] !== 'object' ||
+                  Array.isArray(parsed.input[0]) ||
+                  Object.keys(parsed.input[0]).sort().join(',') !== 'content,role,type' ||
+                  parsed.input[0].type !== 'message' || parsed.input[0].role !== 'user' ||
+                  typeof parsed.input[0].content !== 'string' ||
+                  Buffer.byteLength(parsed.input[0].content) > PROVIDER_INPUT_LIMIT)) {
+                throw fault('NATIVE_VERIFY_REMINDER_SEQUENCE_INVALID',
+                  'verification request preceded the accepted private shell result');
+              }
               if (state.verification !== 'unseen') {
                 throw fault('NATIVE_VERIFY_REMINDER_REPLAY', 'verification reminder repeated');
               }
-              if (association.omittedItems || association.httpRelation === 'foreign') {
+              if (association.omittedItems || association.httpRelation === 'foreign' ||
+                  taskCommit && association.httpRelation !== 'unknown') {
                 throw fault('NATIVE_VERIFY_REMINDER_ASSOCIATION_INVALID', 'verification request has an unreviewed reference');
               }
               const payload = fixedVerificationPayload(parsed);
@@ -1368,6 +1526,7 @@ export async function startShellProvider(forbiddenPort, command, {
               summary.itemId = VERIFY_ITEM;
               summary.callId = VERIFY_CALL;
               summary.payloadSha256 = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+              if (taskCommit) summary.nativeChildAssociation = 'unknown';
               response.writeHead(200, { 'content-type': 'text/event-stream' });
               response.end(output);
               return;
@@ -1381,10 +1540,21 @@ export async function startShellProvider(forbiddenPort, command, {
         }
         const reminder = recognizedReminderSchema(parsed);
         if (reminder) {
-          const ordinal = readFileProbe || boundaryRead ? state.skillDigests.length + 1 : 1;
+          const ordinal = readFileProbe || boundaryRead || taskCommit ?
+            state.skillDigests.length + 1 : 1;
           const secondDuringClassification = boundaryRead && ordinal === 2 &&
             issuanceAtAdmission.main === 'read-result-classifying' &&
             pendingSecondAdmission === summary.responseIndex;
+          const secondTaskDuringClassification = taskCommit && ordinal === 2 &&
+            (issuanceAtAdmission.main === 'shell-result-classifying' ||
+              issuanceAtAdmission.main === 'call-issued' &&
+                state.main === 'shell-result-classifying') &&
+            (pendingSecondAdmission === null ||
+              pendingSecondAdmission === summary.responseIndex);
+          const secondTaskAfterResult = taskCommit && ordinal === 2 &&
+            issuanceAtAdmission.main === 'call-issued' && state.main === 'result-accepted' &&
+            (pendingSecondAdmission === null ||
+              pendingSecondAdmission === summary.responseIndex);
           const association = readFileProbe || boundaryRead ? verificationReminderAssociation(parsed,
             issuanceAtAdmission, summary.responseIndex) : null;
           const firstPrelude = parsed.previous_response_id == null &&
@@ -1393,24 +1563,60 @@ export async function startShellProvider(forbiddenPort, command, {
               readFileProbe ? 'NATIVE_READ_FILE_PROBE' :
               readFileSchemaOnly ? 'NATIVE_READ_FILE_SCHEMA_PROBE' : 'NATIVE_SHELL_PROBE') &&
             !(Array.isArray(parsed.input) && parsed.input.some(item => item?.type === 'function_call_output'));
-          if (ordinal > (readFileProbe || boundaryRead ? 2 : 1) ||
-              (ordinal === 1 && state.reminder !== 'unseen') ||
-              (ordinal === 1 && !firstPrelude &&
-                !((readFileProbe || boundaryRead) && issuanceAtAdmission.main === 'read-result-accepted')) ||
-              (ordinal === 2 && pendingSecondAdmission !== null &&
-                pendingSecondAdmission !== summary.responseIndex) ||
-              (ordinal === 2 && (state.reminder !== 'none-issued' ||
-                !(secondDuringClassification || issuanceAtAdmission.main === 'read-result-accepted' &&
-                  state.main === 'read-result-accepted'))) ||
-              (association && (association.omittedItems !== 0 ||
-                association.httpRelation === 'foreign'))) {
+          const secondTaskPrelude = taskCommit && ordinal === 2 &&
+            parsed.previous_response_id === undefined && Array.isArray(parsed.input) &&
+            parsed.input.length === 2 &&
+            parsed.input.every((item, index) => item && typeof item === 'object' &&
+              !Array.isArray(item) && Object.keys(item).sort().join(',') === 'content,role,type' &&
+              item.type === 'message' && item.role === (index === 0 ? 'developer' : 'user') &&
+              typeof item.content === 'string' &&
+              Buffer.byteLength(item.content) <= PROVIDER_INPUT_LIMIT) && firstPrelude;
+          const sequencePredicate = [
+            ['ordinal_exceeded', ordinal > (readFileProbe || boundaryRead || taskCommit ? 2 : 1)],
+            ['prior_reminder_issued', ordinal === 1 && state.reminder !== 'unseen'],
+            ['prelude_invalid', ordinal === 1 && !firstPrelude &&
+              !((readFileProbe || boundaryRead) && issuanceAtAdmission.main === 'read-result-accepted')],
+            ['second_admission_conflict', ordinal === 2 && pendingSecondAdmission !== null &&
+              pendingSecondAdmission !== summary.responseIndex],
+            ['second_state_invalid', ordinal === 2 && (state.reminder !== 'none-issued' ||
+              !(taskCommit ? issuanceAtAdmission.reminder === 'none-issued' &&
+                (['call-issued', 'result-accepted'].includes(issuanceAtAdmission.main) &&
+                  state.main === issuanceAtAdmission.main || secondTaskDuringClassification ||
+                  secondTaskAfterResult) &&
+                secondTaskPrelude :
+                secondDuringClassification || issuanceAtAdmission.main === 'read-result-accepted' &&
+                  state.main === 'read-result-accepted'))],
+            ['association_invalid', association && (association.omittedItems !== 0 ||
+              association.httpRelation === 'foreign')],
+          ].find(([, invalid]) => invalid)?.[0];
+          if (sequencePredicate) {
+            if (taskCommit && summary.responseIndex === 3) {
+              // A diagnostic write may block. Reserve the authoritative refusal first.
+              latchRejection('NATIVE_REMINDER_SEQUENCE_INVALID', summary);
+              const projection = providerReminderRejectionShape(parsed, summary.responseIndex,
+                issuanceAtAdmission, sequencePredicate, firstPrelude, ordinal, state);
+              summary.reminderRejection = projection;
+              try { summary.reminderRejectionEvidence = await persistReminderRejectionEvidence(
+                projection, resultEvidenceDir); }
+              catch (error) { summary.reminderRejectionEvidenceError =
+                error.code ?? 'NATIVE_REMINDER_EVIDENCE_WRITE_FAILED'; }
+            }
             throw fault('NATIVE_REMINDER_SEQUENCE_INVALID', 'skill reminder request is replayed or unreviewed');
           }
-          const requestDigest = readFileProbe || boundaryRead ? canonicalRequestDigest(parsed) : null;
-          if ((readFileProbe || boundaryRead) && state.skillDigests.includes(requestDigest)) {
+          const requestDigest = readFileProbe || boundaryRead || taskCommit ? canonicalRequestDigest(parsed) : null;
+          if ((readFileProbe || boundaryRead || taskCommit) && state.skillDigests.includes(requestDigest)) {
             throw fault('NATIVE_REMINDER_REPLAY', 'canonical skill reminder request repeated');
           }
           const payload = fixedNoReminderPayload(parsed);
+          if (secondTaskDuringClassification) {
+            pendingSecondAdmission = summary.responseIndex;
+            if (!shellClassification ||
+                !await timeout('shell result before second reminder', shellClassification.promise, 6_000) ||
+                state.failed || state.main !== 'result-accepted') {
+              throw fault('NATIVE_REMINDER_SEQUENCE_INVALID',
+                'shell result was not accepted before second reminder');
+            }
+          }
           if (secondDuringClassification) {
             if (!readClassification ||
                 !await timeout('protected result before second reminder', readClassification.promise, 6_000) ||
@@ -1428,14 +1634,17 @@ export async function startShellProvider(forbiddenPort, command, {
             throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'native fixture output exceeds budget');
           }
           state.reminder = ordinal === 2 ? 'second-issued' : 'none-issued';
-          if (readFileProbe || boundaryRead) state.skillDigests.push(requestDigest);
+          if (readFileProbe || boundaryRead || taskCommit) state.skillDigests.push(requestDigest);
           state.outputBytes += outputBytes;
           summary.kind = 'native_reminder_call';
           summary.ordinal = ordinal;
           summary.responseId = identities.responseId;
           summary.itemId = identities.itemId;
           summary.callId = identities.callId;
-          if (ordinal === 2) summary.association = association;
+          if (ordinal === 2) {
+            if (association) summary.association = association;
+            if (taskCommit) summary.nativeChildAssociation = 'unknown';
+          }
           summary.payloadSha256 = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
           response.writeHead(200, { 'content-type': 'text/event-stream' });
           response.end(output);
@@ -1577,12 +1786,19 @@ export async function startShellProvider(forbiddenPort, command, {
           throw fault('NATIVE_READ_FILE_RESULT_REPLAY', 'another native result arrived during classification');
         }
         if (state.main === 'call-issued') {
-          if (outerOnly) state.main = 'shell-result-classifying';
+          if (outerOnly) {
+            state.main = 'shell-result-classifying';
+            if (taskCommit) shellClassification = { settled: false };
+            if (taskCommit) shellClassification.promise = new Promise(resolve => {
+              shellClassification.resolve = resolve;
+            });
+          }
           const projection = outerOnly ? shellResultEnvelopeShape(parsed,
             issuanceAtAdmission, command) : null;
           if (outerOnly) {
             try { summary.resultEvidence = await persistResultEvidence(projection,
-              summary.responseIndex, resultEvidenceDir); }
+              summary.responseIndex, resultEvidenceDir,
+              { maxRequestIndex: taskCommit ? 4 : 3 }); }
             catch (error) { summary.resultEvidenceError = error.code ?? 'NATIVE_RESULT_EVIDENCE_WRITE_FAILED'; }
           }
           if (state.failed) throw fault('NATIVE_REQUEST_REJECTED',
@@ -1591,7 +1807,7 @@ export async function startShellProvider(forbiddenPort, command, {
             throw fault('NATIVE_TOOL_RESULT_BEFORE_CALL', 'shell result arrived before its call was issued');
           }
           const outerMarkers = outerOnly ? matchingOuterShellResult(parsed, command,
-            workspace, protectedRoot, canaryToken) : null;
+            workspace, protectedRoot, canaryToken, taskCommit) : null;
           if (!(outerOnly ? outerMarkers : matchingShellResult(parsed))) {
             if (!outerOnly) summary.resultEnvelope = shellResultEnvelopeShape(parsed,
               issuanceAtAdmission, command);
@@ -1608,6 +1824,7 @@ export async function startShellProvider(forbiddenPort, command, {
             throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'native result response exceeds budget');
           }
           state.main = 'result-accepted';
+          if (taskCommit) settleShellClassification(true);
           state.outputBytes += outputBytes;
           summary.kind = 'matching_tool_result';
           summary.responseId = SHELL_TEXT_RESPONSE;
@@ -1622,11 +1839,13 @@ export async function startShellProvider(forbiddenPort, command, {
         }
         throw fault('NATIVE_REQUEST_UNCLASSIFIED', 'native request is neither reviewed stream');
       } catch (error) {
+        if (taskCommit && state.main === 'shell-result-classifying') settleShellClassification(false);
         if (!summary.verificationSchema) summary.schemaShape = rejectedToolSchemaShape(parsed);
         reject(error.code ?? 'NATIVE_REQUEST_UNCLASSIFIED', summary, response);
       }
     } finally {
       if (pendingSecondAdmission === summary.responseIndex) pendingSecondAdmission = null;
+      if (pendingVerificationAdmission === summary.responseIndex) pendingVerificationAdmission = null;
       state.active--;
     }
   });
@@ -1923,7 +2142,7 @@ export function approvalSummary(value, command) {
 }
 
 export function heldApprovalPresentation(approval, command, workspace, protectedRoot, token,
-  outerOnly = false, taskOwned = false) {
+  outerOnly = false, taskOwned = false, taskCommit = false) {
   const summary = approvalSummary(approval, command);
   return { kind: 'native_shell_live_approval', handoffId: randomBytes(16).toString('hex'),
     approval: summary, command,
@@ -1931,12 +2150,13 @@ export function heldApprovalPresentation(approval, command, workspace, protected
     ...(outerOnly ? { sandboxPosture: OUTER_ONLY_POSTURE,
       isolation: 'Outer Bubblewrap supplies shell filesystem and network isolation; native shell sandbox is disabled.' } : {}),
     ...(!taskOwned ? { expiresAt: new Date(Date.now() + HELD_INPUT_MS).toISOString() } : {}),
-    effects: { workspaceWrite: join(workspace, 'shell-canary'),
+    effects: { workspaceWrite: join(workspace, taskCommit ? 'qualified-change.txt' : 'shell-canary'),
       protectedDirect: join(protectedRoot, token),
       protectedSymlink: join(workspace, 'protected-link', token),
       protectedProc: `/proc/1/root${join(protectedRoot, token)}`,
       dummyAuth: `${GUEST_HOME}/.config/muse/auth.json`,
-      purpose: 'Disposable shell and protected-path probe; approval permits exactly the displayed command.' } };
+      purpose: taskCommit ? 'Disposable private Git commit and protected-path probe; approval permits exactly the displayed command.' :
+        'Disposable shell and protected-path probe; approval permits exactly the displayed command.' } };
 }
 
 export function validateHeldInitialApproval(metadata, ack, event, pending, command) {
@@ -1955,8 +2175,8 @@ export function validateHeldDecision(presentation, input, checkExpiry = true) {
   const approval = presentation?.approval;
   if (input?.kind !== 'choice' || Object.keys(input).sort().join(',') !==
       'approvalId,callId,choiceId,handoffId,kind,requirementId,sessionId,turnId' ||
-      !Number.isFinite(Date.parse(presentation?.expiresAt)) ||
-      checkExpiry && Date.now() >= Date.parse(presentation.expiresAt) ||
+      checkExpiry && (!Number.isFinite(Date.parse(presentation?.expiresAt)) ||
+        Date.now() >= Date.parse(presentation.expiresAt)) ||
       input.handoffId !== presentation.handoffId || input.sessionId !== approval?.sessionId ||
       input.turnId !== approval?.turnId || input.callId !== approval?.toolCallId ||
       input.approvalId !== approval?.approvalId ||
@@ -1970,16 +2190,17 @@ export function validateHeldDecision(presentation, input, checkExpiry = true) {
 }
 
 export async function submitHeldDecision(connection, presentation, input, command, decisionState,
-  gate = operation => operation()) {
+  gate = operation => operation(), taskOwned = false) {
   if (decisionState.submitted) throw fault('NATIVE_HELD_DUPLICATE_DECISION', 'approval decision already submitted');
-  const choice = validateHeldDecision(presentation, input);
-  const pending = await timeout('current approval/listPending', gate(() => connection.request('approval/listPending',
+  const choice = validateHeldDecision(presentation, input, !taskOwned);
+  const bounded = (name, operation, ms) => taskOwned ? operation : timeout(name, operation, ms);
+  const pending = await bounded('current approval/listPending', gate(() => connection.request('approval/listPending',
     { sessionId: presentation.approval.sessionId })), 5_000);
   if (pending?.approvals?.length !== 1 || pending.userInputs?.length !== 0 ||
       JSON.stringify(approvalSummary(pending.approvals[0], command)) !== JSON.stringify(presentation.approval)) {
     throw fault('NATIVE_HELD_APPROVAL_STALE', 'current loaded approval differs from presented requirement');
   }
-  const current = await timeout('current session/read', gate(() => connection.command('session/read',
+  const current = await bounded('current session/read', gate(() => connection.command('session/read',
     { sessionId: presentation.approval.sessionId, excludeItems: true }, { maxAttempts: 1 })), 5_000);
   if (current?.session?.sessionId !== presentation.approval.sessionId ||
       current.session.activeTurnId !== presentation.approval.turnId) {
@@ -1989,7 +2210,7 @@ export async function submitHeldDecision(connection, presentation, input, comman
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(commandId)) {
     throw fault('NATIVE_HELD_COMMAND_ID_INVALID', 'SDK did not mint a UUIDv7 command ID');
   }
-  const ack = await timeout('approval/decide', gate(() => {
+  const ack = await bounded('approval/decide', gate(() => {
     decisionState.submitted = true;
     return connection.command('approval/decide', {
       approvalId: presentation.approval.approvalId, choiceId: choice.choiceId,
@@ -2077,6 +2298,167 @@ export async function writeTurnAcknowledgement(stream, payload, gate, remainingM
   } finally { cancel?.(); }
 }
 
+export function writeNativeDecision(stream, payload, childClosed = () => false) {
+  return new Promise((resolveWrite, rejectWrite) => {
+    let settled = false;
+    const uncertain = () => fault('NATIVE_HELD_DECISION_UNCERTAIN',
+      'native decision write was not acknowledged');
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      stream.off('error', onError);
+      stream.off('close', onClose);
+      if (error || childClosed() || stream.destroyed || stream.writableEnded)
+        rejectWrite(uncertain());
+      else resolveWrite();
+    };
+    const onError = error => finish(error);
+    const onClose = () => finish(uncertain());
+    if (childClosed() || stream.destroyed || stream.writableEnded) { finish(uncertain()); return; }
+    stream.once('error', onError);
+    stream.once('close', onClose);
+    try { stream.write(payload, error => error ? finish(error) : queueMicrotask(() => finish())); }
+    catch (error) { finish(error); }
+  });
+}
+
+export function createTaskCommitCoverage() {
+  let sessionId = null;
+  let turnId = null;
+  let terminal = false;
+  const operations = new Map();
+  const children = new Map();
+  const childKeys = new Map();
+  const itemKinds = new Map();
+  const completed = [];
+  const known = new Set([SHELL_CALL, REMINDER_CALL, REMINDER_CALL2, VERIFY_CALL]);
+  const allowedText = new Set(['userMessage', 'agentMessage', 'reasoning']);
+  const invalid = () => fault('NATIVE_TASK_OPERATION_UNCERTAIN',
+    'native task has an unknown, foreign or unfinished operation');
+  return {
+    bindSession(value) { if (typeof value !== 'string' || !value) throw invalid(); sessionId = value; },
+    bindTurn(value) {
+      if (typeof value !== 'string' || !value ||
+          [...operations.values(), ...children.values()].some(operation =>
+            operation.turnId !== value)) throw invalid();
+      turnId = value;
+    },
+    accept(method, params) {
+      if (method === 'view/gap') throw invalid();
+      if (!['item/started', 'item/updated', 'item/completed'].includes(method)) return;
+      const item = params?.item;
+      if (typeof params?.sessionId !== 'string' || sessionId !== null && params.sessionId !== sessionId ||
+          !item || typeof item.itemId !== 'string' || !item.itemId || item.itemId.length > 256 ||
+          typeof item.kind !== 'string') throw invalid();
+      const priorKind = itemKinds.get(item.itemId);
+      if (priorKind && priorKind !== item.kind) throw invalid();
+      itemKinds.set(item.itemId, item.kind);
+      if (allowedText.has(item.kind)) return;
+      if (item.kind === 'reminderChild') {
+        const identity = value => value === undefined || value === null ||
+          typeof value === 'string' && value.length > 0 && value.length <= 256 && !value.includes('\0');
+        const agent = item.reminderAgentId;
+        const generation = item.generationId;
+        const key = `${agent}:${generation}`;
+        if (item.callId != null || typeof item.turnId !== 'string' ||
+            turnId !== null && item.turnId !== turnId || terminal ||
+            !identity(item.childSessionId) || !identity(item.reminderAgentId) ||
+            !identity(item.taskId) ||
+            !(agent === 'skill-reminder' && [1, 2].includes(generation) ||
+              agent === 'verify-reminder' && generation === 1)) throw invalid();
+        const prior = children.get(item.itemId);
+        if (prior && (prior.turnId !== item.turnId || prior.status !== 'inProgress' ||
+            ['childSessionId', 'reminderAgentId', 'taskId', 'generationId'].some(key =>
+              prior[key] != null && prior[key] !== item[key]))) throw invalid();
+        const first = children.get(childKeys.get('skill-reminder:1'));
+        const second = children.get(childKeys.get('skill-reminder:2'));
+        if (!prior && (children.size >= 3 || childKeys.has(key) ||
+              operations.has(item.itemId) ||
+              children.size > 0 && [...children.values()].some(child =>
+                child.childSessionId != null && child.childSessionId === item.childSessionId ||
+                child.taskId != null && child.taskId === item.taskId) ||
+              agent === 'skill-reminder' && generation === 1 && children.size > 0 ||
+              agent === 'skill-reminder' && generation === 2 && first?.status !== 'completed' ||
+              agent === 'verify-reminder' &&
+                (!second || ![...operations.values()].some(operation =>
+                  operation.callId === SHELL_CALL && operation.status === 'completed')))) throw invalid();
+        if (method === 'item/started' && prior ||
+            method === 'item/updated' && !prior ||
+            method !== 'item/completed' && item.status !== 'inProgress' ||
+            method === 'item/completed' && item.status !== 'completed') throw invalid();
+        const next = { itemId: item.itemId, turnId: item.turnId,
+          status: method === 'item/completed' ? 'completed' : 'inProgress' };
+        for (const key of ['childSessionId', 'reminderAgentId', 'taskId', 'generationId'])
+          if (item[key] != null || prior?.[key] != null) next[key] = item[key] ?? prior[key];
+        if (method === 'item/completed' &&
+            (!next.childSessionId || !next.taskId ||
+             [...children.values()].some(child => child.itemId !== item.itemId &&
+               (child.childSessionId === next.childSessionId || child.taskId === next.taskId)))) throw invalid();
+        children.set(item.itemId, next);
+        childKeys.set(key, item.itemId);
+        return;
+      }
+      if (item.kind !== 'toolCall' || !known.has(item.callId) || children.has(item.itemId) ||
+          typeof item.turnId !== 'string' || turnId !== null && item.turnId !== turnId ||
+          item.background === true || terminal) throw invalid();
+      const prior = operations.get(item.itemId);
+      if (method === 'item/started') {
+        if (prior || item.status !== 'inProgress') throw invalid();
+        operations.set(item.itemId, { callId: item.callId, turnId: item.turnId,
+          status: 'inProgress' });
+        return;
+      }
+      if (method === 'item/updated') {
+        if (!prior || prior.status !== 'inProgress' || prior.callId !== item.callId ||
+            prior.turnId !== item.turnId || item.status !== 'inProgress') throw invalid();
+        return;
+      }
+      if (prior && (prior.status !== 'inProgress' || prior.callId !== item.callId ||
+          prior.turnId !== item.turnId) || item.status !== 'completed' ||
+          completed.some(value => value.itemId === item.itemId || value.callId === item.callId)) throw invalid();
+      operations.set(item.itemId, { callId: item.callId, turnId: item.turnId,
+        status: 'completed' });
+      completed.push({ itemId: item.itemId, callId: item.callId,
+        turnId: item.turnId, status: item.status });
+    },
+    finish(params) {
+      if (terminal || params?.terminal !== 'completed' || params.sessionId !== sessionId ||
+          params.turnId !== turnId ||
+          [...operations.values()].some(value => value.status !== 'completed') ||
+          [...children.values()].some(value => value.status !== 'completed') ||
+          completed.filter(value => value.callId === SHELL_CALL).length !== 1) throw invalid();
+      terminal = true;
+    },
+    snapshot() {
+      if (!terminal) throw invalid();
+      return { completed: [...completed], children: [...children.values()] };
+    },
+    childDiagnostic(item) {
+      const prior = children.values().next().value;
+      return { attemptedGeneration: Number.isSafeInteger(item?.generationId) ? item.generationId : null,
+        acceptedChildren: children.size, priorGeneration: prior?.generationId ?? null,
+        priorStatus: prior?.status ?? null,
+        sameFirstItem: prior ? prior.itemId === item?.itemId : null };
+    },
+  };
+}
+
+export function scanHeldEvents(events, start, expected) {
+  const kinds = expected === 'resolution' ? ['approval/resolved', 'approval/updated'] :
+    expected === 'item' ? ['tool_item'] : expected === 'terminal' ? ['turn_completed'] : null;
+  if (!kinds || !Array.isArray(events) || !Number.isSafeInteger(start) || start < 0)
+    throw fault('NATIVE_HELD_EVENT_INVALID', 'held event scan had no valid expectation');
+  for (let cursor = start; cursor < events.length; cursor++) {
+    const event = events[cursor];
+    if (kinds.includes(event?.kind)) return { event, cursor: cursor + 1 };
+    if (event?.kind === 'turn_completed') {
+      throw fault(expected === 'resolution' ? 'NATIVE_HELD_RESOLUTION_MISSING' :
+        'NATIVE_HELD_TOOL_MISSING', 'native turn completed before required held evidence');
+    }
+  }
+  return { event: null, cursor: events.length };
+}
+
 export async function spawnNativeHost(gate, create, own) {
   return gate(() => {
     const host = create();
@@ -2090,9 +2472,15 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
 } = {}) {
   let nativeReject;
   let nativeActive = true;
+  let intentionalClose = false;
   const nativeFailure = new Promise((_, reject) => { nativeReject = reject; });
   nativeFailure.catch(() => undefined);
-  const failNative = (code, message) => { if (nativeActive) nativeReject(fault(code, message)); };
+  const failNative = (code, message, observation) => {
+    if (!nativeActive) return;
+    const error = fault(code, message);
+    if (observation) error.observation = observation;
+    nativeReject(error);
+  };
   const caller = nativeCallerGate(config.taskOwned === true ?
     callerFailure === undefined ? nativeFailure : Promise.race([callerFailure, nativeFailure]) : callerFailure);
   const withCaller = caller.run;
@@ -2104,6 +2492,9 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
   const outerOnly = config.phase === 'outer-held-shell';
   const held = ['held-shell', 'outer-held-shell'].includes(config.phase);
   const taskOwned = config.taskOwned === true;
+  const taskCommit = config.taskCommit === true;
+  if (taskCommit && (!taskOwned || !outerOnly)) throw fault('NATIVE_TASK_MODE_INVALID',
+    'private commit requires a task-owned outer shell');
   if (taskOwned && (!held || !controlId(config.turnCheckpointId))) {
     throw fault('NATIVE_TASK_MODE_INVALID', 'task lifetime requires a held shell and accepted-turn checkpoint');
   }
@@ -2124,6 +2515,8 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
   const commands = [];
   const observations = { approvals: [], items: [], reminders: [], protocolErrors: [],
     omitted: { approvals: 0, items: 0, reminders: 0, protocolErrors: 0 } };
+  const taskCoverage = taskCommit ? createTaskCommitCoverage() : null;
+  const taskDecisionState = { submitted: false };
   const observe = (kind, value) => {
     if (observations[kind].length < 8) observations[kind].push(value);
     else observations.omitted[kind]++;
@@ -2140,7 +2533,7 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
     if (!loopbackReady(loopback)) throw fault('GUEST_LOOPBACK_UNAVAILABLE', 'guest loopback unavailable');
     const command = protectedRead ? 'NATIVE_PROTECTED_READ_ONLY' :
       dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_ONLY' :
-      shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
+      (taskCommit ? shellCommitCommand : shellProbeCommand)(workspace, config.protectedRoot, config.canaryToken);
     const sentinel = await tcpProbe('127.0.0.1', config.hostPort);
     const external = await tcpProbe('203.0.113.1', 443);
     if (sentinel.kind === 'connected' || !classifyNoRoute(external)) {
@@ -2171,9 +2564,10 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
       args: outerOnly ? [...OUTER_ONLY_SERVE_ARGS] : ['serve'],
       cwd: workspace, env: guestEnvironment(), shutdownTimeoutMs: 2_000, onStderr: () => undefined,
     }), value => { host = value; });
-    if (taskOwned) host.exited.then(() => failNative('NATIVE_HOST_EXIT',
-      'native host exited while accepted task was active'), () => failNative('NATIVE_HOST_EXIT',
-      'native host process observation failed')).catch(() => undefined);
+    if (taskOwned) host.exited.then(() => { if (!intentionalClose) failNative('NATIVE_HOST_EXIT',
+      'native host exited while accepted task was active'); }, () => {
+      if (!intentionalClose) failNative('NATIVE_HOST_EXIT',
+        'native host process observation failed'); }).catch(() => undefined);
     let resolveObserved;
     const observed = new Promise(resolve => { resolveObserved = resolve; });
     const heldEvents = [];
@@ -2208,7 +2602,23 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
     });
     host.onNotification(notification => {
       const params = notification.params;
-      if (taskOwned && ['approval/resolved', 'approval/updated', 'approval/withdrawn'].includes(notification.method)) {
+      if (taskCoverage && (notification.method === 'view/gap' ||
+          ['item/started', 'item/updated', 'item/completed'].includes(notification.method))) {
+        try { taskCoverage.accept(notification.method, params); }
+        catch (error) {
+          const bounded = value => typeof value === 'string' ? value.slice(0, 256) : null;
+          failNative(error.code, error.message, { method: bounded(notification.method),
+            kind: bounded(params?.item?.kind), sessionId: bounded(params?.sessionId),
+            turnId: bounded(params?.item?.turnId ?? params?.turnId),
+            itemId: bounded(params?.item?.itemId), callId: bounded(params?.item?.callId),
+            status: bounded(params?.item?.status),
+            ...(params?.item?.kind === 'reminderChild' ?
+              { childLifecycle: taskCoverage.childDiagnostic(params.item) } : {}) });
+          return;
+        }
+      }
+      if (taskOwned && !taskDecisionState.submitted &&
+          ['approval/resolved', 'approval/updated', 'approval/withdrawn'].includes(notification.method)) {
         failNative('NATIVE_APPROVAL_WITHDRAWN', 'native approval changed without a task-owned decision');
       }
       if (notification.method === 'item/completed' && params?.item?.kind === 'toolCall') {
@@ -2239,8 +2649,10 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
               { ...outputShape, sha256: createHash('sha256').update(item.visibleOutput).digest('hex') } :
               outputShape });
         } else {
-          const markers = outerOnly ? outerShellItemMarkers(item.visibleOutput, workspace,
-            config.protectedRoot, config.canaryToken) : shellOutputMarkers(item.visibleOutput);
+          const markers = taskCommit ? commitShellItemMarkers(item.visibleOutput, workspace,
+            config.protectedRoot, config.canaryToken) :
+            outerOnly ? outerShellItemMarkers(item.visibleOutput, workspace,
+              config.protectedRoot, config.canaryToken) : shellOutputMarkers(item.visibleOutput);
           observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
           tool: item.tool, status: item.status, outputShape, commandMatch: (() => {
             try { return JSON.parse(item.args)?.command === command; } catch { return false; }
@@ -2248,6 +2660,7 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
           workspaceReportedWritten: outerOnly ? markers.workspaceReportedWritten :
             markers?.workspaceWritten ?? null,
           dummyAuthVisible: outerOnly ? markers.dummyAuthVisible : markers?.dummyAuthVisible ?? null,
+          ...(taskCommit ? { commit: markers.commit } : {}),
           abortDenial: item.visibleOutput === 'tool denied: approval aborted' });
         }
         if (held && item.callId === SHELL_CALL) holdEvent({ kind: 'tool_item',
@@ -2260,7 +2673,16 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
           resolvedBy: params?.resolvedBy, requirementId: params?.currentRequirementId });
       }
       if (notification.method === 'turn/completed') {
-        if (taskOwned) failNative('NATIVE_TASK_TURN_ENDED',
+        if (taskCoverage) {
+          try { taskCoverage.finish(params); }
+          catch (error) { failNative(error.code, error.message, {
+            method: 'turn/completed', kind: null,
+            sessionId: typeof params?.sessionId === 'string' ? params.sessionId.slice(0, 256) : null,
+            turnId: typeof params?.turnId === 'string' ? params.turnId.slice(0, 256) : null,
+            itemId: null, callId: null, status: typeof params?.terminal === 'string' ?
+              params.terminal.slice(0, 256) : null }); return; }
+        }
+        if (taskOwned && !taskDecisionState.submitted) failNative('NATIVE_TASK_TURN_ENDED',
           'native turn ended while task-owned permission remained pending');
         holdEvent({ kind: 'turn_completed', terminal: params?.terminal,
           turnId: params?.turnId, sessionId: params?.sessionId });
@@ -2297,6 +2719,7 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
     const read = await stageCall('session/read', () => initialized.connection.command('session/read',
       { sessionId: started?.session?.sessionId, excludeItems: true }, { maxAttempts: 1 }));
     const metadata = validateIdleRead(started, read, workspace, GUEST_HOME);
+    taskCoverage?.bindSession(metadata.sessionId);
     if (started.session?.approvalMode?.mode !== 'onRequest' || read.session?.approvalMode?.mode !== 'onRequest' ||
         started.session?.modelId !== SHELL_MODEL || read.session?.modelId !== SHELL_MODEL ||
         started.session?.providerId !== 'meta' || read.session?.providerId !== 'meta') {
@@ -2338,6 +2761,7 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
         typeof ack.turnId !== 'string') {
       throw fault('NATIVE_TURN_ACK_INVALID', 'native turn was not admitted as one fresh turn');
     }
+    taskCoverage?.bindTurn(ack.turnId);
     await awaitRecordedNativeTurn(config, metadata.sessionId, ack, withCaller);
     const event = await (taskOwned ? withCaller(() => observed) :
       timeout('native turn or approval', withCaller(() => observed), 15_000));
@@ -2363,7 +2787,7 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
     if (held && event.kind === 'approval') {
       validateHeldInitialApproval(metadata, ack, event, pending, command);
       const presentation = heldApprovalPresentation(pending.approvals[0], command,
-        workspace, config.protectedRoot, config.canaryToken, outerOnly, taskOwned);
+        workspace, config.protectedRoot, config.canaryToken, outerOnly, taskOwned, taskCommit);
       if (JSON.stringify(presentation.approval) !== JSON.stringify(event.approval) ||
           observations.approvals.length !== 1) {
         throw fault('NATIVE_HELD_APPROVAL_STALE', 'held approval differed before presentation');
@@ -2378,25 +2802,24 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
         heldResult = { kind: 'expired', presentation };
       } else {
         const decision = await submitHeldDecision(initialized.connection, presentation,
-          input, command, { submitted: false }, withCaller);
+          input, command, taskDecisionState, withCaller, taskOwned);
         let cursor = 0;
-        const next = async predicate => {
-          const deadline = Date.now() + 15_000;
-          while (Date.now() < deadline) {
+        const next = async expected => {
+          const deadline = taskOwned ? null : Date.now() + 15_000;
+          while (deadline === null || Date.now() < deadline) {
             if (caller.error()) throw caller.error();
             if (heldEventOverflow) throw fault('NATIVE_HELD_EVENT_BUDGET', 'native held event count exceeded bound');
             if (observations.approvals.length > 1) {
               throw fault('NATIVE_HELD_ADDITIONAL_APPROVAL', 'another native approval needs a separate human choice');
             }
-            while (cursor < heldEvents.length) {
-              const value = heldEvents[cursor++];
-              if (predicate(value)) return value;
-            }
+            const scanned = scanHeldEvents(heldEvents, cursor, expected);
+            cursor = scanned.cursor;
+            if (scanned.event) return scanned.event;
             await pause(10);
           }
           throw fault('NATIVE_HELD_RESOLUTION_MISSING', 'native approval did not reach an authoritative outcome');
         };
-        const resolved = await next(value => ['approval/resolved', 'approval/updated'].includes(value.kind));
+        const resolved = await next('resolution');
         if (resolved.approvalId !== presentation.approval.approvalId ||
             resolved.sessionId !== metadata.sessionId ||
             (resolved.kind === 'approval/resolved' &&
@@ -2407,8 +2830,8 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
         if (resolved.kind === 'approval/updated' || decision.ack.terminal !== true) {
           throw fault('NATIVE_HELD_ADDITIONAL_APPROVAL', 'native approval advanced to another requirement');
         }
-        const item = await next(value => value.kind === 'tool_item');
-        const terminal = await next(value => value.kind === 'turn_completed');
+        const item = await next('item');
+        const terminal = await next('terminal');
         if (item.item.callId !== SHELL_CALL || item.item.turnId !== ack.turnId ||
             terminal.turnId !== ack.turnId || terminal.sessionId !== metadata.sessionId) {
           throw fault('NATIVE_HELD_TURN_INVALID', 'native tool or turn differed from approved call');
@@ -2432,22 +2855,25 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
         disposition: ack.disposition, startedNewTurn: ack.startedNewTurn }, event,
       pending: pending ? { approvals: pending.approvals.map(approval => approvalSummary(approval, command)),
         userInputs: [] } : null,
-      observations, providerRequests: [...candidateRequests], commands: [...commands],
+      observations: taskCoverage ? { ...observations, nativeCoverage: taskCoverage.snapshot() } : observations,
+      providerRequests: [...candidateRequests], commands: [...commands],
       ...(heldResult ? { held: heldResult } : {}) };
     process.stdout.write(`${JSON.stringify({ kind: 'guest_outcome', result })}\n`);
     if (await (taskOwned ? withCaller(() => config.release()) :
       timeout('shutdown release', withCaller(() => config.release()))) !== 'shutdown') {
       throw fault('HOST_RELEASE_INVALID', 'native shutdown was not released by host');
     }
-    nativeActive = false;
+    intentionalClose = true;
     await timeout('host close', withCaller(() => host.close()), 5_000);
+    nativeActive = false;
     host = undefined;
     await timeout('native final checkpoint', withCaller(() => onFinal(result)), 5_000);
     return result;
   } catch (error) {
     return { kind: 'guest_transport_error', stage, code: error.code ?? error.name,
       message: String(error.message).slice(0, 400), guestNamespace: namespace,
-      commands, providerRequests: [], observations };
+      commands, providerRequests: [], observations,
+      ...(error.observation ? { failureObservation: error.observation } : {}) };
   } finally {
     nativeActive = false;
     if (nativeWatchTimer) clearInterval(nativeWatchTimer);
@@ -2467,13 +2893,15 @@ export async function guestShellRun(config, { startProvider = startShellProvider
   const targetPath = dummyAuthRead ? DUMMY_AUTH_PATH : protectedRead ?
     protectedReadPath(config.protectedRoute, workspace, config.protectedRoot) :
     join(workspace, READ_CANARY_NAME);
-  const command = protectedRead ? 'NATIVE_PROTECTED_READ_ONLY' :
-    dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_ONLY' :
-    shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
+    const command = protectedRead ? 'NATIVE_PROTECTED_READ_ONLY' :
+      dummyAuthRead ? 'NATIVE_DUMMY_AUTH_READ_ONLY' :
+      (config.taskCommit === true ? shellCommitCommand : shellProbeCommand)(workspace,
+        config.protectedRoot, config.canaryToken);
   let provider;
   try {
     provider = await startProvider(config.hostPort, command,
       { readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly,
+        taskCommit: config.taskCommit === true,
         ...(outerOnly ? { resultEvidenceDir: GUEST_HOME } : {}),
         workspace, protectedRoot: config.protectedRoot, canaryToken: config.canaryToken,
         targetPath,
@@ -2757,6 +3185,9 @@ export function runStatusPhase(prepared, config) {
   const protectedPhase = ['protected-read', 'dummy-auth-read'].includes(config.phase);
   const turnCheckpointEnabled = config.turnCheckpointId !== undefined;
   const taskOwned = config.taskOwned === true;
+  if (config.taskCommit === true && (!taskOwned || config.phase !== 'outer-held-shell')) {
+    throw fault('NATIVE_TASK_MODE_INVALID', 'private commit transport requires a task-owned outer shell');
+  }
   if (taskOwned && (!['held-shell', 'outer-held-shell'].includes(config.phase) || !turnCheckpointEnabled)) {
     throw fault('NATIVE_TASK_MODE_INVALID', 'task lifetime requires held shell and checkpoint');
   }
@@ -3079,7 +3510,9 @@ export function runStatusPhase(prepared, config) {
       throw fault('NATIVE_HELD_DECISION_SEQUENCE', 'held decision was sent outside its one-use window');
     }
       decisionSent = true;
-      child.stdin.write(`${JSON.stringify(decision)}\n`);
+      const frame = `${JSON.stringify(decision)}\n`;
+      if (taskOwned) return writeNativeDecision(child.stdin, frame, () => childClosed);
+      child.stdin.write(frame);
     },
     releaseShutdown: () => { if (turnCheckpointEnabled && !turnRecorded) {
       throw fault('NATIVE_TURN_RECORD_SEQUENCE', 'shutdown release preceded recorded turn');
@@ -3748,8 +4181,7 @@ async function verifyProtectedLink(linkPath, protectedRoot, expected = null) {
   return { dev: stat.dev, ino: stat.ino, uid: stat.uid, target };
 }
 
-export function classifyDurableApprovalLog(bytes, { sessionId, turnId, approvalId,
-  callId = SHELL_CALL, command, workspace }) {
+function decodeDurableSessionEntries(bytes) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > APPROVAL_LOG_LIMIT) {
     throw fault('NATIVE_APPROVAL_LOG_BOUNDS', 'durable approval log was empty or exceeded the read bound');
   }
@@ -3803,6 +4235,12 @@ export function classifyDurableApprovalLog(bytes, { sessionId, turnId, approvalI
   if (entries.length > 1024) {
     throw fault('NATIVE_APPROVAL_LOG_BOUNDS', 'durable approval log had too many decoded records');
   }
+  return entries;
+}
+
+export function classifyDurableApprovalLog(bytes, { sessionId, turnId, approvalId,
+  callId = SHELL_CALL, command, workspace }) {
+  const entries = decodeDurableSessionEntries(bytes);
   const seen = new Map();
   let lastSequence = 0;
   for (const entry of entries) {
@@ -3913,7 +4351,7 @@ export function classifyDurableApprovalLog(bytes, { sessionId, turnId, approvalI
     approvalId, callId, sequences: Object.fromEntries(ordered.map(key => [key, seen.get(key)])) };
 }
 
-export async function readDurableApprovalLog(root, guestPath, identity) {
+async function readOwnedSessionLogBytes(root, guestPath, identity) {
   const prefix = `${GUEST_HOME}/.local/share/muse/sessions/`;
   const suffix = typeof guestPath === 'string' && guestPath.startsWith(prefix) ? guestPath.slice(prefix.length) : '';
   if (!/^\d{4}\/\d{2}\/\d{2}\/[0-9a-f-]{36}\/session\.jsonl$/i.test(suffix) ||
@@ -3952,8 +4390,96 @@ export async function readDurableApprovalLog(root, guestPath, identity) {
       if (!bytesRead) break;
       length += bytesRead;
     }
-    return classifyDurableApprovalLog(buffer.subarray(0, length), identity);
+    const after = await file.stat();
+    if (length !== stat.size || after.dev !== stat.dev || after.ino !== stat.ino ||
+        after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
+        after.ctimeMs !== stat.ctimeMs) {
+      throw fault('NATIVE_APPROVAL_LOG_CHANGED', 'owned session log changed during the read');
+    }
+    return buffer.subarray(0, length);
   } finally { await file.close(); }
+}
+
+export async function readDurableApprovalLog(root, guestPath, identity) {
+  return classifyDurableApprovalLog(await readOwnedSessionLogBytes(root, guestPath, identity), identity);
+}
+
+export function classifyTaskReminderJournal(bytes, { sessionId, turnId, expected }) {
+  const invalid = () => fault('NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN',
+    'native parent journal did not bind each issued reminder to its child');
+  const key = (agent, generation) => `${agent}:${generation}`;
+  const calls = new Map([[key('skill-reminder', 1), REMINDER_CALL],
+    [key('skill-reminder', 2), REMINDER_CALL2],
+    [key('verify-reminder', 1), VERIFY_CALL]]);
+  if (!Array.isArray(expected) || expected.length < 1 || expected.length > 3) throw invalid();
+  const targets = new Map();
+  for (const item of expected) {
+    const agent = item?.reminderAgentId ?? 'skill-reminder';
+    const id = key(agent, item?.generationId);
+    if (!calls.has(id) || targets.has(id) || item.callId !== calls.get(id) ||
+        [item.childSessionId, item.taskId].some(value =>
+          typeof value !== 'string' || !value || value.length > 256) ||
+        [...targets.values()].some(other => other.childSessionId === item.childSessionId ||
+          other.taskId === item.taskId)) throw invalid();
+    targets.set(id, { ...item, reminderAgentId: agent });
+  }
+  if (!targets.has(key('skill-reminder', 1)) ||
+      targets.has(key('verify-reminder', 1)) && !targets.has(key('skill-reminder', 2))) throw invalid();
+  let entries;
+  try { entries = decodeDurableSessionEntries(bytes); }
+  catch { throw invalid(); }
+  const links = new Map(), proposals = new Map();
+  let priorSequence = 0;
+  for (const entry of entries) {
+    if (entry?.schema_version !== 1 ||
+        !(entry.record_type === 'event' && entry.durability === 'durable' ||
+          entry.record_type === 'status' && entry.durability === 'ephemeral') ||
+        !Number.isSafeInteger(entry.sequence) ||
+        entry.sequence <= priorSequence || entry.stream?.kind !== 'session' ||
+        entry.stream.id !== sessionId) throw invalid();
+    priorSequence = entry.sequence;
+    const event = entry.payload?.event;
+    if (!['memory_reminder_child_session_linked', 'reminder_proposal'].includes(event?.kind)) continue;
+    if (entry.record_type !== 'event' || entry.durability !== 'durable' ||
+        entry.payload_type !== 'runtime.session' || entry.payload_schema_version !== 1 ||
+        entry.payload?.kind !== 'run' || entry.payload.run_id !== turnId ||
+        !Number.isSafeInteger(event.generation_id) ||
+        !targets.has(key(event.reminder_agent_id, event.generation_id))) throw invalid();
+    const id = key(event.reminder_agent_id, event.generation_id);
+    const target = targets.get(id);
+    if (event.kind === 'memory_reminder_child_session_linked') {
+      if (links.has(id) || event.parent_run_id !== turnId ||
+          event.parent_session_id !== sessionId ||
+          event.child_session_id !== target.childSessionId || event.task_id !== target.taskId ||
+          event.task_stream?.kind !== 'task' || event.task_stream.id !== target.taskId) throw invalid();
+      links.set(id, entry.sequence);
+    } else {
+      if (proposals.has(id) ||
+          event.decision_call_id !== target.callId ||
+          event.decision_run_stream?.kind !== 'run' ||
+          event.decision_run_stream.id !== target.childSessionId ||
+          !links.has(id) ||
+          links.get(id) >= entry.sequence) throw invalid();
+      proposals.set(id, entry.sequence);
+    }
+  }
+  if (links.size !== expected.length || proposals.size !== expected.length ||
+      targets.has(key('skill-reminder', 2)) &&
+        proposals.get(key('skill-reminder', 1)) >= links.get(key('skill-reminder', 2)) ||
+      targets.has(key('verify-reminder', 1)) &&
+        links.get(key('skill-reminder', 2)) >= links.get(key('verify-reminder', 1))) throw invalid();
+  return { kind: 'native_task_reminder_journal_joined', sessionId, turnId,
+    joins: expected.map(item => ({ reminderAgentId: item.reminderAgentId ?? 'skill-reminder',
+      generationId: item.generationId, callId: item.callId,
+      childSessionId: item.childSessionId, taskId: item.taskId })) };
+}
+
+export async function readTaskReminderJournal(root, guestPath, identity) {
+  let bytes;
+  try { bytes = await readOwnedSessionLogBytes(root, guestPath, identity); }
+  catch { throw fault('NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN',
+    'native parent journal could not be read under its owned path'); }
+  return classifyTaskReminderJournal(bytes, identity);
 }
 
 export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse',
