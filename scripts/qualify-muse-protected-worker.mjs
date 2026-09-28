@@ -15,6 +15,7 @@ import { runStatusPhase, captureHostIdentities, verifyHostStop,
 } from './qualify-muse-sandbox-transport.mjs';
 import { stageNativeRuntime, stageAdapterRuntime, startNativeUpstream, startBroker, relaySandboxConfig,
 } from './qualify-muse-credential-relay.mjs';
+import { startFixtureProviderTransport } from './qualify-muse-provider-transport.mjs';
 
 const GUEST_RUNTIME = '/mounts/runtime';
 const NATIVE_EXE = `${GUEST_RUNTIME}/muse-bin-1.4.0-R4302.1`;
@@ -720,7 +721,7 @@ export async function settleProductionProtectedOutcome({ result, validated, prim
 
 async function runProductionProtectedAdapter(input, options) {
   const { muse, stage, sentinelStart, upstreamStart, brokerStart, probe,
-    onPending, onRetained } = options;
+    onPending, onRetained, providerTransportMode } = options;
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-production-protected-'));
   const runtimeRoot = await mkdtemp('/dev/shm/passeur-muse-production-runtime-');
   const home = join(root, 'home'), protectedRoot = join(root, 'protected');
@@ -748,11 +749,15 @@ async function runProductionProtectedAdapter(input, options) {
     const bearer = randomBytes(32).toString('hex');
     upstream = await upstreamStart({ bearer, workspace: input.workspace,
       protectedRoot, canaryToken: token, hostPort: sentinel.port,
-      shell: true, taskCommit: true, adapterMode: true });
+      shell: true, taskCommit: true, adapterMode: true, signal: input.signal,
+      guestMountSources: [input.workspace, runtime, home, socketDirectory,
+        input.private_git.view.canonical_common_dir,
+        input.private_git.view.private_common_dir] });
     const command = shellCommitCommand(input.workspace, protectedRoot, token);
     broker = await brokerStart({ socketPath: join(socketDirectory, 'relay.sock'),
       upstreamOrigin: upstream.origin, runId, bearer, profile: 'native-shell',
-      workspace: input.workspace, shellCommand: command });
+      workspace: input.workspace, shellCommand: command,
+      ...(providerTransportMode ? { transportSocketPath: upstream.transportSocketPath } : {}) });
     const { MuseSdkAdapter } = await import('../dist/src/muse/adapter.js');
     const nativeExe = join(runtime, 'muse-bin-1.4.0-R4302.1');
     const adapter = new MuseSdkAdapter({ muse_bin: nativeExe, model: 'fixture-native-shell',
@@ -829,7 +834,11 @@ async function runProductionProtectedAdapter(input, options) {
         brokerEvidence?.firstFailure || brokerEvidence?.rejected !== 0 ||
         brokerEvidence?.accepted !== requests.length ||
         upstream.seen?.length !== requests.length ||
-        upstream.seen.some(value => !value.correctBearer || !value.dummyAbsent)) {
+        upstream.seen.some(value => !value.correctBearer || !value.dummyAbsent ||
+          providerTransportMode && (!value.tls || !value.runHeaderAbsent)) ||
+        providerTransportMode && upstream.seen.some((value, index) =>
+          value.path !== (requests[index]?.path === '/muse-code/models' ? '/v1/models' :
+            requests[index]?.path === '/responses' ? '/v1/responses' : null))) {
       throw fault('NATIVE_TASK_PROVIDER_INVALID', 'production provider request sequence differed');
     }
     const correlated = events.find(value => value?.kind === 'turn_correlated');
@@ -876,6 +885,15 @@ async function runProductionProtectedAdapter(input, options) {
     await verifyStoppedPrivateCommit(input, commit);
     if (await readFile(join(protectedRoot, token), 'utf8') !== 'protected-no-account-canary')
       throw fault('NATIVE_TASK_CANARY_INVALID', 'protected canary changed');
+    if (providerTransportMode) {
+      await writeFile(join(root, 'provider-transport-evidence.json'), `${JSON.stringify({
+        kind: 'fixture_provider_transport_tls', schema_version: 1,
+        provider_socket: upstream.transportSocketPath,
+        observed: upstream.seen.map(value => ({ method: value.method, path: value.path,
+          tls: value.tls, correct_bearer: value.correctBearer,
+          dummy_absent: value.dummyAbsent, run_header_absent: value.runHeaderAbsent })),
+      })}\n`, { mode: 0o600, flag: 'wx' });
+    }
     validated = true;
   } catch (cause) { error = cause; }
   finally {
@@ -898,6 +916,7 @@ export function protectedMuseWorker({ muse = '/home/jeremy/.local/bin/muse',
   capture = captureHostIdentities, verifyStop = verifyHostStop,
   validateReady = validateShellReady,
   commitTask = false, adapterMode = false, productionRuntimeMode = false,
+  providerTransportMode = false,
   adapterStage = stageAdapterRuntime, adapterLaunch = runAdapterStatusPhase,
   adapterCapture = captureAdapterHostIdentities,
   onPending = async () => undefined,
@@ -912,11 +931,14 @@ export function protectedMuseWorker({ muse = '/home/jeremy/.local/bin/muse',
           !input.workspace.startsWith('/tmp/')) {
         throw fault('NATIVE_TASK_INPUT_INVALID', 'protected worker needs one live Coordinator-owned private task');
       }
+      if (providerTransportMode && !productionRuntimeMode) throw fault('NATIVE_ADAPTER_CONFIG_INVALID',
+        'fixture TLS transport requires the production protected runtime path');
       if (productionRuntimeMode) {
         if (!commitTask) throw fault('NATIVE_ADAPTER_CONFIG_INVALID',
           'production protected runtime requires private commit mode');
         return runProductionProtectedAdapter(input, { muse, stage: adapterStage,
-          sentinelStart, upstreamStart, brokerStart, probe, onPending, onRetained });
+          sentinelStart, upstreamStart: providerTransportMode ? startFixtureProviderTransport : upstreamStart,
+          brokerStart, probe, onPending, onRetained, providerTransportMode });
       }
       if (adapterMode) {
         if (!commitTask) throw fault('NATIVE_ADAPTER_CONFIG_INVALID',

@@ -102,6 +102,15 @@ test('production installed mode selects the production runtime branch before the
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+test('fixture TLS transport cannot be selected outside the production protected path', async () => {
+  const worker = protectedMuseWorker({ commitTask: true, providerTransportMode: true });
+  await assert.rejects(worker.run({ task_id: randomUUID(), workspace: '/tmp/fixture-guard',
+    private_git: { schema_version: 1, mount_kind: 'canonical_common_dir',
+      view: { private_common_dir: '/tmp/fixture-guard/control/private-git' } },
+    signal: new AbortController().signal, onEvent: async () => {},
+    approve: async () => {} }), { code: 'NATIVE_ADAPTER_CONFIG_INVALID' });
+});
+
 test('production cleanup failure revokes success and still retires every owned resource', async () => {
   const result = { status: 'completed', worker_stop: 'confirmed', summary: 'native settled',
     worker_assessment: 'met', blockers: [], questions: [], checks: [] };
@@ -1598,7 +1607,10 @@ test('installed no-account protected task survives old diagnostic deadline and s
     if (failure) throw failure;
   });
 
-async function runInstalledPrivateCommit(adapterMode, productionRuntimeMode = false) {
+async function runInstalledPrivateCommit(adapterMode, productionRuntimeMode = false,
+  providerTransportMode = false) {
+    if (providerTransportMode && !productionRuntimeMode)
+      throw Error('installed TLS transport requires the production protected runtime');
     if (!process.stdin.isTTY) throw Error('installed commit needs a persistent terminal input channel');
     if (process.env.PASSEUR_MUSE_COMMIT_CHANNEL_DRY_RUN === '1') {
       console.log(JSON.stringify({ kind: 'native_commit_channel_dry_run', stdin_tty: true }));
@@ -1607,11 +1619,16 @@ async function runInstalledPrivateCommit(adapterMode, productionRuntimeMode = fa
     const retained = await mkdtemp(join(tmpdir(), 'passeur-muse-installed-commit-'));
     const project = join(retained, 'project'), worktrees = join(retained, 'worktrees');
     const evidencePath = join(retained, 'qualification.json');
-    const evidence = { kind: adapterMode ? 'installed_no_account_muse_sdk_adapter_private_commit' :
+    const evidence = { kind: providerTransportMode ?
+      'installed_no_account_muse_provider_transport_tls_private_commit' :
+      adapterMode ? 'installed_no_account_muse_sdk_adapter_private_commit' :
       'installed_no_account_native_private_commit',
-      adapter_composition: productionRuntimeMode ? 'built MuseSdkAdapter.run with production protected host and stop observer' :
+      adapter_composition: providerTransportMode ?
+        'built MuseSdkAdapter.run with production protected host, fixture protocol adapter, built host transport and local TLS peer' :
+        productionRuntimeMode ? 'built MuseSdkAdapter.run with production protected host and stop observer' :
         adapterMode ? 'actual MuseSdkAdapter.run with fixture real-SDK ClientStarter' :
         'raw MSP fixture',
+      provider_transport_mode: providerTransportMode,
       retained_root: retained, started_at: new Date().toISOString(), checkpoints: [] };
     const save = async () => writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`,
       { mode: 0o600 });
@@ -1640,6 +1657,7 @@ async function runInstalledPrivateCommit(adapterMode, productionRuntimeMode = fa
     await store.initialize();
     let pendingObservation, retainedObservation;
     const worker = protectedMuseWorker({ commitTask: true, adapterMode, productionRuntimeMode,
+      providerTransportMode,
       onRetained: observation => { retainedObservation = observation; },
       onPending: observation => { pendingObservation = observation; } });
     const coordinator = new Coordinator(project, 'protected-commit-fixture', policy, store,
@@ -1799,6 +1817,22 @@ async function runInstalledPrivateCommit(adapterMode, productionRuntimeMode = fa
     assert.equal((await git(project, 'rev-parse', 'main')).trim(), base);
     assert.equal(await readFile(join(pendingObservation.root, 'protected', protectedToken), 'utf8'),
     'protected-no-account-canary');
+    if (providerTransportMode) {
+      const transport = JSON.parse(await readFile(join(pendingObservation.root,
+        'provider-transport-evidence.json'), 'utf8'));
+      assert.equal(transport.kind, 'fixture_provider_transport_tls');
+      assert.equal(transport.schema_version, 1);
+      assert.ok(transport.provider_socket.startsWith(`${join(pendingObservation.root,
+        'provider-transport')}/`));
+      assert.equal(await lstat(transport.provider_socket).then(() => true,
+        error => error.code === 'ENOENT' ? false : Promise.reject(error)), false);
+      assert.ok(Array.isArray(transport.observed) && transport.observed.length >= 6);
+      assert.ok(transport.observed.every(value => value.tls && value.correct_bearer &&
+        value.dummy_absent && value.run_header_absent &&
+        (value.method === 'GET' && value.path === '/v1/models' ||
+          value.method === 'POST' && value.path === '/v1/responses')));
+      evidence.transport = transport;
+    }
     assert.equal((await store.readResource(receipt.task_id)).private_git.state, 'published');
     assert.equal((await store.readPrivatePublication(receipt.task_id)).state, 'published');
     evidence.checkpoints.push({ kind: 'verified_publication', at: new Date().toISOString() });
@@ -1866,3 +1900,7 @@ test('installed no-account actual Muse SDK adapter commits only after confirmed 
 test('installed no-account production protected Muse runtime commits only after observed stop',
   { skip: process.env.PASSEUR_MUSE_INSTALLED_PRODUCTION_RUNTIME_TASK !== '1' },
   () => runInstalledPrivateCommit(true, true));
+
+test('installed no-account Muse composes protected host and fixture local TLS transport',
+  { skip: process.env.PASSEUR_MUSE_INSTALLED_PROVIDER_TRANSPORT_TASK !== '1' },
+  () => runInstalledPrivateCommit(true, true, true));

@@ -766,7 +766,7 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   profile = 'controlled', workspace = null, shellCommand = null,
   model = MODEL, requestLimit = REQUEST_LIMIT, responseLimit = RESPONSE_LIMIT,
   concurrency = 2, deadlineMs = 3_000, allowedInputs = ['fixture'],
-  perRouteBudget = 1,
+  perRouteBudget = 1, transportSocketPath = null,
   inspectSocket = assertSocketIdentity, writeCapture = writeFile,
   projectCapture = nativeRejectionProjection }) {
   if (!['controlled', 'native-read', 'native-shell'].includes(profile)) {
@@ -794,6 +794,11 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
     throw fault('BROKER_POLICY_INVALID', 'issued shell command descriptor is invalid');
   }
   const upstream = new URL(upstreamOrigin);
+  if (transportSocketPath !== null &&
+      (typeof transportSocketPath !== 'string' || !transportSocketPath.startsWith('/') ||
+       profile !== 'native-shell')) {
+    throw fault('BROKER_POLICY_INVALID', 'fixture transport socket is invalid');
+  }
   if (upstream.protocol !== 'http:' || upstream.hostname !== '127.0.0.1' ||
       !Number.isSafeInteger(Number(upstream.port)) || Number(upstream.port) < 1 ||
       upstream.pathname !== '/' || upstream.search || upstream.hash || upstream.username || upstream.password ||
@@ -950,12 +955,19 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       }
       routeUses[decision.route]++;
       evidence.accepted++;
-      const route = decision.route === 'catalog' ? '/muse-code/models' : '/responses';
+      const route = decision.route === 'catalog' ?
+        (transportSocketPath ? '/v1/models' : '/muse-code/models') :
+        (transportSocketPath ? '/v1/responses' : '/responses');
       const forwarded = decision.body;
       await new Promise(resolveValue => {
-        upstreamRequest = httpRequest(new URL(route, upstream), { method: incoming.method,
-          headers: { authorization: `Bearer ${bearer}`,
-            ...(route === '/responses' ? { 'content-type': 'application/json' } : {}),
+        upstreamRequest = httpRequest({ ...(transportSocketPath ?
+          { socketPath: transportSocketPath, path: route } :
+          { protocol: 'http:', hostname: upstream.hostname, port: upstream.port, path: route }),
+          method: incoming.method,
+          headers: { host: transportSocketPath ? 'api.meta.ai' : upstream.host,
+            authorization: `Bearer ${transportSocketPath ? DUMMY : bearer}`,
+            ...(decision.route === 'responses' ? { 'content-type': 'application/json' } : {}),
+            ...(transportSocketPath ? { 'x-passeur-run': runId } : {}),
             'accept': 'application/json, text/event-stream', 'content-length': String(forwarded.length) },
           timeout: deadlineMs, agent: false }, upstreamResponse => {
           if (upstreamResponse.statusCode >= 300 && upstreamResponse.statusCode < 400 ||
