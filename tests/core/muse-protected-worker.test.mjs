@@ -13,7 +13,7 @@ import { Coordinator } from '../../.passeur-core/src/core/coordinator.js';
 import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
 import { prepareWorkspace, preparePrivateGitView } from '../../.passeur-core/src/workspace/worktree.js';
 import { nativeTaskDecision, settledCommitOutcome, protectedApprovalRequest,
-  protectedMuseWorker, verifySettledStop, verifyStoppedPrivateCommit,
+  protectedMuseWorker, protectedAdapterApproval, verifySettledStop, verifyStoppedPrivateCommit,
   inspectTaskFinalAndStop, awaitTaskHostFinished, boundedGuestFailure,
   primaryNativeFailure, nativeFailureArtifact } from '../../scripts/qualify-muse-protected-worker.mjs';
 import { createTaskCommitCoverage, runStatusPhase, shellProbeCommand,
@@ -22,8 +22,383 @@ import { relaySandboxConfig } from '../../scripts/qualify-muse-credential-relay.
 import { prepareSandbox } from '../../scripts/experiment-worker-sandbox.mjs';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function eventually(read) {
-  const end = Date.now() + 3_000;
+const adapterReady = relayPort => ({ relayPort, guestNamespace: 'net:[1]',
+  canaries: { direct: true, symlink: true, proc: true } });
+
+test('SDK approval bridge accepts only the exact native once shell request', () => {
+  const workspace = '/tmp/passeur-sdk-approval';
+  const command = 'printf fixture';
+  const frame = { kind: 'adapter_approval', id: '0123456789abcdef01234567', request: {
+    tool: 'bash', workspace, raw_args: JSON.stringify({ command,
+      description: 'Disposable native shell qualification' }),
+    subject: { native: { tool_call_id: 'call_native_shell_1', session_id: 'session',
+      turn_id: 'turn', approval_id: 'approval',
+      current_requirement_id: { approvalId: 'approval', sourceIndex: 0 } } },
+    choices: [{ id: 'once', scope: 'once', decision: 'approved', label: 'Allow once' }],
+  } };
+  assert.equal(protectedAdapterApproval(frame, command, workspace), frame.request);
+  for (const changed of [
+    { ...frame, id: 'foreign' },
+    { ...frame, request: { ...frame.request, raw_args: JSON.stringify({ command: 'other',
+      description: 'Disposable native shell qualification' }) } },
+    { ...frame, request: { ...frame.request, choices: [{ id: 'session', scope: 'session',
+      decision: 'approved', label: 'Always' }] } },
+  ]) assert.throws(() => protectedAdapterApproval(changed, command, workspace),
+    { code: 'NATIVE_TASK_APPROVAL_INVALID' });
+});
+
+test('actual-SDK fixture rejects premature host close before any private publication', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'passeur-sdk-premature-'));
+  let retained, approvals = 0, cancellations = 0;
+  const finished = { code: 0, signal: null, output: [], statusLines: [],
+    statusClosed: true, overflow: false };
+  const worker = protectedMuseWorker({ commitTask: true, adapterMode: true,
+    adapterStage: async root => root,
+    sentinelStart: async () => ({ port: 10001, close: async () => {} }),
+    upstreamStart: async () => ({ origin: 'http://127.0.0.1:10002/',
+      provider: { rejection: new Promise(() => {}) }, close: async () => {} }),
+    brokerStart: async () => ({ failure: new Promise(() => {}), close: async () => {} }),
+    prepare: () => ({ executable: 'controlled', args: [] }), probe: () => {},
+    adapterLaunch: () => ({ pid: 123, ready: Promise.resolve(adapterReady(10003)),
+      liveStatus: Promise.resolve({ child: 456, exit: null }),
+      approval: new Promise(() => {}), outcome: new Promise(() => {}),
+      finished: Promise.resolve(finished),
+      cancelTask: () => { cancellations++; } }),
+    onRetained: observation => { retained = observation; } });
+  try {
+    const result = await worker.run({ task_id: randomUUID(), workspace,
+      private_git: { schema_version: 1, mount_kind: 'canonical_common_dir',
+        view: { private_common_dir: join(workspace, 'control', 'private-git') } },
+      signal: new AbortController().signal, onEvent: async () => {},
+      approve: async () => { approvals++; } });
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error.code, 'NATIVE_ADAPTER_HOST_EXIT');
+    assert.equal(result.worker_stop, 'unconfirmed');
+    assert.equal(approvals, 0);
+    assert.equal(cancellations, 1);
+    assert.ok(retained?.root);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('SDK host death during pending human input withdraws that invocation', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'passeur-sdk-input-death-'));
+  let finishHost, presented, stopped = 0;
+  const finished = new Promise(resolve => { finishHost = resolve; });
+  const approved = new Promise(resolve => { presented = resolve; });
+  const frame = { kind: 'adapter_approval', id: '0123456789abcdef01234567', request: {
+    tool: 'bash', workspace, raw_args: JSON.stringify({ command: 'placeholder',
+      description: 'Disposable native shell qualification' }),
+    subject: { native: { tool_call_id: 'call_native_shell_1', session_id: 'session',
+      turn_id: 'turn', approval_id: 'approval',
+      current_requirement_id: { approvalId: 'approval', sourceIndex: 0 } } },
+    choices: [{ id: 'once', scope: 'once', decision: 'approved', label: 'Allow once' }],
+  } };
+  const worker = protectedMuseWorker({ commitTask: true, adapterMode: true,
+    adapterStage: async root => root,
+    sentinelStart: async () => ({ port: 10001, close: async () => {} }),
+    upstreamStart: async () => ({ origin: 'http://127.0.0.1:10002/',
+      provider: { rejection: new Promise(() => {}) }, close: async () => {} }),
+    brokerStart: async () => ({ failure: new Promise(() => {}), close: async () => {} }),
+    prepare: () => ({ executable: 'controlled', args: [] }), probe: () => {},
+    adapterLaunch: (_prepared, config) => ({ pid: 123, ready: Promise.resolve(adapterReady(10003)),
+      liveStatus: Promise.resolve({ child: 456, exit: null }),
+      approval: Promise.resolve({ ...frame, request: { ...frame.request,
+        raw_args: JSON.stringify({ command: shellCommitCommand(config.workspace,
+          config.protectedRoot, config.canaryToken),
+        description: 'Disposable native shell qualification' }) } }),
+      outcome: new Promise(() => {}), finished, events: () => [],
+      cancelTask: () => { stopped++; } }),
+    adapterCapture: async () => ({ fd: { close: async () => {} },
+      wrapper: {}, statusChild: {}, native: { netns: 'net:[1]' }, pidns: 'pid:[1]' }),
+    verifyStop: async () => ({ kind: 'confirmed' }) });
+  try {
+    const run = worker.run({ task_id: randomUUID(), workspace,
+      private_git: { schema_version: 1, mount_kind: 'canonical_common_dir',
+        view: { private_common_dir: join(workspace, 'control', 'private-git') } },
+      signal: new AbortController().signal, onEvent: async () => {},
+      approve: async (_request, signal) => {
+        presented();
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+          reject(Error('native input withdrawn'));
+        }, { once: true }));
+      } });
+    await approved;
+    finishHost({ code: 1, signal: null, overflow: false, statusClosed: true,
+      statusLines: ['{"child-pid":456}', '{"exit-code":1}'], output: [] });
+    const result = await run;
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error.code, 'NATIVE_ADAPTER_HOST_EXIT');
+    assert.ok(stopped >= 1);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test('native-only SDK failure withdraws human input while guest control remains open', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'passeur-sdk-native-death-'));
+  let failNative, finishHost, presented, withdrawn = false, cancelled = 0;
+  const outcome = new Promise(resolve => { failNative = resolve; });
+  const finished = new Promise(resolve => { finishHost = resolve; });
+  const pending = new Promise(resolve => { presented = resolve; });
+  const worker = protectedMuseWorker({ commitTask: true, adapterMode: true,
+    adapterStage: async root => root,
+    sentinelStart: async () => ({ port: 10001, close: async () => {} }),
+    upstreamStart: async () => ({ origin: 'http://127.0.0.1:10002/',
+      provider: { rejection: new Promise(() => {}) }, close: async () => {} }),
+    brokerStart: async () => ({ failure: new Promise(() => {}), close: async () => {} }),
+    prepare: () => ({ executable: 'controlled', args: [] }), probe: () => {},
+    adapterLaunch: (_prepared, config) => ({ pid: 123,
+      ready: Promise.resolve(adapterReady(10003)),
+      liveStatus: Promise.resolve({ child: 456, exit: null }), outcome, finished,
+      approval: Promise.resolve({ kind: 'adapter_approval', id: '0123456789abcdef01234567',
+        request: { tool: 'bash', workspace,
+          raw_args: JSON.stringify({ command: shellCommitCommand(config.workspace,
+            config.protectedRoot, config.canaryToken),
+          description: 'Disposable native shell qualification' }),
+          subject: { native: { tool_call_id: 'call_native_shell_1', session_id: 'session',
+            turn_id: 'turn', approval_id: 'approval',
+            current_requirement_id: { approvalId: 'approval', sourceIndex: 0 } } },
+          choices: [{ id: 'once', scope: 'once', decision: 'approved', label: 'Allow once' }],
+        } }), events: () => [],
+      cancelTask: () => { cancelled++;
+        finishHost({ code: null, signal: 'SIGTERM', overflow: false, statusClosed: true,
+          statusLines: ['{"child-pid":456}', '{"exit-code":1}'], output: [] }); } }),
+    adapterCapture: async () => ({ fd: { close: async () => {} },
+      wrapper: {}, statusChild: {}, native: { netns: 'net:[1]' }, pidns: 'pid:[1]' }),
+    verifyStop: async () => ({ kind: 'confirmed' }) });
+  try {
+    const run = worker.run({ task_id: randomUUID(), workspace,
+      private_git: { schema_version: 1, mount_kind: 'canonical_common_dir',
+        view: { private_common_dir: join(workspace, 'control', 'private-git') } },
+      signal: new AbortController().signal, onEvent: async () => {},
+      approve: async (_request, signal) => {
+        presented();
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+          withdrawn = true; reject(Error('native-only failure withdrew input'));
+        }, { once: true }));
+      } });
+    await pending;
+    failNative({ status: 'failed', error: { code: 'MUSE_HOST_EXITED' } });
+    const result = await Promise.race([run, delay(3_000).then(() => {
+      throw Error('native-only failure stranded pending human input'); })]);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error.code, 'MUSE_HOST_EXITED');
+    assert.equal(withdrawn, true);
+    assert.equal(cancelled, 1);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+async function controlledAdapterFailure(t, mode) {
+  const f = await fixture(t);
+  const never = new Promise(() => undefined);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  let privateView, hostConfig, pendingObservation, finishHost, finishOutcome, workerRoot;
+  let releasedAfterValidation = false;
+  const finished = new Promise(resolve => { finishHost = resolve; });
+  const outcome = new Promise(resolve => { finishOutcome = resolve; });
+  const requests = [{ method: 'GET', path: '/muse-code/models' }];
+  const seen = [{ correctBearer: true, dummyAbsent: true }];
+  const provider = { requests, seen, rejection: never,
+    state: { active: 0, primaryCode: null, failed: false }, freeze: async () => {} };
+  const events = [{ kind: 'turn_started', turn_id: 'provisional', native_session_id: sessionId },
+    { kind: 'turn_correlated', provisional_turn_id: 'provisional', turn_id: 'turn',
+      native_session_id: sessionId },
+    { kind: 'operation_started', id: 'shell', operation: 'tool' }];
+  let notifications = [], committed;
+  const host = { pid: 123, ready: Promise.resolve(adapterReady(8003)),
+    liveStatus: Promise.resolve({ child: 456, exit: null }), outcome, finished,
+    events: () => [...events], notifications: () => [...notifications],
+    sendChoice: () => {
+      if (mode === 'dispatch') throw Object.assign(Error('SDK approval dispatch failed'),
+        { code: 'NATIVE_APPROVAL_DISPATCH_UNKNOWN' });
+      void (async () => {
+        const workspace = hostConfig.workspace;
+        const environment = { ...process.env,
+          GIT_DIR: join(privateView.private_common_dir, privateView.admin_relative),
+          GIT_COMMON_DIR: privateView.private_common_dir, GIT_WORK_TREE: workspace };
+        const privateGit = async (...args) => (await exec('git', ['-C', workspace, ...args],
+          { env: environment })).stdout.trim();
+        await writeFile(join(workspace, 'qualified-change.txt'), 'native committed change\n');
+        await rm(join(workspace, 'protected-link'));
+        await privateGit('add', '--', 'qualified-change.txt');
+        await privateGit('-c', 'user.name=Passeur Fixture',
+          '-c', 'user.email=passeur-fixture@example.invalid', 'commit', '-m', 'Adapter private commit');
+        committed = await privateGit('rev-parse', 'HEAD');
+        requests.push({ path: '/responses', kind: 'matching_tool_result',
+          outputMarkers: { commit: committed } },
+        { path: '/responses', kind: 'native_reminder_call' },
+        { path: '/responses', kind: 'native_reminder_call' },
+        { path: '/responses', kind: 'native_verification_reminder_call' });
+        for (let index = 0; index < 4; index++) seen.push({ correctBearer: true, dummyAbsent: true });
+        events.push({ kind: 'operation_finished', id: 'shell' },
+          { kind: 'turn_settled', turn_id: 'turn', native_session_id: sessionId });
+        if (mode === 'survivor' || mode === 'success') {
+          const transcript = `direct=denied\nsymlink=denied\nproc=denied\ndummy-auth=visible\ncommit=${committed}\n`;
+          const nativeItem = (itemId, callId, kind, status, extra = {}) => ({
+            itemId, callId, kind, turnId: 'turn', status, ...extra });
+          const notification = (method, item) => ({ method,
+            params: { sessionId, item } });
+          const shell = nativeItem('shell-item', 'call_native_shell_1', 'toolCall',
+            'completed', { tool: 'bash', args: JSON.stringify({ command: shellCommitCommand(
+              workspace, hostConfig.protectedRoot, hostConfig.canaryToken) }),
+              visibleOutput: transcript });
+          notifications = [notification('item/started',
+            nativeItem('shell-item', 'call_native_shell_1', 'toolCall', 'inProgress')),
+            notification('item/completed', shell)];
+          const childNames = [['skill-reminder', 1], ['skill-reminder', 2],
+            ['verify-reminder', 1]];
+          const children = childNames.map(([reminderAgentId, generationId], index) => ({
+            itemId: `child-${index}`, callId: null, turnId: 'turn',
+            kind: 'reminderChild', reminderAgentId, generationId,
+            childSessionId: `child-session-${index}`, taskId: `child-task-${index}` }));
+          for (let index = 0; index < children.length; index++) {
+            const child = children[index];
+            notifications.push(notification('item/started', { ...child, status: 'inProgress' }),
+              notification('item/completed', { ...child, status: 'completed' }));
+          }
+          notifications.push({ method: 'turn/completed', params: { sessionId,
+            turnId: 'turn', terminal: 'completed' } });
+          const entry = (sequence, event) => ({ schema_version: 1, sequence,
+            record_type: 'event', durability: 'durable', stream: { kind: 'session', id: sessionId },
+            payload_type: 'runtime.session', payload_schema_version: 1,
+            payload: { kind: 'run', run_id: 'turn', event } });
+          const link = child => ({ kind: 'memory_reminder_child_session_linked',
+            generation_id: child.generationId, reminder_agent_id: child.reminderAgentId,
+            parent_run_id: 'turn', parent_session_id: sessionId,
+            child_session_id: child.childSessionId, task_id: child.taskId,
+            task_stream: { kind: 'task', id: child.taskId } });
+          const proposal = (child, index) => ({ kind: 'reminder_proposal',
+            generation_id: child.generationId, reminder_agent_id: child.reminderAgentId,
+            decision_call_id: index === 2 ? 'call_native_verify_reminder_1' :
+              `call_native_reminder_${index + 1}`,
+            decision_run_stream: { kind: 'run', id: child.childSessionId } });
+          const journal = [entry(1, link(children[0])), entry(2, proposal(children[0], 0)),
+            entry(3, link(children[1])), entry(4, link(children[2])),
+            entry(5, proposal(children[2], 2)), entry(6, proposal(children[1], 1))];
+          const journalPath = join(workerRoot, 'home', '.local', 'share', 'muse',
+            'sessions', '2026', '09', '28', sessionId, 'session.jsonl');
+          await mkdir(join(journalPath, '..'), { recursive: true });
+          await writeFile(journalPath, `${journal.map(value => JSON.stringify(value)).join('\n')}\n`,
+            { mode: 0o600 });
+        } else notifications = [{ method: 'item/started', params: { sessionId,
+          item: { kind: 'unrecognizedChild', itemId: 'foreign', turnId: 'turn',
+            callId: null, status: 'inProgress' } } }];
+        finishOutcome({ status: 'completed', worker_assessment: 'met',
+          summary: 'Controlled SDK adapter completed the fixed private commit',
+          blockers: [], questions: [], checks: [] });
+      })().catch(error => finishOutcome({ status: 'failed',
+        error: { code: error.code ?? 'CONTROLLED_COMMIT_FAILED' } }));
+    },
+    cancelTask: () => finishHost({ code: null, signal: 'SIGTERM', overflow: false,
+      statusClosed: true, output: [], statusLines: ['{"child-pid":456}', '{"exit-code":1}'] }),
+    finishTask: () => { releasedAfterValidation = true;
+      finishHost({ code: 0, signal: null, overflow: false,
+        statusClosed: true, output: [], statusLines: ['{"child-pid":456}', '{"exit-code":0}'] }); },
+  };
+  const worker = protectedMuseWorker({ commitTask: true, adapterMode: true,
+    adapterStage: async root => root,
+    sentinelStart: async () => ({ port: 8001, close: async () => {} }),
+    upstreamStart: async () => ({ origin: 'http://127.0.0.1:8002/', provider, seen,
+      close: async () => {} }),
+    brokerStart: async () => ({ failure: never,
+      evidence: { get accepted() { return requests.length; }, rejected: 0 },
+      close: async () => {} }),
+    prepare: config => { privateView = config.privateGit.view;
+      return { executable: 'controlled', args: [] }; },
+    probe: () => {}, adapterLaunch: (_prepared, config) => {
+      hostConfig = config;
+      assert.equal(config.hostPort, 8001);
+      const command = shellCommitCommand(config.workspace, config.protectedRoot,
+        config.canaryToken);
+      requests.push({ path: '/responses', kind: 'native_tool_call',
+        callId: 'call_native_shell_1' });
+      seen.push({ correctBearer: true, dummyAbsent: true });
+      host.approval = Promise.resolve({ kind: 'adapter_approval',
+        id: '0123456789abcdef01234567', request: { id: 'stage', tool: 'bash',
+          workspace: config.workspace, raw_args: JSON.stringify({ command,
+            description: 'Disposable native shell qualification' }),
+          subject: { native: { session_id: sessionId, turn_id: 'turn',
+            tool_call_id: 'call_native_shell_1', approval_id: 'approval',
+            current_requirement_id: { approvalId: 'approval', sourceIndex: 0 } } },
+          choices: [{ id: 'allow', label: 'Allow once', scope: 'once',
+            decision: 'approved' }] } });
+      return host;
+    },
+    adapterCapture: async () => ({ fd: { close: async () => {} },
+      wrapper: {}, statusChild: {}, native: { netns: 'net:[1]' }, pidns: 'pid:[1]' }),
+    verifyStop: async () => {
+      if (mode === 'survivor') throw Object.assign(Error('descendant still present'),
+        { code: 'STOP_SURVIVOR' });
+      return { kind: 'confirmed' };
+    },
+    onPending: value => { pendingObservation = value; },
+    onRetained: value => { workerRoot = value.root; } });
+  const coordinator = new Coordinator(f.root, 'project', f.policy, f.store,
+    new AgentRegistry(f.profile, { muse: { configure: () => ({ worker,
+      modes: ['implement'], contract: 'adapter-controlled-negative/1', configuration: {} }) } }),
+  () => {}, undefined, 'controlled');
+  const receipt = await coordinator.submit({ schema_version: 1, source_view: f.root,
+    assignment: f.implementation(`sdk-negative-${randomUUID()}`) }, f.owner,
+  new AbortController().signal);
+  const state = await eventually(async () => { const value = await f.store.readControl(receipt.task_id);
+    return value.inputs[0]?.state === 'pending' ? value : null; });
+  await eventually(() => pendingObservation);
+  const claim = await coordinator.inputs.claim(receipt.task_id, state.inputs[0].input_id,
+    f.owner, state.control_generation);
+  if (mode === 'cancel') {
+    const stopped = await coordinator.cancel(receipt.task_id, f.owner,
+      state.control_generation, `cancel-${randomUUID()}`, 'Explicit SDK fixture cancellation');
+    assert.equal(stopped.outcome, 'accepted');
+  } else await coordinator.inputs.answer(receipt.task_id, claim.input_id, f.owner,
+    state.control_generation, claim.claim.id, `allow-${randomUUID()}`, 'allow');
+  const result = await eventually(() => f.store.readResult(receipt.task_id));
+  if (mode === 'success') {
+    assert.equal(releasedAfterValidation, true);
+    assert.equal(result.execution_status, 'completed', JSON.stringify(result));
+    assert.equal(result.worker_stop, 'confirmed');
+    assert.equal(result.delivery.status, 'committed');
+    assert.equal(result.delivery.head_commit, committed);
+    assert.equal((await git(f.root, 'rev-parse', result.delivery.branch_ref)).trim(), committed);
+    assert.equal((await f.store.readPrivatePublication(receipt.task_id)).state, 'published');
+    await coordinator.shutdown();
+    return;
+  }
+  assert.equal(result.execution_status, mode === 'cancel' ? 'cancelled' : 'failed');
+  assert.equal(result.worker_stop, mode === 'survivor' ? 'unconfirmed' : 'confirmed');
+  if (mode === 'unknown') assert.equal(result.error?.code, 'NATIVE_TASK_OPERATION_UNCERTAIN');
+  if (mode === 'unknown') {
+    const diagnostic = JSON.parse(await readFile(join(workerRoot, 'adapter-failure.json'), 'utf8'));
+    assert.deepEqual(diagnostic, { schema_version: 1,
+      error_code: 'NATIVE_TASK_OPERATION_UNCERTAIN', failure_frames: [] });
+  }
+  if (mode === 'dispatch') assert.equal(result.error?.code, 'NATIVE_APPROVAL_DISPATCH_UNKNOWN');
+  if (mode === 'survivor') {
+    assert.equal(releasedAfterValidation, true);
+    assert.equal(result.error?.code, 'STOP_SURVIVOR');
+  }
+  const resource = await f.store.readResource(receipt.task_id);
+  if (mode === 'unknown' || mode === 'survivor') {
+    assert.match(committed, /^[0-9a-f]{40}$/);
+    const head = (await readFile(join(privateView.private_common_dir,
+      privateView.admin_relative, 'HEAD'), 'utf8')).trim();
+    assert.match(head, /^ref: refs\/heads\//);
+    assert.equal((await readFile(join(privateView.private_common_dir,
+      head.slice(5)), 'utf8')).trim(), committed);
+    assert.equal((await git(f.root, 'rev-parse', resource.branch_ref)).trim(), f.base);
+  }
+  assert.equal(result.delivery.status, 'incomplete');
+  assert.equal(await f.store.readPrivatePublication(receipt.task_id), undefined);
+  assert.equal(resource.private_git.state, 'prepared');
+  assert.equal((await git(f.root, 'rev-parse', 'main')).trim(), f.base);
+  await coordinator.shutdown();
+}
+
+for (const mode of ['unknown', 'dispatch', 'cancel', 'survivor']) {
+  test(`SDK adapter Coordinator retains private resources after ${mode} failure`,
+    t => controlledAdapterFailure(t, mode));
+}
+test('SDK adapter Coordinator publishes after one shell call, three children, journal and stop',
+  t => controlledAdapterFailure(t, 'success'));
+async function eventually(read, timeoutMs = 3_000) {
+  const end = Date.now() + timeoutMs;
   while (Date.now() < end) { const value = await read(); if (value) return value; await delay(5); }
   throw Error('controlled protected task observation absent');
 }
@@ -1179,8 +1554,7 @@ test('installed no-account protected task survives old diagnostic deadline and s
     if (failure) throw failure;
   });
 
-test('installed no-account native private commit awaits a forwarded host human choice',
-  { skip: process.env.PASSEUR_MUSE_INSTALLED_COMMIT_TASK !== '1' }, async () => {
+async function runInstalledPrivateCommit(adapterMode) {
     if (!process.stdin.isTTY) throw Error('installed commit needs a persistent terminal input channel');
     if (process.env.PASSEUR_MUSE_COMMIT_CHANNEL_DRY_RUN === '1') {
       console.log(JSON.stringify({ kind: 'native_commit_channel_dry_run', stdin_tty: true }));
@@ -1189,7 +1563,10 @@ test('installed no-account native private commit awaits a forwarded host human c
     const retained = await mkdtemp(join(tmpdir(), 'passeur-muse-installed-commit-'));
     const project = join(retained, 'project'), worktrees = join(retained, 'worktrees');
     const evidencePath = join(retained, 'qualification.json');
-    const evidence = { kind: 'installed_no_account_native_private_commit',
+    const evidence = { kind: adapterMode ? 'installed_no_account_muse_sdk_adapter_private_commit' :
+      'installed_no_account_native_private_commit',
+      adapter_composition: adapterMode ? 'actual MuseSdkAdapter.run with fixture real-SDK ClientStarter' :
+        'raw MSP fixture',
       retained_root: retained, started_at: new Date().toISOString(), checkpoints: [] };
     const save = async () => writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`,
       { mode: 0o600 });
@@ -1217,7 +1594,7 @@ test('installed no-account native private commit awaits a forwarded host human c
     const store = new TaskStore(join(retained, 'state'));
     await store.initialize();
     let pendingObservation, retainedObservation;
-    const worker = protectedMuseWorker({ commitTask: true,
+    const worker = protectedMuseWorker({ commitTask: true, adapterMode,
       onRetained: observation => { retainedObservation = observation; },
       onPending: observation => { pendingObservation = observation; } });
     const coordinator = new Coordinator(project, 'protected-commit-fixture', policy, store,
@@ -1258,8 +1635,10 @@ test('installed no-account native private commit awaits a forwarded host human c
     assert.equal(resource.private_git.control_generation, state.control_generation);
     assert.equal((await git(project, 'rev-parse', resource.branch_ref)).trim(), base);
     assert.equal(await store.readPrivatePublication(receipt.task_id), undefined);
-    assert.equal(pendingObservation.approval.subject.session_id, state.native.native_session_id);
-    assert.equal(pendingObservation.approval.subject.turn_id, state.native.turn_id);
+    const nativeSubject = adapterMode ? pendingObservation.approval.subject.native :
+      pendingObservation.approval.subject;
+    assert.equal(nativeSubject.session_id, state.native.native_session_id);
+    assert.equal(nativeSubject.turn_id, state.native.turn_id);
     assert.equal(input.native_id, pendingObservation.approval.id);
     const command = JSON.parse(pendingObservation.approval.raw_args).command;
     const protectedNames = await readdir(join(pendingObservation.root, 'protected'));
@@ -1278,6 +1657,8 @@ test('installed no-account native private commit awaits a forwarded host human c
       worktree_path: resource.worktree_path,
       private_common_dir: resource.private_git.private_common_dir };
     evidence.worker_roots = [pendingObservation.root, pendingObservation.runtimeRoot];
+    if (adapterMode) evidence.adapter_artifacts = JSON.parse(await readFile(join(
+      pendingObservation.runtimeRoot, 'runtime', 'adapter-artifact-manifest.json'), 'utf8'));
     evidence.checkpoints.push({ kind: 'pending', at: new Date().toISOString() });
     await save();
     const claim = await coordinator.inputs.claim(receipt.task_id, input.input_id,
@@ -1354,8 +1735,9 @@ test('installed no-account native private commit awaits a forwarded host human c
     assert.equal(result.delivery.base_commit, base);
     assert.equal(result.delivery.branch_ref, resource.branch_ref);
     assert.equal(result.delivery.worktree_path, resource.worktree_path);
-    const nativeCommit = /^Native private commit ([0-9a-f]{40}|[0-9a-f]{64}) settled and stopped$/.exec(
-      result.summary ?? '')?.[1];
+    const nativeCommit = adapterMode ? result.delivery.head_commit :
+      /^Native private commit ([0-9a-f]{40}|[0-9a-f]{64}) settled and stopped$/.exec(
+        result.summary ?? '')?.[1];
     assert.ok(nativeCommit, 'worker summary retains the exact stopped native object ID');
     assert.equal(result.delivery.head_commit, nativeCommit);
     assert.equal((await git(project, 'rev-parse', `${nativeCommit}^`)).trim(), base);
@@ -1426,4 +1808,12 @@ test('installed no-account native private commit awaits a forwarded host human c
       }
       throw cause;
     } finally { channel?.close(); }
-  });
+}
+
+test('installed no-account native private commit awaits a forwarded host human choice',
+  { skip: process.env.PASSEUR_MUSE_INSTALLED_COMMIT_TASK !== '1' },
+  () => runInstalledPrivateCommit(false));
+
+test('installed no-account actual Muse SDK adapter commits only after confirmed stop',
+  { skip: process.env.PASSEUR_MUSE_INSTALLED_SDK_ADAPTER_TASK !== '1' },
+  () => runInstalledPrivateCommit(true));

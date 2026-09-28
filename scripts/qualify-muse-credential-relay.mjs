@@ -4,7 +4,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readlink, readdir, rename, rm, stat, symlink, writeFile, chmod, open } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readlink, readdir, rename, rm, stat, symlink, writeFile, chmod, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { once } from 'node:events';
@@ -14,6 +14,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { prepareSandbox, probeBubblewrap } from './experiment-worker-sandbox.mjs';
 import { pinnedNode, tcpProbe, classifyNoRoute, loopbackReady, parseBubblewrapStatus,
   startShellProvider, stageRuntime, startHostSentinel, runStatusPhase,
+  prepareSessions,
   captureHostIdentities, verifyHostStop, validateShellReady, validateReadFileOutcome,
   readFileCanaryFixture, shellProbeCommand, shellCommitCommand, bashCallEvents,
   verificationReminderSchemaDiscovery, fixedVerificationPayload } from './qualify-muse-sandbox-transport.mjs';
@@ -50,6 +51,7 @@ const NATIVE_EVENT_TYPES = new Set(['response.created', 'response.completed',
   'response.output_text.delta', 'response.output_text.done']);
 const GUEST_RUNTIME = '/mounts/runtime';
 const GUEST_SOCKET = '/mounts/relay/relay.sock';
+const GUEST_HOME = '/mounts/home';
 const REQUEST_LIMIT = 8_192;
 const RESPONSE_LIMIT = 65_536;
 const OUTPUT_LIMIT = 16_384;
@@ -1157,7 +1159,7 @@ async function fakeUpstream(bearer) {
 }
 
 export async function startNativeUpstream({ bearer, workspace, protectedRoot,
-  canaryToken, hostPort, shell = false, taskCommit = false }) {
+  canaryToken, hostPort, shell = false, taskCommit = false, adapterMode = false }) {
   if (typeof bearer !== 'string' || bearer.length < 24 || bearer === DUMMY ||
       typeof workspace !== 'string' || !workspace.startsWith('/tmp/') ||
       typeof protectedRoot !== 'string' || typeof canaryToken !== 'string' ||
@@ -1168,7 +1170,7 @@ export async function startNativeUpstream({ bearer, workspace, protectedRoot,
   const provider = await startShellProvider(hostPort,
     shell ? taskCommit ? shellCommitCommand(workspace, protectedRoot, canaryToken) :
       shellProbeCommand(workspace, protectedRoot, canaryToken) : 'NATIVE_READ_FILE_ONLY', {
-    ...(shell ? { outerOnly: true, taskCommit,
+    ...(shell ? { outerOnly: true, taskCommit, adapterMode,
       ...(taskCommit ? { resultEvidenceDir: protectedRoot } : {}) } : { readFileProbe: true }),
     workspace, protectedRoot, canaryToken,
     makeServer: handler => createServer((request, response) => {
@@ -1263,6 +1265,153 @@ export async function guestNativeFixture(config, {
   } finally { await relay.close(); }
 }
 
+export function createAdapterClientStarter({ spawnMspConnection, MuseClient,
+  readSessionDurability }, write) {
+  return options => {
+    const host = spawnMspConnection({ command: options.museBin,
+      args: ['serve', '--disable-sandbox'], cwd: options.cwd, env: options.env,
+      shutdownTimeoutMs: options.shutdownTimeoutMs,
+      onStderr: options.onStderr });
+    let rejectFailure;
+    const failure = new Promise((_resolve, reject) => { rejectFailure = reject; });
+    failure.catch(() => undefined);
+    const ready = host.initialize({ clientInfo: options.clientInfo,
+      capabilities: options.capabilities }).then(spawned => {
+      const registerNotification = spawned.connection.onNotification.bind(spawned.connection);
+      // SDK 1.3.0 has one notification handler. Wrap the handler installed by
+      // MuseClient so the real fold still receives every native frame once.
+      spawned.connection.onNotification = handler => registerNotification(notification => {
+        try { write({ kind: 'adapter_native_notification', notification }); }
+        catch { rejectFailure(fault('NATIVE_ADAPTER_OBSERVATION_FAILED',
+          'passive SDK notification capture failed')); }
+        return handler(notification);
+      });
+      spawned.connection.closed.then(() => rejectFailure(fault('MUSE_CONNECTION_CLOSED',
+        'native SDK connection closed')), () => rejectFailure(fault('MUSE_CONNECTION_FAILED',
+        'native SDK connection failed')));
+      const client = new MuseClient(spawned.connection, {
+        durability: readSessionDurability(spawned.initializeResult), host: spawned });
+      client.exit.then(() => rejectFailure(fault('MUSE_HOST_EXITED', 'native SDK host exited')),
+        () => rejectFailure(fault('MUSE_HOST_EXIT_UNKNOWN', 'native SDK host exit failed')));
+      return client;
+    });
+    ready.catch(() => undefined);
+    return { ready, failure, close: () => host.close() };
+  };
+}
+
+export function guestAdapterPaths(home = GUEST_HOME) {
+  return { settings: join(home, '.config', 'muse'), env: {
+    HOME: home, XDG_CONFIG_HOME: join(home, '.config'),
+    XDG_DATA_HOME: join(home, '.local', 'share'),
+    XDG_CACHE_HOME: join(home, '.cache'),
+    XDG_STATE_HOME: join(home, '.local', 'state'),
+  } };
+}
+
+export async function guestAdapterFixture(config, { frames, write = value =>
+  process.stdout.write(`${JSON.stringify(value)}\n`), startRelay = startGuestRelay,
+  onStage = () => undefined,
+  loadAdapter = () => import(`${GUEST_RUNTIME}/adapter/muse/adapter.js`),
+} = {}) {
+  if (config?.phase !== 'sdk-adapter' || config.taskOwned !== true ||
+      typeof config.runId !== 'string' || typeof config.workspace !== 'string' ||
+      !frames || typeof frames[Symbol.asyncIterator] !== 'function') {
+    throw fault('NATIVE_ADAPTER_CONFIG_INVALID', 'SDK guest requires a task-owned framed input');
+  }
+  onStage('relay_start');
+  const relay = await startRelay(GUEST_SOCKET, config.runId);
+  const abort = new AbortController();
+  const pending = new Map();
+  const control = (async () => {
+    for await (const line of frames) {
+      let value;
+      try { value = JSON.parse(line); } catch { throw fault('NATIVE_ADAPTER_CONTROL_INVALID', 'host frame is not JSON'); }
+      if (value?.kind === 'approval_choice' && typeof value.id === 'string') {
+        const answer = pending.get(value.id);
+        if (!answer || typeof value.choice_id !== 'string') throw fault('NATIVE_ADAPTER_CONTROL_INVALID', 'host choice has no pending request');
+        pending.delete(value.id);
+        answer.resolve({ choice_id: value.choice_id });
+      } else if (value?.kind === 'cancel') { abort.abort(); break; }
+      else throw fault('NATIVE_ADAPTER_CONTROL_INVALID', 'host frame is unsupported');
+    }
+    abort.abort();
+  })();
+  control.catch(() => abort.abort());
+  try {
+    onStage('loopback');
+    const loopback = spawnSync('/usr/sbin/ip', ['-o', 'link', 'show', 'lo'],
+      { encoding: 'utf8', timeout: 2_000 });
+    if (!loopbackReady(loopback)) throw fault('GUEST_LOOPBACK_UNAVAILABLE',
+      'SDK guest loopback is unavailable');
+    onStage('network');
+    const hostTcp = await tcpProbe('127.0.0.1', config.hostPort);
+    const external = await tcpProbe('203.0.113.1', 443);
+    if (hostTcp.kind === 'connected' || !classifyNoRoute(external)) {
+      throw fault('GUEST_NETWORK_UNVERIFIED', 'SDK guest network boundary is unverified');
+    }
+    onStage('canaries');
+    const canaries = { direct: await absent(join(config.protectedRoot, config.canaryToken)),
+      symlink: await absent(join(config.workspace, 'protected-link', config.canaryToken)),
+      proc: await absent(`/proc/1/root${join(config.protectedRoot, config.canaryToken)}`) };
+    if (Object.values(canaries).some(value => !value)) throw fault('CANARY_VISIBLE',
+      'SDK guest can see the host protected canary');
+    onStage('sessions');
+    await prepareSessions(GUEST_HOME);
+    onStage('settings');
+    const { settings, env } = guestAdapterPaths();
+    await mkdir(settings, { recursive: true, mode: 0o700 });
+    await writeFile(join(settings, 'settings.json'), `${JSON.stringify({ schema_version: 1,
+      endpoint_transport: { base_url: `http://127.0.0.1:${relay.port}`, auth: 'bearer' } })}\n`, { mode: 0o600 });
+    await writeFile(join(settings, 'auth.json'), `${JSON.stringify({ schema_version: 1,
+      providers: { meta: { api_key: DUMMY } } })}\n`, { mode: 0o600 });
+    Object.assign(process.env, env);
+    onStage('sdk_import');
+    const { MuseSdkAdapter } = await loadAdapter();
+    const { spawnMspConnection, MuseClient, readSessionDurability } = await import(
+      `${GUEST_RUNTIME}/sdk/dist/src/index.js`);
+    const startClient = createAdapterClientStarter({ spawnMspConnection,
+      MuseClient, readSessionDurability }, write);
+    const adapter = new MuseSdkAdapter({ muse_bin: `${GUEST_RUNTIME}/native-host-wrapper`,
+      model: NATIVE_MODEL, implementation: { sandbox_network: 'none' },
+      review: { sandbox_network: 'none' } }, startClient);
+    const guestInput = { task_id: config.taskId, workspace: config.workspace,
+      prompt: config.prompt, request: { mode: 'implement' },
+      policy: { stop_grace_ms: 2_000 }, signal: abort.signal,
+      onEvent: async event => write({ kind: 'adapter_event', event }),
+      approve: async (request, signal) => {
+        const id = randomBytes(12).toString('hex');
+        const answer = new Promise((resolveValue, reject) => {
+          pending.set(id, { resolve: resolveValue, reject });
+        });
+        const withdraw = () => pending.get(id)?.reject(fault('NATIVE_ADAPTER_INPUT_WITHDRAWN',
+          'native approval invocation ended'));
+        if (signal.aborted) withdraw();
+        else signal.addEventListener('abort', withdraw, { once: true });
+        try {
+          if (!signal.aborted) write({ kind: 'adapter_approval', id, request });
+          return await answer;
+        } finally {
+          signal.removeEventListener('abort', withdraw);
+          pending.delete(id);
+        }
+      },
+      input: async () => { throw fault('NATIVE_ADAPTER_INPUT_REQUIRED',
+        'synthetic fixed conversation requested unplanned clarification'); },
+    };
+    write({ kind: 'adapter_ready', relayPort: relay.port,
+      hostTcp, external, canaries, guestNamespace: await readlink('/proc/self/ns/net') });
+    onStage('adapter_run');
+    const result = await adapter.run(guestInput);
+    write({ kind: 'adapter_result', result });
+    return result;
+  } finally {
+    abort.abort();
+    for (const answer of pending.values()) answer.reject(fault('NATIVE_ADAPTER_STOPPED', 'native input stopped'));
+    await relay.close();
+  }
+}
+
 async function stage(root) {
   const runtime = join(root, 'runtime');
   await mkdir(runtime, { mode: 0o700 });
@@ -1288,6 +1437,67 @@ export async function stageNativeRuntime(root, muse, stagePinned = stageRuntime)
   }
   await copyFile(fileURLToPath(import.meta.url),
     join(runtime, 'qualify-muse-credential-relay.mjs'));
+  return runtime;
+}
+
+const ADAPTER_CLOSURE = Object.freeze([
+  'muse/adapter.js', 'core/errors.js', 'core/async.js', 'agents/report.js',
+  'agents/report-format.js', 'contracts/peer-delivery.js',
+  'contracts/peer-operations.js', 'coordination/peer-resolution.js',
+]);
+
+async function artifactTreeDigest(root) {
+  const hash = createHash('sha256');
+  const visit = async (path, relative = '') => {
+    const entries = await readdir(path, { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : 1)) {
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await visit(join(path, entry.name), name);
+      else if (entry.isFile()) hash.update(name).update('\0').update(await readFile(join(path, entry.name)));
+      else throw fault('NATIVE_ADAPTER_STAGE_INVALID', 'adapter dependency contains unsupported file type');
+    }
+  };
+  await visit(root);
+  return hash.digest('hex');
+}
+
+export async function stageAdapterRuntime(root, muse, stagePinned = stageNativeRuntime) {
+  const runtime = await stagePinned(root, muse);
+  const modules = join(runtime, 'adapter');
+  await mkdir(join(modules, 'node_modules', '@muse-code'), { recursive: true, mode: 0o700 });
+  const closure = [];
+  for (const relative of ADAPTER_CLOSURE) {
+    const source = resolve('dist/src', relative);
+    const target = join(modules, relative);
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    await copyFile(source, target);
+    const sourceDigest = createHash('sha256').update(await readFile(source)).digest('hex');
+    const stagedDigest = createHash('sha256').update(await readFile(target)).digest('hex');
+    if (sourceDigest !== stagedDigest) throw fault('NATIVE_ADAPTER_STAGE_INVALID',
+      'staged built adapter differs from its source artifact');
+    closure.push({ path: relative, sha256: stagedDigest });
+  }
+  await writeFile(join(modules, 'package.json'), '{"type":"module"}\n', { mode: 0o600 });
+  await symlink('../../../sdk', join(modules, 'node_modules', '@muse-code', 'sdk'));
+  const zodRoot = resolve('node_modules/zod');
+  const zodPackage = JSON.parse(await readFile(join(zodRoot, 'package.json'), 'utf8'));
+  if (zodPackage.version !== '4.1.11') throw fault('ZOD_MISMATCH', 'built adapter validator version differs');
+  await cp(zodRoot, join(modules, 'node_modules', 'zod'), { recursive: true });
+  const sdkRoot = resolve('node_modules/@muse-code/sdk');
+  const sdkPackage = JSON.parse(await readFile(join(sdkRoot, 'package.json'), 'utf8'));
+  if (sdkPackage.version !== '1.3.0') throw fault('SDK_MISMATCH',
+    'built adapter SDK version differs from pinned package');
+  const sdkDigest = await artifactTreeDigest(join(sdkRoot, 'dist'));
+  const zodDigest = await artifactTreeDigest(zodRoot);
+  if (sdkDigest !== await artifactTreeDigest(join(runtime, 'sdk', 'dist')) ||
+      zodDigest !== await artifactTreeDigest(join(modules, 'node_modules', 'zod'))) {
+    throw fault('NATIVE_ADAPTER_STAGE_INVALID', 'staged SDK or validator differs from pinned local artifact');
+  }
+  await writeFile(join(runtime, 'adapter-artifact-manifest.json'), `${JSON.stringify({
+    schema_version: 1, adapter: 'MuseSdkAdapter.run', fixture_starter: 'real_sdk_outer_bwrap',
+    sdk_version: sdkPackage.version, sdk_dist_sha256: sdkDigest,
+    zod_version: zodPackage.version, zod_tree_sha256: zodDigest, closure,
+  })}\n`, { mode: 0o600, flag: 'wx' });
   return runtime;
 }
 
@@ -2003,7 +2213,25 @@ export function nativeGuestControl(lines) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  if (process.argv[2] === '--guest-native') {
+  if (process.argv[2] === '--guest-adapter') {
+    const lines = createInterface({ input: process.stdin });
+    const iterator = lines[Symbol.asyncIterator]();
+    let stage = 'config';
+    try {
+      const first = await iterator.next();
+      if (first.done || Buffer.byteLength(first.value) > OUTPUT_LIMIT)
+        throw fault('NATIVE_ADAPTER_CONFIG_INVALID', 'SDK guest configuration is absent or oversized');
+      await guestAdapterFixture(JSON.parse(first.value), { frames: { [Symbol.asyncIterator]: () => iterator },
+        onStage: value => { stage = value; } });
+    } catch (error) {
+      process.stdout.write(`${JSON.stringify({ kind: 'guest_transport_error', stage: 'sdk_adapter',
+        preflight_stage: stage, code: boundedCode(error),
+        error_kind: ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'Error']
+          .includes(error?.name) ? error.name : 'Other',
+        message: 'SDK adapter guest failed' })}\n`);
+      process.exitCode = 1;
+    }
+  } else if (process.argv[2] === '--guest-native') {
     const { release, callerFailure, readConfig } = nativeGuestControl(
       createInterface({ input: process.stdin }));
     try {

@@ -1,7 +1,7 @@
 // Fixture-only, no-account Coordinator worker. The caller owns the accepted task lifetime.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -10,8 +10,10 @@ import { prepareSandbox, probeBubblewrap } from './experiment-worker-sandbox.mjs
 import { runStatusPhase, captureHostIdentities, verifyHostStop,
   parseBubblewrapStatus, startHostSentinel, shellProbeCommand, shellCommitCommand,
   validateShellReady, readTaskReminderJournal, fixedVerificationPayloadSha256,
+  runAdapterStatusPhase, captureAdapterHostIdentities, createTaskCommitCoverage,
+  commitShellItemMarkers,
 } from './qualify-muse-sandbox-transport.mjs';
-import { stageNativeRuntime, startNativeUpstream, startBroker, relaySandboxConfig,
+import { stageNativeRuntime, stageAdapterRuntime, startNativeUpstream, startBroker, relaySandboxConfig,
 } from './qualify-muse-credential-relay.mjs';
 
 const GUEST_RUNTIME = '/mounts/runtime';
@@ -440,13 +442,276 @@ export async function verifyStoppedPrivateCommit(input, commit) {
   return { commit, tree };
 }
 
+export function protectedAdapterApproval(frame, command, workspace) {
+  const request = frame?.request;
+  const native = request?.subject?.native;
+  let args;
+  try { args = JSON.parse(request?.raw_args); } catch { /* rejected below */ }
+  if (frame?.kind !== 'adapter_approval' || typeof frame.id !== 'string' ||
+      !/^[0-9a-f]{24}$/.test(frame.id) || request?.tool !== 'bash' ||
+      !native || native.tool_call_id !== 'call_native_shell_1' ||
+      !native.session_id || !native.turn_id || !native.approval_id ||
+      native.current_requirement_id?.approvalId !== native.approval_id ||
+      args?.command !== command || args?.description !== 'Disposable native shell qualification' ||
+      Object.keys(args ?? {}).sort().join(',') !== 'command,description' ||
+      request.workspace !== workspace || !Array.isArray(request.choices) ||
+      !request.choices.some(choice => choice.scope === 'once' && choice.decision === 'approved')) {
+    throw fault('NATIVE_TASK_APPROVAL_INVALID', 'SDK approval differs from the fixed native shell request');
+  }
+  return request;
+}
+
+async function ownedAdapterJournal(root, sessionId) {
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(sessionId)) {
+    throw fault('NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN',
+      'native session identity cannot select an owned journal');
+  }
+  const base = join(root, 'home', '.local', 'share', 'muse', 'sessions');
+  let paths = [base];
+  for (let depth = 0; depth < 4; depth++) {
+    const next = [];
+    for (const path of paths) {
+      const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
+      if (entries.length > 64) throw fault('NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN',
+        'isolated session tree exceeded its scan bound');
+      for (const entry of entries) if (entry.isDirectory() && !entry.isSymbolicLink())
+        next.push(join(path, entry.name));
+    }
+    paths = next;
+  }
+  const match = paths.filter(path => path.endsWith(`/${sessionId}`));
+  if (match.length !== 1) throw fault('NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN',
+    'isolated native session journal was not unique');
+  return `/mounts/home${match[0].slice(join(root, 'home').length)}/session.jsonl`;
+}
+
+async function runProtectedAdapter(input, options) {
+  const { muse, stage, sentinelStart, upstreamStart, brokerStart, prepare, probe,
+    launch, capture, verifyStop, onPending, onRetained } = options;
+  const view = input.private_git.view;
+  const root = await mkdtemp(join(tmpdir(), 'passeur-muse-protected-worker-'));
+  const runtimeRoot = await mkdtemp('/dev/shm/passeur-muse-protected-runtime-');
+  const home = join(root, 'home'), protectedRoot = join(root, 'protected');
+  const socketDirectory = join(root, 'socket');
+  let sentinel, upstream, broker, host, captured, stopProof, error, result, commit;
+  let journalIdentity, journalSnapshot;
+  let hostStarted = false, token;
+  const nativeAbort = new AbortController();
+  const cancel = () => { nativeAbort.abort(); host?.cancelTask(); };
+  input.signal.addEventListener('abort', cancel, { once: true });
+  try {
+    await onRetained({ taskId: input.task_id, root, runtimeRoot });
+    await Promise.all([home, protectedRoot, socketDirectory].map(path => mkdir(path, { mode: 0o700 })));
+    token = randomBytes(12).toString('hex');
+    await writeFile(join(protectedRoot, token), 'protected-no-account-canary',
+      { mode: 0o600, flag: 'wx' });
+    await symlink(protectedRoot, join(input.workspace, 'protected-link'));
+    const runtime = await stage(runtimeRoot, muse);
+    sentinel = await sentinelStart();
+    const runId = `run_${randomBytes(12).toString('hex')}`;
+    const bearer = randomBytes(32).toString('hex');
+    upstream = await upstreamStart({ bearer, workspace: input.workspace,
+      protectedRoot, canaryToken: token, hostPort: sentinel.port,
+      shell: true, taskCommit: true, adapterMode: true });
+    broker = await brokerStart({ socketPath: join(socketDirectory, 'relay.sock'),
+      upstreamOrigin: upstream.origin, runId, bearer, profile: 'native-shell',
+      workspace: input.workspace,
+      shellCommand: shellCommitCommand(input.workspace, protectedRoot, token) });
+    const prepared = prepare(relaySandboxConfig({ workspace: input.workspace, runtime, home,
+      protectedRoot, socketDirectory,
+      privateGit: { controlRoot: dirname(view.private_common_dir), view } }),
+    [SUPERVISOR_EXE, `${GUEST_RUNTIME}/qualify-muse-credential-relay.mjs`, '--guest-adapter']);
+    probe();
+    input.signal.throwIfAborted();
+    hostStarted = true;
+    host = launch(prepared, { phase: 'sdk-adapter', taskOwned: true, runId,
+      taskId: input.task_id, workspace: input.workspace, hostPort: sentinel.port,
+      protectedRoot, canaryToken: token,
+      prompt: 'NATIVE_SHELL_PROBE: Use the advertised bash tool once to run the disposable command. ' +
+        'Report its result. Finish with PASSEUR_MESSAGE followed by a version 2 final JSON object.' });
+    if (input.signal.aborted) host.cancelTask();
+    const hostDeath = host.finished.then(() => {
+      queueMicrotask(() => nativeAbort.abort());
+      throw fault('NATIVE_ADAPTER_HOST_EXIT', 'SDK guest exited before task settlement');
+    });
+    hostDeath.catch(() => undefined);
+    const earlyOutcome = host.outcome.then(value => {
+      queueMicrotask(() => nativeAbort.abort());
+      throw fault(value?.error?.code ?? 'NATIVE_ADAPTER_OUTCOME_EARLY',
+        'SDK guest settled before the retained native permission was dispatched');
+    }, cause => { queueMicrotask(() => nativeAbort.abort()); throw cause; });
+    earlyOutcome.catch(() => undefined);
+    const [ready, status] = await Promise.race([
+      Promise.all([host.ready, host.liveStatus]), hostDeath, earlyOutcome]);
+    if (!Number.isSafeInteger(ready.relayPort) || !status.child || status.exit !== null ||
+        !ready.canaries || Object.values(ready.canaries).length !== 3 ||
+        Object.values(ready.canaries).some(value => value !== true) ||
+        typeof ready.guestNamespace !== 'string') {
+      throw fault('NATIVE_ADAPTER_HOST_INVALID', 'SDK guest or namespace readiness is invalid');
+    }
+    const frame = await Promise.race([host.approval, hostDeath, earlyOutcome]);
+    const command = shellCommitCommand(input.workspace, protectedRoot, token);
+    const approval = protectedAdapterApproval(frame, command, input.workspace);
+    captured = await capture(host.pid, status.child, NATIVE_EXE, SUPERVISOR_EXE);
+    if (captured.native.netns !== ready.guestNamespace) throw fault('NATIVE_ADAPTER_HOST_INVALID',
+      'SDK guest namespace differs from the captured installed native process');
+    let eventCount = 0;
+    const forwardEvents = async () => {
+      const events = host.events();
+      for (; eventCount < events.length; eventCount++) await input.onEvent(events[eventCount]);
+    };
+    await forwardEvents();
+    await onPending({ taskId: input.task_id, runId, approval, root, runtimeRoot,
+      processIdentities: { wrapper: captured.wrapper, statusChild: captured.statusChild,
+        native: captured.native, pidns: captured.pidns } });
+    const pendingAnswer = input.approve(approval,
+      AbortSignal.any([input.signal, nativeAbort.signal]));
+    pendingAnswer.catch(() => undefined);
+    const answer = await Promise.race([pendingAnswer, hostDeath, earlyOutcome]);
+    const selected = approval.choices.find(choice => choice.id === answer?.choice_id);
+    if (!selected || selected.scope !== 'once' || selected.decision !== 'approved') {
+      throw fault('NATIVE_TASK_DECISION_INVALID', 'SDK fixture requires exact human once approval');
+    }
+    host.sendChoice(frame.id, selected.id);
+    result = await Promise.race([host.outcome, hostDeath]);
+    await forwardEvents();
+    if (result?.status !== 'completed' || result.worker_assessment !== 'met') {
+      throw fault(result?.error?.code ?? 'NATIVE_ADAPTER_RESULT_INVALID',
+        'actual MuseSdkAdapter did not complete the fixed assignment');
+    }
+    await broker.close();
+    const brokerEvidence = broker.evidence;
+    broker = undefined;
+    await upstream.provider.freeze();
+    const requests = upstream.provider.requests;
+    const responses = requests.filter(value => value.path === '/responses');
+    if (upstream.provider.state?.primaryCode || upstream.provider.state?.failed ||
+        upstream.provider.state?.active !== 0 || responses.length !== 5 ||
+        requests.filter(value => value.path === '/muse-code/models' &&
+          value.method === 'GET').length < 1 ||
+        requests.some(value => !['/responses', '/muse-code/models'].includes(value.path)) ||
+        brokerEvidence?.firstFailure || brokerEvidence?.rejected !== 0 ||
+        brokerEvidence?.accepted !== requests.length ||
+        upstream.seen?.length !== requests.length ||
+        upstream.seen.some(value => !value.correctBearer || !value.dummyAbsent) ||
+        requests.filter(value => value.kind === 'native_tool_call').length !== 1 ||
+        requests.filter(value => value.kind === 'native_reminder_call').length !== 2 ||
+        requests.filter(value => value.kind === 'native_verification_reminder_call').length !== 1 ||
+        requests.filter(value => value.kind === 'matching_tool_result').length !== 1) {
+      throw fault('NATIVE_TASK_PROVIDER_INVALID', 'SDK provider request sequence differed');
+    }
+    const correlated = host.events().find(value => value?.kind === 'turn_correlated');
+    const settled = host.events().find(value => value?.kind === 'turn_settled' &&
+      value.turn_id === correlated?.turn_id);
+    if (!correlated?.native_session_id || !settled ||
+        !host.events().some(value => value?.kind === 'operation_finished')) {
+      throw fault('NATIVE_TASK_SETTLEMENT_INVALID', 'SDK adapter lacks correlated settled native evidence');
+    }
+    const coverage = createTaskCommitCoverage();
+    coverage.bindSession(correlated.native_session_id);
+    coverage.bindTurn(correlated.turn_id);
+    const notifications = host.notifications();
+    for (const notification of notifications) {
+      if (notification?.method === 'turn/completed') coverage.finish(notification.params);
+      else coverage.accept(notification?.method, notification?.params);
+    }
+    const native = coverage.snapshot();
+    if (native.completed.length !== 1 ||
+        native.completed[0].callId !== 'call_native_shell_1' ||
+        native.children.length !== 3) {
+      throw fault('NATIVE_TASK_SETTLEMENT_INVALID', 'SDK native child or tool coverage differs');
+    }
+    const shell = notifications.find(value => value?.method === 'item/completed' &&
+      value.params?.item?.callId === 'call_native_shell_1')?.params?.item;
+    const markers = commitShellItemMarkers(shell?.visibleOutput, input.workspace,
+      protectedRoot, token);
+    let nativeArgs;
+    try { nativeArgs = JSON.parse(shell?.args); } catch { /* rejected below */ }
+    if (shell?.status !== 'completed' || shell?.turnId !== correlated.turn_id ||
+        nativeArgs?.command !== command ||
+        requests.find(value => value.kind === 'native_tool_call')?.callId !== shell.callId ||
+        requests.find(value => value.kind === 'matching_tool_result')?.outputMarkers?.commit !==
+          markers?.commit ||
+        !markers?.outputMarkers ||
+        !markers.workspaceReportedWritten || !/^[0-9a-f]{40}$/.test(markers.commit ?? '')) {
+      throw fault('NATIVE_TASK_COMMIT_INVALID', 'SDK native shell lacked an exact private commit');
+    }
+    commit = markers.commit;
+    const calls = ['call_native_reminder_1', 'call_native_reminder_2',
+      'call_native_verify_reminder_1'];
+    const expected = native.children.map((child, index) => ({
+      ...child, callId: calls[index] }));
+    journalIdentity = { sessionId: correlated.native_session_id,
+      turnId: correlated.turn_id, expected };
+    const journal = await ownedAdapterJournal(root, correlated.native_session_id);
+    journalSnapshot = await readTaskReminderJournal(root, journal, journalIdentity);
+    host.finishTask();
+  } catch (cause) { error = cause; }
+  finally {
+    nativeAbort.abort();
+    if (host && (error || input.signal.aborted)) host.cancelTask();
+    if (host) {
+      const awaited = await awaitTaskHostFinished(host, { shutdownReleased: !error,
+        priorError: error, cancelled: input.signal.aborted, cleanupMs: 10_000 });
+      error ??= awaited.error ?? awaited.stopError;
+      if (captured && awaited.finished) {
+        try { stopProof = (await verifySettledStop(verifyStop, captured,
+          parseBubblewrapStatus(awaited.finished.statusLines), awaited.finished)).proof; }
+        catch (cause) { error ??= cause; }
+      }
+      if (awaited.finished?.code !== 0 || awaited.finished?.signal ||
+          awaited.finished?.overflow || !awaited.finished?.statusClosed) {
+        error ??= fault('NATIVE_ADAPTER_HOST_INVALID', 'SDK guest did not stop cleanly');
+      }
+    }
+    input.signal.removeEventListener('abort', cancel);
+    if (captured) await captured.fd.close().catch(() => undefined);
+    for (const resource of [broker, upstream, sentinel]) if (resource)
+      await within(resource.close(), 5_000, 'NATIVE_TASK_RESOURCE_STOP_UNCONFIRMED')
+        .catch(cause => { error ??= cause; });
+  }
+  if (token && await readFile(join(protectedRoot, token), 'utf8').catch(() => null) !==
+      'protected-no-account-canary') error ??= fault('NATIVE_TASK_CANARY_INVALID',
+    'protected host canary changed');
+  if (commit && !error && stopProof?.kind === 'confirmed') {
+    try {
+      const finalJournal = await readTaskReminderJournal(root,
+        await ownedAdapterJournal(root, journalIdentity.sessionId), journalIdentity);
+      if (JSON.stringify(finalJournal) !== JSON.stringify(journalSnapshot)) {
+        throw fault('NATIVE_TASK_REMINDER_ASSOCIATION_UNKNOWN',
+          'SDK native journal association changed after stop');
+      }
+      if (await readFile(join(input.workspace, 'qualified-change.txt'), 'utf8') !==
+          'native committed change\n') throw fault('NATIVE_TASK_WORKSPACE_INVALID',
+        'SDK private workspace changed after stop');
+      await verifyStoppedPrivateCommit(input, commit);
+    }
+    catch (cause) { error = cause; }
+  }
+  if (commit && !error && stopProof?.kind === 'confirmed') {
+    return { ...result, worker_stop: 'confirmed' };
+  }
+  if (error) {
+    const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ?
+      error.code : 'NATIVE_TASK_FAILED';
+    await writeFile(join(root, 'adapter-failure.json'), `${JSON.stringify({
+      schema_version: 1, error_code: code,
+      failure_frames: host?.failureFrames?.().slice(0, 8) ?? [],
+    }, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+  }
+  return stoppedResult(input.signal.aborted ? 'cancelled' : 'failed', stopProof, error,
+    hostStarted, [root, runtimeRoot], null, null);
+}
+
 export function protectedMuseWorker({ muse = '/home/jeremy/.local/bin/muse',
   stage = stageNativeRuntime, sentinelStart = startHostSentinel,
   upstreamStart = startNativeUpstream, brokerStart = startBroker,
   prepare = prepareSandbox, probe = probeBubblewrap, launch = runStatusPhase,
   capture = captureHostIdentities, verifyStop = verifyHostStop,
   validateReady = validateShellReady,
-  commitTask = false,
+  commitTask = false, adapterMode = false,
+  adapterStage = stageAdapterRuntime, adapterLaunch = runAdapterStatusPhase,
+  adapterCapture = captureAdapterHostIdentities,
   onPending = async () => undefined,
   onRetained = async () => undefined,
 } = {}) {
@@ -458,6 +723,13 @@ export function protectedMuseWorker({ muse = '/home/jeremy/.local/bin/muse',
           input.signal.aborted || typeof input.workspace !== 'string' ||
           !input.workspace.startsWith('/tmp/')) {
         throw fault('NATIVE_TASK_INPUT_INVALID', 'protected worker needs one live Coordinator-owned private task');
+      }
+      if (adapterMode) {
+        if (!commitTask) throw fault('NATIVE_ADAPTER_CONFIG_INVALID',
+          'actual SDK fixture requires protected private commit mode');
+        return runProtectedAdapter(input, { muse, stage: adapterStage, sentinelStart,
+          upstreamStart, brokerStart, prepare, probe, launch: adapterLaunch,
+          capture: adapterCapture, verifyStop, onPending, onRetained });
       }
       const view = input.private_git.view;
       const controlRoot = dirname(view.private_common_dir);

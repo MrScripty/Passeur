@@ -1336,7 +1336,7 @@ export function shellTextEvents(text = 'Fixture shell result observed.',
 export async function startShellProvider(forbiddenPort, command, {
   makeServer = createServer, waitListen = listen, shut = close,
   readFileSchemaOnly = false, readFileProbe = false, protectedRead = false, dummyAuthRead = false,
-  outerOnly = false, taskCommit = false, resultEvidenceDir = null,
+  outerOnly = false, taskCommit = false, adapterMode = false, resultEvidenceDir = null,
   persistResultEvidence = persistOuterShellResultEvidence,
   persistReminderRejectionEvidence = persistProviderReminderRejectionEvidence,
   workspace, protectedRoot, canaryToken, targetPath,
@@ -1817,7 +1817,10 @@ export async function startShellProvider(forbiddenPort, command, {
             throw fault('NATIVE_RESULT_EVIDENCE_WRITE_FAILED', 'outer shell result evidence was not persisted');
           }
           if (outerOnly) summary.resultEnvelope = projection;
-          const events = shellTextEvents();
+          const events = shellTextEvents(adapterMode ?
+            `PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: 'final',
+              summary: 'Protected native commit settled', assessment: 'met', blockers: [],
+              questions: [], checks: [] })}` : 'Fixture shell result observed.');
           const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
           const outputBytes = Buffer.byteLength(output);
           if (state.outputBytes + outputBytes > LIMIT) {
@@ -1965,7 +1968,7 @@ export async function verifyNativeServeArgs(pid, expected, { read = readFile } =
   return { exact: true, args: [...OUTER_ONLY_SERVE_ARGS] };
 }
 
-async function prepareSessions(home) {
+export async function prepareSessions(home) {
   const made = [];
   let path = home;
   for (const part of ['.local', 'share', 'muse', 'sessions']) {
@@ -3121,6 +3124,16 @@ export async function captureHostIdentities(wrapperPid, childPid, nativeStart, n
   } catch (error) { await fd.close(); throw error; }
 }
 
+export async function captureAdapterHostIdentities(wrapperPid, childPid, nativeExe, supervisorExe) {
+  const boot = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+  const statusChild = await processIdentity(childPid, boot);
+  const members = await namespaceMembers(statusChild.pidns, boot);
+  const native = members.filter(member => member.exe === nativeExe);
+  if (native.length !== 1) throw fault('STOP_ASSOCIATION_INVALID',
+    'SDK guest must have exactly one installed native process');
+  return captureHostIdentities(wrapperPid, childPid, native[0].start, nativeExe, supervisorExe);
+}
+
 export function assertHostAssociation(wrapper, statusChild, members, nativeStart, nativeExe, supervisorExe) {
   if (statusChild.pidns === wrapper.pidns || statusChild.netns === wrapper.netns) {
     throw fault('STOP_ASSOCIATION_INVALID', 'Bubblewrap child is not in the new namespaces');
@@ -3527,6 +3540,102 @@ export function runStatusPhase(prepared, config) {
       taskStopTimer ??= setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }, 2_000).unref(); }, finished };
+}
+
+export function runAdapterStatusPhase(prepared, config) {
+  if (config?.phase !== 'sdk-adapter' || config.taskOwned !== true ||
+      typeof config.taskId !== 'string' || typeof config.prompt !== 'string') {
+    throw fault('NATIVE_ADAPTER_CONFIG_INVALID', 'SDK host requires exact task ownership');
+  }
+  const separator = prepared.args.indexOf('--');
+  if (separator < 0) throw fault('BWRAP_STATUS_INVALID', 'prepared sandbox lacks command delimiter');
+  const args = [...prepared.args.slice(0, separator), '--json-status-fd', '3',
+    ...prepared.args.slice(separator)];
+  const child = spawn(prepared.executable, args,
+    { stdio: ['pipe', 'pipe', 'pipe', 'pipe'], env: {} });
+  const output = [], statusLines = [], events = [], notifications = [], failureFrames = [];
+  let overflow = false, statusClosed = false, childClosed = false;
+  let readyResolve, readyReject, approvalResolve, approvalReject, resultResolve, resultReject;
+  let statusResolve, statusReject;
+  const ready = new Promise((resolveValue, reject) => { readyResolve = resolveValue; readyReject = reject; });
+  const approval = new Promise((resolveValue, reject) => { approvalResolve = resolveValue; approvalReject = reject; });
+  const outcome = new Promise((resolveValue, reject) => { resultResolve = resolveValue; resultReject = reject; });
+  const liveStatus = new Promise((resolveValue, reject) => { statusResolve = resolveValue; statusReject = reject; });
+  for (const promise of [ready, approval, outcome, liveStatus]) promise.catch(() => undefined);
+  const terminate = () => { if (!childClosed) child.kill('SIGTERM'); };
+  const bounded = (list, line) => {
+    list.push(line);
+    if (Buffer.byteLength(list.join('\n')) > 1_048_576) { overflow = true; terminate(); }
+  };
+  for (const stream of [child.stdout, child.stderr, child.stdio[3]]) {
+    let bytes = 0;
+    stream.on('data', chunk => { bytes += chunk.length;
+      if (bytes > 1_048_576) { overflow = true; terminate(); } });
+  }
+  createInterface({ input: child.stdout }).on('line', line => {
+    bounded(output, line);
+    let frame;
+    try { frame = JSON.parse(line); } catch { frame = null; }
+    if (!frame || typeof frame.kind !== 'string') { resultReject(fault('GUEST_OUTPUT_INVALID', 'SDK guest frame is invalid')); return; }
+    if (frame.kind === 'adapter_ready') readyResolve(frame);
+    else if (frame.kind === 'adapter_event') {
+      if (events.length < 512) events.push(frame.event);
+      else { overflow = true; terminate(); }
+    } else if (frame.kind === 'adapter_native_notification') {
+      if (notifications.length < 512) notifications.push(frame.notification);
+      else { overflow = true; terminate(); }
+    } else if (frame.kind === 'adapter_approval') approvalResolve(frame);
+    else if (frame.kind === 'adapter_result') resultResolve(frame.result);
+    else if (frame.kind === 'guest_transport_error') {
+      failureFrames.push({ kind: 'guest_transport_error',
+        stage: frame.stage === 'sdk_adapter' ? frame.stage : 'unknown',
+        preflight_stage: ['config', 'relay_start', 'loopback', 'network', 'canaries',
+          'sessions', 'settings', 'sdk_import', 'adapter_run'].includes(frame.preflight_stage) ?
+          frame.preflight_stage : 'unknown',
+        code: /^[A-Z][A-Z0-9_]{0,63}$/.test(frame.code ?? '') ? frame.code : 'GUEST_OUTPUT_INVALID',
+        error_kind: ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'Error',
+          'Other'].includes(frame.error_kind) ? frame.error_kind : 'Other' });
+      resultReject(fault(frame.code ?? 'GUEST_OUTPUT_INVALID',
+        'SDK guest reported native failure'));
+    }
+    else resultReject(fault('GUEST_OUTPUT_INVALID', 'SDK guest frame kind is unsupported'));
+  });
+  createInterface({ input: child.stdio[3] }).on('line', line => {
+    bounded(statusLines, line);
+    try { const status = parseBubblewrapStatus(statusLines); if (status.child) statusResolve(status); }
+    catch (error) { statusReject(error); }
+  });
+  child.stdio[3].on('end', () => { statusClosed = true; });
+  child.stdin.on('error', () => undefined);
+  child.stdin.write(`${JSON.stringify(config)}\n`);
+  const finished = new Promise(resolveValue => {
+    const settle = (code, signal, error) => {
+      childClosed = true;
+      const early = fault('NATIVE_ADAPTER_HOST_EXIT', 'SDK guest exited before required evidence');
+      readyReject(early); approvalReject(early); resultReject(early); statusReject(early);
+      resolveValue({ code, signal, error, overflow, output, statusLines, statusClosed });
+    };
+    child.once('error', error => settle(null, null, error.code ?? error.name));
+    child.once('close', (code, signal) => settle(code, signal, null));
+  });
+  return { pid: child.pid, ready, approval, outcome, liveStatus, finished,
+    events: () => [...events], notifications: () => [...notifications],
+    failureFrames: () => [...failureFrames],
+    statusLines: () => [...statusLines],
+    sendChoice: (id, choiceId) => {
+      if (childClosed || child.stdin.destroyed || child.stdin.writableEnded ||
+          !controlId(id) || !controlId(choiceId)) throw fault('NATIVE_ADAPTER_CONTROL_INVALID',
+        'SDK choice cannot be delivered to the owned guest');
+      child.stdin.write(`${JSON.stringify({ kind: 'approval_choice', id, choice_id: choiceId })}\n`);
+    },
+    finishTask: () => { if (!childClosed && !child.stdin.destroyed && !child.stdin.writableEnded)
+      child.stdin.end(); },
+    cancelTask: () => { if (!childClosed) {
+      if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end(`${JSON.stringify({ kind: 'cancel' })}\n`);
+      child.kill('SIGTERM');
+      setTimeout(() => { if (!childClosed) child.kill('SIGKILL'); }, 2_000).unref();
+    } },
+  };
 }
 
 export function decodeShellOutcomeLine(line) {

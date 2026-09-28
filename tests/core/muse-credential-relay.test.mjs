@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
-import { chmod, mkdtemp, mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, copyFile, mkdtemp, mkdir, lstat, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
@@ -12,15 +12,137 @@ import { pathToFileURL } from 'node:url';
 import { assertSocketIdentity, relaySandboxConfig, requestDecision, startBroker,
   startGuestRelay, captureFixtureProcesses, verifyFixtureStop,
   validateNativeSse, startNativeUpstream, nativeRejectionProjection,
-  stageNativeRuntime, guestNativeFixture, issuedShellDescriptorFromSse } from '../../scripts/qualify-muse-credential-relay.mjs';
+  stageNativeRuntime, stageAdapterRuntime, guestNativeFixture, guestAdapterFixture,
+  createAdapterClientStarter, guestAdapterPaths,
+  issuedShellDescriptorFromSse } from '../../scripts/qualify-muse-credential-relay.mjs';
 import { prepareSandbox } from '../../scripts/experiment-worker-sandbox.mjs';
-import { readFileCanaryFixture, shellProbeCommand, bashCallEvents } from '../../scripts/qualify-muse-sandbox-transport.mjs';
+import { readFileCanaryFixture, shellProbeCommand, bashCallEvents,
+  prepareSessions } from '../../scripts/qualify-muse-sandbox-transport.mjs';
 import { runStatusPhase } from '../../scripts/qualify-muse-sandbox-transport.mjs';
 
 const runId = 'run_0123456789abcdef01234567';
 const model = 'fixture-relay-model';
 const dummy = 'passeur-disposable-dummy-key';
 const REQUEST_OVERSIZE = 9_000;
+
+test('SDK adapter mode stages only the built runtime import closure and pinned validator', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-sdk-stage-test-'));
+  try {
+    const runtime = join(root, 'runtime');
+    await mkdir(join(runtime, 'sdk'), { recursive: true });
+    await cp('node_modules/@muse-code/sdk/dist', join(runtime, 'sdk/dist'), { recursive: true });
+    await copyFile('node_modules/@muse-code/sdk/package.json', join(runtime, 'sdk/package.json'));
+    assert.equal(await stageAdapterRuntime(root, 'unused', async () => runtime), runtime);
+    for (const relative of ['muse/adapter.js', 'core/errors.js', 'core/async.js',
+      'agents/report.js', 'agents/report-format.js', 'contracts/peer-delivery.js',
+      'contracts/peer-operations.js', 'coordination/peer-resolution.js']) {
+      assert.deepEqual(await readFile(join(runtime, 'adapter', relative)),
+        await readFile(join('dist/src', relative)));
+    }
+    const zod = JSON.parse(await readFile(join(runtime, 'adapter/node_modules/zod/package.json')));
+    assert.equal(zod.version, '4.1.11');
+    const manifest = JSON.parse(await readFile(join(runtime, 'adapter-artifact-manifest.json')));
+    assert.equal(manifest.adapter, 'MuseSdkAdapter.run');
+    assert.equal(manifest.sdk_version, '1.3.0');
+    assert.equal(manifest.zod_version, '4.1.11');
+    assert.equal(manifest.closure.length, 8);
+    for (const entry of manifest.closure) assert.equal(entry.sha256,
+      createHash('sha256').update(await readFile(join('dist/src', entry.path))).digest('hex'));
+    const module = await import(pathToFileURL(join(runtime, 'adapter/muse/adapter.js')).href);
+    assert.equal(typeof module.MuseSdkAdapter, 'function');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('SDK guest rejects unowned mode before relay startup', async () => {
+  await assert.rejects(guestAdapterFixture({ phase: 'sdk-adapter', taskOwned: false },
+    { frames: { async *[Symbol.asyncIterator]() {} }, startRelay: () => {
+      throw Error('relay must not start'); } }), { code: 'NATIVE_ADAPTER_CONFIG_INVALID' });
+});
+
+test('SDK guest preflight resolves the sandbox mounted HOME and XDG paths', () => {
+  const paths = guestAdapterPaths();
+  assert.equal(paths.settings, '/mounts/home/.config/muse');
+  assert.deepEqual(paths.env, {
+    HOME: '/mounts/home', XDG_CONFIG_HOME: '/mounts/home/.config',
+    XDG_DATA_HOME: '/mounts/home/.local/share',
+    XDG_CACHE_HOME: '/mounts/home/.cache',
+    XDG_STATE_HOME: '/mounts/home/.local/state',
+  });
+});
+
+test('SDK guest prepares an owned empty mode 0700 native sessions path', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-sdk-sessions-test-'));
+  try {
+    const paths = await prepareSessions(root);
+    assert.deepEqual(paths, ['.local', '.local/share', '.local/share/muse',
+      '.local/share/muse/sessions']);
+    for (const relative of paths) {
+      const entry = await lstat(join(root, relative));
+      assert.equal(entry.isDirectory(), true);
+      assert.equal(entry.uid, process.getuid());
+      assert.equal(entry.mode & 0o7777, 0o700);
+    }
+    const sessions = join(root, '.local/share/muse/sessions');
+    assert.deepEqual(await readdir(sessions), []);
+    await writeFile(join(sessions, 'foreign'), 'not a new session');
+    await assert.rejects(prepareSessions(root), { code: 'EEXIST' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('fixture passive tap preserves the SDK single notification pump and order', async () => {
+  const observed = [], routed = [];
+  let handler;
+  const connection = { closed: new Promise(() => {}),
+    onNotification(next) { handler = next; } };
+  const host = { initialize: async () => ({ connection, initializeResult: {},
+    child: {} }), close: async () => {} };
+  const start = createAdapterClientStarter({
+    spawnMspConnection: options => {
+      assert.deepEqual(options.args, ['serve', '--disable-sandbox']);
+      return host;
+    },
+    MuseClient: class {
+      constructor(owned) {
+        owned.onNotification(value => { routed.push(value); return value.method; });
+        this.exit = new Promise(() => {});
+      }
+    },
+    readSessionDurability: () => 'durable',
+  }, value => observed.push(value));
+  const started = start({ museBin: 'native', cwd: '/tmp', env: {}, clientInfo: {} });
+  await started.ready;
+  const first = { method: 'item/started', params: { item: { itemId: 'one' } } };
+  const second = { method: 'item/completed', params: { item: { itemId: 'one' } } };
+  assert.equal(handler(first), 'item/started');
+  assert.equal(handler(second), 'item/completed');
+  assert.deepEqual(routed, [first, second]);
+  assert.deepEqual(observed, [
+    { kind: 'adapter_native_notification', notification: first },
+    { kind: 'adapter_native_notification', notification: second },
+  ]);
+});
+
+test('fixture capture failure leaves native delivery intact and fails the startup owner', async () => {
+  let handler, routed = 0;
+  const connection = { closed: new Promise(() => {}),
+    onNotification(next) { handler = next; } };
+  const start = createAdapterClientStarter({
+    spawnMspConnection: () => ({ initialize: async () => ({ connection,
+      initializeResult: {}, child: {} }), close: async () => {} }),
+    MuseClient: class {
+      constructor(owned) {
+        owned.onNotification(() => { routed++; });
+        this.exit = new Promise(() => {});
+      }
+    },
+    readSessionDurability: () => 'durable',
+  }, () => { throw Error('capture failed'); });
+  const started = start({ museBin: 'native', cwd: '/tmp', env: {}, clientInfo: {} });
+  await started.ready;
+  handler({ method: 'item/started' });
+  assert.equal(routed, 1);
+  await assert.rejects(started.failure, { code: 'NATIVE_ADAPTER_OBSERVATION_FAILED' });
+});
 
 function request(method, url, headers = {}) {
   const defaults = { host: '127.0.0.1:1', authorization: `Bearer ${dummy}`,
