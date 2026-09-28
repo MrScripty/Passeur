@@ -1,5 +1,10 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-28 — exact six-field relay reaches tool-schema refusal
+
+- Operation `continue` from reviewed exact-admission commit `b71f30e`. Parent pure focused tests passed 17/17 with eight local-network skips and elevated local-only tests passed 25/25. Independent Astra High found and then cleared the raw UTF-8 admission P2; exact six-field constraints and canonical stripping were independently checked.
+- One fresh installed no-account synthetic host passed the six top-level controls, then broker admission returned primary `native_turn/NATIVE_TOOLS_INVALID` on its first Responses POST. One catalog route reached the fake upstream; the native turn failed. Exact four-process/PID-namespace stop was confirmed. The rejected request has one namespace and 25 functions; current evidence cannot identify the failing tool predicate. Capture `/tmp/passeur-muse-native-credential-relay-3dh6sN/socket/first-rejected-native-post.json` SHA-256 `e17eceaaea7440851f4a3bbe573d4356c8955e81ab48140086b86c523666ae6e`; bounded `/tmp/passeur-muse-native-credential-relay-tools-evidence-20260928.json` SHA-256 `89b0a69159c783cb69704700265f3dcad77092771ec89364e6d9a805e1f4ab5f`. The `/tmp` root remained after exit, while the immediate-result `/dev/shm` runtime was absent on later inspection. No accepted native turn, real account, external provider or protected worker is claimed. Next: value-free exact tool failure classification before any tool policy change.
+
 ## 2026-09-28 — installed relay value shapes, still rejected
 
 - Operation `continue` from reviewed value-shape commit `bd9e3d1`. Parent pure tests passed 17/17 with eight local-network cases skipped and elevated local-only tests passed 25/25. Independent Astra High found and then cleared an artifact-bound P2; its adversarial 262,144-byte request produced a 4,025-byte value-free artifact after deterministic sample trimming.
