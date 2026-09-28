@@ -1363,6 +1363,7 @@ export async function qualify({ checkBubblewrap = probeBubblewrap, execute = exe
 
 export async function qualifyNativeRelay({
   muse = '/home/jeremy/.local/bin/muse', checkBubblewrap = probeBubblewrap,
+  turnCheckpointId, recordTurn, callerFailure,
   stagePinned = stageNativeRuntime, startSentinel = startHostSentinel,
   startUpstream = startNativeUpstream, startSocketBroker = startBroker,
   probe = tcpProbe, prepare = prepareSandbox,
@@ -1370,6 +1371,26 @@ export async function qualifyNativeRelay({
   inspectSocket = lstat, validateReady = validateShellReady,
   validateOutcome = validateReadFileOutcome, inspectRetainedRoot = lstat,
 } = {}) {
+  const checkpointEnabled = turnCheckpointId !== undefined || recordTurn !== undefined;
+  if (checkpointEnabled && (typeof turnCheckpointId !== 'string' ||
+      turnCheckpointId.length === 0 || Buffer.byteLength(turnCheckpointId) > 256 ||
+      turnCheckpointId.includes('\0') || typeof recordTurn !== 'function')) {
+    throw fault('NATIVE_TURN_CHECKPOINT_CONFIG_INVALID',
+      'native relay checkpoint requires an explicit ID and durable recorder');
+  }
+  if (callerFailure !== undefined && (!checkpointEnabled ||
+      typeof callerFailure?.then !== 'function')) {
+    throw fault('NATIVE_TURN_CHECKPOINT_CONFIG_INVALID',
+      'caller failure signal requires a checkpoint and a promise');
+  }
+  let callerFailureError = null;
+  const callerGate = callerFailure === undefined ? undefined : Promise.resolve(callerFailure).then(
+    () => { callerFailureError = fault('NATIVE_TURN_CALLER_FAILED',
+      'native relay caller settled without failure'); throw callerFailureError; },
+    reason => { callerFailureError = reason instanceof Error ? reason :
+      fault('NATIVE_TURN_CALLER_FAILED', 'native relay caller failed without an Error');
+    throw callerFailureError; });
+  callerGate?.catch(() => undefined);
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-native-credential-relay-'));
   let runtimeRoot;
   let sentinel;
@@ -1382,10 +1403,16 @@ export async function qualifyNativeRelay({
   let stageName = 'prepare';
   let observed = null;
   let hostStarted = false;
+  let turnEvidence = null;
+  let pendingRecord = null;
+  let rawRecorder = null;
+  let rawRecorderSettlement = null;
+  let recordSettlementUnverified = false;
   const sourceFailures = { first: null };
   let rejectProvider;
   let rejectBroker;
   try {
+    if (callerFailureError) throw callerFailureError;
     runtimeRoot = await mkdtemp('/dev/shm/passeur-muse-native-relay-runtime-');
     const workspace = join(root, 'workspace');
     const home = join(root, 'home');
@@ -1434,16 +1461,22 @@ export async function qualifyNativeRelay({
       throw noteSourceFailure('broker', event.code);
     });
     rejectBroker.catch(() => undefined);
+    const turnCallerFailure = checkpointEnabled ? Promise.race([rejectProvider, rejectBroker,
+      ...(callerGate === undefined ? [] : [callerGate])]) : undefined;
+    turnCallerFailure?.catch(() => undefined);
     const prepared = prepare(relaySandboxConfig({ workspace, runtime, home,
       protectedRoot, socketDirectory }), [`${GUEST_RUNTIME}/node`,
       `${GUEST_RUNTIME}/qualify-muse-credential-relay.mjs`, '--guest-native']);
     checkBubblewrap();
+    if (callerFailureError) throw callerFailureError;
     stageName = 'guest_ready';
     hostStarted = true;
     host = launch(prepared, { phase: 'read-file-probe', workspace, protectedRoot,
-      canaryToken, hostPort: sentinel.port, runId });
+      canaryToken, hostPort: sentinel.port, runId,
+      ...(checkpointEnabled ? { turnCheckpointId, turnCallerFailure } : {}) });
     const [ready, liveStatus] = await Promise.all([
-      Promise.race([host.ready, rejectProvider, rejectBroker]), host.liveStatus,
+      Promise.race([host.ready, rejectProvider, rejectBroker,
+        ...(checkpointEnabled ? [turnCallerFailure] : [])]), host.liveStatus,
     ]);
     const readyRequests = structuredClone(upstream.provider.requests);
     validateReady({ ...ready, providerRequests: readyRequests }, workspace, sentinel.port);
@@ -1465,7 +1498,25 @@ export async function qualifyNativeRelay({
     }
     stageName = 'native_turn';
     host.releaseTurn();
-    const outcome = await Promise.race([host.outcome, rejectProvider, rejectBroker]);
+    if (checkpointEnabled) {
+      const accepted = await Promise.race([host.turnAccepted, turnCallerFailure]);
+      if (accepted.checkpointId !== turnCheckpointId || accepted.status !== 'accepted' ||
+          accepted.disposition !== 'started' || accepted.startedNewTurn !== true) {
+        throw fault('NATIVE_TURN_CHECKPOINT_INVALID', 'native accepted turn differed');
+      }
+      pendingRecord = host.recordAndAckTurn(turn => {
+        if (rawRecorder) throw fault('NATIVE_TURN_RECORD_SEQUENCE', 'durable recorder was reused');
+        rawRecorder = Promise.resolve().then(() => recordTurn(turn));
+        rawRecorder.then(
+          () => { rawRecorderSettlement = 'fulfilled'; },
+          () => { rawRecorderSettlement = 'rejected'; });
+        return rawRecorder;
+      });
+      pendingRecord.catch(() => undefined);
+      await Promise.race([pendingRecord, turnCallerFailure]);
+    }
+    const outcome = await Promise.race([host.outcome, rejectProvider, rejectBroker,
+      ...(checkpointEnabled ? [turnCallerFailure] : [])]);
     if (outcome.kind === 'guest_transport_error') {
       throw fault(outcome.code, 'native guest reported a bounded transport failure');
     }
@@ -1491,11 +1542,13 @@ export async function qualifyNativeRelay({
       throw fault('NATIVE_RELAY_PROVIDER_INVALID', 'host provider or synthetic bearer evidence differed');
     }
     stageName = 'native_shutdown';
+    if (callerFailureError) throw callerFailureError;
     host.releaseShutdown();
     const finished = await settleWithin(host.finished, 30_000, 'NATIVE_HOST_EXIT_DEADLINE');
     const status = parseBubblewrapStatus(finished.statusLines);
     stopProof = await settleWithin(stop(captured, status, finished), 5_000,
       'NATIVE_STOP_DEADLINE');
+    if (callerFailureError) throw callerFailureError;
     await captured.fd.close(); captured = undefined;
     if (stopProof.kind !== 'confirmed' || finished.output.length !== 3 ||
         finished.code !== 0 || finished.timedOut || finished.overflow ||
@@ -1521,6 +1574,7 @@ export async function qualifyNativeRelay({
         (await probe('127.0.0.1', sentinel.port)).kind !== 'connected') {
       throw fault('NATIVE_RELAY_CANARY_INVALID', 'host-only or workspace canary changed');
     }
+    if (callerFailureError) throw callerFailureError;
     observed = { kind: 'native_synthetic_relay_observed', classified,
       broker: broker.evidence, upstream: upstream.seen,
       stopProof: { kind: stopProof.kind, observed: stopProof.observed },
@@ -1543,6 +1597,20 @@ export async function qualifyNativeRelay({
     if (providerCode && providerCode !== primary.code) primary.providerCode = providerCode;
     if (brokerCode && brokerCode !== primary.code) primary.brokerCode = brokerCode;
   } finally {
+    if (pendingRecord) {
+      try { await settleWithin(pendingRecord, 6_000, 'NATIVE_TURN_RECORD_UNCERTAIN'); }
+      catch (error) {
+        if (error?.code === 'NATIVE_TURN_RECORD_UNCERTAIN') recordSettlementUnverified = true;
+        primary ??= { stage: 'turn_record', code: boundedCode(error) };
+      }
+    }
+    if (rawRecorder) {
+      try { await settleWithin(rawRecorder, 6_000, 'NATIVE_TURN_RAW_RECORD_UNCERTAIN'); }
+      catch (error) {
+        if (error?.code === 'NATIVE_TURN_RAW_RECORD_UNCERTAIN') rawRecorderSettlement = 'unverified';
+        primary ??= { stage: 'turn_record', code: boundedCode(error) };
+      }
+    }
     if (host && stopProof.kind !== 'confirmed') {
       try { host.abort(); }
       catch { primary ??= { stage: 'host_abort', code: 'NATIVE_HOST_ABORT_UNVERIFIED' }; }
@@ -1566,9 +1634,26 @@ export async function qualifyNativeRelay({
     catch { primary ??= { stage: 'upstream_close', code: 'UPSTREAM_STOP_UNVERIFIED' }; }
     try { if (sentinel) await settleWithin(sentinel.close(), 5_000, 'SENTINEL_CLOSE_DEADLINE'); }
     catch { primary ??= { stage: 'sentinel_close', code: 'SENTINEL_STOP_UNVERIFIED' }; }
+    if (checkpointEnabled && host) {
+      try { turnEvidence = { ...host.turnCheckpoint(),
+        ...(rawRecorder ? { recorderSettlement: rawRecorderSettlement ?? 'unverified' } : {}),
+        ...(recordSettlementUnverified ? { recordAndAckSettlement: 'unverified' } : {}) }; }
+      catch { turnEvidence = { accepted: null, durableRecordConfirmed: false,
+        recorded: false, error: 'NATIVE_TURN_EVIDENCE_UNVERIFIED' }; }
+    }
   }
+  if (!primary && callerFailureError) {
+    primary = { stage: stageName, code: boundedCode(callerFailureError) };
+  }
+  if (checkpointEnabled && observed) observed.turnCheckpoint = turnEvidence;
   let result = primary ? { kind: 'native_synthetic_relay_error', primary,
-    stopProof, hostStarted, ...(broker ? { broker: structuredClone(broker.evidence) } : {}) } : observed;
+    stopProof, hostStarted, ...(broker ? { broker: structuredClone(broker.evidence) } : {}),
+    ...(checkpointEnabled ? { turnCheckpoint: turnEvidence } : {}) } : observed;
+  if (result?.kind === 'native_synthetic_relay_observed') {
+    if (callerFailureError) result = { kind: 'native_synthetic_relay_error',
+      primary: { stage: 'retirement', code: boundedCode(callerFailureError) },
+      stopProof, hostStarted, turnCheckpoint: turnEvidence };
+  }
   if (result?.kind === 'native_synthetic_relay_observed') {
     let socketAbsent = false;
     try { await inspectSocket(join(root, 'socket', 'relay.sock')); }
@@ -1577,14 +1662,22 @@ export async function qualifyNativeRelay({
       else result = { kind: 'native_synthetic_relay_error',
         primary: { stage: 'retirement', code: 'SOCKET_INSPECTION_UNVERIFIED',
           secondary: boundedCode(error) }, stopProof, hostStarted,
+        ...(checkpointEnabled ? { turnCheckpoint: turnEvidence } : {}),
         retainedFixtures: [root, runtimeRoot] };
     }
     if (!socketAbsent && result.kind === 'native_synthetic_relay_observed') {
       result = { kind: 'native_synthetic_relay_error',
         primary: { stage: 'retirement', code: 'SOCKET_STILL_PRESENT' },
         stopProof, hostStarted, retainedFixtures: [root, runtimeRoot] };
+      if (checkpointEnabled) result.turnCheckpoint = turnEvidence;
     }
     if (socketAbsent) {
+    if (callerFailureError) {
+      result = { kind: 'native_synthetic_relay_error',
+        primary: { stage: 'retirement', code: boundedCode(callerFailureError) },
+        stopProof, hostStarted, turnCheckpoint: turnEvidence,
+        retainedFixtures: [root, runtimeRoot] };
+    } else {
     try {
       await rm(root, { recursive: true, force: true });
       await rm(runtimeRoot, { recursive: true, force: true });
@@ -1593,8 +1686,10 @@ export async function qualifyNativeRelay({
       result = { kind: 'native_synthetic_relay_error',
         primary: { stage: 'retirement', code: boundedCode(error) },
         stopProof, hostStarted,
+        ...(checkpointEnabled ? { turnCheckpoint: turnEvidence } : {}),
         retainedFixtures: (await Promise.all([root, runtimeRoot].map(async path =>
           await lstat(path).then(() => path, () => null)))).filter(Boolean) };
+    }
     }
     }
   }
@@ -1697,35 +1792,74 @@ async function executeGuest(prepared, config, expectedNode) {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  if (process.argv[2] === '--guest-native') {
-    const lines = createInterface({ input: process.stdin });
+export function nativeGuestControl(lines) {
     const iterator = lines[Symbol.asyncIterator]();
+    const firstLine = iterator.next();
     let normalEnd = false;
+    let extraLine = false;
     let releaseCount = 0;
+    let checkpointMode = false;
     let rejectCaller;
     const callerFailure = new Promise((_, reject) => { rejectCaller = reject; });
     callerFailure.catch(() => undefined);
     lines.on('line', line => {
-      if (line === 'shutdown' && releaseCount === 2) normalEnd = true;
-      else if (line === 'shutdown') rejectCaller(fault('HOST_RELEASE_INVALID', 'early shutdown line'));
+      if (normalEnd) {
+        extraLine = true;
+        rejectCaller(fault('HOST_RELEASE_INVALID', 'extra native control line followed shutdown'));
+      } else if (line === 'shutdown') {
+        if (releaseCount === (checkpointMode ? 3 : 2)) normalEnd = true;
+        else rejectCaller(fault('HOST_RELEASE_INVALID', 'early native shutdown line'));
+      }
     });
     lines.once('close', () => {
       if (!normalEnd) rejectCaller(fault('HOST_CHANNEL_CLOSED', 'guest host control channel closed'));
     });
     const release = async () => {
-      if (++releaseCount > 2) throw fault('HOST_RELEASE_INVALID', 'extra native release requested');
+      releaseCount++;
+      if (releaseCount > (checkpointMode ? 3 : 2)) {
+        throw fault('HOST_RELEASE_INVALID', 'extra native release requested');
+      }
       const line = await iterator.next();
       if (line.done) throw fault('HOST_CHANNEL_CLOSED', 'guest host control channel closed');
-      if (releaseCount === 2 && line.value === 'shutdown') normalEnd = true;
+      if (releaseCount === 1 && line.value !== 'turn') {
+        throw fault('HOST_RELEASE_INVALID', 'native turn release was not exact');
+      }
+      if (checkpointMode && releaseCount === 2) {
+        let ack;
+        try { ack = JSON.parse(line.value); }
+        catch { throw fault('NATIVE_TURN_RECORD_INVALID', 'turn acknowledgement was not JSON'); }
+        if (!ack || Array.isArray(ack) || typeof ack !== 'object' ||
+            Object.keys(ack).sort().join(',') !== 'checkpointId,kind,schemaVersion,sessionId,turnId' ||
+            ack.kind !== 'host_turn_recorded' || ack.schemaVersion !== 1) {
+          throw fault('NATIVE_TURN_RECORD_INVALID', 'turn acknowledgement frame was invalid');
+        }
+      }
+      if (releaseCount === (checkpointMode ? 3 : 2)) {
+        if (line.value !== 'shutdown') throw fault('HOST_RELEASE_INVALID', 'native shutdown release was not exact');
+        const trailing = await iterator.next();
+        if (!trailing.done || extraLine) {
+          throw fault('HOST_RELEASE_INVALID', 'native shutdown had an extra control line');
+        }
+      }
       return line.value;
     };
-    try {
-      const first = await iterator.next();
-      if (first.done || Buffer.byteLength(first.value) > OUTPUT_LIMIT) {
-        throw fault('GUEST_INPUT_LIMIT', 'native guest config missing or too large');
-      }
+    return { release, callerFailure, readConfig: async () => {
+      const first = await firstLine;
+      if (first.done) throw fault('GUEST_INPUT_LIMIT', 'native guest config missing');
+      if (Buffer.byteLength(first.value) > OUTPUT_LIMIT)
+        throw fault('GUEST_INPUT_LIMIT', 'native guest config too large');
       const config = JSON.parse(first.value);
+      checkpointMode = config.turnCheckpointId !== undefined;
+      return config;
+    } };
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  if (process.argv[2] === '--guest-native') {
+    const { release, callerFailure, readConfig } = nativeGuestControl(
+      createInterface({ input: process.stdin }));
+    try {
+      const config = await readConfig();
       process.stdout.write(`${JSON.stringify(await guestNativeFixture(config,
         { release, callerFailure }))}\n`);
     } catch (error) {

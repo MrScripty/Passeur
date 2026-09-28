@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
-import { mkdtemp, mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { assertSocketIdentity, relaySandboxConfig, requestDecision, startBroker,
   startGuestRelay, captureFixtureProcesses, verifyFixtureStop,
   validateNativeSse, startNativeUpstream, nativeRejectionProjection,
   stageNativeRuntime, guestNativeFixture } from '../../scripts/qualify-muse-credential-relay.mjs';
 import { prepareSandbox } from '../../scripts/experiment-worker-sandbox.mjs';
 import { readFileCanaryFixture, shellProbeCommand } from '../../scripts/qualify-muse-sandbox-transport.mjs';
+import { runStatusPhase } from '../../scripts/qualify-muse-sandbox-transport.mjs';
 
 const runId = 'run_0123456789abcdef01234567';
 const model = 'fixture-relay-model';
@@ -656,7 +660,9 @@ test('native host retains both roots and closes fixtures after a readiness failu
 async function runInjectedNativeSuccessPath({ inspectSocket, terminalError = false,
   providerFailureAt = null, brokerFailureAt = null, stopUnverified = false,
   missingRuntime = false, freezeError = false, failureOrder = 'provider-first',
-  capturePending = false } = {}) {
+  capturePending = false, checkpoint = null, recordTurn = undefined,
+  callerFailure = undefined, callerFailureAtStop = false,
+  callerFailureImmediate = false, recordWrapperFailure = false } = {}) {
   const { qualifyNativeRelay } = await import('../../scripts/qualify-muse-credential-relay.mjs');
   const state = { active: 0 };
   const catalog = { method: 'GET', path: '/muse-code/models' };
@@ -678,7 +684,20 @@ async function runInjectedNativeSuccessPath({ inspectSocket, terminalError = fal
   const outcome = terminalError ? { kind: 'guest_transport_error', code: 'GUEST_TERMINAL_ERROR' } :
     { kind: 'native_read_file_outcome' };
   const canary = readFileCanaryFixture();
+  const accepted = checkpoint ? { schemaVersion: 1, checkpointId: checkpoint,
+    sessionId: 'session_fixture', turnId: 'turn_fixture', status: 'accepted',
+    disposition: 'started', startedNewTurn: true } : null;
+  let recorded = false;
+  let rejectStopCaller;
+  const stopCallerSignal = callerFailureAtStop ? new Promise((_, reject) => {
+    rejectStopCaller = reject;
+  }) : undefined;
+  const immediateCallerSignal = callerFailureImmediate ? Promise.reject(
+    Object.assign(new Error('early caller failure'),
+      { code: 'REVIEW_EARLY_CALLER_FAILED' })) : undefined;
   const result = await qualifyNativeRelay({
+    ...(checkpoint ? { turnCheckpointId: checkpoint, recordTurn,
+      callerFailure: stopCallerSignal ?? immediateCallerSignal ?? callerFailure } : {}),
     stagePinned: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
     startSentinel: async () => ({ port: 12345, close: async () => undefined }),
     startUpstream: async () => ({ origin: 'http://127.0.0.1:12346/',
@@ -705,6 +724,8 @@ async function runInjectedNativeSuccessPath({ inspectSocket, terminalError = fal
       return lstat(path);
     },
     launch: (_prepared, config) => {
+      assert.equal(config.turnCheckpointId, checkpoint ?? undefined);
+      assert.equal('recordTurn' in config, false);
       const ready = { kind: 'guest_shell_ready', nativeIdentity: { pid: 123, start: '1' },
         guestNamespace: 'net:[1]', nativeNamespace: 'net:[1]',
         readCanarySha256: createHash('sha256').update(canary.content).digest('hex'),
@@ -713,6 +734,17 @@ async function runInjectedNativeSuccessPath({ inspectSocket, terminalError = fal
       return { pid: 1, ready: Promise.resolve(ready),
         liveStatus: Promise.resolve({ child: 2, exit: null }),
         outcome: Promise.resolve(outcome),
+        ...(checkpoint ? { turnAccepted: Promise.resolve(accepted),
+          recordAndAckTurn: async recorder => {
+            if (recordWrapperFailure) {
+              recorder(accepted).catch(() => undefined);
+              throw Object.assign(new Error('record wrapper failed'),
+                { code: 'RECORD_WRAPPER_FAILED' });
+            }
+            await recorder(accepted); recorded = true; return accepted;
+          },
+          turnCheckpoint: () => ({ accepted, durableRecordConfirmed: recorded,
+            recorded, error: null }) } : {}),
         releaseTurn: () => {
           if (failureOrder === 'broker-first') {
             if (brokerFailureAt === 'terminal') reportBroker();
@@ -731,12 +763,276 @@ async function runInjectedNativeSuccessPath({ inspectSocket, terminalError = fal
     },
     capture: async () => ({ native: { nspid: [123], netns: 'net:[1]' },
       supervisor: { netns: 'net:[1]' }, fd: { close: async () => undefined } }),
-    stop: async () => stopUnverified ?
-      { kind: 'unverified', code: 'INJECTED_STOP_UNVERIFIED' } :
-      { kind: 'confirmed', observed: 3 },
+    stop: async () => {
+      if (callerFailureAtStop) {
+        rejectStopCaller(Object.assign(new Error('late caller failure'),
+          { code: 'REVIEW_LATE_CALLER_FAILED' }));
+        await Promise.resolve();
+      }
+      return stopUnverified ? { kind: 'unverified', code: 'INJECTED_STOP_UNVERIFIED' } :
+        { kind: 'confirmed', observed: 3 };
+    },
   });
   return { result, removedSocket };
 }
+
+test('native relay checkpoint requires explicit durable recorder before launch', async () => {
+  const { qualifyNativeRelay } = await import('../../scripts/qualify-muse-credential-relay.mjs');
+  for (const options of [{ turnCheckpointId: 'checkpoint_only' },
+    { recordTurn: async () => undefined },
+    { turnCheckpointId: '', recordTurn: async () => undefined },
+    { turnCheckpointId: 'checkpoint', recordTurn: () => undefined,
+      callerFailure: 'invalid' }]) {
+    await assert.rejects(qualifyNativeRelay(options),
+      { code: 'NATIVE_TURN_CHECKPOINT_CONFIG_INVALID' });
+  }
+});
+
+test('native relay persists accepted turn before consuming outcome and retains failure evidence', async () => {
+  const checkpoint = 'checkpoint_fixture_fresh_1';
+  const seen = [];
+  const first = await runInjectedNativeSuccessPath({ checkpoint,
+    recordTurn: async accepted => { seen.push(accepted); },
+    inspectSocket: async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); } });
+  assert.equal(first.result.kind, 'native_synthetic_relay_observed');
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].checkpointId, checkpoint);
+  assert.deepEqual(first.result.turnCheckpoint, { accepted: seen[0],
+    durableRecordConfirmed: true, recorded: true, error: null,
+    recorderSettlement: 'fulfilled' });
+  const failed = await runInjectedNativeSuccessPath({ checkpoint: 'checkpoint_fixture_fresh_2',
+    recordTurn: async () => { throw Object.assign(new Error('record failed'),
+      { code: 'DURABLE_RECORD_FAILED' }); },
+    inspectSocket: async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); } });
+  try {
+    assert.equal(failed.result.kind, 'native_synthetic_relay_error');
+    assert.equal(failed.result.primary.code, 'DURABLE_RECORD_FAILED');
+    assert.equal(failed.result.turnCheckpoint.accepted.checkpointId, 'checkpoint_fixture_fresh_2');
+    assert.equal(failed.result.turnCheckpoint.recorded, false);
+  } finally {
+    for (const path of failed.result.retainedFixtures ?? [])
+      await rm(path, { recursive: true, force: true });
+  }
+});
+
+test('relay retains raw durable settlement after acknowledgement wrapper fails', async () => {
+  let completeRecord;
+  const rawRecord = new Promise(resolve => { completeRecord = resolve; });
+  const resultPromise = runInjectedNativeSuccessPath({ checkpoint: 'checkpoint_late_record',
+    recordWrapperFailure: true, recordTurn: () => rawRecord,
+    inspectSocket: async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); } });
+  setTimeout(completeRecord, 25);
+  const { result } = await resultPromise;
+  try {
+    assert.equal(result.kind, 'native_synthetic_relay_error');
+    assert.equal(result.primary.code, 'RECORD_WRAPPER_FAILED');
+    assert.equal(result.turnCheckpoint.accepted.checkpointId, 'checkpoint_late_record');
+    assert.equal(result.turnCheckpoint.recorded, false);
+    assert.equal(result.turnCheckpoint.recorderSettlement, 'fulfilled');
+  } finally {
+    for (const path of result.retainedFixtures ?? [])
+      await rm(path, { recursive: true, force: true });
+  }
+});
+
+test('relay reports unresolved raw recorder after bounded settlement wait', async () => {
+  const { result } = await runInjectedNativeSuccessPath({
+    checkpoint: 'checkpoint_unresolved_record', recordWrapperFailure: true,
+    recordTurn: () => new Promise(() => undefined),
+    inspectSocket: async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); },
+  });
+  try {
+    assert.equal(result.kind, 'native_synthetic_relay_error');
+    assert.equal(result.primary.code, 'RECORD_WRAPPER_FAILED');
+    assert.equal(result.turnCheckpoint.recorderSettlement, 'unverified');
+    assert.equal(result.turnCheckpoint.recorded, false);
+  } finally {
+    for (const path of result.retainedFixtures ?? [])
+      await rm(path, { recursive: true, force: true });
+  }
+});
+
+test('immediate and stop-time caller failures reject relay success and retain roots', async () => {
+  for (const options of [
+    { callerFailureImmediate: true, code: 'REVIEW_EARLY_CALLER_FAILED' },
+    { callerFailureAtStop: true, code: 'REVIEW_LATE_CALLER_FAILED' },
+  ]) {
+    const { result } = await runInjectedNativeSuccessPath({
+      checkpoint: `checkpoint_${options.code}`, recordTurn: async () => undefined,
+      callerFailureImmediate: options.callerFailureImmediate,
+      callerFailureAtStop: options.callerFailureAtStop,
+      inspectSocket: async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); },
+    });
+    try {
+      assert.equal(result.kind, 'native_synthetic_relay_error');
+      assert.equal(result.primary.code, options.code);
+      assert.equal(result.retainedFixtures.length, options.callerFailureAtStop ? 2 : 1);
+      if (options.callerFailureAtStop) {
+        assert.equal(result.turnCheckpoint.accepted.checkpointId,
+          'checkpoint_REVIEW_LATE_CALLER_FAILED');
+        assert.equal(result.turnCheckpoint.recorded, true);
+      }
+    } finally {
+      for (const path of result.retainedFixtures ?? [])
+        await rm(path, { recursive: true, force: true });
+    }
+  }
+});
+
+const nodeChildProbe = spawnSync(process.execPath, ['-e', 'process.stdout.write("ready")'],
+  { encoding: 'utf8' });
+test('real guest control reader accepts exact legacy and checkpoint release sequences',
+  { skip: nodeChildProbe.error?.code === 'EPERM' ? 'Node subprocess denied by sandbox' : false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-turn-control-fixture-'));
+  const fixture = join(root, 'guest.mjs');
+  const controlUrl = pathToFileURL(join(process.cwd(), 'scripts/qualify-muse-credential-relay.mjs')).href;
+  await writeFile(fixture, `#!${process.execPath}
+import { writeSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { nativeGuestControl } from ${JSON.stringify(controlUrl)};
+if (process.argv.includes('--json-status-fd'))
+  writeSync(3, JSON.stringify({ 'child-pid': process.pid }) + '\\n');
+const { readConfig, release } = nativeGuestControl(createInterface({ input: process.stdin }));
+const config = await readConfig();
+const sessionId = 'session_fixture';
+const turnId = 'turn_fixture';
+process.stdout.write(JSON.stringify({ kind: 'guest_ready', result: {
+  kind: 'guest_shell_ready', metadata: { sessionId } } }) + '\\n');
+if (await release() !== 'turn') throw new Error('turn release invalid');
+if (config.turnCheckpointId) {
+  process.stdout.write(JSON.stringify({ kind: 'guest_turn_accepted', schemaVersion: 1,
+    checkpointId: config.turnCheckpointId, sessionId, turnId, status: 'accepted',
+    disposition: 'started', startedNewTurn: true }) + '\\n');
+  const ack = JSON.parse(await release());
+  if (ack.checkpointId !== config.turnCheckpointId || ack.sessionId !== sessionId ||
+      ack.turnId !== turnId) throw new Error('ack identity invalid');
+}
+const outcome = { kind: 'native_read_file_outcome', providerRequests: [] };
+process.stdout.write(JSON.stringify(outcome) + '\\n');
+if (await release() !== 'shutdown') throw new Error('shutdown release invalid');
+process.stdout.write(JSON.stringify(outcome) + '\\n');
+`);
+  await chmod(fixture, 0o700);
+  try {
+    for (const checkpointId of [undefined, 'checkpoint_subprocess']) {
+      const child = spawn(fixture, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+      const output = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+      let stderr = '';
+      child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      const closed = once(child, 'close');
+      child.stdin.write(`${JSON.stringify({ phase: 'read-file-probe', turnCheckpointId: checkpointId })}\n`);
+      const readyLine = await output.next();
+      assert.equal(readyLine.done, false, stderr);
+      const ready = JSON.parse(readyLine.value);
+      assert.equal(ready.result.metadata.sessionId, 'session_fixture');
+      child.stdin.write('turn\n');
+      if (checkpointId) {
+        const accepted = JSON.parse((await output.next()).value);
+        assert.equal(accepted.checkpointId, checkpointId);
+        child.stdin.write(`${JSON.stringify({ kind: 'host_turn_recorded', schemaVersion: 1,
+          checkpointId, sessionId: accepted.sessionId, turnId: accepted.turnId })}\n`);
+      }
+      assert.equal(JSON.parse((await output.next()).value).kind, 'native_read_file_outcome');
+      child.stdin.end('shutdown\n');
+      assert.equal(JSON.parse((await output.next()).value).kind, 'native_read_file_outcome');
+      const [code] = await closed;
+      assert.equal(code, 0, stderr);
+    }
+    for (const input of ['shutdown\n', 'turn\nshutdown\nextra\n']) {
+      const child = spawn(fixture, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      child.stdout.resume();
+      const closed = once(child, 'close');
+      child.stdin.end(`${JSON.stringify({ phase: 'read-file-probe' })}\n${input}`);
+      const [code] = await closed;
+      assert.equal(code, 1);
+      assert.match(stderr, /HOST_RELEASE_INVALID/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('real guest reader composes with shared host accepted-turn parser',
+  { skip: nodeChildProbe.error?.code === 'EPERM' ? 'Node subprocess denied by sandbox' : false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-turn-host-composition-'));
+  const fixture = join(root, 'guest.mjs');
+  const controlUrl = pathToFileURL(join(process.cwd(), 'scripts/qualify-muse-credential-relay.mjs')).href;
+  await writeFile(fixture, `#!${process.execPath}
+import { writeSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { nativeGuestControl } from ${JSON.stringify(controlUrl)};
+writeSync(3, JSON.stringify({ 'child-pid': process.pid }) + '\\n');
+const { readConfig, release } = nativeGuestControl(createInterface({ input: process.stdin }));
+const config = await readConfig();
+const sessionId = 'session_fixture';
+const turnId = 'turn_fixture';
+process.stdout.write(JSON.stringify({ kind: 'guest_ready', result: {
+  kind: 'guest_shell_ready', metadata: { sessionId } } }) + '\\n');
+if (await release() !== 'turn') throw new Error('turn release invalid');
+if (config.turnCheckpointId) {
+  process.stdout.write(JSON.stringify({ kind: 'guest_turn_accepted', schemaVersion: 1,
+    checkpointId: config.turnCheckpointId, sessionId, turnId, status: 'accepted',
+    disposition: 'started', startedNewTurn: true }) + '\\n');
+  const ack = JSON.parse(await release());
+  if (ack.checkpointId !== config.turnCheckpointId || ack.sessionId !== sessionId ||
+      ack.turnId !== turnId) throw new Error('ack identity invalid');
+}
+const outcome = { kind: 'native_read_file_outcome', providerRequests: [] };
+process.stdout.write(JSON.stringify({ kind: 'guest_outcome', result: outcome }) + '\\n');
+if (await release() !== 'shutdown') throw new Error('shutdown release invalid');
+process.stdout.write(JSON.stringify({ kind: 'guest_outcome', result: outcome }) + '\\n');
+`);
+  await chmod(fixture, 0o700);
+  try {
+    for (const checkpointId of [undefined, 'checkpoint_composed']) {
+      const host = runStatusPhase({ executable: fixture, args: ['--'] },
+        { phase: 'read-file-probe', ...(checkpointId ? { turnCheckpointId: checkpointId } : {}) });
+      const ready = await host.ready;
+      assert.equal(ready.metadata.sessionId, 'session_fixture');
+      host.releaseTurn();
+      if (checkpointId) {
+        const accepted = await host.turnAccepted;
+        assert.equal(accepted.checkpointId, checkpointId);
+        let recorderCalls = 0;
+        assert.deepEqual(await host.recordAndAckTurn(async turn => {
+          recorderCalls++;
+          assert.deepEqual(turn, accepted);
+        }), accepted);
+        assert.equal(recorderCalls, 1);
+        assert.deepEqual(host.turnCheckpoint(), { accepted, durableRecordConfirmed: true,
+          recorded: true, error: null });
+      }
+      assert.equal((await host.outcome).kind, 'native_read_file_outcome');
+      host.releaseShutdown();
+      const finished = await host.finished;
+      assert.equal(finished.code, 0, finished.stderr);
+      assert.equal(finished.output.length, 3);
+    }
+    let rejectCaller;
+    const callerFailure = new Promise((_, reject) => { rejectCaller = reject; });
+    let completeRawRecord;
+    let recorderStillActive = true;
+    const rawRecord = new Promise(resolve => { completeRawRecord = () => {
+      recorderStillActive = false;
+      resolve();
+    }; });
+    const host = runStatusPhase({ executable: fixture, args: ['--'] },
+      { phase: 'read-file-probe', turnCheckpointId: 'checkpoint_wrapper_race',
+        turnCallerFailure: callerFailure });
+    await host.ready;
+    host.releaseTurn();
+    await host.turnAccepted;
+    const wrapper = host.recordAndAckTurn(() => rawRecord);
+    await Promise.resolve();
+    rejectCaller(Object.assign(new Error('caller failed during record'),
+      { code: 'REVIEW_CALLER_FAILED' }));
+    await assert.rejects(wrapper, { code: 'REVIEW_CALLER_FAILED' });
+    assert.equal(recorderStillActive, true);
+    completeRawRecord();
+    await rawRecord;
+    await host.finished;
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test('native success path retains both roots when socket remains or stat is uncertain', async () => {
   for (const [inspectSocket, code] of [

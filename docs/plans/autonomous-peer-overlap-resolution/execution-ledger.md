@@ -1,5 +1,10 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-28 — accepted-turn relay handoff controlled gate
+
+- Operation `continue` from `843b8f1`. The relay now accepts an opt-in checkpoint ID and caller-owned durable recorder, forwards native/provider/broker/caller failures to the shared accepted-turn gate, and supports exact legacy two-release or checkpoint three-release guest control. The guest reader and shared host parser composed in an actual subprocess fixture. Underlying recorder settlement is retained separately when the shared acknowledgement wrapper fails; early and stop-time caller failures cannot produce success. Independent Astra High identified three P2 races in the first candidate, then cleared their repaired regressions with no further P0/P1/P2.
+- Parent outside-sandbox `PASSEUR_RELAY_NETWORK_TEST=1 node tests/core/muse-credential-relay.test.mjs` passed 43/43, `node tests/core/muse-sandbox-transport.test.mjs` passed 113/113, and both syntax checks plus `git diff --check` passed. Frozen script/test SHA-256: `6de4f3df471af6067ddfaffb89cc3dfa564ddad5c975917925f6cfbf718f9d6e` / `304f0e7d2352540ef68c113109fdee094ec8acd0b4746e21fba0605d071323ed`. No installed Muse, account or external provider launched. This is controlled relay qualification, not Coordinator worker, private Git, approval, real credential or production boundary acceptance. The single next G2 gate is fixture-only installed task-bound shell/commit composition.
+
 ## 2026-09-28 — narrow description allowance exposes schema-type refusal
 
 - Operation `continue` from reviewed narrow-description commit `a3c838a`. Parent pure focused tests passed 18/18 with eight local-network skips; elevated local-only tests passed 26/26 after an automatic approval review timeout and one permitted retry. Independent Astra High cleared the escaped-surrogate P2; only index 0 of the 25-function namespace has an 8,192-byte well-formed UTF-8 description allowance, with other descriptions still capped at 2,048 bytes.
