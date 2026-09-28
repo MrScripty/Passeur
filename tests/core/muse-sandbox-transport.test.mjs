@@ -1119,6 +1119,44 @@ test('read_file mismatch projects four native items without retaining arbitrary 
   assert.equal(JSON.stringify(excess).includes(secret), false);
 });
 
+test('read_file mismatch identifies HTTP name and fixed args without revealing values', () => {
+  const workspace = '/tmp/fixture/workspace';
+  const expected = { path: join(workspace, 'read-canary.txt'), offset: 1, limit: 20 };
+  const body = { model: 'fixture-native-shell', input: [
+    { type: 'message', role: 'developer', content: 'private developer prompt' },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'private user prompt' }] },
+    { type: 'function_call', id: 'fc_native_read_file_1', call_id: 'call_native_read_file_1',
+      name: 'muse.read_file', arguments: JSON.stringify(expected) },
+    { type: 'function_call_output', call_id: 'call_native_read_file_1', output: 'private output' },
+  ] };
+  const issued = { main: 'read-call-issued' };
+  const shape = readFileResultEnvelopeShape(body, issued, workspace);
+  assert.deepEqual(shape.items.slice(0, 2).map(item => item.contentKind), ['string', 'array']);
+  assert.deepEqual(shape.items[1].contentParts, ['input_text']);
+  assert.equal(shape.items[2].nameClass, 'muse.read_file');
+  assert.equal(shape.items[2].nameLength, 'muse.read_file'.length);
+  assert.equal(shape.items[2].nameSha256,
+    createHash('sha256').update('muse.read_file').digest('hex'));
+  assert.equal(shape.items[2].argumentsType, 'string');
+  assert.equal(shape.items[2].argumentsBytes, Buffer.byteLength(JSON.stringify(expected)));
+  assert.equal(shape.items[2].argumentsWithinBound, true);
+  assert.equal(shape.items[2].argumentsExactFixed, true);
+  assert.equal(JSON.stringify(shape).includes(workspace), false);
+  assert.equal(JSON.stringify(shape).includes('private'), false);
+  const wrong = structuredClone(body);
+  wrong.input[2].name = 'sk_test_12345_SUPPOSED_SECRET';
+  wrong.input[2].arguments = JSON.stringify({ ...expected, path: '/tmp/private-secret' });
+  const changed = readFileResultEnvelopeShape(wrong, issued, workspace);
+  assert.equal(changed.items[2].nameClass, '[other]');
+  assert.equal(changed.items[2].argumentsExactFixed, false);
+  assert.equal(JSON.stringify(changed).includes('SUPPOSED_SECRET'), false);
+  assert.equal(JSON.stringify(changed).includes('/tmp/private-secret'), false);
+  wrong.input[2].arguments = 'x'.repeat(5000);
+  const oversized = readFileResultEnvelopeShape(wrong, issued, workspace);
+  assert.equal(oversized.items[2].argumentsWithinBound, false);
+  assert.equal(oversized.items[2].argumentsExactFixed, false);
+});
+
 test('probe provider accepts one workspace read and both independent reminder schemas in bounded orders', async () => {
   const skill = { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE' };
   const cases = [
@@ -1190,7 +1228,9 @@ test('probe provider rejects result substitution, schema drift and unexpected ve
     const body = { model: 'fixture-native-shell', input: [
       { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'private prompt' }] },
       { type: 'reasoning', summary: 'private reasoning' },
-      { type: 'function_call', name: 'read_file', namespace: 'muse', call_id: 'call_native_read_file_1' },
+      { type: 'function_call', name: 'muse.read_file', call_id: 'call_native_read_file_1',
+        id: 'fc_native_read_file_1', arguments: JSON.stringify({
+          path: '/tmp/fixture/workspace/read-canary.txt', offset: 1, limit: 20 }) },
       { type: 'function_call_output', call_id: 'call_native_read_file_1',
         output: 'decorated synthetic output' },
     ] };
@@ -1201,6 +1241,8 @@ test('probe provider rejects result substitution, schema drift and unexpected ve
     assert.equal(rejected.resultEnvelope.items.length, 4);
     assert.equal(rejected.resultEnvelope.items[3].outputSha256,
       createHash('sha256').update('decorated synthetic output').digest('hex'));
+    assert.equal(rejected.resultEnvelope.items[2].nameClass, 'muse.read_file');
+    assert.equal(rejected.resultEnvelope.items[2].argumentsExactFixed, true);
     assert.equal(JSON.stringify(rejected).includes('private'), false);
     assert.equal((await structural.post(readFileResultRequest())).status, 429);
     assert.equal(structural.provider.state.main, 'read-call-issued');

@@ -746,7 +746,7 @@ export function matchingReadFileResult(body) {
     body.input[0].output === READ_CANARY_CONTENT;
 }
 
-export function readFileResultEnvelopeShape(body, issuedAtRequest = {}) {
+export function readFileResultEnvelopeShape(body, issuedAtRequest = {}, workspace) {
   const input = body?.input;
   const safeFields = new Set(['type', 'id', 'item_id', 'response_id', 'call_id', 'role', 'name',
     'namespace', 'content', 'output', 'status', 'arguments', 'summary', 'recipient']);
@@ -780,21 +780,39 @@ export function readFileResultEnvelopeShape(body, issuedAtRequest = {}) {
     const keys = object ? Object.keys(object) : [];
     const content = object?.content;
     const output = object?.output;
+    const args = object?.arguments;
+    const argsBytes = args === undefined ? null : Buffer.byteLength(
+      typeof args === 'string' ? args : JSON.stringify(args));
+    let parsedArgs;
+    if (typeof args === 'string' && argsBytes <= 4096) {
+      try { parsedArgs = JSON.parse(args); } catch { /* classified as nonmatching below */ }
+    } else if (args && typeof args === 'object' && !Array.isArray(args) && argsBytes <= 4096) parsedArgs = args;
+    const expectedArgs = typeof workspace === 'string' ?
+      { path: join(workspace, READ_CANARY_NAME), offset: 1, limit: 20 } : null;
     const serializedOutput = output === undefined ? null :
       typeof output === 'string' ? output : JSON.stringify(output);
     return { type: classify(object?.type, safeTypes),
       role: classify(object?.role, new Set(['system', 'developer', 'user', 'assistant', 'tool'])),
       name: classify(object?.name, new Set(['read_file', 'submit_reminder_decision', 'bash'])),
+      nameClass: object?.name == null ? 'absent' : typeof object.name !== 'string' ? 'invalid' :
+        ['read_file', 'muse.read_file', 'tool.read_file'].includes(object.name) ? object.name : '[other]',
+      nameLength: typeof object?.name === 'string' ? object.name.length : null,
+      nameSha256: typeof object?.name === 'string' ?
+        createHash('sha256').update(object.name).digest('hex') : null,
       namespace: classify(object?.namespace, new Set(['muse'])),
       fields: keys.filter(key => safeFields.has(key)).sort(),
       unknownFieldCount: keys.filter(key => !safeFields.has(key)).length,
       idRef: reference(object?.id), itemRef: reference(object?.item_id),
       callId: reference(object?.call_id), responseRef: reference(object?.response_id),
-      contentKind: Array.isArray(content) ? 'array' : content == null ? 'absent' : '[other]',
+      contentKind: Array.isArray(content) ? 'array' : content == null ? 'absent' : typeof content,
       contentPartCount: Array.isArray(content) ? content.length : null,
       contentParts: Array.isArray(content) ? content.slice(0, 8).map(part =>
         classify(part?.type, safeParts)) : [],
       omittedContentParts: Array.isArray(content) ? Math.max(0, content.length - 8) : 0,
+      argumentsType: args === null ? 'null' : typeof args,
+      argumentsBytes: argsBytes,
+      argumentsWithinBound: argsBytes === null ? null : argsBytes <= 4096,
+      argumentsExactFixed: expectedArgs !== null && isDeepStrictEqual(parsedArgs, expectedArgs),
       outputType: output === null ? 'null' : typeof output,
       outputBytes: serializedOutput === null ? null : Buffer.byteLength(serializedOutput),
       outputSha256: serializedOutput === null ? null :
@@ -1102,7 +1120,7 @@ export async function startShellProvider(forbiddenPort, command, {
         }
         if (readFileProbe && state.main === 'read-call-issued') {
           if (issuanceAtAdmission.main !== 'read-call-issued' || !matchingReadFileResult(parsed)) {
-            summary.resultEnvelope = readFileResultEnvelopeShape(parsed, issuanceAtAdmission);
+            summary.resultEnvelope = readFileResultEnvelopeShape(parsed, issuanceAtAdmission, workspace);
             throw fault('NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN', 'read_file result differs from issued call and canary');
           }
           const events = shellTextEvents('Fixture workspace read observed.', READ_TEXT_RESPONSE,
