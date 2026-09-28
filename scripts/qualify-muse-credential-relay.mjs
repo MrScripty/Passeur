@@ -23,6 +23,7 @@ const NATIVE_MODEL = 'fixture-native-shell';
 const NATIVE_REQUEST_LIMIT = 262_144;
 const NATIVE_AGGREGATE_REQUEST_LIMIT = NATIVE_REQUEST_LIMIT * 5;
 const NATIVE_CAPTURE_ARTIFACT_LIMIT = 4_096;
+const NATIVE_DIAGNOSTIC_SCHEMA_NODE_LIMIT = 8_192;
 // Field names only. This vocabulary changes capture evidence, never request admission.
 const NATIVE_TOP_LEVEL_CAPTURE_FIELDS = Object.freeze([
   'background', 'conversation', 'include', 'instructions', 'max_output_tokens',
@@ -32,6 +33,12 @@ const NATIVE_TOP_LEVEL_CAPTURE_FIELDS = Object.freeze([
   'top_logprobs', 'top_p', 'truncation', 'user',
 ]);
 const NATIVE_REASONING_CAPTURE_FIELDS = Object.freeze(['effort', 'summary', 'generate_summary']);
+const NATIVE_SCHEMA_KEYS = new Set(['type', 'description', 'title', 'examples', 'properties',
+  'required', 'additionalProperties', 'items', 'enum', 'const', 'nullable',
+  'anyOf', 'oneOf', 'allOf', 'minimum', 'maximum', 'exclusiveMinimum',
+  'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems',
+  'maxItems', 'minProperties', 'maxProperties']);
+const NATIVE_SCHEMA_TYPES = ['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'];
 const NATIVE_RESPONSE_IDS = new Set(['resp_native_read_file_1', 'resp_native_read_file_2',
   'resp_native_reminder_1', 'resp_native_reminder_2', 'resp_native_verify_reminder_1']);
 const NATIVE_ITEM_IDS = new Set(['fc_native_read_file_1', 'fc_native_reminder_1',
@@ -117,12 +124,8 @@ function nativeToolsFailure(tools) {
       (names.length === 25 && names[1] !== 'read_file') ||
       (names.length === 1 && names[0] !== 'submit_reminder_decision'))
     return failure('FUNCTION_NAME_SET');
-  const schemaKeys = new Set(['type', 'description', 'title', 'examples', 'properties',
-    'required', 'additionalProperties', 'items', 'enum', 'const', 'nullable',
-    'anyOf', 'oneOf', 'allOf', 'minimum', 'maximum', 'exclusiveMinimum',
-    'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems',
-    'maxItems', 'minProperties', 'maxProperties']);
-  const schemaTypes = ['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'];
+  const schemaKeys = NATIVE_SCHEMA_KEYS;
+  const schemaTypes = NATIVE_SCHEMA_TYPES;
   const context = { nodes: 0 };
   const schemaFailure = (schema, depth = 0, functionIndex) => {
     if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return 'SCHEMA_SHAPE';
@@ -465,6 +468,226 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       .map(key => [key, reasoningMemberShape(reasoning[key])])),
     unknownMemberCount: Math.min(reasoningMembers.filter(key =>
       !NATIVE_REASONING_CAPTURE_FIELDS.includes(key)).length, 64) };
+  const diagnostic = { coverage: { inputItems: 0, namespaces: 0, functions: 0,
+    schemaNodes: 0, schemaNodeLimit: NATIVE_DIAGNOSTIC_SCHEMA_NODE_LIMIT,
+    admissionSchemaNodes: 0, admissionSchemaNodeLimit: 512,
+    invalidParents: 0, blockedParents: {}, unexaminedSchemaSubtrees: 0,
+    unexaminedWorkspaceArgumentChecks: 0, unexaminedInitialContextChecks: 0 },
+  violations: {}, examples: [], violationsOmittedFromExamples: 0 };
+  const blocked = kind => {
+    diagnostic.coverage.invalidParents++;
+    diagnostic.coverage.blockedParents[kind] =
+      (diagnostic.coverage.blockedParents[kind] ?? 0) + 1;
+  };
+  const note = (violation, location = {}) => {
+    diagnostic.violations[violation] = (diagnostic.violations[violation] ?? 0) + 1;
+    if (diagnostic.examples.length < 12) diagnostic.examples.push({ code: violation, ...location });
+    else diagnostic.violationsOmittedFromExamples++;
+  };
+  const topKeys = ['include', 'input', 'instructions', 'max_output_tokens', 'model',
+    'previous_response_id', 'prompt_cache_key', 'store', 'stream', 'tools'];
+  const requiredTopKeys = topKeys.filter(key => key !== 'previous_response_id');
+  if (!object) {
+    note('NATIVE_ENVELOPE_TYPE', { class: type(parsed) });
+    blocked('envelope');
+  } else {
+    const unknownTop = Object.keys(object).filter(key => !topKeys.includes(key)).length;
+    const missingTop = requiredTopKeys.filter(key => !Object.hasOwn(object, key)).length;
+    if (unknownTop || missingTop) note('NATIVE_TOP_LEVEL_FIELDS',
+      { unknownFieldCount: Math.min(unknownTop, 64), missingFieldCount: missingTop });
+    if (!Array.isArray(object.include) || object.include.length !== 1 ||
+        object.include[0] !== 'reasoning.encrypted_content') note('NATIVE_INCLUDE_INVALID');
+    if (typeof object.instructions !== 'string' || !object.instructions.length ||
+        Buffer.byteLength(object.instructions) > 32_768 ||
+        Buffer.from(object.instructions, 'utf8').toString('utf8') !== object.instructions)
+      note('NATIVE_INSTRUCTIONS_INVALID', { class: type(object.instructions),
+        byteCount: typeof object.instructions === 'string' ?
+          Math.min(Buffer.byteLength(object.instructions), 32_769) : null });
+    if (object.max_output_tokens !== 128_000) note('NATIVE_OUTPUT_TOKENS_INVALID');
+    if (typeof object.prompt_cache_key !== 'string' ||
+        !/^[\x20-\x7e]{45}$/.test(object.prompt_cache_key)) note('NATIVE_CACHE_KEY_INVALID');
+    if (object.store !== false || object.stream !== true) note('NATIVE_MODE_INVALID');
+    if (object.model !== NATIVE_MODEL) note('NATIVE_MODEL_INVALID');
+    if (object.previous_response_id !== undefined &&
+        !NATIVE_RESPONSE_IDS.has(object.previous_response_id))
+      note('NATIVE_RESPONSE_REFERENCE_INVALID');
+    if (typeof input !== 'string' && !Array.isArray(input)) {
+      note('NATIVE_INPUT_INVALID', { class: type(input) });
+      blocked('input');
+    } else if (Array.isArray(input)) {
+      diagnostic.coverage.inputItems = input.length;
+      const inputAllowed = nativeInputAllowed(input);
+      if (!inputAllowed) note('NATIVE_INPUT_INVALID');
+      for (const [inputIndex, item] of input.entries()) {
+        if (!item || typeof item !== 'object' || Array.isArray(item) ||
+            !['message', 'function_call', 'function_call_output', 'reasoning'].includes(item.type)) {
+          note('NATIVE_INPUT_ITEM_INVALID', { inputIndex, class: type(item) });
+          blocked('inputItem');
+          continue;
+        }
+        if (item.id !== undefined && !NATIVE_ITEM_IDS.has(item.id) &&
+            item.id !== 'msg_native_read_file_2' ||
+            item.call_id !== undefined && !NATIVE_CALL_IDS.has(item.call_id))
+          note('NATIVE_INPUT_REFERENCE_INVALID', { inputIndex });
+        if (typeof item.arguments === 'string' && Buffer.byteLength(item.arguments) > 4_096 ||
+            typeof item.output === 'string' && Buffer.byteLength(item.output) > 8_192)
+          note('NATIVE_INPUT_SIZE_INVALID', { inputIndex });
+        if (item.type === 'function_call' && typeof item.arguments === 'string') {
+          try {
+            const argumentsObject = JSON.parse(item.arguments);
+            if (!argumentsObject || typeof argumentsObject !== 'object' ||
+                Array.isArray(argumentsObject)) note('NATIVE_ARGUMENTS_REJECTED', { inputIndex });
+            else if (item.name === 'muse.read_file')
+              diagnostic.coverage.unexaminedWorkspaceArgumentChecks++;
+          } catch { note('NATIVE_ARGUMENTS_REJECTED', { inputIndex }); }
+        }
+      }
+      if (!inputAllowed) {
+        blocked('initialContext');
+        diagnostic.coverage.unexaminedInitialContextChecks++;
+      } else if (object.previous_response_id === undefined &&
+          !input.some(item => item?.type === 'function_call_output') &&
+          !JSON.stringify(input).includes('NATIVE_READ_FILE_PROBE') &&
+          !JSON.stringify(input).includes('NATIVE_READ_FILE_SCHEMA_PROBE') &&
+          !input.some(item => item?.call_id !== undefined || item?.id !== undefined))
+        note('NATIVE_INITIAL_CONTEXT_INVALID');
+    } else if (!nativeInputAllowed(input)) note('NATIVE_INPUT_INVALID',
+      { class: 'string', byteCount: Math.min(Buffer.byteLength(input), 32_769) });
+    if (!Array.isArray(object.tools)) {
+      note('NAMESPACE_COUNT', { class: type(object.tools) });
+      blocked('tools');
+    } else {
+      diagnostic.coverage.namespaces = object.tools.length;
+      if (object.tools.length !== 1) note('NAMESPACE_COUNT',
+        { namespaceCount: Math.min(object.tools.length, 64) });
+      const schemaKeys = NATIVE_SCHEMA_KEYS;
+      const typeLabels = NATIVE_SCHEMA_TYPES;
+      for (const namespace of object.tools) {
+        if (!namespace || typeof namespace !== 'object' || Array.isArray(namespace) ||
+            !Array.isArray(namespace.tools)) {
+          note('NAMESPACE_SHAPE', { class: type(namespace) });
+          blocked('namespace');
+          continue;
+        }
+        if (namespace.type !== 'namespace' || namespace.name !== 'muse' ||
+            ![1, 25].includes(namespace.tools.length) ||
+            namespace.description !== undefined &&
+              (typeof namespace.description !== 'string' ||
+                Buffer.byteLength(namespace.description) > 2_048) ||
+            Object.keys(namespace).some(key => !['type', 'name', 'description', 'tools'].includes(key)))
+          note('NAMESPACE_SHAPE');
+        const names = namespace.tools.map(tool => tool?.name);
+        if (new Set(names).size !== names.length ||
+            names.length === 25 && names[1] !== 'read_file' ||
+            names.length === 1 && names[0] !== 'submit_reminder_decision')
+          note('FUNCTION_NAME_SET');
+        diagnostic.coverage.functions += namespace.tools.length;
+        for (const [functionIndex, tool] of namespace.tools.entries()) {
+          if (!tool || typeof tool !== 'object' || Array.isArray(tool)) {
+            note('FUNCTION_TYPE', { functionIndex, class: type(tool) });
+            blocked('function');
+            continue;
+          }
+          if (tool.type !== 'function') note('FUNCTION_TYPE', { functionIndex });
+          if (typeof tool.name !== 'string' || !/^[a-z_][a-z0-9_]{0,63}$/.test(tool.name))
+            note('FUNCTION_NAME_SYNTAX', { functionIndex });
+          if (Object.keys(tool).some(key =>
+            !['type', 'name', 'description', 'parameters', 'strict'].includes(key)))
+            note('FUNCTION_FIELDS', { functionIndex });
+          if (tool.strict !== undefined && typeof tool.strict !== 'boolean')
+            note('FUNCTION_STRICT', { functionIndex });
+          const descriptionLimit = namespace.tools.length === 25 && functionIndex === 0 ?
+            8_192 : 2_048;
+          if (tool.description !== undefined && (typeof tool.description !== 'string' ||
+              Buffer.byteLength(tool.description) > descriptionLimit ||
+              Buffer.from(tool.description, 'utf8').toString('utf8') !== tool.description))
+            note('FUNCTION_DESCRIPTION', { functionIndex, class: type(tool.description),
+              byteCount: typeof tool.description === 'string' ?
+                Math.min(Buffer.byteLength(tool.description), descriptionLimit + 1) : null });
+          const pending = [{ value: tool.parameters, depth: 0 }];
+          while (pending.length) {
+            const { value, depth } = pending.pop();
+            if (diagnostic.coverage.schemaNodes >= NATIVE_DIAGNOSTIC_SCHEMA_NODE_LIMIT) {
+              diagnostic.coverage.unexaminedSchemaSubtrees += pending.length + 1;
+              break;
+            }
+            diagnostic.coverage.schemaNodes++;
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+              note('SCHEMA_SHAPE', { functionIndex, depth, class: type(value) });
+              blocked('schema');
+              continue;
+            }
+            if (depth <= 8 && ++diagnostic.coverage.admissionSchemaNodes === 513)
+              note('SCHEMA_COMPLEXITY', { functionIndex, depth });
+            if (depth > 8) note('SCHEMA_COMPLEXITY', { functionIndex, depth });
+            const keys = Object.keys(value);
+            const unknown = keys.filter(key => !schemaKeys.has(key)).length;
+            if (unknown) note('SCHEMA_KEYS', { functionIndex, depth,
+              unknownFieldCount: Math.min(unknown, 64) });
+            for (const key of keys) {
+              if (!schemaKeys.has(key)) continue;
+              const child = value[key];
+              const location = { functionIndex, depth, keyword: key, class: type(child) };
+              if (key === 'properties') {
+                if (!child || typeof child !== 'object' || Array.isArray(child)) {
+                  note('SCHEMA_PROPERTIES', location); blocked('properties');
+                } else {
+                  if (Object.keys(child).length > 64) note('SCHEMA_PROPERTIES', location);
+                  for (const nested of Object.values(child)) pending.push({ value: nested, depth: depth + 1 });
+                }
+              } else if (key === 'items' || key === 'additionalProperties' &&
+                  child && typeof child === 'object') {
+                pending.push({ value: child, depth: depth + 1 });
+              } else if (['anyOf', 'oneOf', 'allOf'].includes(key)) {
+                if (!Array.isArray(child) || child.length < 1 || child.length > 8) {
+                  note('SCHEMA_COMPOSITION', location);
+                  if (!Array.isArray(child)) blocked('composition');
+                }
+                if (Array.isArray(child)) for (const nested of child)
+                  pending.push({ value: nested, depth: depth + 1 });
+              } else if (key === 'type') {
+                const values = Array.isArray(child) ? child : [child];
+                const expanded = namespace.tools.length === 25 && functionIndex === 0 && depth === 1 &&
+                  Array.isArray(child);
+                if (!values.length || values.length > (expanded ? 6 : 3) ||
+                    values.some(label => !typeLabels.includes(label)) ||
+                    expanded && new Set(values).size !== values.length)
+                  note('SCHEMA_TYPE', { ...location, memberCount: Math.min(values.length, 64) });
+              } else if (key === 'description' || key === 'title') {
+                const limit = key === 'description' && namespace.tools.length === 25 &&
+                  functionIndex === 0 && depth === 1 ? 8_192 : 2_048;
+                if (typeof child !== 'string' || Buffer.byteLength(child) > limit ||
+                    limit === 8_192 &&
+                    Buffer.from(child, 'utf8').toString('utf8') !== child)
+                  note('SCHEMA_DESCRIPTION', { ...location, byteCount: typeof child === 'string' ?
+                    Math.min(Buffer.byteLength(child), limit + 1) : null });
+              } else if (key === 'required' && (!Array.isArray(child) || child.length > 64 ||
+                  child.some(item => typeof item !== 'string' || item.length > 64) ||
+                  new Set(child).size !== child.length))
+                note('SCHEMA_REQUIRED', location);
+              else if (key === 'enum' || key === 'examples') {
+                if (!Array.isArray(child) || child.length > 16 ||
+                    child.some(item => item !== null &&
+                      (!['string', 'number', 'boolean'].includes(typeof item) ||
+                        typeof item === 'string' && Buffer.byteLength(item) > 2_048)))
+                  note('SCHEMA_ENUM', location);
+              } else if (key === 'const') {
+                if (child !== null && !['string', 'number', 'boolean'].includes(typeof child) ||
+                    typeof child === 'string' && Buffer.byteLength(child) > 2_048)
+                  note('SCHEMA_CONST', location);
+              } else if (key === 'nullable' || key === 'additionalProperties') {
+                if (typeof child !== 'boolean') note('SCHEMA_BOOLEAN', location);
+              } else if (!['required'].includes(key) &&
+                  (typeof child !== 'number' || !Number.isFinite(child) ||
+                    Math.abs(child) > 1_000_000)) {
+                note('SCHEMA_NUMBER', location);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   const projection = { schemaVersion: 1, requestIndex: index, byteCount: receivedBytes,
     capturedByteCount: body.length, omittedByteCount: Math.max(0, receivedBytes - body.length),
     bodyComplete: complete, capturedSha256: createHash('sha256').update(body).digest('hex'),
@@ -493,13 +716,17 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
     input: { class: type(input), itemCount: items.length, itemClasses,
       omittedItems: Math.max(0, items.length - itemClasses.length) },
     previousResponse: classify(object?.previous_response_id, NATIVE_RESPONSE_IDS),
+    diagnostic,
     tools: { class: type(object?.tools), namespaceCount: tools.length, toolClasses,
       omittedNamespaces: Math.max(0, tools.length - toolClasses.length),
       failure: code === 'NATIVE_TOOLS_INVALID' ? nativeToolsFailure(object?.tools) : null } };
   while (Buffer.byteLength(JSON.stringify(projection)) + 1 > NATIVE_CAPTURE_ARTIFACT_LIMIT) {
     const sampledNamespace = projection.tools.toolClasses.find(namespace =>
       namespace.functionSamples.length > 0);
-    if (sampledNamespace) {
+    if (projection.diagnostic.examples.length > 0) {
+      projection.diagnostic.examples.pop();
+      projection.diagnostic.violationsOmittedFromExamples++;
+    } else if (sampledNamespace) {
       sampledNamespace.functionSamples.pop();
       sampledNamespace.omittedFunctions++;
     } else if (projection.input.itemClasses.length > 0) {
@@ -528,7 +755,8 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   model = MODEL, requestLimit = REQUEST_LIMIT, responseLimit = RESPONSE_LIMIT,
   concurrency = 2, deadlineMs = 3_000, allowedInputs = ['fixture'],
   perRouteBudget = 1,
-  inspectSocket = assertSocketIdentity, writeCapture = writeFile }) {
+  inspectSocket = assertSocketIdentity, writeCapture = writeFile,
+  projectCapture = nativeRejectionProjection }) {
   if (!['controlled', 'native-read'].includes(profile)) {
     throw fault('BROKER_POLICY_INVALID', 'unknown synthetic relay profile');
   }
@@ -572,7 +800,14 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   let captureStarted = false;
   let captureFinished = Promise.resolve();
   let captureSealed = false;
+  const capturedPostIndices = new Set();
+  const captureRecords = new Map();
   const captureAbort = new AbortController();
+  const settleCapture = (record, result) => {
+    if (record.status !== 'pending') return;
+    record.status = result.status;
+    Object.assign(record.visible, result);
+  };
   let nativePostIndex = 0;
   const markFailure = (code, stage, incoming, body = Buffer.alloc(0), index = null,
     complete = true, receivedBytes = body.length) => {
@@ -581,17 +816,36 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
       evidence.firstFailure = { code: boundedCode({ code }), stage };
       resolveFailure(evidence.firstFailure);
     }
-    if (incoming?.method === 'POST' && !captureStarted) {
+    const postIndex = index ?? nativePostIndex;
+    if (incoming?.method === 'POST' && !captureSealed &&
+        (!captureStarted || postIndex <= 5) &&
+        !capturedPostIndices.has(postIndex)) {
+      capturedPostIndices.add(postIndex);
+      const firstCapture = !captureStarted;
       captureStarted = true;
-      const projection = nativeRejectionProjection(body,
-        { index: index ?? nativePostIndex, stage, code: boundedCode({ code }), complete,
-          receivedBytes });
-      captureFinished = Promise.resolve().then(() => writeCapture(capturePath,
+      const path = firstCapture ? capturePath :
+        join(dirname(socketPath), `rejected-native-post-${postIndex}.json`);
+      const visible = firstCapture ? { status: 'pending' } :
+        { index: postIndex, status: 'pending' };
+      if (firstCapture) evidence.capture = visible;
+      else (evidence.additionalCaptures ??= []).push(visible);
+      const record = { status: 'pending', visible };
+      captureRecords.set(postIndex, record);
+      let projection;
+      try {
+        projection = projectCapture(body,
+          { index: postIndex, stage, code: boundedCode({ code }), complete, receivedBytes });
+      } catch (error) {
+        settleCapture(record, { status: 'failed', code: boundedCode(error) });
+        return captureFinished;
+      }
+      const written = Promise.resolve().then(() => writeCapture(path,
         `${JSON.stringify(projection)}\n`, { flag: 'wx', mode: 0o600,
           signal: captureAbort.signal }))
-        .then(() => { if (!captureSealed) evidence.capture = { status: 'written', path: capturePath }; }, error => {
-          if (!captureSealed) evidence.capture = { status: 'failed', code: boundedCode(error) };
-        });
+        .then(() => settleCapture(record, { status: 'written', path }),
+          error => settleCapture(record,
+            { status: 'failed', code: boundedCode(error) }));
+      captureFinished = Promise.all([captureFinished, written]).then(() => undefined);
     }
     return captureFinished;
   };
@@ -770,9 +1024,12 @@ export async function startBroker({ socketPath, upstreamOrigin, runId, bearer,
   return { socketPath, identity: socketIdentity, evidence, failure,
     flushCapture: () => captureFinished,
     cancelCapture: code => {
-      if (!captureStarted || evidence.capture || captureSealed) return;
+      if (!captureStarted || captureSealed) return;
+      const pending = [...captureRecords.values()].filter(record => record.status === 'pending');
+      if (!pending.length) return;
       captureSealed = true;
-      evidence.capture = { status: 'unverified', code: boundedCode({ code }) };
+      for (const record of pending)
+        settleCapture(record, { status: 'unverified', code: boundedCode({ code }) });
       captureAbort.abort();
     },
     get listening() { return server.listening; },

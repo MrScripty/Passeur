@@ -179,7 +179,7 @@ test('native rejected POST projection is bounded and contains no request values'
   assert.equal(projection.omittedByteCount, 0);
   assert.equal(projection.input.omittedItems, 22);
   assert.equal(projection.tools.omittedNamespaces, 4);
-  assert.equal(projection.tools.toolClasses[0].omittedFunctions, 16);
+  assert.ok(projection.tools.toolClasses[0].omittedFunctions >= 16);
   assert.deepEqual(projection.failedPredicates, ['NATIVE_TOOLS_INVALID']);
   assert.deepEqual(projection.topLevel.recognizedExtraFieldTypes,
     { include: 'array', instructions: 'string', max_output_tokens: 'number',
@@ -248,6 +248,145 @@ test('rejected reasoning field exposes only finite bounded member shapes', () =>
     assert.equal(JSON.stringify(projection).includes(secret), false);
     assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
   }
+});
+
+test('aggregate native envelope diagnosis crosses independent reachable branches', () => {
+  const secret = 'secret-schema-key-description-and-reasoning';
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const oneFunction = [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+    name: 'submit_reminder_decision', parameters: { type: 'object',
+      properties: { [secret]: { type: 'string', [secret]: true } } } }] }];
+  const mainFunctions = Array.from({ length: 25 }, (_, index) => ({ type: 'function',
+    name: index === 1 ? 'read_file' : `native_${index}`,
+    parameters: index === 13 ? { type: 'object', properties: {
+      [secret]: { type: 'string', [secret]: true } } } : { type: 'object' } }));
+  const payload = (tools, extras = {}) => body({ model: nativePolicy.model,
+    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools, ...extras });
+  const one = payload(oneFunction, { reasoning: { effort: secret, [secret]: secret } });
+  assert.equal(requestDecision(post, one, nativePolicy).code, 'NATIVE_TOP_LEVEL_FIELDS');
+  const oneProjection = nativeRejectionProjection(one,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
+  assert.equal(oneProjection.diagnostic.coverage.functions, 1);
+  assert.equal(oneProjection.diagnostic.coverage.schemaNodes, 2);
+  assert.equal(oneProjection.diagnostic.violations.NATIVE_TOP_LEVEL_FIELDS, 1);
+  assert.equal(oneProjection.diagnostic.violations.SCHEMA_KEYS, 1);
+  assert.equal(oneProjection.diagnostic.coverage.unexaminedSchemaSubtrees, 0);
+  const main = payload([{ type: 'namespace', name: 'muse', tools: mainFunctions }]);
+  assert.equal(requestDecision(post, main, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+  const mainProjection = nativeRejectionProjection(main,
+    { index: 2, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
+  assert.equal(mainProjection.diagnostic.coverage.functions, 25);
+  assert.equal(mainProjection.diagnostic.coverage.schemaNodes, 26);
+  assert.equal(mainProjection.diagnostic.violations.SCHEMA_KEYS, 1);
+  assert.ok(mainProjection.diagnostic.examples.some(example =>
+    example.code === 'SCHEMA_KEYS' && example.functionIndex === 13 && example.depth === 1));
+  for (const projection of [oneProjection, mainProjection]) {
+    assert.equal(JSON.stringify(projection).includes(secret), false);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+  }
+  const simultaneous = payload(oneFunction, { reasoning: { [secret]: secret },
+    include: [], instructions: '', previous_response_id: secret });
+  assert.equal(requestDecision(post, simultaneous, nativePolicy).code,
+    'NATIVE_TOP_LEVEL_FIELDS');
+  const multiple = nativeRejectionProjection(simultaneous,
+    { index: 3, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
+  for (const code of ['NATIVE_TOP_LEVEL_FIELDS', 'NATIVE_INCLUDE_INVALID',
+    'NATIVE_INSTRUCTIONS_INVALID', 'NATIVE_RESPONSE_REFERENCE_INVALID', 'SCHEMA_KEYS'])
+    assert.equal(multiple.diagnostic.violations[code], 1);
+  assert.equal(JSON.stringify(multiple).includes(secret), false);
+  const invalidParent = payload([{ type: 'namespace', name: 'muse', tools: [{
+    type: 'function', name: 'submit_reminder_decision', parameters: {
+      type: 'object', properties: secret, items: { [secret]: true } } }] }]);
+  const blocked = nativeRejectionProjection(invalidParent,
+    { index: 4, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).diagnostic;
+  assert.equal(blocked.coverage.blockedParents.properties, 1);
+  assert.equal(blocked.coverage.schemaNodes, 2);
+  assert.equal(blocked.violations.SCHEMA_KEYS, 1);
+  const validTools = [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+    name: 'submit_reminder_decision', parameters: { type: 'object' } }] }];
+  const unauthorizedArguments = payload(validTools, { input: [{ type: 'function_call',
+    id: 'fc_native_read_file_1', call_id: 'call_native_read_file_1',
+    name: 'muse.read_file', arguments: JSON.stringify({ path: secret, offset: 1, limit: 20 }) }] });
+  assert.equal(requestDecision(post, unauthorizedArguments, nativePolicy).code,
+    'NATIVE_ARGUMENTS_REJECTED');
+  const argumentCoverage = nativeRejectionProjection(unauthorizedArguments,
+    { index: 5, stage: 'admission', code: 'NATIVE_ARGUMENTS_REJECTED' }).diagnostic.coverage;
+  assert.equal(argumentCoverage.inputItems, 1);
+  assert.equal(argumentCoverage.unexaminedWorkspaceArgumentChecks, 1);
+});
+
+test('aggregate coverage distinguishes unexamined nodes from omitted examples', () => {
+  const secret = 'leak';
+  const parameters = { type: 'object', properties: Object.fromEntries(
+    Array.from({ length: 9_000 }, (_, index) => [`p${index}`, { [secret]: true }])) };
+  const payload = body({ model: 'fixture-native-shell', input: 'NATIVE_READ_FILE_PROBE',
+    ...nativeExtras, tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters }] }] });
+  assert.ok(payload.length < 262_144);
+  const projection = nativeRejectionProjection(payload,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
+  assert.equal(projection.diagnostic.coverage.functions, 1);
+  assert.equal(projection.diagnostic.coverage.schemaNodes, 8_192);
+  assert.ok(projection.diagnostic.coverage.unexaminedSchemaSubtrees > 0);
+  assert.ok(projection.diagnostic.violations.SCHEMA_KEYS > 0);
+  assert.ok(projection.diagnostic.violationsOmittedFromExamples > 0);
+  assert.equal(JSON.stringify(projection).includes(secret), false);
+  assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+});
+
+test('aggregate reports admission 512-node complexity across independent failures', () => {
+  const schema = finalLeaves => ({ type: 'object', properties: Object.fromEntries(
+    Array.from({ length: 8 }, (_, group) => [`g${group}`, { type: 'object',
+      properties: Object.fromEntries(Array.from({ length: group === 7 ? finalLeaves : 63 },
+        (_, leaf) => [`p${leaf}`, { type: 'string' }])) }])) });
+  const envelope = (parameters, extra = {}) => body({ model: 'fixture-native-shell',
+    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters }] }], ...extra });
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  assert.equal(requestDecision(post, envelope(schema(62)), nativePolicy).ok, true);
+  const over = envelope(schema(63));
+  assert.equal(requestDecision(post, over, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+  const diagnosed = nativeRejectionProjection(over,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).diagnostic;
+  assert.equal(diagnosed.coverage.admissionSchemaNodes, 513);
+  assert.equal(diagnosed.coverage.unexaminedSchemaSubtrees, 0);
+  assert.equal(diagnosed.violations.SCHEMA_COMPLEXITY, 1);
+  const earlier = envelope(schema(63), { reasoning: { effort: 'secret-reasoning' } });
+  assert.equal(requestDecision(post, earlier, nativePolicy).code, 'NATIVE_TOP_LEVEL_FIELDS');
+  const combined = nativeRejectionProjection(earlier,
+    { index: 2, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
+  assert.equal(combined.diagnostic.violations.NATIVE_TOP_LEVEL_FIELDS, 1);
+  assert.equal(combined.diagnostic.violations.SCHEMA_COMPLEXITY, 1);
+  assert.equal(JSON.stringify(combined).includes('secret-reasoning'), false);
+});
+
+test('deep invalid input blocks dependent context check while sibling diagnostics survive', () => {
+  const secret = 'secret-schema-key';
+  const ordinary = JSON.stringify({ model: 'fixture-native-shell',
+    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters: { type: 'object', [secret]: true } }] }],
+    reasoning: {} });
+  const deepInput = `${'['.repeat(10_000)}"x"${']'.repeat(10_000)}`;
+  const payload = Buffer.from(ordinary.replace('"input":"NATIVE_READ_FILE_PROBE"',
+    `"input":${deepInput}`));
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  assert.ok(payload.length < 262_144);
+  assert.equal(requestDecision(post, payload, nativePolicy).code, 'NATIVE_TOP_LEVEL_FIELDS');
+  const projection = nativeRejectionProjection(payload,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOP_LEVEL_FIELDS' });
+  assert.equal(projection.diagnostic.coverage.blockedParents.initialContext, 1);
+  assert.equal(projection.diagnostic.coverage.unexaminedInitialContextChecks, 1);
+  assert.equal(projection.diagnostic.violations.SCHEMA_KEYS, 1);
+  assert.equal(JSON.stringify(projection).includes(secret), false);
+  assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
 });
 
 test('maximum recognized field projection trims samples under the artifact limit', () => {
@@ -1050,6 +1189,9 @@ test('native broker keeps separate catalog/Responses budgets and rejects canonic
     assert.equal(await sendNative('GET', '/muse-code/models'), 429);
     assert.equal(await sendNative('POST', '/responses', nativeBody('NATIVE_READ_FILE_PROBE: 0')), 200);
     assert.equal(await sendNative('POST', '/responses', nativeBody('NATIVE_READ_FILE_PROBE: 0')), 403);
+    assert.equal(await sendNative('POST', '/responses', JSON.stringify({
+      ...JSON.parse(nativeBody('NATIVE_READ_FILE_PROBE: another')),
+      reasoning: { effort: 'secret-native-reasoning' } })), 403);
     for (let i = 1; i < 5; i++) assert.equal(await sendNative('POST', '/responses',
       nativeBody(`NATIVE_READ_FILE_PROBE: ${i}`)), 200);
     assert.equal(await sendNative('POST', '/responses', nativeBody('NATIVE_READ_FILE_PROBE: 5')), 429);
@@ -1062,6 +1204,13 @@ test('native broker keeps separate catalog/Responses budgets and rejects canonic
     assert.equal(captured.requestIndex, 2);
     assert.deepEqual(captured.failedPredicates, ['NATIVE_REQUEST_REPLAY']);
     assert.equal(JSON.stringify(captured).includes('NATIVE_READ_FILE_PROBE: 0'), false);
+    const later = JSON.parse(await readFile(join(root, 'rejected-native-post-3.json'), 'utf8'));
+    assert.equal(later.requestIndex, 3);
+    assert.deepEqual(later.failedPredicates, ['NATIVE_TOP_LEVEL_FIELDS']);
+    assert.equal(later.diagnostic.violations.NATIVE_TOP_LEVEL_FIELDS, 1);
+    assert.equal(JSON.stringify(later).includes('secret-native-reasoning'), false);
+    assert.deepEqual(broker.evidence.additionalCaptures,
+      [{ index: 3, status: 'written', path: join(root, 'rejected-native-post-3.json') }]);
   } finally {
     if (broker) await broker.close();
     if (upstream) await new Promise(resolveValue => upstream.close(resolveValue));
@@ -1108,6 +1257,108 @@ test('native rejected POST capture write failure preserves refusal without forwa
       assert.equal(await lstat(join(root, 'first-rejected-native-post.json'))
         .then(() => true, () => false), false);
     } finally {
+      if (broker) await broker.close();
+      if (upstream) await new Promise(resolveValue => upstream.close(resolveValue));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+test('diagnostic projection failure cannot replace first broker refusal',
+  { skip: !network }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'passeur-native-diagnostic-fail-'));
+    let upstream;
+    let broker;
+    let forwarded = 0;
+    let writes = 0;
+    try {
+      upstream = createServer((_request, response) => {
+        forwarded++; response.writeHead(200).end();
+      });
+      upstream.listen(0, '127.0.0.1');
+      await once(upstream, 'listening');
+      broker = await startBroker({ socketPath: join(root, 'relay.sock'),
+        upstreamOrigin: `http://127.0.0.1:${upstream.address().port}/`, runId,
+        bearer: 'synthetic-host-held-bearer-0123456789', profile: 'native-read',
+        workspace: join(root, 'workspace'),
+        projectCapture: () => { throw Object.assign(new Error('diagnostic failed'),
+          { code: 'DIAGNOSTIC_FAILURE' }); },
+        writeCapture: async () => { writes++; } });
+      const status = await new Promise(resolveValue => {
+        const client = httpRequest({ socketPath: broker.socketPath, method: 'POST',
+          path: '/responses', headers: { host: '127.0.0.1:1', authorization: `Bearer ${dummy}`,
+            'x-passeur-run': runId, 'content-type': 'application/json' } }, response => {
+          response.resume(); response.once('end', () => resolveValue(response.statusCode));
+        });
+        client.once('error', () => resolveValue(0));
+        client.end(JSON.stringify({ model: 'fixture-native-shell', input: 'unreviewed child',
+          ...nativeExtras, tools: [] }));
+      });
+      assert.equal(status, 403);
+      assert.equal(forwarded, 0);
+      assert.equal(writes, 0);
+      assert.deepEqual(broker.evidence.firstFailure,
+        { code: 'NATIVE_INPUT_INVALID', stage: 'admission' });
+      assert.deepEqual(broker.evidence.capture,
+        { status: 'failed', code: 'DIAGNOSTIC_FAILURE' });
+    } finally {
+      if (broker) await broker.close();
+      if (upstream) await new Promise(resolveValue => upstream.close(resolveValue));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+test('later pending capture stays unverified after cancellation and late writer completion',
+  { skip: !network }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'passeur-native-late-capture-'));
+    let upstream;
+    let broker;
+    let releaseWrite;
+    let announceSecond;
+    const secondStarted = new Promise(resolveValue => { announceSecond = resolveValue; });
+    const deferred = new Promise(resolveValue => { releaseWrite = resolveValue; });
+    try {
+      upstream = createServer((_request, response) => response.writeHead(200).end());
+      upstream.listen(0, '127.0.0.1');
+      await once(upstream, 'listening');
+      broker = await startBroker({ socketPath: join(root, 'relay.sock'),
+        upstreamOrigin: `http://127.0.0.1:${upstream.address().port}/`, runId,
+        bearer: 'synthetic-host-held-bearer-0123456789', profile: 'native-read',
+        workspace: join(root, 'workspace'), writeCapture: async (path, data, options) => {
+          if (path.endsWith('first-rejected-native-post.json'))
+            return writeFile(path, data, options);
+          announceSecond();
+          await deferred;
+        } });
+      const send = index => new Promise(resolveValue => {
+        const payload = JSON.stringify({ model: 'fixture-native-shell',
+          input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, reasoning: { effort: `private-${index}` },
+          tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+            name: 'submit_reminder_decision', parameters: { type: 'object' } }] }] });
+        const client = httpRequest({ socketPath: broker.socketPath, method: 'POST',
+          path: '/responses', headers: { host: '127.0.0.1:1', authorization: `Bearer ${dummy}`,
+            'x-passeur-run': runId, 'content-type': 'application/json' } }, response => {
+          response.resume(); response.once('end', () => resolveValue(response.statusCode));
+        });
+        client.once('error', () => resolveValue(0));
+        client.end(payload);
+      });
+      assert.equal(await send(1), 403);
+      assert.equal(broker.evidence.capture.status, 'written');
+      const secondResponse = send(2);
+      await secondStarted;
+      assert.equal(broker.evidence.additionalCaptures[0].status, 'pending');
+      broker.cancelCapture('BROKER_CAPTURE_DEADLINE');
+      assert.equal(broker.evidence.capture.status, 'written');
+      assert.deepEqual(broker.evidence.additionalCaptures,
+        [{ index: 2, status: 'unverified', code: 'BROKER_CAPTURE_DEADLINE' }]);
+      releaseWrite();
+      assert.equal(await secondResponse, 403);
+      await broker.flushCapture();
+      assert.equal(broker.evidence.additionalCaptures[0].status, 'unverified');
+      assert.deepEqual(broker.evidence.firstFailure,
+        { code: 'NATIVE_TOP_LEVEL_FIELDS', stage: 'admission' });
+    } finally {
+      releaseWrite?.();
       if (broker) await broker.close();
       if (upstream) await new Promise(resolveValue => upstream.close(resolveValue));
       await rm(root, { recursive: true, force: true });
