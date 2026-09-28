@@ -12,7 +12,7 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   assertHostAssociation,
   advertisedBash, matchingShellResult, shellOutputMarkers, shellProbeCommand,
   rejectedToolSchemaShape, summarizedShellModel, recognizedReminderSchema, decodeShellOutcomeLine,
-  startShellProvider,
+  startShellProvider, mainSchemaDiscovery, fixedNoReminderPayload, reminderCallEvents,
   validateShellReady, validateShellOutcome, qualifyNativeShell,
   diagnosticMode,
   runStatusPhase,
@@ -606,30 +606,228 @@ test('recognized reminder prelude records only its seven-field schema and never 
   { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
 });
 
-test('recognized reminder provider request returns 422 without a function call frame', async () => {
+function fixedReminderRequest() {
+  const properties = {
+    advisory_text: { type: ['null', 'string'] },
+    confidence: { type: ['null', 'string'], enum: ['low', 'medium', 'high'] },
+    decision: { type: 'string', enum: ['remind', 'none'] },
+    priority: { type: ['null', 'string'], enum: ['low', 'normal', 'high'] },
+    reason: { type: 'string' }, skill_id: { type: ['null', 'string'] },
+    visible_for_steps: { type: ['null', 'integer'], minimum: 1, maximum: 8 },
+  };
+  return { model: 'fixture-native-shell', input: 'NATIVE_SHELL_PROBE', tools: [{ type: 'namespace',
+    name: 'muse', tools: [{ type: 'function', name: 'submit_reminder_decision', strict: true,
+      parameters: { type: 'object', properties, required: Object.keys(properties),
+        additionalProperties: false } }] }] };
+}
+
+test('fixed reminder payload is schema bound and its six SSE events preserve namespace identities', () => {
+  const body = fixedReminderRequest();
+  const payload = fixedNoReminderPayload(body);
+  assert.deepEqual(payload, { advisory_text: null, confidence: 'low', decision: 'none',
+    priority: 'normal', reason: 'Disposable scripted protocol probe; no skill reminder is being proposed.',
+    skill_id: null, visible_for_steps: 1 });
+  const events = reminderCallEvents(payload);
+  assert.deepEqual(events.map(event => event.type), ['response.created', 'response.output_item.added',
+    'response.function_call_arguments.delta', 'response.function_call_arguments.done',
+    'response.output_item.done', 'response.completed']);
+  assert.equal(events[1].item.namespace, 'muse');
+  assert.equal(events[1].item.name, 'submit_reminder_decision');
+  assert.equal(events[1].item.call_id, events[4].item.call_id);
+  assert.equal(events[2].delta, events[3].arguments);
+  assert.equal(events[3].arguments, events[4].item.arguments);
+  assert.equal(events[5].response.output[0].id, events[1].item.id);
+  assert.throws(() => fixedNoReminderPayload({ ...body, tools: [{ ...body.tools[0],
+    tools: [{ ...body.tools[0].tools[0], name: 'wrong' }] }] }),
+  { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
+  const drift = fixedReminderRequest();
+  drift.tools[0].tools[0].parameters.properties.confidence.enum = ['null', 'low'];
+  assert.throws(() => fixedNoReminderPayload(drift), { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
+  const hiddenConstraint = fixedReminderRequest();
+  hiddenConstraint.tools[0].tools[0].parameters.properties.reason.pattern = '^x$';
+  assert.throws(() => fixedNoReminderPayload(hiddenConstraint), { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
+  const contradictory = fixedReminderRequest();
+  contradictory.tools[0].tools[0].parameters.properties.advisory_text.anyOf = [{ type: 'string' }];
+  assert.throws(() => fixedNoReminderPayload(contradictory), { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
+  const unknownType = fixedReminderRequest();
+  unknownType.tools[0].tools[0].parameters.properties.advisory_text.type.push('UNREVIEWED_TYPE');
+  assert.throws(() => fixedNoReminderPayload(unknownType), { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
+  const duplicateType = fixedReminderRequest();
+  duplicateType.tools[0].tools[0].parameters.properties.advisory_text.type.push('string');
+  assert.throws(() => fixedNoReminderPayload(duplicateType), { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
+});
+
+function mainNativeRequest() {
+  return { model: 'fixture-native-shell', input: 'NATIVE_SHELL_PROBE', tools: [{
+    type: 'namespace', name: 'muse', tools: Array.from({ length: 25 }, (_, index) => ({
+      type: 'function', name: index === 12 ? 'bash' : `native_${index}`,
+      parameters: { type: 'object', properties: index === 12 ?
+        { command: { type: 'string' } } : { value: { type: 'string' } },
+      required: [index === 12 ? 'command' : 'value'], additionalProperties: false },
+    })) }] };
+}
+
+async function nativeProviderHarness() {
   let handle;
-  const provider = await startShellProvider(31001, 'unused', {
+  const provider = await startShellProvider(31001, 'printf never-issued', {
     makeServer: callback => { handle = callback; return {}; },
     waitListen: async () => 31002, shut: async () => undefined,
   });
-  const names = ['decision', 'reason', 'next_step', 'detail', 'code', 'flag', 'tags'];
-  const body = { model: 'fixture-native-shell', input: 'secret prompt', tools: [{ type: 'namespace',
-    name: 'muse', tools: [{ type: 'function', name: 'submit_reminder_decision',
-      parameters: { type: 'object', properties: Object.fromEntries(names.map(name =>
-        [name, { type: 'string', description: 'secret description' }])), required: names } }] }] };
-  const request = Readable.from([JSON.stringify(body)]);
-  request.method = 'POST'; request.url = '/responses';
-  const response = { status: null, body: null, writeHead(status) { this.status = status; return this; },
-    end(value = '') { this.body = value; return this; } };
-  await handle(request, response);
+  const postRaw = async raw => {
+    const request = Readable.from([raw]);
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, body: null, writeHead(status) { this.status = status; return this; },
+      end(value = '') { this.body = value; return this; } };
+    await handle(request, response);
+    return response;
+  };
+  return { provider, handle, postRaw, post: body => postRaw(JSON.stringify(body)) };
+}
+
+test('main request discovers all 25 functions without a shell call or raw values', async () => {
+  const secret = 'sk_test_12345_SUPPOSED_SECRET';
+  const main = mainNativeRequest();
+  main.tools[0].tools[0].name = secret;
+  main.tools[0].tools[12].description = secret;
+  main.tools[0].tools[12].parameters.properties.command.enum = [secret];
+  const summary = mainSchemaDiscovery(main);
+  assert.equal(summary.functionCount, 25);
+  assert.equal(summary.functions.length, 25);
+  assert.equal(summary.selected.name, 'bash');
+  assert.equal(summary.selectedComplete, false);
+  assert.deepEqual(summary.selected.schema.required, ['command']);
+  assert.equal(summary.functions[0].name, '[other]');
+  assert.equal(JSON.stringify(summary).includes(secret), false);
+  assert.ok(Buffer.byteLength(JSON.stringify(summary)) <= 16_384);
+  assert.equal(mainSchemaDiscovery(mainNativeRequest()).selectedComplete, true);
+  const unreviewed = mainNativeRequest();
+  unreviewed.tools[0].tools[12].parameters.properties.command.pattern = secret;
+  assert.equal(mainSchemaDiscovery(unreviewed).selectedComplete, false);
+  const invalidType = mainNativeRequest();
+  invalidType.tools[0].tools[12].parameters.properties.command.type = 'UNKNOWN_TYPE';
+  assert.equal(mainSchemaDiscovery(invalidType).selectedComplete, false);
+  const duplicateType = mainNativeRequest();
+  duplicateType.tools[0].tools[12].parameters.properties.command.type = ['string', 'string'];
+  assert.equal(mainSchemaDiscovery(duplicateType).selectedComplete, false);
+  const h = await nativeProviderHarness();
+  const response = await h.post(main);
   assert.equal(response.status, 422);
   assert.equal(response.body, '');
-  assert.equal(provider.requests.length, 1);
-  assert.equal(provider.requests[0].kind, 'native_reminder_schema_only');
-  assert.equal(provider.requests[0].reminderSchema.function, 'submit_reminder_decision');
-  assert.equal(JSON.stringify(provider.requests).includes('secret'), false);
-  assert.deepEqual(await provider.rejection, { kind: 'provider_rejected', code: 'NATIVE_REMINDER_SCHEMA_ONLY' });
-  await provider.close();
+  assert.equal(h.provider.requests[0].kind, 'native_main_schema_discovery');
+  assert.equal(h.provider.requests[0].callId, undefined);
+  assert.deepEqual(await h.provider.rejection, { kind: 'provider_rejected', code: 'NATIVE_MAIN_SCHEMA_ONLY' });
+  await h.provider.close();
+});
+
+test('main and reminder streams accept either order and concurrent arrival without cross-stream correlation', async () => {
+  for (const order of ['main-first', 'reminder-first', 'concurrent']) {
+    const h = await nativeProviderHarness();
+    const main = mainNativeRequest();
+    const reminder = fixedReminderRequest();
+    const results = order === 'main-first' ? [await h.post(main),
+      await new Promise(resolve => setTimeout(resolve, 10)).then(() => h.post(reminder))] :
+      order === 'reminder-first' ? [await h.post(reminder), await h.post(main)] :
+        await Promise.all([h.post(main), h.post(reminder)]);
+    assert.deepEqual(results.map(result => result.status).sort(), [200, 422]);
+    const reminderResponse = results.find(result => result.status === 200);
+    assert.equal((reminderResponse.body.match(/data: /g) ?? []).length, 6);
+    assert.deepEqual(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 1);
+    assert.deepEqual(h.provider.requests.filter(request => request.kind === 'native_main_schema_discovery').length, 1);
+    assert.equal(h.provider.state.main, 'discovered');
+    assert.equal(h.provider.state.reminder, 'none-issued');
+    assert.equal(h.provider.state.failed, false);
+    await h.provider.close();
+  }
+});
+
+test('duplicate, unknown and malformed requests fail closed under attempt and byte caps', async () => {
+  const mainReplay = await nativeProviderHarness();
+  assert.equal((await mainReplay.post(mainNativeRequest())).status, 422);
+  assert.equal((await mainReplay.post(mainNativeRequest())).status, 422);
+  assert.equal(mainReplay.provider.requests[1].rejection, 'NATIVE_MAIN_REPLAY');
+  assert.equal(mainReplay.provider.state.failed, true);
+  await mainReplay.provider.close();
+  const duplicate = await nativeProviderHarness();
+  assert.equal((await duplicate.post(fixedReminderRequest())).status, 200);
+  assert.equal((await duplicate.post(fixedReminderRequest())).status, 422);
+  assert.equal(duplicate.provider.state.failed, true);
+  assert.equal((await duplicate.post(mainNativeRequest())).status, 429);
+  await duplicate.provider.close();
+  const correlated = await nativeProviderHarness();
+  assert.equal((await correlated.post({ ...fixedReminderRequest(),
+    previous_response_id: 'resp_native_shell_1' })).status, 422);
+  assert.equal(correlated.provider.requests[0].rejection, 'NATIVE_REMINDER_SEQUENCE_INVALID');
+  await correlated.provider.close();
+  const unknown = await nativeProviderHarness();
+  assert.equal((await unknown.post({ model: 'fixture-native-shell', tools: [], input: 'NATIVE_SHELL_PROBE' })).status, 422);
+  assert.equal((await unknown.post(fixedReminderRequest())).status, 429);
+  await unknown.provider.close();
+  const wrongPath = await nativeProviderHarness();
+  const pathRequest = Readable.from(['{}']);
+  pathRequest.method = 'POST'; pathRequest.url = '/unexpected';
+  const pathResponse = { status: null, writeHead(status) { this.status = status; return this; },
+    end() { return this; } };
+  await wrongPath.handle(pathRequest, pathResponse);
+  assert.equal(pathResponse.status, 404);
+  assert.equal((await wrongPath.post(fixedReminderRequest())).status, 429);
+  await wrongPath.provider.close();
+  const malformed = await nativeProviderHarness();
+  assert.equal((await malformed.postRaw('{bad-json')).status, 400);
+  assert.equal((await malformed.post(fixedReminderRequest())).status, 429);
+  await malformed.provider.close();
+  const near = await nativeProviderHarness();
+  assert.equal((await near.post({ ...fixedReminderRequest(), input: `NATIVE_SHELL_PROBE${'x'.repeat(92_000)}` })).status, 200);
+  assert.ok(near.provider.requests[0].bytes > 91_989);
+  await near.provider.close();
+  const oversized = await nativeProviderHarness();
+  assert.equal((await oversized.postRaw('x'.repeat(262_145))).status, 413);
+  assert.equal(oversized.provider.requests[0].rejection, 'REQUEST_TOO_LARGE');
+  assert.equal((await oversized.post(fixedReminderRequest())).status, 429);
+  await oversized.provider.close();
+});
+
+test('active native request cap rejects a third request before consuming its body', async () => {
+  const h = await nativeProviderHarness();
+  const makePending = () => {
+    const request = new Readable({ read() {} });
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, writeHead(status) { this.status = status; return this; },
+      end() { return this; } };
+    return { request, response, handling: h.handle(request, response) };
+  };
+  const first = makePending();
+  const second = makePending();
+  const third = makePending();
+  await third.handling;
+  assert.equal(third.response.status, 429);
+  assert.equal(h.provider.requests[2].bytes, 0);
+  first.request.push(JSON.stringify(mainNativeRequest())); first.request.push(null);
+  second.request.push(JSON.stringify(fixedReminderRequest())); second.request.push(null);
+  await Promise.all([first.handling, second.handling]);
+  assert.equal(h.provider.state.failed, true);
+  await h.provider.close();
+});
+
+test('catalog flood has bounded responses and retained request evidence', async () => {
+  const h = await nativeProviderHarness();
+  const get = async () => {
+    const request = Readable.from([]);
+    request.method = 'GET'; request.url = '/muse-code/models';
+    const response = { status: null, body: '', writeHead(status) { this.status = status; return this; },
+      end(value = '') { this.body = value; return this; } };
+    await h.handle(request, response);
+    return response;
+  };
+  const first = await Promise.all(Array.from({ length: 10 }, get));
+  assert.deepEqual(first.map(response => response.status), [200, 200, 200, 200,
+    429, 429, 429, 429, 429, 429]);
+  for (let index = 0; index < 990; index++) await get();
+  assert.equal(h.provider.requests.length, 8);
+  assert.deepEqual(h.provider.requests[7], { kind: 'omitted_requests', count: 993 });
+  assert.ok(h.provider.state.outputBytes < 65_536);
+  assert.equal(h.provider.state.failed, true);
+  assert.equal((await h.post(fixedReminderRequest())).status, 429);
+  await h.provider.close();
 });
 
 test('shell output decoder retains a typed primary native guest failure', () => {
@@ -685,6 +883,28 @@ test('native shell outcome rejects wrong turn, extra provider call and unanswere
   const ready = shellReadyFixture('/tmp/fixture/workspace');
   validateShellReady(ready, ready.metadata.workspaceRoot, 31001);
   assert.equal(validateShellOutcome(ready, shellOutcomeFixture(ready)).kind, 'native_shell_effect_observed');
+  const reminder = { method: 'POST', path: '/responses',
+    kind: 'native_reminder_call', model: 'fixture-native-shell', responseId: 'resp_native_reminder_1',
+    itemId: 'fc_native_reminder_1', callId: 'call_native_reminder_1',
+    payloadSha256: createHash('sha256').update(JSON.stringify(fixedNoReminderPayload(fixedReminderRequest()))).digest('hex') };
+  for (const index of [1, 2, 3]) {
+    const withReminder = shellOutcomeFixture(ready);
+    withReminder.providerRequests.splice(index, 0, structuredClone(reminder));
+    assert.equal(validateShellOutcome(ready, withReminder).kind, 'native_shell_effect_observed');
+  }
+  const pendingPrelude = shellOutcomeFixture(ready, true);
+  pendingPrelude.providerRequests.push(structuredClone(reminder));
+  assert.equal(validateShellOutcome(ready, pendingPrelude).kind, 'native_shell_approval_pending');
+  const wrongPrelude = shellOutcomeFixture(ready);
+  wrongPrelude.providerRequests.splice(1, 0, structuredClone(reminder));
+  wrongPrelude.providerRequests[1].callId = 'wrong';
+  assert.throws(() => validateShellOutcome(ready, wrongPrelude), { code: 'NATIVE_SHELL_OUTCOME_INVALID' });
+  const falseLink = shellOutcomeFixture(ready);
+  falseLink.providerRequests[1].afterReminderCallId = 'call_native_reminder_1';
+  assert.throws(() => validateShellOutcome(ready, falseLink), { code: 'NATIVE_SHELL_OUTCOME_INVALID' });
+  const reversed = shellOutcomeFixture(ready);
+  reversed.providerRequests.reverse();
+  assert.throws(() => validateShellOutcome(ready, reversed), { code: 'NATIVE_SHELL_OUTCOME_INVALID' });
   assert.equal(validateShellOutcome(ready, shellOutcomeFixture(ready, false, false)).kind,
     'native_shell_denial_observed');
   assert.equal(validateShellOutcome(ready, shellOutcomeFixture(ready, true)).kind, 'native_shell_approval_pending');
@@ -695,6 +915,8 @@ test('native shell outcome rejects wrong turn, extra provider call and unanswere
   for (const variant of [
     { event: { kind: 'turn_completed', terminal: 'completed', turnId: 'wrong', sessionId: ready.metadata.sessionId } },
     { providerRequests: [...shellOutcomeFixture(ready).providerRequests, { method: 'POST', path: '/responses' }] },
+    { providerRequests: shellOutcomeFixture(ready).providerRequests.map(request =>
+      request.method === 'GET' ? { ...request, rejection: 'NATIVE_CATALOG_BUDGET_EXCEEDED' } : request) },
     { observations: { ...shellOutcomeFixture(ready).observations, items: [{ ...shellOutcomeFixture(ready).observations.items[0], callId: 'wrong' }] } },
     { providerRequests: shellOutcomeFixture(ready).providerRequests.map(request =>
       request.kind === 'native_tool_call' ? { ...request, commandSha256: '0'.repeat(64) } : request) },
