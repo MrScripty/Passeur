@@ -1,5 +1,10 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-28 — installed relay value shapes, still rejected
+
+- Operation `continue` from reviewed value-shape commit `bd9e3d1`. Parent pure tests passed 17/17 with eight local-network cases skipped and elevated local-only tests passed 25/25. Independent Astra High found and then cleared an artifact-bound P2; its adversarial 262,144-byte request produced a 4,025-byte value-free artifact after deterministic sample trimming.
+- One fresh installed no-account host returned primary `native_turn/NATIVE_TOP_LEVEL_FIELDS`, native turn failed, and exact four-process stop was confirmed. The first rejected 92,085-byte POST held one `include` member `reasoning.encrypted_content`, 24,968 instruction bytes, `max_output_tokens` 128,000, a 45-byte printable ASCII prompt-cache key, `store` false and `stream` true. The instruction and key contents were not retained. Capture SHA-256 `f5412e4a9866d845cf1ce1ce9215ca035d80ba43267b72794e8041081f6bcc4e`; bounded `/tmp/passeur-muse-native-credential-relay-shape-evidence-20260928.json` SHA-256 `304bd2debbd756733d0082d929f22328f92de789c97ba4b0798ba25e3b6e267c`. The `/tmp` root remained; the reported `/dev/shm` runtime disappeared after tool exit. This is evidence for a separately reviewed synthetic-only policy admission, not an accepted native turn, real-provider semantics, credential secrecy or protected worker qualification.
+
 ## 2026-09-28 — installed relay finite field names and types
 
 - Operation `continue` from reviewed classifier commit `5563fe6`. Parent pure focused tests passed 16/16 with eight local-network skips; elevated local-only tests passed 24/24; independent Astra High found no P0/P1/P2 and checked a 3,797-byte adversarial all-fields artifact. The broker policy and native lifecycle were unchanged.

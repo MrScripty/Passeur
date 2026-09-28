@@ -26,6 +26,8 @@ function request(method, url, headers = {}) {
 }
 function body(value) { return Buffer.from(JSON.stringify(value)); }
 const policy = { runId, model, allowedInputs: ['fixture'] };
+const nativeExtras = { include: ['reasoning.encrypted_content'], instructions: 'synthetic instructions',
+  max_output_tokens: 128_000, prompt_cache_key: 'x'.repeat(45), store: false, stream: true };
 
 test('exact broker method, route, run and model are the only accepted requests', () => {
   assert.deepEqual(requestDecision(request('GET', '/muse-code/models'), Buffer.alloc(0), policy),
@@ -58,20 +60,40 @@ test('native read profile is separate and forwards only canonical reviewed envel
   const native = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
     workspace: '/tmp/native-fixture/workspace' };
   const post = request('POST', '/responses', { 'content-type': 'application/json' });
-  const envelope = { model: native.model, input: 'NATIVE_READ_FILE_PROBE', tools: [{
+  const envelope = { model: native.model, input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools: [{
     type: 'namespace', name: 'muse', tools: [{ type: 'function', name: 'submit_reminder_decision',
       parameters: { type: 'object', properties: {} } }] }] };
   const accepted = requestDecision(post, body(envelope), native);
   assert.equal(accepted.ok, true);
-  assert.deepEqual(JSON.parse(accepted.body), envelope);
+  assert.deepEqual(JSON.parse(accepted.body), { model: native.model,
+    input: envelope.input, tools: envelope.tools });
   assert.equal(requestDecision(post, body(envelope), policy).ok, false);
   const duplicate = Buffer.from(JSON.stringify(envelope).replace('"input":',
     '"unreviewed":"secret-source","input":'));
   assert.deepEqual(requestDecision(post, duplicate, native),
     { ok: false, code: 'NATIVE_TOP_LEVEL_FIELDS' });
+  const invalidUtf8 = body(envelope);
+  const instructionOffset = invalidUtf8.indexOf(Buffer.from(nativeExtras.instructions));
+  assert.ok(instructionOffset > 0);
+  for (const byte of [0xff, 0xc3]) {
+    const changed = Buffer.from(invalidUtf8);
+    changed[instructionOffset] = byte;
+    assert.deepEqual(requestDecision(post, changed, native),
+      { ok: false, code: 'BODY_INVALID' });
+  }
   for (const [changed, expected] of [
     [[], 'NATIVE_ENVELOPE_TYPE'],
     [{ ...envelope, model: 'foreign' }, 'NATIVE_MODEL_INVALID'],
+    [{ ...envelope, include: [] }, 'NATIVE_INCLUDE_INVALID'],
+    [{ ...envelope, include: ['reasoning.encrypted_content', 'other'] }, 'NATIVE_INCLUDE_INVALID'],
+    [{ ...envelope, instructions: '' }, 'NATIVE_INSTRUCTIONS_INVALID'],
+    [{ ...envelope, instructions: 'x'.repeat(32_769) }, 'NATIVE_INSTRUCTIONS_INVALID'],
+    [{ ...envelope, instructions: '\ud800' }, 'NATIVE_INSTRUCTIONS_INVALID'],
+    [{ ...envelope, max_output_tokens: 127_999 }, 'NATIVE_OUTPUT_TOKENS_INVALID'],
+    [{ ...envelope, prompt_cache_key: 'x'.repeat(44) }, 'NATIVE_CACHE_KEY_INVALID'],
+    [{ ...envelope, prompt_cache_key: 'x'.repeat(44) + '\n' }, 'NATIVE_CACHE_KEY_INVALID'],
+    [{ ...envelope, store: true }, 'NATIVE_MODE_INVALID'],
+    [{ ...envelope, stream: false }, 'NATIVE_MODE_INVALID'],
     [{ ...envelope, input: 'child prompt without marker' }, 'NATIVE_INPUT_INVALID'],
     [{ ...envelope, input: [{ type: 'message', role: 'user', content: 'child prompt' }] },
       'NATIVE_INITIAL_CONTEXT_INVALID'],
@@ -80,6 +102,8 @@ test('native read profile is separate and forwards only canonical reviewed envel
   ]) assert.equal(requestDecision(post, body(changed), native).code, expected);
   for (const changed of [
     { ...envelope, model },
+    { ...envelope, include: undefined },
+    { ...envelope, extra: 'secret-source' },
     { ...envelope, previous_response_id: 'foreign' },
     { ...envelope, previous_response_id: 'resp_native_shell_1' },
     { ...envelope, input: [{ type: 'function_call_output', call_id: 'foreign', output: 'x' }] },
@@ -630,6 +654,7 @@ test('native broker keeps separate catalog/Responses budgets and rejects canonic
   let broker;
   const bearer = 'synthetic-host-held-bearer-0123456789';
   const nativeBody = input => JSON.stringify({ model: 'fixture-native-shell', input,
+    ...nativeExtras,
     tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
       name: 'submit_reminder_decision', parameters: { type: 'object' } }] }] });
   const sendNative = (method, path, payload = '') => new Promise(resolveValue => {
@@ -708,7 +733,8 @@ test('native rejected POST capture write failure preserves refusal without forwa
           response.resume(); response.once('end', () => resolveValue(response.statusCode));
         });
         client.once('error', () => resolveValue(0));
-        client.end(JSON.stringify({ model: 'fixture-native-shell', input: 'unreviewed child', tools: [] }));
+        client.end(JSON.stringify({ model: 'fixture-native-shell', input: 'unreviewed child',
+          ...nativeExtras, tools: [] }));
       });
       await broker.flushCapture();
       assert.equal(status, 403);
@@ -798,7 +824,8 @@ test('reviewed native provider handler sees only host synthetic bearer', { skip:
         required: ['path'] } : { type: 'object', properties: { value: { type: 'string' } },
         required: ['value'], additionalProperties: false } }));
     const payload = JSON.stringify({ model: 'fixture-native-shell',
-      input: 'NATIVE_READ_FILE_PROBE', tools: [{ type: 'namespace', name: 'muse', tools }] });
+      input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+      tools: [{ type: 'namespace', name: 'muse', tools }] });
     const nativeResponse = await new Promise(resolveValue => {
       const client = httpRequest({ socketPath: broker.socketPath, method: 'POST', path: '/responses',
         headers: { host: '127.0.0.1:1', authorization: `Bearer ${dummy}`,

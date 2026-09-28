@@ -228,16 +228,36 @@ export function requestDecision(request, body, policy) {
   if (request.method === 'POST' && request.url === '/responses' &&
       headers['content-type'] === 'application/json') {
     let parsed;
-    try { parsed = JSON.parse(body.toString('utf8')); } catch { return { ok: false, code: 'BODY_INVALID' }; }
+    const sourceText = body.toString('utf8');
+    if (policy.profile === 'native-read' && !Buffer.from(sourceText, 'utf8').equals(body))
+      return { ok: false, code: 'BODY_INVALID' };
+    try { parsed = JSON.parse(sourceText); } catch { return { ok: false, code: 'BODY_INVALID' }; }
     if (policy.profile === 'native-read') {
       const keys = Object.keys(parsed ?? {}).sort();
-      const allowedKeys = ['input', 'model', 'previous_response_id', 'tools'];
+      const allowedKeys = ['include', 'input', 'instructions', 'max_output_tokens',
+        'model', 'previous_response_id', 'prompt_cache_key', 'store', 'stream', 'tools'];
+      const requiredKeys = ['include', 'input', 'instructions', 'max_output_tokens',
+        'model', 'prompt_cache_key', 'store', 'stream', 'tools'];
       const reject = code => ({ ok: false, code });
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
         return reject('NATIVE_ENVELOPE_TYPE');
       if (keys.some(key => !allowedKeys.includes(key)) ||
-          !['input', 'model', 'tools'].every(key => keys.includes(key)))
+          !requiredKeys.every(key => keys.includes(key)))
         return reject('NATIVE_TOP_LEVEL_FIELDS');
+      if (!Array.isArray(parsed.include) || parsed.include.length !== 1 ||
+          parsed.include[0] !== 'reasoning.encrypted_content')
+        return reject('NATIVE_INCLUDE_INVALID');
+      if (typeof parsed.instructions !== 'string' || parsed.instructions.length === 0 ||
+          Buffer.byteLength(parsed.instructions) > 32_768 ||
+          Buffer.from(parsed.instructions, 'utf8').toString('utf8') !== parsed.instructions)
+        return reject('NATIVE_INSTRUCTIONS_INVALID');
+      if (parsed.max_output_tokens !== 128_000)
+        return reject('NATIVE_OUTPUT_TOKENS_INVALID');
+      if (typeof parsed.prompt_cache_key !== 'string' ||
+          !/^[\x20-\x7e]{45}$/.test(parsed.prompt_cache_key))
+        return reject('NATIVE_CACHE_KEY_INVALID');
+      if (parsed.store !== false || parsed.stream !== true)
+        return reject('NATIVE_MODE_INVALID');
       if (parsed.model !== NATIVE_MODEL) return reject('NATIVE_MODEL_INVALID');
       if (typeof policy.workspace !== 'string' || !policy.workspace.startsWith('/tmp/'))
         return reject('NATIVE_WORKSPACE_INVALID');
