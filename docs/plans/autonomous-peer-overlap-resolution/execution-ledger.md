@@ -1,5 +1,10 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-28 — first installed tool-schema reason is function zero shape
+
+- Operation `continue` from reviewed tool-classifier commit `7d10947`. Parent pure focused tests passed 18/18 with eight local-network skips; elevated local-only tests passed 26/26. Independent Astra High matched old/new acceptance over 335 schema cases and found no P0/P1/P2.
+- One fresh installed no-account synthetic host again rejected the first Responses POST as `NATIVE_TOOLS_INVALID`, now classifying the first failure as `FUNCTION_SHAPE` at function index 0. The native turn failed; exact four-process stop was confirmed. Capture `/tmp/passeur-muse-native-credential-relay-huUAV5/socket/first-rejected-native-post.json` SHA-256 `aa91dcc661d40f4ede396a2abab0a6adbb2063ffa52f41529564fa5af0522712`; bounded `/tmp/passeur-muse-native-credential-relay-function-evidence-20260928.json` SHA-256 `8bd76d38c03ce9cd67d5ba8caed2fc269aa2d105aab5e77926a8e417431acb5d`. The `/tmp` root remained and reported `/dev/shm` runtime disappeared after exit. The fixed function shape code still merged five predicates, so no policy change followed; a separately reviewed subtype classifier is next.
+
 ## 2026-09-28 — exact six-field relay reaches tool-schema refusal
 
 - Operation `continue` from reviewed exact-admission commit `b71f30e`. Parent pure focused tests passed 17/17 with eight local-network skips and elevated local-only tests passed 25/25. Independent Astra High found and then cleared the raw UTF-8 admission P2; exact six-field constraints and canonical stripping were independently checked.

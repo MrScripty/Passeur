@@ -171,12 +171,17 @@ function nativeToolsFailure(tools) {
     return null;
   };
   for (const [index, tool] of namespace.tools.entries()) {
-    if (tool?.type !== 'function' || typeof tool.name !== 'string' ||
-        !/^[a-z_][a-z0-9_]{0,63}$/.test(tool.name) ||
-        Object.keys(tool).some(key => !['type', 'name', 'description', 'parameters', 'strict'].includes(key)) ||
-        tool.strict !== undefined && typeof tool.strict !== 'boolean' ||
-        tool.description !== undefined && (typeof tool.description !== 'string' ||
-          Buffer.byteLength(tool.description) > 2_048)) return failure('FUNCTION_SHAPE', index);
+    if (tool?.type !== 'function') return failure('FUNCTION_TYPE', index);
+    if (typeof tool.name !== 'string' || !/^[a-z_][a-z0-9_]{0,63}$/.test(tool.name))
+      return failure('FUNCTION_NAME_SYNTAX', index);
+    if (Object.keys(tool).some(key =>
+      !['type', 'name', 'description', 'parameters', 'strict'].includes(key)))
+      return failure('FUNCTION_FIELDS', index);
+    if (tool.strict !== undefined && typeof tool.strict !== 'boolean')
+      return failure('FUNCTION_STRICT', index);
+    if (tool.description !== undefined && (typeof tool.description !== 'string' ||
+        Buffer.byteLength(tool.description) > 2_048))
+      return failure('FUNCTION_DESCRIPTION', index);
     const issue = schemaFailure(tool.parameters);
     if (issue) return failure(issue, index);
   }

@@ -239,13 +239,22 @@ test('native tool rejection identifies only the first bounded failure family and
   const validTool = { type: 'function', name: 'submit_reminder_decision',
     parameters: { type: 'object', properties: {} } };
   const validNamespace = { type: 'namespace', name: 'muse', tools: [validTool] };
+  const fullTools = change => Array.from({ length: 25 }, (_, index) => index === 0 ?
+    { type: 'function', name: 'native_0', parameters: { type: 'object' }, ...change } :
+    { type: 'function', name: index === 1 ? 'read_file' : `native_${index}`,
+      parameters: { type: 'object' } });
   const envelope = tools => ({ model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE',
     ...nativeExtras, tools });
   const cases = [
     [[], 'NAMESPACE_COUNT', null],
     [[{ ...validNamespace, name: secret }], 'NAMESPACE_SHAPE', null],
     [[{ ...validNamespace, tools: [{ ...validTool, name: secret }] }], 'FUNCTION_NAME_SET', null],
-    [[{ ...validNamespace, tools: [{ ...validTool, strict: secret }] }], 'FUNCTION_SHAPE', 0],
+    [[{ ...validNamespace, tools: fullTools({ type: secret }) }], 'FUNCTION_TYPE', 0],
+    [[{ ...validNamespace, tools: fullTools({ name: 'bad-name' }) }], 'FUNCTION_NAME_SYNTAX', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool, [secret]: true }] }], 'FUNCTION_FIELDS', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool, strict: secret }] }], 'FUNCTION_STRICT', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool, description: secret.repeat(100) }] }],
+    'FUNCTION_DESCRIPTION', 0],
     [[{ ...validNamespace, tools: [{ ...validTool, parameters: null }] }], 'SCHEMA_SHAPE', 0],
     [[{ ...validNamespace, tools: [{ ...validTool,
       parameters: { type: 'object', [secret]: true } }] }], 'SCHEMA_KEYS', 0],
