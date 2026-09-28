@@ -121,6 +121,7 @@ function nativeToolsFailure(tools) {
     'anyOf', 'oneOf', 'allOf', 'minimum', 'maximum', 'exclusiveMinimum',
     'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems',
     'maxItems', 'minProperties', 'maxProperties']);
+  const schemaTypes = ['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'];
   const context = { nodes: 0 };
   const schemaFailure = (schema, depth = 0) => {
     if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return 'SCHEMA_SHAPE';
@@ -139,8 +140,12 @@ function nativeToolsFailure(tools) {
         const issue = schemaFailure(value, depth + 1);
         if (issue) return issue;
       } else if (['anyOf', 'oneOf', 'allOf'].includes(key)) {
-        if (!Array.isArray(value) || value.length < 1 || value.length > 8 ||
-            value.some(child => schemaFailure(child, depth + 1))) return 'SCHEMA_COMPOSITION';
+        if (!Array.isArray(value) || value.length < 1 || value.length > 8)
+          return 'SCHEMA_COMPOSITION';
+        for (const child of value) {
+          const issue = schemaFailure(child, depth + 1);
+          if (issue) return typeof issue === 'object' ? issue : 'SCHEMA_COMPOSITION';
+        }
       } else if (key === 'required') {
         if (!Array.isArray(value) || value.length > 64 ||
             value.some(item => typeof item !== 'string' || item.length > 64) ||
@@ -148,8 +153,17 @@ function nativeToolsFailure(tools) {
       } else if (key === 'type') {
         const values = Array.isArray(value) ? value : [value];
         if (!values.length || values.length > 3 || values.some(item =>
-          !['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'].includes(item)))
-          return 'SCHEMA_TYPE';
+          !schemaTypes.includes(item))) {
+          const memberLimit = 64;
+          return { code: 'SCHEMA_TYPE', schemaType: {
+            depth, class: Array.isArray(value) ? 'array' : 'scalar',
+            memberCount: Math.min(values.length, memberLimit),
+            moreMembers: values.length > memberLimit,
+            recognizedTypes: schemaTypes.filter(label => values.includes(label)),
+            unknownMemberCount: Math.min(values.reduce((count, item) =>
+              count + Number(!schemaTypes.includes(item)), 0), memberLimit),
+          } };
+        }
       } else if (key === 'enum' || key === 'examples') {
         if (!Array.isArray(value) || value.length > 16 ||
             value.some(item => item !== null &&
@@ -189,7 +203,8 @@ function nativeToolsFailure(tools) {
         descriptionBytes: typeof tool.description === 'string' ?
           Buffer.byteLength(tool.description) : null };
     const issue = schemaFailure(tool.parameters);
-    if (issue) return failure(issue, index);
+    if (issue) return typeof issue === 'object' ?
+      { ...failure(issue.code, index), schemaType: issue.schemaType } : failure(issue, index);
   }
   return null;
 }

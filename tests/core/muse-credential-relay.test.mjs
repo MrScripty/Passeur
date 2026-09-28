@@ -303,6 +303,8 @@ test('native tool rejection identifies only the first bounded failure family and
     const projection = nativeRejectionProjection(payload,
       { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
     const expected = { code, functionIndex };
+    if (code === 'SCHEMA_TYPE') expected.schemaType = { depth: 0, class: 'scalar',
+      memberCount: 1, moreMembers: false, recognizedTypes: [], unknownMemberCount: 1 };
     if (code === 'FUNCTION_DESCRIPTION') {
       const description = tools[0].tools[0].description;
       expected.descriptionType = description === null ? 'null' :
@@ -350,6 +352,50 @@ test('native tool rejection identifies only the first bounded failure family and
   assert.equal(JSON.stringify(nativeRejectionProjection(mainOver,
     { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }))
     .includes('😀'), false);
+});
+
+test('native schema type rejection reports bounded shape without schema values', () => {
+  const secret = 'credential-header-and-property-secret';
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const envelope = parameters => body({ model: nativePolicy.model,
+    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters }] }] });
+  const cases = [
+    [{ type: 'object', properties: { [secret]: { type: ['string', secret] } } },
+      { depth: 1, class: 'array', memberCount: 2, moreMembers: false,
+        recognizedTypes: ['string'], unknownMemberCount: 1 }],
+    [{ type: 'object', items: { anyOf: [{ type: 'number' },
+      { type: [secret, 'null', 'object'] }] } },
+    { depth: 2, class: 'array', memberCount: 3, moreMembers: false,
+      recognizedTypes: ['object', 'null'], unknownMemberCount: 1 }],
+    [{ type: [] }, { depth: 0, class: 'array', memberCount: 0,
+      moreMembers: false, recognizedTypes: [], unknownMemberCount: 0 }],
+    [{ type: ['string', 'number', 'null', 'object'] },
+      { depth: 0, class: 'array', memberCount: 4, moreMembers: false,
+        recognizedTypes: ['object', 'string', 'number', 'null'], unknownMemberCount: 0 }],
+    [{ type: Array(80).fill(secret) },
+      { depth: 0, class: 'array', memberCount: 64, moreMembers: true,
+        recognizedTypes: [], unknownMemberCount: 64 }],
+    [{ type: secret }, { depth: 0, class: 'scalar', memberCount: 1,
+      moreMembers: false, recognizedTypes: [], unknownMemberCount: 1 }],
+  ];
+  for (const [parameters, schemaType] of cases) {
+    const payload = envelope(parameters);
+    assert.deepEqual(requestDecision(post, payload, nativePolicy),
+      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
+    const projection = nativeRejectionProjection(payload,
+      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
+    assert.deepEqual(projection.tools.failure,
+      { code: 'SCHEMA_TYPE', functionIndex: 0, schemaType });
+    assert.equal(JSON.stringify(projection).includes(secret), false);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+  }
+  for (const type of ['object', ['string', 'null'], ['integer', 'number', 'boolean']]) {
+    assert.equal(requestDecision(post, envelope({ type }), nativePolicy).ok, true);
+  }
 });
 
 test('guest headers and auth cannot select upstream authority or identity', () => {
