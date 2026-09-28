@@ -777,6 +777,7 @@ export class Coordinator {
       if (run.status === "completed" && !state.cancel && (state.native.coverage !== "turn_scoped" || state.native.obligations.length || state.inputs.some((i) => i.state === "pending" || i.state === "answer_intent" || i.state === "delivery_unknown"))) {
         result.execution_status = "failed"; result.error = { code: "COMPLETION_EVIDENCE_MISSING", message: "Native completion did not account for required obligations" };
       }
+      const privatePublicationEligible = run.status === "completed" && result.execution_status === "completed";
       if (run.worker_stop === "unconfirmed") {
         if (result.execution_status === "completed") result.execution_status = "interrupted";
         await this.#freeze(`Task ${id} has unconfirmed native shutdown`);
@@ -794,7 +795,7 @@ export class Coordinator {
               throw new BridgeError("PRIVATE_GIT_STOP_UNCONFIRMED", "Private worker evidence changed before stop settlement");
             s.native.state = "stopped";
           });
-          await this.administration.run(() => this.controls.withTaskPublication([id], async () => {
+          if (privatePublicationEligible) await this.administration.run(() => this.controls.withTaskPublication([id], async () => {
             const current = await this.store.readControl(id), owned = await this.store.readResource(id);
             if (current.cancel || current.native.run_id !== state.native.run_id ||
                 current.control_generation !== state.control_generation || current.native.state !== "stopped" ||
@@ -826,40 +827,46 @@ export class Coordinator {
           }));
         }
         await phase("finalizing");
-        // Accounted-for native stop permits collection independent of execution cancellation.
-        const collection = { ...workspace };
-        delete collection.signal;
-        this.assertAuthority();
-        result.delivery = await observeDelivery(collection, run.no_changes_reason);
-        if (privateView) {
-          const retained = await this.store.readPrivatePublication(id);
-          if (retained?.state !== "published" ||
-              result.delivery.head_commit !== retained.request.publication.new_head ||
-              result.delivery.tree_oid !== retained.request.publication.tree_oid ||
-              result.delivery.base_commit !== retained.request.workspace.base_commit ||
-              result.delivery.branch_ref !== retained.request.workspace.branch ||
-              result.delivery.worktree_path !== retained.request.workspace.path ||
-              !["committed", "no_changes_needed"].includes(result.delivery.status)) {
-            throw new BridgeError("PRIVATE_PUBLICATION_RESULT_CONFLICT", "Observed delivery differs from the exact private publication");
+        // A private candidate is collected only after its successful worker result was published.
+        if (!privateView || privatePublicationEligible) {
+          const collection = { ...workspace };
+          delete collection.signal;
+          this.assertAuthority();
+          result.delivery = await observeDelivery(collection, run.no_changes_reason);
+          if (privateView) {
+            const retained = await this.store.readPrivatePublication(id);
+            if (retained?.state !== "published" ||
+                result.delivery.head_commit !== retained.request.publication.new_head ||
+                result.delivery.tree_oid !== retained.request.publication.tree_oid ||
+                result.delivery.base_commit !== retained.request.workspace.base_commit ||
+                result.delivery.branch_ref !== retained.request.workspace.branch ||
+                result.delivery.worktree_path !== retained.request.workspace.path ||
+                !["committed", "no_changes_needed"].includes(result.delivery.status)) {
+              throw new BridgeError("PRIVATE_PUBLICATION_RESULT_CONFLICT", "Observed delivery differs from the exact private publication");
+            }
           }
+          result.workspace.stale = request.mode === "review" && (JSON.stringify(before) !== JSON.stringify(await digestFiles(workspace.path, request.context_files ?? [], true))
+            || JSON.stringify(beforeStatus) !== JSON.stringify(await sourceStatus(workspace.path)) || revision !== await currentRevision(workspace.path));
+          const changes = await collectChanges(collection); result.changed_files = changes.map((c) => c.path).sort();
+          const paths = [...new Set(changes.flatMap((c) => c.old_path ? [c.old_path, c.path] : [c.path]))];
+          const outside = request.allowed_paths ? paths.filter((p) => !request.allowed_paths!.some((a) => p === a || p.startsWith(`${a.replace(/\/$/, "")}/`))) : [];
+          if (outside.length) result.blockers.push(`Changes outside allowed_paths require caller review: ${outside.join(", ").slice(0, 1800)}`);
+          if (request.mode === "implement") await this.#artifacts(id, collection, result, changes);
+          const owned = await this.store.readResource(id);
+          if (owned && result.delivery.head_commit) await this.store.writeResource(id, { ...owned, head_commit: result.delivery.head_commit, updated_at: now() });
         }
-        result.workspace.stale = request.mode === "review" && (JSON.stringify(before) !== JSON.stringify(await digestFiles(workspace.path, request.context_files ?? [], true))
-          || JSON.stringify(beforeStatus) !== JSON.stringify(await sourceStatus(workspace.path)) || revision !== await currentRevision(workspace.path));
-        const changes = await collectChanges(collection); result.changed_files = changes.map((c) => c.path).sort();
-        const paths = [...new Set(changes.flatMap((c) => c.old_path ? [c.old_path, c.path] : [c.path]))];
-        const outside = request.allowed_paths ? paths.filter((p) => !request.allowed_paths!.some((a) => p === a || p.startsWith(`${a.replace(/\/$/, "")}/`))) : [];
-        if (outside.length) result.blockers.push(`Changes outside allowed_paths require caller review: ${outside.join(", ").slice(0, 1800)}`);
-        if (request.mode === "implement") await this.#artifacts(id, collection, result, changes);
-        const owned = await this.store.readResource(id);
-        if (owned && result.delivery.head_commit) await this.store.writeResource(id, { ...owned, head_commit: result.delivery.head_commit, updated_at: now() });
       }
     } catch (error) {
       const detail = errorInfo(error);
       if (detail.code === "GIT_STOP_UNCONFIRMED") result.worker_stop = "unconfirmed";
-      result.error = workerSettled ? { code: "FINALIZATION_FAILED", message: detail.message } : detail; result.summary = detail.message;
+      const primaryFailure = privateView && workerSettled && result.execution_status !== "completed" && result.error;
+      if (!primaryFailure) {
+        result.error = workerSettled ? { code: "FINALIZATION_FAILED", message: detail.message } : detail;
+        result.summary = detail.message;
+      }
       result.execution_status = controller.signal.aborted ? "cancelled" : "failed";
       if (privateView) result.delivery = { status: "incomplete", reason: "Private Git publication or delivery failed" };
-      if (workerSettled) result.blockers.push("Delivery collection failed; preserve the worktree and evidence");
+      if (workerSettled && !primaryFailure) result.blockers.push("Delivery collection failed; preserve the worktree and evidence");
     }
     if (!await this.store.readResource(id)) await this.store.writeResource(id, { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
     const privateResource = await this.store.readResource(id);

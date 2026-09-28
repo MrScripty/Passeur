@@ -36,6 +36,72 @@ async function privateCommit(input) {
   }
   return (await exec('git', ['-C', input.workspace, 'rev-parse', 'HEAD'], { env: { ...process.env, GIT_DIR: admin } })).stdout.trim();
 }
+async function sharedIndexDigest(f) {
+  return createHash('sha256').update(await readFile(join(f.root, '.git', 'index'))).digest('hex');
+}
+async function assertPrivatePublicationRefused(f, result, indexBefore, errorCode, executionStatus = 'failed') {
+  const resource = await f.store.readResource(result.task_id);
+  assert.equal(result.execution_status, executionStatus);
+  assert.equal(result.worker_stop, 'confirmed');
+  assert.equal(result.error.code, errorCode);
+  assert.equal(result.delivery.status, 'incomplete');
+  assert.deepEqual(result.changed_files, []);
+  assert.equal(resource.schema_version, 2);
+  assert.equal(resource.private_git.state, 'prepared');
+  assert.equal(await f.store.readPrivatePublication(result.task_id), undefined);
+  assert.equal((await git(f.root, 'rev-parse', resource.branch_ref)).trim(), f.base);
+  assert.equal(await sharedIndexDigest(f), indexBefore);
+  assert.equal((await f.store.readControl(result.task_id)).phase, 'needs_attention');
+  assert.equal(await readFile(join(resource.worktree_path, 'worker.txt'), 'utf8'), 'private commit bytes\n');
+  return resource;
+}
+
+test('failed worker retains a private commit after confirmed stop without publication or delivery collection', async t => {
+  const f = await fixture(t), indexBefore = await sharedIndexDigest(f);
+  const c = controlled(f, async input => {
+    await privateCommit(input);
+    await input.onEvent({ kind: 'operation_started', id: 'candidate-validation', operation: 'candidate_validation' });
+    await input.onEvent({ kind: 'operation_finished', id: 'candidate-validation' });
+    return done({ status: 'failed', worker_assessment: 'unmet',
+      error: { code: 'CANDIDATE_REJECTED', message: 'Disposable candidate validation failed' } });
+  });
+  const result = await c.execute(f.implementation('failed-private-commit'));
+  await c.waitForIdle();
+  const resource = await assertPrivatePublicationRefused(f, result, indexBefore, 'CANDIDATE_REJECTED');
+  assert.equal(result.native_evidence.state, 'stopped');
+  assert.deepEqual(result.native_evidence.obligations, []);
+  const reopened = new TaskStore(f.state);
+  await reconcileStoredTasks(reopened);
+  assert.equal((await reopened.readControl(result.task_id)).phase, 'needs_attention');
+  assert.equal((await reopened.readResource(result.task_id)).private_git.state, 'prepared');
+  assert.equal(await reopened.readPrivatePublication(result.task_id), undefined);
+  assert.equal((await git(f.root, 'rev-parse', resource.branch_ref)).trim(), f.base);
+  assert.equal(await sharedIndexDigest(f), indexBefore);
+});
+
+test('Coordinator downgrade of a completed private worker cannot publish its commit', async t => {
+  const f = await fixture(t), indexBefore = await sharedIndexDigest(f);
+  f.store.listPeerOperations = async () => [{ disposition: 'started' }];
+  const c = controlled(f, async input => { await privateCommit(input); return done(); });
+  const result = await c.execute(f.implementation('downgraded-private-commit'));
+  await c.waitForIdle();
+  await assertPrivatePublicationRefused(f, result, indexBefore, 'PEER_OPERATION_RECOVERY_REQUIRED', 'interrupted');
+  assert.equal(result.native_evidence.state, 'stopped');
+});
+
+test('pending candidate validation obligation prevents private publication', async t => {
+  const f = await fixture(t), indexBefore = await sharedIndexDigest(f);
+  const c = controlled(f, async input => {
+    await privateCommit(input);
+    await input.onEvent({ kind: 'operation_started', id: 'candidate-validation', operation: 'candidate_validation' });
+    return done();
+  });
+  const result = await c.execute(f.implementation('pending-candidate-validation'));
+  await c.waitForIdle();
+  await assertPrivatePublicationRefused(f, result, indexBefore, 'COMPLETION_EVIDENCE_MISSING');
+  assert.deepEqual((await f.store.readControl(result.task_id)).native.obligations,
+    [{ id: 'candidate-validation', kind: 'candidate_validation' }]);
+});
 
 test('controlled worker commits with ordinary hook in private Git and Coordinator publishes only after exact stop', async t => {
   const f = await fixture(t);
