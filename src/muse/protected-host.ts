@@ -80,7 +80,8 @@ export async function runProtectedGuest(spec: GuestSpec,
     active++;
     outgoing.once("close", () => { active--; });
     incoming.setTimeout(5_000, () => incoming.destroy());
-    outgoing.setTimeout(5_000, () => outgoing.destroy());
+    // Request intake is bounded; provider inference after a complete request is task-owned.
+    incoming.once("end", () => incoming.setTimeout(0));
     const headers = { host: "127.0.0.1:1", authorization: incoming.headers.authorization,
       accept: "application/json, text/event-stream",
       ...(incoming.headers["content-type"] ? { "content-type": incoming.headers["content-type"] } : {}),
@@ -90,6 +91,8 @@ export async function runProtectedGuest(spec: GuestSpec,
       path: incoming.url, headers, agent: false }, response => {
       outgoing.writeHead(response.statusCode ?? 502,
         { "content-type": response.headers["content-type"] ?? "application/json" });
+      response.once("error", () => outgoing.destroy());
+      response.once("close", () => { if (!response.complete) outgoing.destroy(); });
       response.pipe(outgoing);
     });
     forwarding.on("error", () => { if (!outgoing.headersSent) outgoing.writeHead(502).end();

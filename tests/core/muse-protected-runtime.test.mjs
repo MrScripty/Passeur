@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, mkdir, writeFile, rm, lstat, readdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { createServer, request } from 'node:http';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { protectedLaunch, captureProtectedHost, verifyProtectedStop,
@@ -109,6 +111,152 @@ test('production guest retires its relay after session-prep or native-spawn fail
     } finally { await rm(home, { recursive: true, force: true }); }
   }
 });
+
+async function streamingGuestFixture(onProviderRequest) {
+  const home = await mkdtemp(join(tmpdir(), 'passeur-protected-stream-test-'));
+  const socket = join(home, 'provider.sock');
+  const provider = createServer(onProviderRequest);
+  await new Promise((resolve, reject) => {
+    provider.once('error', reject);
+    provider.listen(socket, resolve);
+  });
+  let native, relayUrl, ready;
+  const launched = new Promise(resolve => { ready = resolve; });
+  const spawnNative = () => {
+    native = new EventEmitter();
+    native.stdin = new PassThrough();
+    native.stdout = new PassThrough();
+    native.stderr = new PassThrough();
+    native.exitCode = null;
+    native.signalCode = null;
+    native.kill = () => false;
+    relayUrl = JSON.parse(readFileSync(join(home, '.config/muse/settings.json'), 'utf8'))
+      .endpoint_transport.base_url;
+    ready();
+    return native;
+  };
+  const guest = runProtectedGuest({ museBin: '/controlled/muse', museArgs: ['serve'],
+    relaySocket: socket, home, relayHeaders: {} }, undefined, spawnNative);
+  await Promise.race([launched, guest.then(() => { throw new Error('guest exited before native launch'); })]);
+  const stop = async () => {
+    native.exitCode = 0;
+    native.emit('close', 0, null);
+    assert.equal(await guest, 0);
+  };
+  const close = async () => {
+    if (native.exitCode === null) await stop();
+    provider.closeAllConnections();
+    await new Promise(resolve => provider.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  };
+  return { relayUrl, stop, close };
+}
+
+function relayPost(url, onChunk = () => {}) {
+  let settled = false;
+  const result = new Promise((resolve, reject) => {
+    const req = request(url, { method: 'POST', headers: { authorization: 'Bearer test',
+      'content-type': 'application/json' } }, res => {
+      const chunks = [];
+      res.on('data', chunk => { chunks.push(chunk); onChunk(chunk); });
+      res.on('end', () => resolve(Buffer.concat(chunks).toString()));
+      res.on('error', reject);
+      res.on('aborted', () => reject(new Error('relay response aborted')));
+    });
+    req.on('error', reject);
+    req.end('{}');
+  }).finally(() => { settled = true; });
+  return { result, get settled() { return settled; } };
+}
+
+async function assertRelayRetired(url) {
+  await assert.rejects(relayPost(url).result, error =>
+    error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET');
+}
+
+function afterCompleteProviderRequest(req, run) {
+  const chunks = [];
+  req.on('data', value => chunks.push(value));
+  req.on('end', () => {
+    assert.equal(Buffer.concat(chunks).toString(), '{}');
+    run();
+  });
+}
+
+async function within(promise, milliseconds = 2_000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('relay observation timed out')), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+test('production guest forwards a provider response across slow first and interchunk waits', async () => {
+  const f = await streamingGuestFixture((req, res) => {
+    afterCompleteProviderRequest(req, () => setTimeout(() => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('first');
+      setTimeout(() => res.end('second'), 5_200);
+    }, 5_200));
+  });
+  try {
+    assert.equal(await relayPost(f.relayUrl).result, 'firstsecond');
+    await f.stop();
+    await assertRelayRetired(f.relayUrl);
+  } finally { await f.close(); }
+});
+
+test('production guest closes partial responses and releases each active relay slot', async () => {
+  let requestCount = 0;
+  const f = await streamingGuestFixture((req, res) => {
+    afterCompleteProviderRequest(req, () => {
+      if (++requestCount <= 4) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('partial');
+        setTimeout(() => res.socket.destroy(), 20);
+      } else res.end('complete');
+    });
+  });
+  try {
+    for (let index = 0; index < 4; index++) {
+      let chunks = 0;
+      const client = relayPost(f.relayUrl, () => { chunks++; });
+      await assert.rejects(within(client.result), error =>
+        error.message !== 'relay observation timed out');
+      assert.equal(chunks, 1);
+    }
+    assert.equal(await within(relayPost(f.relayUrl).result), 'complete');
+    await f.stop();
+    await assertRelayRetired(f.relayUrl);
+  } finally { await f.close(); }
+});
+
+for (const wait of ['first response', 'interchunk']) {
+  test(`production guest cancellation retires relay during ${wait} wait`, async () => {
+    let receivedChunk;
+    const chunk = new Promise(resolve => { receivedChunk = resolve; });
+    let providerClosed;
+    const closed = new Promise(resolve => { providerClosed = resolve; });
+    const f = await streamingGuestFixture((req, res) => {
+      res.once('close', providerClosed);
+      afterCompleteProviderRequest(req, () => {
+        if (wait === 'interchunk') res.write('first');
+      });
+    });
+    try {
+      const client = relayPost(f.relayUrl, receivedChunk);
+      void client.result.catch(() => {});
+      if (wait === 'interchunk') await chunk;
+      await new Promise(resolve => setTimeout(resolve, 5_200));
+      assert.equal(client.settled, false);
+      await f.stop();
+      await assert.rejects(client.result);
+      await within(closed);
+      await assertRelayRetired(f.relayUrl);
+    } finally { await f.close(); }
+  });
+}
 
 test('production SDK host reserves status FD 3 outside MSP stdio and writes exact terminal frames', async () => {
   const root = await mkdtemp(join(tmpdir(), 'passeur-protected-host-status-'));
