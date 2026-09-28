@@ -101,72 +101,88 @@ function nativeInputAllowed(input) {
     return true;
   });
 }
-function nativeToolsAllowed(tools) {
-  if (!Array.isArray(tools) || tools.length !== 1) return false;
+function nativeToolsFailure(tools) {
+  const failure = (code, functionIndex = null) => ({ code, functionIndex });
+  if (!Array.isArray(tools) || tools.length !== 1) return failure('NAMESPACE_COUNT');
   const namespace = tools[0];
   if (!namespace || namespace.type !== 'namespace' || namespace.name !== 'muse' ||
       Object.keys(namespace).some(key => !['type', 'name', 'description', 'tools'].includes(key)) ||
       namespace.description !== undefined && (typeof namespace.description !== 'string' ||
         Buffer.byteLength(namespace.description) > 2_048) ||
-      !Array.isArray(namespace.tools) || ![1, 25].includes(namespace.tools.length)) return false;
+      !Array.isArray(namespace.tools) || ![1, 25].includes(namespace.tools.length))
+    return failure('NAMESPACE_SHAPE');
   const names = namespace.tools.map(tool => tool?.name);
   if (new Set(names).size !== names.length ||
       (names.length === 25 && names[1] !== 'read_file') ||
-      (names.length === 1 && names[0] !== 'submit_reminder_decision')) return false;
+      (names.length === 1 && names[0] !== 'submit_reminder_decision'))
+    return failure('FUNCTION_NAME_SET');
   const schemaKeys = new Set(['type', 'description', 'title', 'examples', 'properties',
     'required', 'additionalProperties', 'items', 'enum', 'const', 'nullable',
     'anyOf', 'oneOf', 'allOf', 'minimum', 'maximum', 'exclusiveMinimum',
     'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems',
     'maxItems', 'minProperties', 'maxProperties']);
   const context = { nodes: 0 };
-  const schemaAllowed = (schema, depth = 0) => {
-    if (!schema || typeof schema !== 'object' || Array.isArray(schema) ||
-        depth > 8 || ++context.nodes > 512 ||
-        Object.keys(schema).some(key => !schemaKeys.has(key))) return false;
+  const schemaFailure = (schema, depth = 0) => {
+    if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return 'SCHEMA_SHAPE';
+    if (depth > 8 || ++context.nodes > 512) return 'SCHEMA_COMPLEXITY';
+    if (Object.keys(schema).some(key => !schemaKeys.has(key))) return 'SCHEMA_KEYS';
     for (const [key, value] of Object.entries(schema)) {
       if (key === 'properties') {
         if (!value || typeof value !== 'object' || Array.isArray(value) ||
-            Object.keys(value).length > 64 ||
-            Object.values(value).some(child => !schemaAllowed(child, depth + 1))) return false;
+            Object.keys(value).length > 64) return 'SCHEMA_PROPERTIES';
+        for (const child of Object.values(value)) {
+          const issue = schemaFailure(child, depth + 1);
+          if (issue) return issue;
+        }
       } else if (key === 'items' || key === 'additionalProperties' &&
           typeof value === 'object') {
-        if (!schemaAllowed(value, depth + 1)) return false;
+        const issue = schemaFailure(value, depth + 1);
+        if (issue) return issue;
       } else if (['anyOf', 'oneOf', 'allOf'].includes(key)) {
         if (!Array.isArray(value) || value.length < 1 || value.length > 8 ||
-            value.some(child => !schemaAllowed(child, depth + 1))) return false;
+            value.some(child => schemaFailure(child, depth + 1))) return 'SCHEMA_COMPOSITION';
       } else if (key === 'required') {
         if (!Array.isArray(value) || value.length > 64 ||
             value.some(item => typeof item !== 'string' || item.length > 64) ||
-            new Set(value).size !== value.length) return false;
+            new Set(value).size !== value.length) return 'SCHEMA_REQUIRED';
       } else if (key === 'type') {
         const values = Array.isArray(value) ? value : [value];
         if (!values.length || values.length > 3 || values.some(item =>
-          !['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'].includes(item))) return false;
+          !['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'].includes(item)))
+          return 'SCHEMA_TYPE';
       } else if (key === 'enum' || key === 'examples') {
         if (!Array.isArray(value) || value.length > 16 ||
             value.some(item => item !== null &&
               (!['string', 'number', 'boolean'].includes(typeof item) ||
-                typeof item === 'string' && Buffer.byteLength(item) > 2_048))) return false;
+                typeof item === 'string' && Buffer.byteLength(item) > 2_048)))
+          return 'SCHEMA_ENUM';
       } else if (['description', 'title'].includes(key)) {
-        if (typeof value !== 'string' || Buffer.byteLength(value) > 2_048) return false;
+        if (typeof value !== 'string' || Buffer.byteLength(value) > 2_048)
+          return 'SCHEMA_DESCRIPTION';
       } else if (key === 'nullable' || key === 'additionalProperties') {
-        if (typeof value !== 'boolean') return false;
+        if (typeof value !== 'boolean') return 'SCHEMA_BOOLEAN';
       } else if (key === 'const') {
         if (value !== null && !['string', 'number', 'boolean'].includes(typeof value) ||
-            typeof value === 'string' && Buffer.byteLength(value) > 2_048) return false;
+            typeof value === 'string' && Buffer.byteLength(value) > 2_048)
+          return 'SCHEMA_CONST';
       } else if (typeof value !== 'number' ||
-          !Number.isFinite(value) || Math.abs(value) > 1_000_000) return false;
+          !Number.isFinite(value) || Math.abs(value) > 1_000_000) return 'SCHEMA_NUMBER';
     }
-    return true;
+    return null;
   };
-  return namespace.tools.every(tool => tool?.type === 'function' &&
-    typeof tool.name === 'string' && /^[a-z_][a-z0-9_]{0,63}$/.test(tool.name) &&
-    Object.keys(tool).every(key => ['type', 'name', 'description', 'parameters', 'strict'].includes(key)) &&
-    (tool.strict === undefined || typeof tool.strict === 'boolean') &&
-    (tool.description === undefined || typeof tool.description === 'string' &&
-      Buffer.byteLength(tool.description) <= 2_048) &&
-    schemaAllowed(tool.parameters));
+  for (const [index, tool] of namespace.tools.entries()) {
+    if (tool?.type !== 'function' || typeof tool.name !== 'string' ||
+        !/^[a-z_][a-z0-9_]{0,63}$/.test(tool.name) ||
+        Object.keys(tool).some(key => !['type', 'name', 'description', 'parameters', 'strict'].includes(key)) ||
+        tool.strict !== undefined && typeof tool.strict !== 'boolean' ||
+        tool.description !== undefined && (typeof tool.description !== 'string' ||
+          Buffer.byteLength(tool.description) > 2_048)) return failure('FUNCTION_SHAPE', index);
+    const issue = schemaFailure(tool.parameters);
+    if (issue) return failure(issue, index);
+  }
+  return null;
 }
+function nativeToolsAllowed(tools) { return nativeToolsFailure(tools) === null; }
 export function validateNativeSse(bytes) {
   const text = bytes.toString('utf8');
   if (!text.endsWith('\n\n') || Buffer.from(text).length !== bytes.length) {
@@ -416,7 +432,8 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
       omittedItems: Math.max(0, items.length - itemClasses.length) },
     previousResponse: classify(object?.previous_response_id, NATIVE_RESPONSE_IDS),
     tools: { class: type(object?.tools), namespaceCount: tools.length, toolClasses,
-      omittedNamespaces: Math.max(0, tools.length - toolClasses.length) } };
+      omittedNamespaces: Math.max(0, tools.length - toolClasses.length),
+      failure: code === 'NATIVE_TOOLS_INVALID' ? nativeToolsFailure(object?.tools) : null } };
   while (Buffer.byteLength(JSON.stringify(projection)) + 1 > NATIVE_CAPTURE_ARTIFACT_LIMIT) {
     const sampledNamespace = projection.tools.toolClasses.find(namespace =>
       namespace.functionSamples.length > 0);

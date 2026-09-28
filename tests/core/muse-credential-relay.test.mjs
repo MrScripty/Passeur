@@ -231,6 +231,66 @@ test('maximum recognized field projection trims samples under the artifact limit
     { 'content-type': 'application/json' }), payload, nativePolicy).ok, false);
 });
 
+test('native tool rejection identifies only the first bounded failure family and index', () => {
+  const secret = 'secret-tool-description-and-property-name';
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const validTool = { type: 'function', name: 'submit_reminder_decision',
+    parameters: { type: 'object', properties: {} } };
+  const validNamespace = { type: 'namespace', name: 'muse', tools: [validTool] };
+  const envelope = tools => ({ model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE',
+    ...nativeExtras, tools });
+  const cases = [
+    [[], 'NAMESPACE_COUNT', null],
+    [[{ ...validNamespace, name: secret }], 'NAMESPACE_SHAPE', null],
+    [[{ ...validNamespace, tools: [{ ...validTool, name: secret }] }], 'FUNCTION_NAME_SET', null],
+    [[{ ...validNamespace, tools: [{ ...validTool, strict: secret }] }], 'FUNCTION_SHAPE', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool, parameters: null }] }], 'SCHEMA_SHAPE', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', [secret]: true } }] }], 'SCHEMA_KEYS', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', properties: Object.fromEntries(
+        Array.from({ length: 65 }, (_, index) => [`field${index}`, { type: 'string' }])) } }] }],
+    'SCHEMA_PROPERTIES', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', required: [secret.repeat(4)] } }] }], 'SCHEMA_REQUIRED', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: secret } }] }], 'SCHEMA_TYPE', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', enum: Array(17).fill(secret) } }] }], 'SCHEMA_ENUM', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', description: secret.repeat(100) } }] }],
+    'SCHEMA_DESCRIPTION', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', nullable: secret } }] }], 'SCHEMA_BOOLEAN', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', const: { secret } } }] }], 'SCHEMA_CONST', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', minimum: secret } }] }], 'SCHEMA_NUMBER', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: { type: 'object', anyOf: [] } }] }], 'SCHEMA_COMPOSITION', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool,
+      parameters: Array.from({ length: 10 }).reduce(schema =>
+        ({ type: 'object', properties: { nested: schema } }), { type: 'string' }) }] }],
+    'SCHEMA_COMPLEXITY', 0],
+    [[{ ...validNamespace, tools: Array.from({ length: 25 }, (_, index) => ({
+      type: 'function', name: index === 1 ? 'read_file' : `native_${index}`,
+      parameters: index === 22 ? { type: 'object', [secret]: true } : { type: 'object' },
+    })) }], 'SCHEMA_KEYS', 22],
+  ];
+  for (const [tools, code, functionIndex] of cases) {
+    const payload = body(envelope(tools));
+    assert.deepEqual(requestDecision(post, payload, nativePolicy),
+      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
+    const projection = nativeRejectionProjection(payload,
+      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
+    assert.deepEqual(projection.tools.failure, { code, functionIndex });
+    assert.equal(JSON.stringify(projection).includes(secret), false);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+  }
+});
+
 test('guest headers and auth cannot select upstream authority or identity', () => {
   for (const headers of [
     { authorization: 'Bearer external' }, { cookie: 'session=anything' },
