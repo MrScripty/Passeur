@@ -761,6 +761,64 @@ export function matchingShellResult(body) {
     shellOutputMarkers(body.input[0].output) !== null;
 }
 
+export function outerShellTranscript(workspace, protectedRoot, token) {
+  const direct = join(protectedRoot, token);
+  const linked = join(workspace, 'protected-link', token);
+  return `workspace=ok\n` +
+    [direct, linked, `/proc/1/root${direct}`].map(path =>
+      `/bin/sh: 1: cannot create ${path}: Directory nonexistent\n`).join('') +
+    'direct=denied\nsymlink=denied\nproc=denied\ndummy-auth=visible\n';
+}
+
+export function outerShellItemMarkers(output, workspace, protectedRoot, token) {
+  const exact = output === outerShellTranscript(workspace, protectedRoot, token);
+  return { outputMarkers: exact, workspaceReportedWritten: exact ? true : null,
+    dummyAuthVisible: exact ? true : null };
+}
+
+// The installed outer-only host sends a decorated JSON result, while the native
+// completed item reports the inner shell transcript. Keep both identities separate.
+export function matchingOuterShellResult(body, command, workspace, protectedRoot, token) {
+  if (body?.model !== SHELL_MODEL || Object.hasOwn(body, 'previous_response_id') ||
+      !Array.isArray(body.input) || body.input.length !== 4 ||
+      typeof command !== 'string' || typeof workspace !== 'string' ||
+      typeof protectedRoot !== 'string' || typeof token !== 'string') return null;
+  const [developer, user, call, result] = body.input;
+  const keys = value => value && typeof value === 'object' && !Array.isArray(value) ?
+    Object.keys(value).sort().join(',') : '';
+  const message = (value, role) => keys(value) === 'content,role,type' &&
+    value.type === 'message' && value.role === role &&
+    typeof value.content === 'string' && Buffer.byteLength(value.content) <= PROVIDER_INPUT_LIMIT;
+  if (!message(developer, 'developer') || !message(user, 'user') ||
+      keys(call) !== 'arguments,call_id,id,name,type' || call.type !== 'function_call' ||
+      call.id !== SHELL_ITEM || call.call_id !== SHELL_CALL || call.name !== 'muse.bash' ||
+      typeof call.arguments !== 'string' || Buffer.byteLength(call.arguments) > 4096 ||
+      keys(result) !== 'call_id,output,type' || result.type !== 'function_call_output' ||
+      result.call_id !== SHELL_CALL || typeof result.output !== 'string' ||
+      Buffer.byteLength(result.output) > PROTECTED_OUTPUT_LIMIT) return null;
+  let args;
+  let decorated;
+  try { args = JSON.parse(call.arguments); decorated = JSON.parse(result.output); }
+  catch { return null; }
+  const expectedArgs = { command, description: 'Disposable native shell qualification' };
+  const transcript = outerShellTranscript(workspace, protectedRoot, token);
+  if (!isDeepStrictEqual(args, expectedArgs) ||
+      call.arguments !== JSON.stringify(expectedArgs) ||
+      !isDeepStrictEqual(Object.keys(decorated ?? {}), ['chunk_id', 'command', 'exit_code',
+        'terminal_status', 'output', 'original_output_bytes', 'original_output_tokens', 'truncated']) ||
+      result.output !== JSON.stringify(decorated, null, 2) ||
+      decorated.chunk_id !== 'exec-1-1' || decorated.command !== command ||
+      decorated.exit_code !== 0 || decorated.terminal_status !== 'completed' ||
+      decorated.output !== transcript ||
+      decorated.original_output_bytes !== Buffer.byteLength(transcript) ||
+      !Number.isInteger(decorated.original_output_tokens) ||
+      decorated.original_output_tokens < 1 || decorated.original_output_tokens > 1024 ||
+      decorated.truncated !== false) return null;
+  return { workspaceWritten: true, dummyAuthVisible: true,
+    innerOutputBytes: Buffer.byteLength(transcript),
+    innerOutputSha256: createHash('sha256').update(transcript).digest('hex') };
+}
+
 export function readFileCallEvents(args) {
   const serialized = JSON.stringify(args);
   const item = status => ({ type: 'function_call', id: READ_ITEM, call_id: READ_CALL,
@@ -1129,7 +1187,7 @@ export async function startShellProvider(forbiddenPort, command, {
   readFileSchemaOnly = false, readFileProbe = false, protectedRead = false, dummyAuthRead = false,
   outerOnly = false, resultEvidenceDir = null,
   persistResultEvidence = persistOuterShellResultEvidence,
-  workspace, targetPath,
+  workspace, protectedRoot, canaryToken, targetPath,
   classifyProtectedRaw,
 } = {}) {
   const boundaryRead = protectedRead || dummyAuthRead;
@@ -1497,7 +1555,12 @@ export async function startShellProvider(forbiddenPort, command, {
           }
           if (state.failed) throw fault('NATIVE_REQUEST_REJECTED',
             'another native request failed during shell result classification');
-          if (!matchingShellResult(parsed)) {
+          if (outerOnly && issuanceAtAdmission.main !== 'call-issued') {
+            throw fault('NATIVE_TOOL_RESULT_BEFORE_CALL', 'shell result arrived before its call was issued');
+          }
+          const outerMarkers = outerOnly ? matchingOuterShellResult(parsed, command,
+            workspace, protectedRoot, canaryToken) : null;
+          if (!(outerOnly ? outerMarkers : matchingShellResult(parsed))) {
             if (!outerOnly) summary.resultEnvelope = shellResultEnvelopeShape(parsed,
               issuanceAtAdmission, command);
             throw fault('NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN', 'native result envelope differs from reviewed call identity');
@@ -1517,7 +1580,7 @@ export async function startShellProvider(forbiddenPort, command, {
           summary.kind = 'matching_tool_result';
           summary.responseId = SHELL_TEXT_RESPONSE;
           summary.forCallId = SHELL_CALL;
-          summary.outputMarkers = shellOutputMarkers(parsed.input[0].output);
+          summary.outputMarkers = outerOnly ? outerMarkers : shellOutputMarkers(parsed.input[0].output);
           response.writeHead(200, { 'content-type': 'text/event-stream' });
           response.end(output);
           return;
@@ -1941,7 +2004,8 @@ export async function guestShellRun(config) {
     provider = await startShellProvider(config.hostPort, command,
       { readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly,
         ...(outerOnly ? { resultEvidenceDir: GUEST_HOME } : {}),
-        workspace, targetPath,
+        workspace, protectedRoot: config.protectedRoot, canaryToken: config.canaryToken,
+        targetPath,
         ...(boundaryRead ? { classifyProtectedRaw: async raw => {
           process.stdout.write(`${JSON.stringify({ kind: 'guest_protected_raw',
             callId: READ_CALL, output: raw })}\n`);
@@ -2044,13 +2108,18 @@ export async function guestShellRun(config) {
             outputShape: boundaryRead && typeof item.visibleOutput === 'string' ?
               { ...outputShape, sha256: createHash('sha256').update(item.visibleOutput).digest('hex') } :
               outputShape });
-        } else observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
+        } else {
+          const markers = outerOnly ? outerShellItemMarkers(item.visibleOutput, workspace,
+            config.protectedRoot, config.canaryToken) : shellOutputMarkers(item.visibleOutput);
+          observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
           tool: item.tool, status: item.status, outputShape, commandMatch: (() => {
             try { return JSON.parse(item.args)?.command === command; } catch { return false; }
-          })(), outputMarkers: shellOutputMarkers(item.visibleOutput) !== null,
-          workspaceReportedWritten: shellOutputMarkers(item.visibleOutput)?.workspaceWritten ?? null,
-          dummyAuthVisible: shellOutputMarkers(item.visibleOutput)?.dummyAuthVisible ?? null,
+          })(), outputMarkers: outerOnly ? markers.outputMarkers : markers !== null,
+          workspaceReportedWritten: outerOnly ? markers.workspaceReportedWritten :
+            markers?.workspaceWritten ?? null,
+          dummyAuthVisible: outerOnly ? markers.dummyAuthVisible : markers?.dummyAuthVisible ?? null,
           abortDenial: item.visibleOutput === 'tool denied: approval aborted' });
+        }
         if (held && item.callId === SHELL_CALL) holdEvent({ kind: 'tool_item',
           item: observations.items.at(-1) });
       }
@@ -2243,8 +2312,11 @@ export async function guestShellRun(config) {
     }
     return result;
   } catch (error) {
-    return { kind: 'guest_transport_error', stage, code: error.code ?? error.name,
-      message: String(error.message).slice(0, 400), guestNamespace: namespace,
+    const firstProviderCode = provider?.state.primaryCode;
+    return { kind: 'guest_transport_error', stage, code: firstProviderCode ?? error.code ?? error.name,
+      message: firstProviderCode && firstProviderCode !== error.code ?
+        'guest provider first rejection preceded the terminal failure' :
+        String(error.message).slice(0, 400), guestNamespace: namespace,
       commands, providerRequests: provider?.requests ?? [], observations };
   } finally {
     try { if (host) await timeout('host close', host.close(), 5_000); } catch { /* stop is verified outside */ }
@@ -3181,16 +3253,27 @@ export function validateShellOutcome(ready, outcome, { outerOnly = false } = {})
   }
   if (outerOnly) {
     const envelope = shellResult.resultEnvelope;
-    const output = envelope?.items?.[0];
-    if (envelope?.model !== SHELL_MODEL || envelope.previousResponse !== 'issued_shell' ||
-        envelope.inputType !== 'array' || envelope.inputCount !== 1 ||
-        envelope.omittedItems !== 0 || envelope.items.length !== 1 ||
-        output.type !== 'function_call_output' ||
+    const [developer, user, call, output] = envelope?.items ?? [];
+    const message = (item, role) => item?.type === 'message' &&
+      item.fields?.join(',') === 'content,role,type' && item.unknownFieldCount === 0 &&
+      item.roleClass === role && item.contentKind === 'string';
+    if (envelope?.model !== SHELL_MODEL || envelope.previousResponse !== 'absent' ||
+        envelope.inputType !== 'array' || envelope.inputCount !== 4 ||
+        envelope.omittedItems !== 0 || envelope.items.length !== 4 ||
+        !message(developer, 'developer') || !message(user, 'user') ||
+        call?.type !== 'function_call' ||
+        call.fields?.join(',') !== 'arguments,call_id,id,name,type' ||
+        call.unknownFieldCount !== 0 || call.idRef !== 'issued_shell_item' ||
+        call.callId !== 'issued_shell' || call.nameClass !== 'muse.bash' ||
+        call.argumentsType !== 'string' || call.argumentsExactFixed !== true ||
+        output?.type !== 'function_call_output' ||
         output.fields?.join(',') !== 'call_id,output,type' || output.unknownFieldCount !== 0 ||
         output.callId !== 'issued_shell' || output.outputType !== 'string' ||
-        output.outputBytes !== tool[0].outputShape?.bytes ||
-        output.outputSha256 !== tool[0].outputShape?.sha256 ||
-        !isDeepStrictEqual(output.outputMarkers, shellResult.outputMarkers)) {
+        output.outputBytes === null || output.outputBytes > PROTECTED_OUTPUT_LIMIT ||
+        shellResult.outputMarkers?.workspaceWritten !== true ||
+        shellResult.outputMarkers?.dummyAuthVisible !== true ||
+        shellResult.outputMarkers?.innerOutputBytes !== tool[0].outputShape?.bytes ||
+        shellResult.outputMarkers?.innerOutputSha256 !== tool[0].outputShape?.sha256) {
       throw fault('NATIVE_SHELL_RESULT_ASSOCIATION_INVALID', 'outer-only native output differed from correlated HTTP result');
     }
   }

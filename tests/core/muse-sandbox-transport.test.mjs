@@ -21,6 +21,7 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   qualifyNativeDummyAuthRead,
   fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape, persistOuterShellResultEvidence, inspectOuterShellResultEvidence,
+  outerShellTranscript, outerShellItemMarkers, matchingOuterShellResult,
   fixedNoReminderPayload, reminderCallEvents,
   approvalSummary, validateShellReady, validateShellOutcome, validateReadFileSchemaOutcome,
   validateReadFileOutcome, qualifyNativeShell, qualifyNativeReadFileSchema, qualifyNativeReadFile,
@@ -1193,7 +1194,8 @@ async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readF
     readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly,
     resultEvidenceDir, ...(persistResultEvidence ? { persistResultEvidence } : {}),
     targetPath, classifyProtectedRaw,
-    workspace: '/tmp/fixture/workspace',
+    workspace: '/tmp/fixture/workspace', protectedRoot: '/tmp/fixture/protected',
+    canaryToken: 'protected-canary',
     makeServer: callback => { handle = callback; return {}; },
     waitListen: async () => 31002, shut: async () => { if (onShut) await onShut(handle); },
   });
@@ -1212,6 +1214,22 @@ function shellResultRequest(overrides = {}) {
   return { model: 'fixture-native-shell', previous_response_id: 'resp_native_shell_1',
     input: [{ type: 'function_call_output', call_id: 'call_native_shell_1',
       output: 'workspace=ok\ndirect=denied\nsymlink=denied\nproc=denied\ndummy-auth=absent\n' }], ...overrides };
+}
+
+function outerShellResultRequest(command, workspace = '/tmp/fixture/workspace',
+  protectedRoot = '/tmp/fixture/protected', token = 'protected-canary') {
+  const output = outerShellTranscript(workspace, protectedRoot, token);
+  const decorated = JSON.stringify({ chunk_id: 'exec-1-1', command, exit_code: 0,
+    terminal_status: 'completed', output, original_output_bytes: Buffer.byteLength(output),
+    original_output_tokens: 114, truncated: false }, null, 2);
+  return { model: 'fixture-native-shell', input: [
+    { type: 'message', role: 'developer', content: 'disposable developer context' },
+    { type: 'message', role: 'user', content: 'disposable user context' },
+    { type: 'function_call', id: 'fc_native_shell_1', call_id: 'call_native_shell_1',
+      name: 'muse.bash', arguments: JSON.stringify({ command,
+        description: 'Disposable native shell qualification' }) },
+    { type: 'function_call_output', call_id: 'call_native_shell_1', output: decorated },
+  ] };
 }
 
 test('main schema projector redacts drift and provider refuses a call', async () => {
@@ -2125,7 +2143,89 @@ test('outer shell unknown result persists standalone redacted evidence before or
     assert.equal(saved.projection.items[3].outputSha256,
       createHash('sha256').update(secret).digest('hex'));
     assert.deepEqual(await inspectOuterShellResultEvidence(root), [summary.resultEvidence]);
+    assert.equal((await h.post(outerShellResultRequest(h.command))).status, 429);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+    assert.deepEqual(h.provider.requests.slice(1).map(request => request.rejection),
+      ['NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN', 'NATIVE_REQUEST_BUDGET_EXCEEDED']);
   } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('outer shell accepts only the captured decorated four-item result', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-shell-exact-result-'));
+  const h = await nativeProviderHarness({ outerOnly: true, resultEvidenceDir: root });
+  try {
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    const body = outerShellResultRequest(h.command);
+    const facts = matchingOuterShellResult(body, h.command, '/tmp/fixture/workspace',
+      '/tmp/fixture/protected', 'protected-canary');
+    assert.equal(facts.workspaceWritten, true);
+    assert.equal(facts.dummyAuthVisible, true);
+    assert.equal(facts.innerOutputBytes, Buffer.byteLength(outerShellTranscript(
+      '/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary')));
+    const accepted = await h.post(body);
+    assert.equal(accepted.status, 200);
+    assert.match(accepted.body, /resp_native_shell_2/);
+    assert.equal(h.provider.state.main, 'result-accepted');
+    assert.equal(h.provider.requests[1].resultEnvelope.inputCount, 4);
+    assert.deepEqual(h.provider.requests[1].outputMarkers, facts);
+    assert.equal((await inspectOuterShellResultEvidence(root)).length, 1);
+    assert.equal((await h.post(body)).status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_REQUEST_UNCLASSIFIED');
+  } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('outer shell result and independent reminder use the three-request budget in either order', async () => {
+  for (const order of ['reminder-before', 'reminder-after']) {
+    const root = await mkdtemp(join(tmpdir(), 'passeur-shell-result-order-'));
+    const h = await nativeProviderHarness({ outerOnly: true, resultEvidenceDir: root });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      if (order === 'reminder-before') assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      assert.equal((await h.post(outerShellResultRequest(h.command))).status, 200);
+      if (order === 'reminder-after') assert.equal((await h.post(fixedReminderRequest())).status, 200);
+      assert.equal(h.provider.state.attempts, 3);
+      assert.equal(h.provider.state.primaryCode, undefined);
+      assert.equal(h.provider.requests.filter(request => request.kind === 'matching_tool_result').length, 1);
+      assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 1);
+    } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('outer shell result rejects changed identity, shape, output and protected markers', async () => {
+  const cases = [
+    body => { body.previous_response_id = 'resp_native_shell_1'; },
+    body => { body.previous_response_id = null; },
+    body => { body.input.reverse(); },
+    body => { body.input.push({ type: 'function_call_output', call_id: 'foreign', output: '' }); },
+    body => { body.input[0].role = 'assistant'; },
+    body => { body.input[1].content = []; },
+    body => { body.input[2].id = 'foreign'; },
+    body => { body.input[2].name = 'muse.bash_input'; },
+    body => { body.input[2].arguments = JSON.stringify({ command: 'foreign',
+      description: 'Disposable native shell qualification' }); },
+    body => { body.input[2].arguments = body.input[2].arguments.replace('{',
+      '{"description":"Disposable native shell qualification",'); },
+    body => { body.input[3].call_id = 'foreign'; },
+    body => { body.input[3].output = body.input[3].output.replace('exit_code": 0', 'exit_code": 1'); },
+    body => { body.input[3].output = body.input[3].output.replace('dummy-auth=visible', 'dummy-auth=absent'); },
+    body => { body.input[3].output = body.input[3].output.replace('direct=denied', 'direct=visible'); },
+    body => { body.input[3].output = body.input[3].output.replace('Directory nonexistent', 'Permission denied'); },
+    body => { body.input[3].output = body.input[3].output.replace('"truncated": false', '"truncated": true'); },
+    body => { body.input[3].output = body.input[3].output.replace('"chunk_id": "exec-1-1"',
+      '"chunk_id": "other"'); },
+  ];
+  for (const mutate of cases) {
+    const root = await mkdtemp(join(tmpdir(), 'passeur-shell-invalid-result-'));
+    const h = await nativeProviderHarness({ outerOnly: true, resultEvidenceDir: root });
+    try {
+      assert.equal((await h.post(mainNativeRequest())).status, 200);
+      const body = outerShellResultRequest(h.command);
+      mutate(body);
+      assert.equal((await h.post(body)).status, 422);
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+      assert.equal(h.provider.requests[1].resultEvidence.name, 'outer-shell-result-2.json');
+    } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+  }
 });
 
 test('outer shell evidence failure preserves the original unknown-envelope error', async () => {
@@ -2180,16 +2280,37 @@ test('outer shell result reservation prevents a 200 after a concurrent rejected 
       return persistOuterShellResultEvidence(...args); } });
   try {
     assert.equal((await h.post(mainNativeRequest())).status, 200);
-    const first = h.post(shellResultRequest());
+    const first = h.post(outerShellResultRequest(h.command));
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(h.provider.state.main, 'shell-result-classifying');
-    assert.equal((await h.post(shellResultRequest())).status, 422);
+    assert.equal((await h.post(outerShellResultRequest(h.command))).status, 422);
     assert.equal(h.provider.state.primaryCode, 'NATIVE_TOOL_RESULT_REPLAY');
     release();
     assert.equal((await first).status, 422);
     assert.equal(h.provider.requests.some(request => request.kind === 'matching_tool_result'), false);
     assert.equal((await inspectOuterShellResultEvidence(root)).length, 1);
   } finally { release(); await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('outer shell result admitted before call issuance stays ineligible after delayed body', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-shell-before-call-'));
+  const h = await nativeProviderHarness({ outerOnly: true, resultEvidenceDir: root });
+  try {
+    const request = new Readable({ read() {} });
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, writeHead(status) { this.status = status; return this; },
+      end() { return this; } };
+    const handling = h.handle(request, response);
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    request.push(JSON.stringify(outerShellResultRequest(h.command))); request.push(null);
+    await handling;
+    assert.equal(response.status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_TOOL_RESULT_BEFORE_CALL');
+    assert.equal(h.provider.requests[0].resultEvidence.name, 'outer-shell-result-1.json');
+    const saved = JSON.parse(await readFile(join(root, 'outer-shell-result-1.json')));
+    assert.equal(saved.projection.items[2].idRef, 'other');
+    assert.equal(h.provider.requests.some(item => item.kind === 'matching_tool_result'), false);
+  } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('main call, result and reminder accept independent orders and overlap', async () => {
@@ -3118,8 +3239,11 @@ test('held outcome requires resolved notification, tool result and terminal turn
     { code: 'NATIVE_HELD_OUTCOME_INVALID' });
   const abortChoice = { choiceId: 'abort', decision: 'abort', scope: 'once', label: 'Reject' };
   const abortApproval = { ...approval, choices: [abortChoice] };
-  const abortItem = { ...completed.observations.items[0], outputMarkers: false,
-    workspaceReportedWritten: null, dummyAuthVisible: null, abortDenial: true,
+  const abortMarkers = outerShellItemMarkers('tool denied: approval aborted',
+    '/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
+  assert.deepEqual(abortMarkers, { outputMarkers: false,
+    workspaceReportedWritten: null, dummyAuthVisible: null });
+  const abortItem = { ...completed.observations.items[0], ...abortMarkers, abortDenial: true,
     outputShape: { type: 'string', bytes: Buffer.byteLength('tool denied: approval aborted'), lines: 1 } };
   const aborted = { ...decided, providerRequests: pending.providerRequests,
     event: { kind: 'approval', approval: abortApproval },
@@ -3130,6 +3254,8 @@ test('held outcome requires resolved notification, tool result and terminal turn
       resolved: { ...decided.held.resolved, decision: 'abort' }, item: abortItem,
       terminal: { ...decided.held.terminal, terminal: 'cancelled' } } };
   assert.equal(validateHeldShellOutcome(ready, aborted).kind, 'native_shell_held_rejected');
+  assert.equal(validateHeldShellOutcome(ready, aborted, { outerOnly: true }).kind,
+    'native_shell_held_rejected');
   for (const altered of [{ abortDenial: false, outputMarkers: true },
     { abortDenial: true, dummyAuthVisible: true },
     { abortDenial: true, workspaceReportedWritten: false }]) {
@@ -3370,16 +3496,20 @@ test('native shell controller verifies effects, stop and durable approval termin
         }
         if (outerOnly && heldDecided) {
           const command = shellProbeCommand(config.workspace, config.protectedRoot, 'protected-canary');
-          const raw = `workspace=${workspaceReportedWritten ? 'ok' : 'failed'}\n` +
-            'direct=denied\nsymlink=denied\nproc=denied\n' +
-            `dummy-auth=${dummyAuthVisible ? 'visible' : 'absent'}\n`;
-          outcome.providerRequests.find(request => request.kind === 'matching_tool_result').resultEnvelope =
-            shellResultEnvelopeShape(shellResultRequest({ input: [{ type: 'function_call_output',
-              call_id: 'call_native_shell_1', output: raw }] }),
-            { main: 'call-issued', reminder: 'unseen' }, command);
+          const raw = outerShellTranscript(config.workspace, config.protectedRoot, 'protected-canary');
+          const matching = outcome.providerRequests.find(request => request.kind === 'matching_tool_result');
+          matching.resultEnvelope = shellResultEnvelopeShape(outerShellResultRequest(command,
+            config.workspace, config.protectedRoot),
+          { main: 'call-issued', reminder: 'unseen' }, command);
+          matching.outputMarkers = matchingOuterShellResult(outerShellResultRequest(command,
+            config.workspace, config.protectedRoot), command, config.workspace,
+          config.protectedRoot, 'protected-canary');
           outcome.observations.items[0].outputShape = { type: 'string', bytes: Buffer.byteLength(raw),
             sha256: createHash('sha256').update(outerResultMismatch ? `${raw.slice(0, -1)}X` : raw)
               .digest('hex') };
+          outcome.observations.items[0].outputMarkers = true;
+          outcome.observations.items[0].workspaceReportedWritten = true;
+          outcome.observations.items[0].dummyAuthVisible = true;
         }
         const finalOutcome = lateGuestFailure ? { kind: 'guest_transport_error', stage: 'native_turn',
           code: 'NATIVE_REQUEST_BUDGET_EXCEEDED', message: 'late provider request after provisional outcome',
