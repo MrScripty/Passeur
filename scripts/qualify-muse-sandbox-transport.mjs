@@ -746,19 +746,75 @@ export function matchingReadFileResult(body) {
     body.input[0].output === READ_CANARY_CONTENT;
 }
 
-export function readFileResultEnvelopeShape(body) {
+export function readFileResultEnvelopeShape(body, issuedAtRequest = {}) {
   const input = body?.input;
-  return { model: summarizedShellModel(body?.model),
-    previousResponse: body?.previous_response_id === READ_RESPONSE ? 'issued_read_file' : 'other',
-    inputKind: Array.isArray(input) ? 'array' : '[other]',
+  const safeFields = new Set(['type', 'id', 'item_id', 'response_id', 'call_id', 'role', 'name',
+    'namespace', 'content', 'output', 'status', 'arguments', 'summary', 'recipient']);
+  const safeTypes = new Set(['message', 'function_call', 'function_call_output', 'reasoning']);
+  const safeParts = new Set(['input_text', 'output_text', 'text', 'input_image', 'input_audio',
+    'output_audio', 'refusal']);
+  const readIssued = ['read-call-issued', 'read-result-accepted'].includes(issuedAtRequest.main);
+  const textIssued = issuedAtRequest.main === 'read-result-accepted';
+  const skillIssued = issuedAtRequest.reminder === 'none-issued';
+  const verifyIssued = issuedAtRequest.verification === 'none-issued';
+  const references = new Map([
+    [READ_RESPONSE, [readIssued, 'issued_read_response']],
+    [READ_ITEM, [readIssued, 'issued_read_item']],
+    [READ_CALL, [readIssued, 'issued_read_file']],
+    [READ_TEXT_RESPONSE, [textIssued, 'issued_read_text_response']],
+    [REMINDER_RESPONSE, [skillIssued, 'issued_skill_response']],
+    [REMINDER_ITEM, [skillIssued, 'issued_skill_item']],
+    [REMINDER_CALL, [skillIssued, 'issued_skill_call']],
+    [VERIFY_RESPONSE, [verifyIssued, 'issued_verify_response']],
+    [VERIFY_ITEM, [verifyIssued, 'issued_verify_item']],
+    [VERIFY_CALL, [verifyIssued, 'issued_verify_call']],
+  ]);
+  const reference = value => value == null ? 'absent' :
+    typeof value !== 'string' ? 'invalid' :
+      references.has(value) ? references.get(value)[0] ? references.get(value)[1] :
+        'known_unissued' : 'foreign';
+  const classify = (value, allowed) => typeof value === 'string' && allowed.has(value) ?
+    value : value == null ? 'absent' : '[other]';
+  const itemShape = item => {
+    const object = item && typeof item === 'object' && !Array.isArray(item) ? item : null;
+    const keys = object ? Object.keys(object) : [];
+    const content = object?.content;
+    const output = object?.output;
+    const serializedOutput = output === undefined ? null :
+      typeof output === 'string' ? output : JSON.stringify(output);
+    return { type: classify(object?.type, safeTypes),
+      role: classify(object?.role, new Set(['system', 'developer', 'user', 'assistant', 'tool'])),
+      name: classify(object?.name, new Set(['read_file', 'submit_reminder_decision', 'bash'])),
+      namespace: classify(object?.namespace, new Set(['muse'])),
+      fields: keys.filter(key => safeFields.has(key)).sort(),
+      unknownFieldCount: keys.filter(key => !safeFields.has(key)).length,
+      idRef: reference(object?.id), itemRef: reference(object?.item_id),
+      callId: reference(object?.call_id), responseRef: reference(object?.response_id),
+      contentKind: Array.isArray(content) ? 'array' : content == null ? 'absent' : '[other]',
+      contentPartCount: Array.isArray(content) ? content.length : null,
+      contentParts: Array.isArray(content) ? content.slice(0, 8).map(part =>
+        classify(part?.type, safeParts)) : [],
+      omittedContentParts: Array.isArray(content) ? Math.max(0, content.length - 8) : 0,
+      outputType: output === null ? 'null' : typeof output,
+      outputBytes: serializedOutput === null ? null : Buffer.byteLength(serializedOutput),
+      outputSha256: serializedOutput === null ? null :
+        createHash('sha256').update(serializedOutput).digest('hex'),
+      exactCanary: output === READ_CANARY_CONTENT };
+  };
+  const shape = { model: summarizedShellModel(body?.model),
+    previousResponse: reference(body?.previous_response_id),
+    issuedAtRequest: { read: readIssued, readText: textIssued,
+      skill: skillIssued, verification: verifyIssued },
+    nativeChildAssociation: 'unknown',
+    inputKind: Array.isArray(input) ? 'array' : typeof input,
     inputCount: Array.isArray(input) ? input.length : null,
-    items: Array.isArray(input) ? input.slice(0, 4).map(item => ({
-      type: item?.type === 'function_call_output' ? 'function_call_output' : '[other]',
-      callId: item?.call_id === READ_CALL ? 'issued_read_file' : 'other',
-      outputType: typeof item?.output,
-      outputBytes: typeof item?.output === 'string' ? Buffer.byteLength(item.output) : null,
-      exactCanary: item?.output === READ_CANARY_CONTENT,
-    })) : [], omittedItems: Array.isArray(input) ? Math.max(0, input.length - 4) : 0 };
+    items: Array.isArray(input) ? input.slice(0, 8).map(itemShape) : [],
+    omittedItems: Array.isArray(input) ? Math.max(0, input.length - 8) : 0 };
+  while (shape.items.length && Buffer.byteLength(JSON.stringify(shape)) > 8192) {
+    shape.items.pop();
+    shape.omittedItems++;
+  }
+  return shape;
 }
 
 export function shellResultEnvelopeShape(body) {
@@ -877,7 +933,8 @@ export async function startShellProvider(forbiddenPort, command, {
       reject('NATIVE_REQUEST_BUDGET_EXCEEDED', summary, response, 429); return;
     }
     // Body completion can reorder concurrent requests. Attribution uses the state at admission.
-    const issuanceAtAdmission = { main: state.main, reminder: state.reminder };
+    const issuanceAtAdmission = { main: state.main, reminder: state.reminder,
+      verification: state.verification };
     state.active++;
     try {
       let body = '';
@@ -1044,8 +1101,8 @@ export async function startShellProvider(forbiddenPort, command, {
           return;
         }
         if (readFileProbe && state.main === 'read-call-issued') {
-          if (!matchingReadFileResult(parsed)) {
-            summary.resultEnvelope = readFileResultEnvelopeShape(parsed);
+          if (issuanceAtAdmission.main !== 'read-call-issued' || !matchingReadFileResult(parsed)) {
+            summary.resultEnvelope = readFileResultEnvelopeShape(parsed, issuanceAtAdmission);
             throw fault('NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN', 'read_file result differs from issued call and canary');
           }
           const events = shellTextEvents('Fixture workspace read observed.', READ_TEXT_RESPONSE,

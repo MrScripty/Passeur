@@ -1065,6 +1065,60 @@ test('fixed verification none and read_file calls bind exact schemas, paths and 
     .includes('private output'), false);
 });
 
+test('read_file mismatch projects four native items without retaining arbitrary values', () => {
+  const secret = 'sk_test_12345_SUPPOSED_SECRET';
+  const output = `Read file: /tmp/fixture/workspace/read-canary.txt\n${secret}`;
+  const body = { model: 'fixture-native-shell', input: [
+    { type: 'message', role: 'assistant', id: secret,
+      content: [{ type: 'output_text', text: secret }], [secret]: secret },
+    { type: 'reasoning', id: 'fc_native_read_file_1', summary: secret },
+    { type: 'function_call', name: 'read_file', namespace: 'muse',
+      call_id: 'call_native_read_file_1', response_id: 'resp_native_read_file_1' },
+    { type: 'function_call_output', call_id: 'call_native_read_file_1', output },
+  ] };
+  const issued = { main: 'read-call-issued', reminder: 'unseen', verification: 'unseen' };
+  const shape = readFileResultEnvelopeShape(body, issued);
+  assert.equal(shape.previousResponse, 'absent');
+  assert.equal(shape.nativeChildAssociation, 'unknown');
+  assert.equal(shape.inputCount, 4);
+  assert.deepEqual(shape.items.map(item => item.type),
+    ['message', 'reasoning', 'function_call', 'function_call_output']);
+  assert.equal(shape.items[0].role, 'assistant');
+  assert.equal(shape.items[0].unknownFieldCount, 1);
+  assert.deepEqual(shape.items[0].contentParts, ['output_text']);
+  assert.equal(shape.items[1].idRef, 'issued_read_item');
+  assert.equal(shape.items[2].callId, 'issued_read_file');
+  assert.equal(shape.items[2].responseRef, 'issued_read_response');
+  assert.equal(shape.items[3].outputBytes, Buffer.byteLength(output));
+  assert.equal(shape.items[3].outputSha256, createHash('sha256').update(output).digest('hex'));
+  assert.equal(shape.items[3].exactCanary, false);
+  assert.deepEqual(shape.issuedAtRequest,
+    { read: true, readText: false, skill: false, verification: false });
+  assert.equal(JSON.stringify(shape).includes(secret), false);
+  assert.equal(readFileResultEnvelopeShape({ ...body, previous_response_id: secret })
+    .previousResponse, 'foreign');
+  assert.equal(readFileResultEnvelopeShape({ ...body, previous_response_id: 7 })
+    .previousResponse, 'invalid');
+  assert.equal(readFileResultEnvelopeShape({ ...body, previous_response_id: 'resp_native_read_file_2' },
+    issued).previousResponse, 'known_unissued');
+  assert.equal(readFileResultEnvelopeShape({ ...body, previous_response_id: 'resp_native_reminder_1' },
+    issued).previousResponse, 'known_unissued');
+  assert.equal(readFileResultEnvelopeShape({ ...body, previous_response_id: 'resp_native_verify_reminder_1' },
+    issued).previousResponse, 'known_unissued');
+  assert.equal(readFileResultEnvelopeShape({ ...body, previous_response_id: 'resp_native_reminder_1' },
+    { ...issued, reminder: 'none-issued' }).previousResponse, 'issued_skill_response');
+  assert.equal(readFileResultEnvelopeShape({ ...body, previous_response_id: 'resp_native_verify_reminder_1' },
+    { ...issued, verification: 'none-issued' }).previousResponse, 'issued_verify_response');
+  const excess = readFileResultEnvelopeShape({ ...body, input: Array.from({ length: 200 }, () =>
+    ({ type: secret, role: secret, name: secret, namespace: secret, content: Array.from(
+      { length: 100 }, () => ({ type: secret, text: secret })), output: secret, [secret]: secret })) });
+  assert.equal(excess.inputCount, 200);
+  assert.ok(excess.omittedItems >= 192);
+  assert.equal(excess.items[0].unknownFieldCount, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify(excess)) <= 8192);
+  assert.equal(JSON.stringify(excess).includes(secret), false);
+});
+
 test('probe provider accepts one workspace read and both independent reminder schemas in bounded orders', async () => {
   const skill = { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE' };
   const cases = [
@@ -1130,6 +1184,27 @@ test('probe provider rejects result substitution, schema drift and unexpected ve
     assert.equal(h.provider.requests[1].resultEnvelope.items[0].exactCanary, false);
     assert.equal((await h.post(readFileResultRequest())).status, 429);
   } finally { await h.provider.close(); }
+  const structural = await nativeProviderHarness({ readFileProbe: true });
+  try {
+    assert.equal((await structural.post(readFileProbeRequest())).status, 200);
+    const body = { model: 'fixture-native-shell', input: [
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'private prompt' }] },
+      { type: 'reasoning', summary: 'private reasoning' },
+      { type: 'function_call', name: 'read_file', namespace: 'muse', call_id: 'call_native_read_file_1' },
+      { type: 'function_call_output', call_id: 'call_native_read_file_1',
+        output: 'decorated synthetic output' },
+    ] };
+    assert.equal((await structural.post(body)).status, 422);
+    const rejected = structural.provider.requests[1];
+    assert.equal(rejected.responseIndex, 2);
+    assert.equal(rejected.resultEnvelope.previousResponse, 'absent');
+    assert.equal(rejected.resultEnvelope.items.length, 4);
+    assert.equal(rejected.resultEnvelope.items[3].outputSha256,
+      createHash('sha256').update('decorated synthetic output').digest('hex'));
+    assert.equal(JSON.stringify(rejected).includes('private'), false);
+    assert.equal((await structural.post(readFileResultRequest())).status, 429);
+    assert.equal(structural.provider.state.main, 'read-call-issued');
+  } finally { await structural.provider.close(); }
   for (const edit of [
     body => { body.tools[0].tools[1].parameters.properties.offset.minimum = 0; },
     body => { body.tools[0].tools[1].name = 'read_memory'; },
@@ -1145,6 +1220,30 @@ test('probe provider rejects result substitution, schema drift and unexpected ve
     assert.equal((await foreign.post(body)).status, 422);
     assert.equal(foreign.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_ASSOCIATION_INVALID');
   } finally { await foreign.provider.close(); }
+});
+
+test('read result admitted before its call stays unissued when its body arrives late', async () => {
+  const h = await nativeProviderHarness({ readFileProbe: true });
+  try {
+    const request = new Readable({ read() {} });
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, writeHead(status) { this.status = status; return this; },
+      end(value = '') { this.body = value; return this; } };
+    const handling = h.handle(request, response);
+    assert.equal(h.provider.state.active, 1);
+    assert.equal((await h.post(readFileProbeRequest())).status, 200);
+    request.push(JSON.stringify(readFileResultRequest()));
+    request.push(null);
+    await handling;
+    assert.equal(response.status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
+    assert.equal(h.provider.requests[0].responseIndex, 1);
+    assert.equal(h.provider.requests[0].resultEnvelope.previousResponse, 'known_unissued');
+    assert.equal(h.provider.requests[0].resultEnvelope.items[0].callId, 'known_unissued');
+    assert.deepEqual(h.provider.requests[0].resultEnvelope.issuedAtRequest,
+      { read: false, readText: false, skill: false, verification: false });
+    assert.equal(h.provider.state.main, 'read-call-issued');
+  } finally { await h.provider.close(); }
 });
 
 test('selected bash schema retains distinct safe names, nested constraints and exact safe enums', () => {
