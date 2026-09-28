@@ -181,7 +181,11 @@ function nativeToolsFailure(tools) {
       return failure('FUNCTION_STRICT', index);
     if (tool.description !== undefined && (typeof tool.description !== 'string' ||
         Buffer.byteLength(tool.description) > 2_048))
-      return failure('FUNCTION_DESCRIPTION', index);
+      return { ...failure('FUNCTION_DESCRIPTION', index),
+        descriptionType: tool.description === null ? 'null' :
+          Array.isArray(tool.description) ? 'array' : typeof tool.description,
+        descriptionBytes: typeof tool.description === 'string' ?
+          Buffer.byteLength(tool.description) : null };
     const issue = schemaFailure(tool.parameters);
     if (issue) return failure(issue, index);
   }

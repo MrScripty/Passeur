@@ -255,6 +255,14 @@ test('native tool rejection identifies only the first bounded failure family and
     [[{ ...validNamespace, tools: [{ ...validTool, strict: secret }] }], 'FUNCTION_STRICT', 0],
     [[{ ...validNamespace, tools: [{ ...validTool, description: secret.repeat(100) }] }],
     'FUNCTION_DESCRIPTION', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool, description: 17 }] }],
+    'FUNCTION_DESCRIPTION', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool, description: [secret] }] }],
+    'FUNCTION_DESCRIPTION', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool, description: { secret } }] }],
+    'FUNCTION_DESCRIPTION', 0],
+    [[{ ...validNamespace, tools: [{ ...validTool, description: null }] }],
+    'FUNCTION_DESCRIPTION', 0],
     [[{ ...validNamespace, tools: [{ ...validTool, parameters: null }] }], 'SCHEMA_SHAPE', 0],
     [[{ ...validNamespace, tools: [{ ...validTool,
       parameters: { type: 'object', [secret]: true } }] }], 'SCHEMA_KEYS', 0],
@@ -294,10 +302,26 @@ test('native tool rejection identifies only the first bounded failure family and
       { ok: false, code: 'NATIVE_TOOLS_INVALID' });
     const projection = nativeRejectionProjection(payload,
       { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
-    assert.deepEqual(projection.tools.failure, { code, functionIndex });
+    const expected = { code, functionIndex };
+    if (code === 'FUNCTION_DESCRIPTION') {
+      const description = tools[0].tools[0].description;
+      expected.descriptionType = description === null ? 'null' :
+        Array.isArray(description) ? 'array' : typeof description;
+      expected.descriptionBytes = typeof description === 'string' ?
+        Buffer.byteLength(description) : null;
+    }
+    assert.deepEqual(projection.tools.failure, expected);
     assert.equal(JSON.stringify(projection).includes(secret), false);
     assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
   }
+  assert.equal(requestDecision(post, body(envelope([{ ...validNamespace, tools: [{
+    ...validTool, description: '😀'.repeat(512) }] }])), nativePolicy).ok, true);
+  const emojiOver = body(envelope([{ ...validNamespace, tools: [{
+    ...validTool, description: '😀'.repeat(513) }] }]));
+  assert.deepEqual(nativeRejectionProjection(emojiOver,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure,
+  { code: 'FUNCTION_DESCRIPTION', functionIndex: 0,
+    descriptionType: 'string', descriptionBytes: 2_052 });
 });
 
 test('guest headers and auth cannot select upstream authority or identity', () => {

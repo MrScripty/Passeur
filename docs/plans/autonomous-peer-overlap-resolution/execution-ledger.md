@@ -1,5 +1,10 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-28 — installed tool function zero fails description check
+
+- Operation `continue` from reviewed function-subtype commit `37e411e`. Parent pure focused tests passed 18/18 with eight local-network skips; elevated local-only tests passed 26/26. Independent Astra High matched old/new acceptance over 381 function mutations and found no P0/P1/P2.
+- One fresh installed no-account synthetic host again rejected its first Responses POST as `NATIVE_TOOLS_INVALID`, now classifying `FUNCTION_DESCRIPTION` at function index 0. The description type and byte count were not captured by that version, so no limit change followed. Native turn failed; exact four-process stop was confirmed. Capture `/tmp/passeur-muse-native-credential-relay-RU3tQW/socket/first-rejected-native-post.json` SHA-256 `6f6895993c4dcc0da28d9cec3d0bd68f90ae16c72a2c5fce644a221fa07bad57`; bounded `/tmp/passeur-muse-native-credential-relay-description-evidence-20260928.json` SHA-256 `b8d81d9495508edb375c31481537e1347ecdafaa8ba7bb60aa4662e1e2c6ef56`. The `/tmp` root remained and the reported `/dev/shm` runtime disappeared after exit. The next reviewed capture adds only type and byte count for this rejected description.
+
 ## 2026-09-28 — first installed tool-schema reason is function zero shape
 
 - Operation `continue` from reviewed tool-classifier commit `7d10947`. Parent pure focused tests passed 18/18 with eight local-network skips; elevated local-only tests passed 26/26. Independent Astra High matched old/new acceptance over 335 schema cases and found no P0/P1/P2.
