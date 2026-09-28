@@ -17,6 +17,8 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   fixedNoReminderPayload, reminderCallEvents,
   approvalSummary, validateShellReady, validateShellOutcome, qualifyNativeShell,
   classifyDurableApprovalLog, readDurableApprovalLog,
+  heldApprovalPresentation, validateHeldDecision, validateHeldInitialApproval, submitHeldDecision,
+  validateHeldHandoff, validateHeldShellOutcome, qualifyNativeShellHeld, readHeldCliDecision,
   diagnosticMode,
   runStatusPhase,
 } from '../../scripts/qualify-muse-sandbox-transport.mjs';
@@ -472,6 +474,7 @@ test('second-host readiness failure retains confirmed first-stop and both phase 
 test('native shell provider checks advertised bash schema and exact tool result correlation', async () => {
   assert.equal(diagnosticMode([]), 'idle-resume');
   assert.equal(diagnosticMode(['--native-shell']), 'native-shell');
+  assert.equal(diagnosticMode(['--native-shell-held']), 'native-shell-held');
   for (const args of [['--unknown'], ['--native-shell', '--extra']]) {
     assert.throws(() => diagnosticMode(args), { code: 'DIAGNOSTIC_MODE_INVALID' });
   }
@@ -1133,6 +1136,78 @@ test('native approval presentation binds the exact fixed bash arguments without 
   }
 });
 
+test('held handoff shows full fixed command and guards one fresh current approval decision', async () => {
+  const workspace = '/tmp/fixture/workspace';
+  const protectedRoot = '/tmp/fixture/protected';
+  const command = shellProbeCommand(workspace, protectedRoot, 'protected-canary');
+  const raw = { approvalId: 'approval-1', sessionId: '0199aabb-ccdd-7eef-8abc-0123456789ab',
+    turnId: '0199aabb-ccdd-7eef-8abc-0123456789ac', toolCallId: 'call_native_shell_1',
+    toolName: 'bash', currentRequirementId: { approvalId: 'approval-1', sourceIndex: 0 },
+    availableChoices: [{ choiceId: 'allow_once', decision: 'approved', scope: 'once', label: 'Allow once' },
+      { choiceId: 'abort', decision: 'abort', scope: 'once', label: 'Reject' }],
+    rawArgs: JSON.stringify({ command, description: 'Disposable native shell qualification' }) };
+  const handoff = heldApprovalPresentation(raw, command, workspace, protectedRoot, 'protected-canary');
+  const ready = shellReadyFixture(workspace);
+  validateHeldHandoff(ready, handoff, command, workspace, protectedRoot, 'protected-canary');
+  assert.equal(handoff.command, command);
+  assert.equal(handoff.waitBudgetMs, 590_000);
+  assert.ok(Date.parse(handoff.expiresAt) > Date.now());
+  assert.equal(handoff.effects.protectedDirect, '/tmp/fixture/protected/protected-canary');
+  const input = { kind: 'choice', handoffId: handoff.handoffId, sessionId: raw.sessionId,
+    turnId: raw.turnId, callId: raw.toolCallId, approvalId: raw.approvalId,
+    requirementId: raw.currentRequirementId, choiceId: 'allow_once' };
+  assert.equal(validateHeldDecision(handoff, input).decision, 'approved');
+  assert.deepEqual(validateHeldInitialApproval({ sessionId: raw.sessionId }, { turnId: raw.turnId },
+    { kind: 'approval', approval: handoff.approval }, { approvals: [raw], userInputs: [] }, command),
+  handoff.approval);
+  assert.throws(() => validateHeldInitialApproval({ sessionId: raw.sessionId }, { turnId: 'other-turn' },
+    { kind: 'approval', approval: handoff.approval }, { approvals: [raw], userInputs: [] }, command),
+  { code: 'NATIVE_HELD_APPROVAL_STALE' });
+  for (const change of [{ choiceId: 'unoffered' }, { approvalId: 'stale' },
+    { sessionId: 'other' }, { requirementId: { ...input.requirementId, sourceIndex: 1 } },
+    { handoffId: '0'.repeat(32) }]) {
+    assert.throws(() => validateHeldDecision(handoff, { ...input, ...change }),
+      { code: 'NATIVE_HELD_DECISION_INVALID' });
+  }
+  const calls = [];
+  const state = { submitted: false };
+  const connection = { request: async (method, params) => {
+    calls.push([method, params]); return { approvals: [raw], userInputs: [] };
+  }, mintCommandId: () => '0199aabb-ccdd-7eef-8abc-0123456789ad',
+  command: async (method, params, options) => { calls.push([method, params, options]);
+    return method === 'session/read' ? { session: { sessionId: raw.sessionId, activeTurnId: raw.turnId } } :
+      { status: 'accepted', commandId: options.commandId, approvalId: raw.approvalId, terminal: true }; } };
+  const submitted = await submitHeldDecision(connection, handoff, input, command, state);
+  assert.equal(submitted.commandId, '0199aabb-ccdd-7eef-8abc-0123456789ad');
+  assert.deepEqual(calls.map(call => call[0]), ['approval/listPending', 'session/read', 'approval/decide']);
+  assert.deepEqual(calls[2][1], { approvalId: raw.approvalId, choiceId: 'allow_once',
+    requirementId: raw.currentRequirementId, sessionId: raw.sessionId });
+  assert.deepEqual(calls[2][2], { commandId: submitted.commandId, maxAttempts: 1 });
+  await assert.rejects(submitHeldDecision(connection, handoff, input, command, state),
+    { code: 'NATIVE_HELD_DUPLICATE_DECISION' });
+  assert.equal(calls.length, 3);
+  const stale = { ...connection, request: async () => ({ approvals: [{ ...raw,
+    currentRequirementId: { approvalId: raw.approvalId, sourceIndex: 1 } }], userInputs: [] }) };
+  await assert.rejects(submitHeldDecision(stale, handoff, input, command, { submitted: false }),
+    { code: 'NATIVE_HELD_APPROVAL_STALE' });
+  const extra = { ...connection, request: async () => ({ approvals: [raw, raw], userInputs: [] }) };
+  await assert.rejects(submitHeldDecision(extra, handoff, input, command, { submitted: false }),
+    { code: 'NATIVE_HELD_APPROVAL_STALE' });
+  const changedTurn = { ...connection, command: async (method, params, options) =>
+    method === 'session/read' ? { session: { sessionId: raw.sessionId, activeTurnId: 'other-turn' } } :
+      { status: 'accepted', commandId: options.commandId, approvalId: raw.approvalId, terminal: true } };
+  await assert.rejects(submitHeldDecision(changedTurn, handoff, input, command, { submitted: false }),
+    { code: 'NATIVE_HELD_APPROVAL_STALE' });
+  const ackOnly = { ...connection, command: async (method, params, options) => method === 'session/read' ?
+    { session: { sessionId: raw.sessionId, activeTurnId: raw.turnId } } :
+    { status: 'accepted', commandId: options.commandId, approvalId: raw.approvalId, terminal: true } };
+  const accepted = await submitHeldDecision(ackOnly, handoff, input, command, { submitted: false });
+  assert.equal(accepted.ack.status, 'accepted');
+  const output = [];
+  assert.equal(await readHeldCliDecision(handoff, Readable.from([]), { write: value => output.push(value) }), null);
+  assert.match(output[0], /native_shell_live_handoff/);
+});
+
 test('native shell outcome rejects wrong turn, extra provider call and unanswered approval mismatch', () => {
   const ready = shellReadyFixture('/tmp/fixture/workspace');
   validateShellReady(ready, ready.metadata.workspaceRoot, 31001);
@@ -1181,6 +1256,61 @@ test('native shell outcome rejects wrong turn, extra provider call and unanswere
     { code: 'NATIVE_SHELL_OUTCOME_INVALID' });
   assert.throws(() => validateShellOutcome(ready, { ...shellOutcomeFixture(ready, true),
     pending: { approvals: [], userInputs: [] } }), { code: 'NATIVE_APPROVAL_INVALID' });
+});
+
+test('held outcome requires resolved notification, tool result and terminal turn beyond ACK', () => {
+  const ready = shellReadyFixture('/tmp/fixture/workspace');
+  const pending = shellOutcomeFixture(ready, true);
+  const completed = shellOutcomeFixture(ready);
+  const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
+  const approval = { ...pending.event.approval, choices: [
+    { choiceId: 'allow_once', decision: 'approved', scope: 'once', label: 'Allow once' }] };
+  const handoff = { kind: 'native_shell_live_approval', handoffId: 'a'.repeat(32),
+    expiresAt: new Date(Date.now() + 590_000).toISOString(),
+    approval, command };
+  const commandId = '0199aabb-ccdd-7eef-8abc-0123456789ad';
+  const decided = { ...completed, kind: 'native_shell_held_decided',
+    event: { kind: 'approval', approval }, pending: { approvals: [approval], userInputs: [] },
+    observations: { ...completed.observations, approvals: [approval] },
+    held: { kind: 'decided', presentation: handoff,
+      decision: { commandId, choice: approval.choices[0],
+        ack: { status: 'accepted', terminal: true, commandId, approvalId: approval.approvalId } },
+      resolved: { kind: 'approval/resolved', approvalId: approval.approvalId,
+        sessionId: approval.sessionId, turnId: approval.turnId, decidedByCommandId: commandId,
+        resolvedBy: 'user', decision: 'approved' },
+      item: completed.observations.items[0], terminal: completed.event } };
+  assert.equal(validateHeldShellOutcome(ready, decided).kind, 'native_shell_effect_observed');
+  for (const variant of [
+    { held: { ...decided.held, resolved: null } },
+    { held: { ...decided.held, resolved: { ...decided.held.resolved, kind: 'approval/updated' } } },
+    { held: { ...decided.held, resolved: { ...decided.held.resolved, decidedByCommandId: 'other' } } },
+    { held: { ...decided.held, item: { ...decided.held.item, callId: 'other' } } },
+    { held: { ...decided.held, terminal: { ...decided.held.terminal, turnId: 'other' } } },
+    { observations: { ...decided.observations, approvals: [approval, approval] } },
+  ]) assert.throws(() => validateHeldShellOutcome(ready, { ...decided, ...variant }),
+    { code: 'NATIVE_HELD_OUTCOME_INVALID' });
+  const abortChoice = { choiceId: 'abort', decision: 'abort', scope: 'once', label: 'Reject' };
+  const abortApproval = { ...approval, choices: [abortChoice] };
+  const abortItem = { ...completed.observations.items[0], outputMarkers: false,
+    workspaceReportedWritten: null, dummyAuthVisible: null, abortDenial: true,
+    outputShape: { type: 'string', bytes: Buffer.byteLength('tool denied: approval aborted'), lines: 1 } };
+  const aborted = { ...decided, providerRequests: pending.providerRequests,
+    event: { kind: 'approval', approval: abortApproval },
+    pending: { approvals: [abortApproval], userInputs: [] },
+    observations: { ...decided.observations, approvals: [abortApproval], items: [abortItem] },
+    held: { ...decided.held, presentation: { ...handoff, approval: abortApproval },
+      decision: { ...decided.held.decision, choice: abortChoice },
+      resolved: { ...decided.held.resolved, decision: 'abort' }, item: abortItem,
+      terminal: { ...decided.held.terminal, terminal: 'cancelled' } } };
+  assert.equal(validateHeldShellOutcome(ready, aborted).kind, 'native_shell_held_rejected');
+  for (const altered of [{ abortDenial: false, outputMarkers: true },
+    { abortDenial: true, dummyAuthVisible: true },
+    { abortDenial: true, workspaceReportedWritten: false }]) {
+    const item = { ...abortItem, ...altered };
+    assert.throws(() => validateHeldShellOutcome(ready, { ...aborted,
+      observations: { ...aborted.observations, items: [item] },
+      held: { ...aborted.held, item } }), { code: 'NATIVE_HELD_OUTCOME_INVALID' });
+  }
 });
 
 function durableApprovalFixture({ sessionId, turnId, approvalId, command, workspace }) {
@@ -1332,11 +1462,14 @@ test('native shell controller verifies effects, stop and durable approval termin
   const run = async ({ approval = false, writeShell = false, stopFails = false,
     workspaceReportedWritten = true, dummyAuthVisible = false, guestFailure = false,
     finishedReject = false, terminalInvalid = false, lateGuestFailure = false,
-    approvalLog = 'abort' } = {}) => {
+    approvalLog = 'abort', held = false, heldInput = null, heldDecided = false } = {}) => {
     let fixtureRoot;
     let fixtureReady;
     let fixtureOutcome;
-    const result = await qualifyNativeShell({
+    let sentDecision;
+    const result = await (held ? qualifyNativeShellHeld : qualifyNativeShell)({
+      ...(held ? { requestDecision: async handoff => typeof heldInput === 'function' ?
+        heldInput(handoff) : heldInput } : {}),
       stage: async root => {
         fixtureRoot = root;
         const runtime = join(root, 'runtime');
@@ -1355,8 +1488,38 @@ test('native shell controller verifies effects, stop and durable approval termin
           providerRequests: [{ method: 'POST', path: '/responses', kind: 'native_tool_call' },
             { method: 'POST', path: '/responses', rejection: 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN' }] } :
           shellOutcomeFixture(ready, approval, workspaceReportedWritten);
+        if (heldDecided) {
+          const allow = { choiceId: 'allow_once', decision: 'approved', scope: 'once', label: 'Allow once' };
+          outcome.event.approval.choices = [allow];
+          outcome.pending.approvals[0].choices = [allow];
+          outcome.observations.approvals[0].choices = [allow];
+        }
         fixtureReady = ready;
         fixtureOutcome = outcome;
+        const rawApproval = approval ? { approvalId: outcome.event.approval.approvalId,
+          sessionId: outcome.sessionId, turnId: outcome.turnId, toolCallId: 'call_native_shell_1',
+          toolName: 'bash', availableChoices: outcome.event.approval.choices,
+          currentRequirementId: outcome.event.approval.requirementId,
+          rawArgs: JSON.stringify({ command: shellProbeCommand(config.workspace, config.protectedRoot,
+            'protected-canary'), description: 'Disposable native shell qualification' }) } : null;
+        const handoff = rawApproval ? heldApprovalPresentation(rawApproval,
+          shellProbeCommand(config.workspace, config.protectedRoot, 'protected-canary'),
+          config.workspace, config.protectedRoot, 'protected-canary') : null;
+        if (heldDecided) {
+          const completed = shellOutcomeFixture(ready);
+          const commandId = '0199aabb-ccdd-7eef-8abc-0123456789ad';
+          outcome.kind = 'native_shell_held_decided';
+          outcome.providerRequests = completed.providerRequests;
+          outcome.observations.items = completed.observations.items;
+          outcome.held = { kind: 'decided', presentation: handoff,
+            decision: { commandId, choice: handoff.approval.choices[0],
+              ack: { status: 'accepted', terminal: true, commandId,
+                approvalId: handoff.approval.approvalId } },
+            resolved: { kind: 'approval/resolved', approvalId: handoff.approval.approvalId,
+              sessionId: outcome.sessionId, turnId: outcome.turnId, decidedByCommandId: commandId,
+              resolvedBy: 'user', decision: 'approved' },
+            item: completed.observations.items[0], terminal: completed.event };
+        }
         if (!approval && !guestFailure) {
           outcome.observations.items[0].dummyAuthVisible = dummyAuthVisible;
           outcome.providerRequests.find(request => request.kind === 'matching_tool_result').outputMarkers.dummyAuthVisible =
@@ -1372,11 +1535,14 @@ test('native shell controller verifies effects, stop and durable approval termin
           statusLines: terminalInvalid ? ['{"child-pid":101}', 'bad-json'] :
             ['{"child-pid":101}', `{"exit-code":${guestFailure || lateGuestFailure ? 1 : 0}}`], stderr: '',
           output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
+            ...held && !guestFailure ? [JSON.stringify({ kind: 'guest_handoff', result: handoff })] : [],
             JSON.stringify(guestFailure ? outcome : { kind: 'guest_outcome', result: outcome }),
             JSON.stringify(finalOutcome)] });
         finished.catch(() => undefined);
         return { pid: 100, ready: Promise.resolve(ready),
           liveStatus: Promise.resolve({ child: 101, exit: null }), outcome: Promise.resolve(outcome),
+          handoff: Promise.resolve(held && guestFailure ? outcome : handoff),
+          sendDecision: value => { sentDecision = value; },
           releaseTurn: () => undefined, releaseShutdown: () => undefined, abort: () => undefined,
           finished };
       },
@@ -1401,6 +1567,7 @@ test('native shell controller verifies effects, stop and durable approval termin
         return { kind: 'confirmed', pidns: 'pid:[1]' };
       },
     });
+    result.testSentDecision = sentDecision;
     await rm(result.retainedFixtures[0], { recursive: true, force: true });
     return result;
   };
@@ -1416,6 +1583,22 @@ test('native shell controller verifies effects, stop and durable approval termin
   assert.equal(pending.classified.kind, 'native_shell_approval_pending');
   assert.equal(pending.evidence.guestOutcome.pending.approvals.length, 1);
   assert.equal(pending.evidence.approvalTerminal.sequences.run_terminal, 6);
+  const heldExpired = await run({ approval: true, held: true });
+  assert.equal(heldExpired.kind, 'native_shell_approval_aborted_on_shutdown');
+  assert.deepEqual(heldExpired.testSentDecision, { kind: 'expire' });
+  assert.equal(heldExpired.evidence.stop.kind, 'confirmed');
+  const heldInvalid = await run({ approval: true, held: true, heldInput: { kind: 'choice' } });
+  assert.equal(heldInvalid.code, 'NATIVE_HELD_DECISION_INVALID');
+  assert.deepEqual(heldInvalid.testSentDecision, { kind: 'expire' });
+  assert.equal(heldInvalid.evidence.stop.kind, 'confirmed');
+  const heldApproved = await run({ approval: true, held: true, heldDecided: true, writeShell: true,
+    heldInput: handoff => ({ kind: 'choice', handoffId: handoff.handoffId,
+      sessionId: handoff.approval.sessionId, turnId: handoff.approval.turnId,
+      callId: handoff.approval.toolCallId, approvalId: handoff.approval.approvalId,
+      requirementId: handoff.approval.requirementId, choiceId: 'allow_once' }) });
+  assert.equal(heldApproved.kind, 'native_shell_effect_observed');
+  assert.equal(heldApproved.testSentDecision.choiceId, 'allow_once');
+  assert.equal(heldApproved.evidence.stop.kind, 'confirmed');
   for (const approvalLog of ['absent', 'mismatch', 'ambiguous', 'incomplete']) {
     const unknown = await run({ approval: true, approvalLog });
     assert.equal(unknown.kind, 'native_shell_approval_terminal_unknown');
@@ -1432,6 +1615,11 @@ test('native shell controller verifies effects, stop and durable approval termin
   assert.equal(primary.evidence.primaryGuestFailure.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(primary.evidence.stopError.code, 'STOP_SURVIVOR');
   assert.equal(primary.stopProof, 'unconfirmed');
+  const heldPrimary = await run({ held: true, guestFailure: true, stopFails: true });
+  assert.equal(heldPrimary.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+  assert.equal(heldPrimary.evidence.primaryGuestFailure.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+  assert.equal(heldPrimary.evidence.stopError.code, 'STOP_SURVIVOR');
+  assert.equal(heldPrimary.testSentDecision, undefined);
   const completionFailed = await run({ guestFailure: true, finishedReject: true });
   assert.equal(completionFailed.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(completionFailed.evidence.primaryGuestFailure.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
@@ -1459,5 +1647,73 @@ test('early shell child failure settles an unread bounded outcome without unhand
     assert.equal((await host.liveStatus).child, 123);
     assert.equal((await host.finished).code, 1);
     await new Promise(resolve => setTimeout(resolve, 0));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('held transport keeps the child alive until one host decision and explicit shutdown', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-held-transport-'));
+  try {
+    const fake = join(root, 'fake-bwrap');
+    await writeFile(fake, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '{"kind":"guest_ready","result":{"kind":"guest_shell_ready"}}\\n'
+read turn
+printf '{"kind":"guest_handoff","result":{"kind":"native_shell_live_approval"}}\\n'
+read decision
+printf '{"kind":"guest_outcome","result":{"kind":"native_shell_approval_pending"}}\\n'
+read shutdown
+printf '{"kind":"native_shell_approval_pending"}\\n'
+printf '{"exit-code":0}\\n' >&3
+`, { mode: 0o700 });
+    const host = runStatusPhase({ executable: fake, args: ['--', 'ignored'] }, { phase: 'held-shell' });
+    assert.equal((await host.ready).kind, 'guest_shell_ready');
+    assert.equal((await host.liveStatus).child, 123);
+    host.releaseTurn();
+    assert.equal((await host.handoff).kind, 'native_shell_live_approval');
+    let finished = false;
+    host.finished.then(() => { finished = true; });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(finished, false);
+    host.sendDecision({ kind: 'expire' });
+    assert.equal((await host.outcome).kind, 'native_shell_approval_pending');
+    assert.throws(() => host.sendDecision({ kind: 'expire' }),
+      { code: 'NATIVE_HELD_DECISION_SEQUENCE' });
+    host.releaseShutdown();
+    const done = await host.finished;
+    assert.equal(done.code, 0);
+    assert.equal(done.output.length, 4);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('held transport owns early handoff rejection and forwards typed pre-handoff guest failure', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-held-early-'));
+  try {
+    const early = join(root, 'early-bwrap');
+    await writeFile(early, '#!/bin/sh\nprintf \'{"child-pid":123}\\n\' >&3\nexit 1\n',
+      { mode: 0o700 });
+    const first = runStatusPhase({ executable: early, args: ['--', 'ignored'] }, { phase: 'held-shell' });
+    await assert.rejects(first.ready, { code: 'GUEST_OUTPUT_INVALID' });
+    assert.equal((await first.finished).code, 1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const failure = { kind: 'guest_transport_error', stage: 'native_turn',
+      code: 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN', message: 'unreviewed result', providerRequests: [] };
+    const beforeHandoff = join(root, 'before-handoff-bwrap');
+    await writeFile(beforeHandoff, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '{"kind":"guest_ready","result":{"kind":"guest_shell_ready"}}\\n'
+read turn
+printf '%s\\n' '${JSON.stringify(failure)}'
+printf '%s\\n' '${JSON.stringify(failure)}'
+printf '{"exit-code":1}\\n' >&3
+exit 1
+`, { mode: 0o700 });
+    const second = runStatusPhase({ executable: beforeHandoff, args: ['--', 'ignored'] }, { phase: 'held-shell' });
+    assert.equal((await second.ready).kind, 'guest_shell_ready');
+    second.releaseTurn();
+    assert.deepEqual(await second.handoff, failure);
+    assert.deepEqual(await second.outcome, failure);
+    assert.equal((await second.finished).output.length, 3);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Disposable, no-account transport probe. The guest path runs only inside Bubblewrap.
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
@@ -23,6 +23,9 @@ const LIMIT = 65_536;
 const PROVIDER_INPUT_LIMIT = 262_144;
 const APPROVAL_LOG_LIMIT = 1_048_576;
 const DEADLINE_MS = 25_000;
+const HELD_WAIT_MS = 600_000;
+const HELD_INPUT_MS = HELD_WAIT_MS - 10_000;
+const HELD_DEADLINE_MS = HELD_WAIT_MS + 60_000;
 const GUEST_RUNTIME = '/mounts/runtime';
 const GUEST_HOME = '/mounts/home';
 const SHELL_MODEL = 'fixture-native-shell';
@@ -1047,6 +1050,7 @@ export function approvalSummary(value, command) {
       value.availableChoices.length < 1 || value.availableChoices.length > 16 ||
       value.availableChoices.some(choice => !choice || ['choiceId', 'decision', 'scope', 'label']
         .some(key => typeof choice[key] !== 'string' || !choice[key] || choice[key].length > 200)) ||
+      new Set(value.availableChoices.map(choice => choice?.choiceId)).size !== value.availableChoices.length ||
       value.currentRequirementId?.approvalId !== value.approvalId ||
       !Number.isSafeInteger(value.currentRequirementId?.sourceIndex)) {
     throw fault('NATIVE_APPROVAL_INVALID', 'native approval identity or choices invalid');
@@ -1069,11 +1073,87 @@ export function approvalSummary(value, command) {
       decision: choice.decision, scope: choice.scope, label: choice.label })) };
 }
 
+export function heldApprovalPresentation(approval, command, workspace, protectedRoot, token) {
+  const summary = approvalSummary(approval, command);
+  return { kind: 'native_shell_live_approval', handoffId: randomBytes(16).toString('hex'),
+    approval: summary, command, waitBudgetMs: HELD_INPUT_MS,
+    expiresAt: new Date(Date.now() + HELD_INPUT_MS).toISOString(),
+    effects: { workspaceWrite: join(workspace, 'shell-canary'),
+      protectedDirect: join(protectedRoot, token),
+      protectedSymlink: join(workspace, 'protected-link', token),
+      protectedProc: `/proc/1/root${join(protectedRoot, token)}`,
+      dummyAuth: `${GUEST_HOME}/.config/muse/auth.json`,
+      purpose: 'Disposable shell and protected-path probe; approval permits exactly the displayed command.' } };
+}
+
+export function validateHeldInitialApproval(metadata, ack, event, pending, command) {
+  const approval = event?.approval;
+  if (event?.kind !== 'approval' || approval?.sessionId !== metadata.sessionId ||
+      approval.turnId !== ack.turnId || approval.toolCallId !== SHELL_CALL ||
+      approval.toolName !== 'bash' || pending?.approvals?.length !== 1 ||
+      pending.userInputs?.length !== 0 ||
+      JSON.stringify(approvalSummary(pending.approvals[0], command)) !== JSON.stringify(approval)) {
+    throw fault('NATIVE_HELD_APPROVAL_STALE', 'held approval is not the accepted fresh turn and call');
+  }
+  return approval;
+}
+
+export function validateHeldDecision(presentation, input, checkExpiry = true) {
+  const approval = presentation?.approval;
+  if (input?.kind !== 'choice' || Object.keys(input).sort().join(',') !==
+      'approvalId,callId,choiceId,handoffId,kind,requirementId,sessionId,turnId' ||
+      !Number.isFinite(Date.parse(presentation?.expiresAt)) ||
+      checkExpiry && Date.now() >= Date.parse(presentation.expiresAt) ||
+      input.handoffId !== presentation.handoffId || input.sessionId !== approval?.sessionId ||
+      input.turnId !== approval?.turnId || input.callId !== approval?.toolCallId ||
+      input.approvalId !== approval?.approvalId ||
+      Object.keys(input.requirementId ?? {}).sort().join(',') !== 'approvalId,sourceIndex' ||
+      input.requirementId.approvalId !== approval.requirementId.approvalId ||
+      input.requirementId.sourceIndex !== approval.requirementId.sourceIndex ||
+      !approval.choices.some(choice => choice.choiceId === input.choiceId)) {
+    throw fault('NATIVE_HELD_DECISION_INVALID', 'human choice did not match the live approval and requirement');
+  }
+  return approval.choices.find(choice => choice.choiceId === input.choiceId);
+}
+
+export async function submitHeldDecision(connection, presentation, input, command, decisionState) {
+  if (decisionState.submitted) throw fault('NATIVE_HELD_DUPLICATE_DECISION', 'approval decision already submitted');
+  const choice = validateHeldDecision(presentation, input);
+  const pending = await timeout('current approval/listPending', connection.request('approval/listPending',
+    { sessionId: presentation.approval.sessionId }), 5_000);
+  if (pending?.approvals?.length !== 1 || pending.userInputs?.length !== 0 ||
+      JSON.stringify(approvalSummary(pending.approvals[0], command)) !== JSON.stringify(presentation.approval)) {
+    throw fault('NATIVE_HELD_APPROVAL_STALE', 'current loaded approval differs from presented requirement');
+  }
+  const current = await timeout('current session/read', connection.command('session/read',
+    { sessionId: presentation.approval.sessionId, excludeItems: true }, { maxAttempts: 1 }), 5_000);
+  if (current?.session?.sessionId !== presentation.approval.sessionId ||
+      current.session.activeTurnId !== presentation.approval.turnId) {
+    throw fault('NATIVE_HELD_APPROVAL_STALE', 'loaded session no longer holds the presented turn');
+  }
+  const commandId = connection.mintCommandId();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(commandId)) {
+    throw fault('NATIVE_HELD_COMMAND_ID_INVALID', 'SDK did not mint a UUIDv7 command ID');
+  }
+  decisionState.submitted = true;
+  const ack = await timeout('approval/decide', connection.command('approval/decide', {
+    approvalId: presentation.approval.approvalId, choiceId: choice.choiceId,
+    requirementId: presentation.approval.requirementId, sessionId: presentation.approval.sessionId,
+  }, { commandId, maxAttempts: 1 }), 10_000);
+  if (ack?.status !== 'accepted' || ack.commandId !== commandId ||
+      ack.approvalId !== presentation.approval.approvalId || typeof ack.terminal !== 'boolean') {
+    throw fault('NATIVE_HELD_ACK_INVALID', 'approval decision admission acknowledgement differed');
+  }
+  return { commandId, choice, ack: { status: ack.status, terminal: ack.terminal,
+    approvalId: ack.approvalId, commandId: ack.commandId } };
+}
+
 export async function guestShellRun(config) {
   const { spawnMspConnection } = await import(pathToFileURL(`${GUEST_RUNTIME}/sdk/dist/src/index.js`).href);
   const workspace = config.workspace;
   const native = `${GUEST_RUNTIME}/muse-bin-${VERSION}`;
   const namespace = await readlink('/proc/self/ns/net');
+  const held = config.phase === 'held-shell';
   let provider;
   let host;
   let stage = 'network';
@@ -1109,10 +1189,24 @@ export async function guestShellRun(config) {
       cwd: workspace, env: guestEnvironment(), shutdownTimeoutMs: 2_000, onStderr: () => undefined });
     let resolveObserved;
     const observed = new Promise(resolve => { resolveObserved = resolve; });
+    const heldEvents = [];
+    let heldEventOverflow = false;
+    const holdEvent = value => {
+      if (held && heldEvents.length < 24) heldEvents.push(value);
+      else if (held) heldEventOverflow = true;
+    };
     host.onServerRequest(async request => {
       if (request.method !== 'approval/request') throw fault('NATIVE_REQUEST_UNEXPECTED', 'unexpected native request');
+      if (held && observations.approvals.length > 0) {
+        observe('approvals', { approvalId: request.params?.approvalId,
+          sessionId: request.params?.sessionId, turnId: request.params?.turnId,
+          toolCallId: request.params?.toolCallId, kind: 'additional_stage' });
+        holdEvent({ kind: 'additional_approval_request' });
+        return {};
+      }
       const approval = approvalSummary(request.params, command);
       observe('approvals', approval);
+      holdEvent({ kind: 'approval_request', approval });
       resolveObserved({ kind: 'approval', approval });
       return {}; // Presentation receipt only. No approval/decide is sent.
     });
@@ -1132,9 +1226,20 @@ export async function guestShellRun(config) {
             try { return JSON.parse(item.args)?.command === command; } catch { return false; }
           })(), outputMarkers: shellOutputMarkers(item.visibleOutput) !== null,
           workspaceReportedWritten: shellOutputMarkers(item.visibleOutput)?.workspaceWritten ?? null,
-          dummyAuthVisible: shellOutputMarkers(item.visibleOutput)?.dummyAuthVisible ?? null });
+          dummyAuthVisible: shellOutputMarkers(item.visibleOutput)?.dummyAuthVisible ?? null,
+          abortDenial: item.visibleOutput === 'tool denied: approval aborted' });
+        if (held && item.callId === SHELL_CALL) holdEvent({ kind: 'tool_item',
+          item: observations.items.at(-1) });
+      }
+      if (held && ['approval/resolved', 'approval/updated'].includes(notification.method)) {
+        holdEvent({ kind: notification.method, approvalId: params?.approvalId,
+          sessionId: params?.sessionId, turnId: params?.turnId,
+          decidedByCommandId: params?.decidedByCommandId, decision: params?.decision,
+          resolvedBy: params?.resolvedBy, requirementId: params?.currentRequirementId });
       }
       if (notification.method === 'turn/completed') {
+        holdEvent({ kind: 'turn_completed', terminal: params?.terminal,
+          turnId: params?.turnId, sessionId: params?.sessionId });
         resolveObserved({ kind: 'turn_completed', terminal: params?.terminal,
           turnId: params?.turnId, sessionId: params?.sessionId,
           errorKind: params?.error?.kind ?? null });
@@ -1206,16 +1311,75 @@ export async function guestShellRun(config) {
         throw fault('NATIVE_APPROVAL_INVALID', 'read-only pending list differs from observed approval');
       }
     }
+    let heldResult = null;
+    if (held && event.kind === 'approval') {
+      validateHeldInitialApproval(metadata, ack, event, pending, command);
+      const presentation = heldApprovalPresentation(pending.approvals[0], command,
+        workspace, config.protectedRoot, config.canaryToken);
+      if (JSON.stringify(presentation.approval) !== JSON.stringify(event.approval) ||
+          observations.approvals.length !== 1) {
+        throw fault('NATIVE_HELD_APPROVAL_STALE', 'held approval differed before presentation');
+      }
+      process.stdout.write(`${JSON.stringify({ kind: 'guest_handoff', result: presentation })}\n`);
+      const line = await timeout('held human input', config.release(), HELD_WAIT_MS + 5_000);
+      let input;
+      try { input = JSON.parse(line); }
+      catch { throw fault('NATIVE_HELD_INPUT_INVALID', 'held input was not JSON'); }
+      if (input?.kind === 'expire' && Object.keys(input).join(',') === 'kind') {
+        heldResult = { kind: 'expired', presentation };
+      } else {
+        if (provider.state.primaryCode) throw fault(provider.state.primaryCode, 'provider rejected before human choice');
+        const decision = await submitHeldDecision(initialized.connection, presentation,
+          input, command, { submitted: false });
+        let cursor = 0;
+        const next = async predicate => {
+          const deadline = Date.now() + 15_000;
+          while (Date.now() < deadline) {
+            if (provider.state.primaryCode) throw fault(provider.state.primaryCode, 'provider rejected held native request');
+            if (heldEventOverflow) throw fault('NATIVE_HELD_EVENT_BUDGET', 'native held event count exceeded bound');
+            if (observations.approvals.length > 1) {
+              throw fault('NATIVE_HELD_ADDITIONAL_APPROVAL', 'another native approval needs a separate human choice');
+            }
+            while (cursor < heldEvents.length) {
+              const value = heldEvents[cursor++];
+              if (predicate(value)) return value;
+            }
+            await pause(10);
+          }
+          throw fault('NATIVE_HELD_RESOLUTION_MISSING', 'native approval did not reach an authoritative outcome');
+        };
+        const resolved = await next(value => ['approval/resolved', 'approval/updated'].includes(value.kind));
+        if (resolved.approvalId !== presentation.approval.approvalId ||
+            resolved.sessionId !== metadata.sessionId ||
+            (resolved.kind === 'approval/resolved' &&
+              (resolved.turnId !== ack.turnId || resolved.decidedByCommandId !== decision.commandId ||
+               resolved.decision !== decision.choice.decision || resolved.resolvedBy !== 'user'))) {
+          throw fault('NATIVE_HELD_RESOLUTION_INVALID', 'native approval resolution differed from submitted choice');
+        }
+        if (resolved.kind === 'approval/updated' || decision.ack.terminal !== true) {
+          throw fault('NATIVE_HELD_ADDITIONAL_APPROVAL', 'native approval advanced to another requirement');
+        }
+        const item = await next(value => value.kind === 'tool_item');
+        const terminal = await next(value => value.kind === 'turn_completed');
+        if (item.item.callId !== SHELL_CALL || item.item.turnId !== ack.turnId ||
+            terminal.turnId !== ack.turnId || terminal.sessionId !== metadata.sessionId) {
+          throw fault('NATIVE_HELD_TURN_INVALID', 'native tool or turn differed from approved call');
+        }
+        heldResult = { kind: 'decided', presentation, decision, resolved, item: item.item, terminal };
+      }
+    }
     await timeout('provider freeze', provider.freeze(), 5_000);
     if (provider.state.primaryCode) {
       throw fault(provider.state.primaryCode, 'guest provider rejected a request before outcome publication');
     }
-    const result = { kind: event.kind === 'approval' ? 'native_shell_approval_pending' : 'guest_shell_outcome',
+    const result = { kind: heldResult?.kind === 'decided' ? 'native_shell_held_decided' :
+      event.kind === 'approval' ? 'native_shell_approval_pending' : 'guest_shell_outcome',
       stage, sessionId: metadata.sessionId, turnId: ack.turnId, turnAck: { status: ack.status,
         disposition: ack.disposition, startedNewTurn: ack.startedNewTurn }, event,
       pending: pending ? { approvals: pending.approvals.map(approval => approvalSummary(approval, command)),
         userInputs: [] } : null,
-      observations, providerRequests: [...provider.requests], commands: [...commands] };
+      observations, providerRequests: [...provider.requests], commands: [...commands],
+      ...(heldResult ? { held: heldResult } : {}) };
     process.stdout.write(`${JSON.stringify({ kind: 'guest_outcome', result })}\n`);
     if (await timeout('shutdown release', config.release()) !== 'shutdown') {
       throw fault('HOST_RELEASE_INVALID', 'native shutdown was not released by host');
@@ -1453,16 +1617,21 @@ export function runStatusPhase(prepared, config) {
   let readyReject;
   let outcomeResolve;
   let outcomeReject;
+  let handoffResolve;
+  let handoffReject;
   let statusResolve;
   let statusReject;
   let released = false;
   let shutdownReleased = false;
+  let decisionSent = false;
   const ready = new Promise((resolveReady, rejectReady) => { readyResolve = resolveReady; readyReject = rejectReady; });
   const outcome = new Promise((resolveValue, rejectValue) => { outcomeResolve = resolveValue; outcomeReject = rejectValue; });
+  const handoff = new Promise((resolveValue, rejectValue) => { handoffResolve = resolveValue; handoffReject = rejectValue; });
   const liveStatus = new Promise((resolveStatus, rejectStatus) => { statusResolve = resolveStatus; statusReject = rejectStatus; });
   // Both promises have consumers from construction, including on early spawn failure.
   ready.catch(() => undefined);
   outcome.catch(() => undefined);
+  handoff.catch(() => undefined);
   liveStatus.catch(() => undefined);
   const append = (array, line) => {
     array.push(line);
@@ -1477,7 +1646,7 @@ export function runStatusPhase(prepared, config) {
   }
   createInterface({ input: child.stdout }).on('line', line => {
     append(output, line);
-    if (['first', 'resume', 'shell'].includes(config.phase) && output.length === 1) {
+    if (['first', 'resume', 'shell', 'held-shell'].includes(config.phase) && output.length === 1) {
       try {
         const parsed = JSON.parse(line);
         if (parsed.kind !== 'guest_ready' || parsed.result?.kind !==
@@ -1488,7 +1657,23 @@ export function runStatusPhase(prepared, config) {
         readyResolve(parsed.result);
       } catch (error) { readyReject(error); }
     }
-    if (config.phase === 'shell' && output.length === 2) {
+    if (config.phase === 'held-shell' && output.length === 2) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.kind === 'guest_transport_error') {
+          const failure = decodeShellOutcomeLine(line);
+          handoffResolve(failure);
+          outcomeResolve(failure);
+          return;
+        }
+        if (parsed.kind !== 'guest_handoff' || parsed.result?.kind !== 'native_shell_live_approval') {
+          throw fault('NATIVE_HELD_HANDOFF_INVALID', 'guest did not present a live native approval');
+        }
+        handoffResolve(parsed.result);
+      } catch (error) { handoffReject(error); }
+    }
+    if ((config.phase === 'shell' && output.length === 2) ||
+        (config.phase === 'held-shell' && output.length === 3)) {
       try {
         outcomeResolve(decodeShellOutcomeLine(line));
       } catch (error) { outcomeReject(error); }
@@ -1507,12 +1692,14 @@ export function runStatusPhase(prepared, config) {
   child.stdin.on('error', () => { /* child completion reports the failed phase */ });
   child.stdin.write(`${JSON.stringify(config)}\n`);
   const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM');
-    setTimeout(() => child.kill('SIGKILL'), 2_000).unref(); }, DEADLINE_MS);
+    setTimeout(() => child.kill('SIGKILL'), 2_000).unref(); },
+  config.phase === 'held-shell' ? HELD_DEADLINE_MS : DEADLINE_MS);
   const finished = new Promise(resolveResult => {
     child.once('error', error => {
       clearTimeout(timer);
       readyReject(error);
       outcomeReject(error);
+      handoffReject(error);
       statusReject(error);
       resolveResult({ code: null, signal: null, error: error.code ?? error.name, timedOut, overflow,
         output, stderr, statusLines, statusClosed });
@@ -1520,20 +1707,37 @@ export function runStatusPhase(prepared, config) {
     child.once('close', (code, signal) => {
       clearTimeout(timer);
       if (output.length === 0) readyReject(fault('GUEST_OUTPUT_INVALID', 'phase exited before readiness'));
-      if (config.phase === 'shell' && output.length < 2) outcomeReject(fault('GUEST_OUTPUT_INVALID', 'shell exited before outcome'));
+      if (config.phase === 'shell' && output.length < 2 ||
+          config.phase === 'held-shell' && output.length < 3) {
+        outcomeReject(fault('GUEST_OUTPUT_INVALID', 'shell exited before outcome'));
+      }
+      if (config.phase === 'held-shell' && output.length < 2) {
+        handoffReject(fault('NATIVE_HELD_HANDOFF_MISSING', 'held shell exited before approval handoff'));
+      }
       if (statusLines.length === 0) statusReject(fault('BWRAP_STATUS_INVALID', 'Bubblewrap exited without status'));
       resolveResult({ code, signal, timedOut, overflow, output, stderr, statusLines, statusClosed });
     });
   });
-  const boundedOutcome = config.phase === 'shell' ? timeout('shell outcome', outcome) : undefined;
+  const boundedOutcome = ['shell', 'held-shell'].includes(config.phase) ?
+    timeout('shell outcome', outcome, config.phase === 'held-shell' ? HELD_DEADLINE_MS : DEADLINE_MS) : undefined;
   boundedOutcome?.catch(() => undefined);
+  const boundedHandoff = config.phase === 'held-shell' ? timeout('held approval handoff', handoff) : undefined;
+  boundedHandoff?.catch(() => undefined);
   return { pid: child.pid, ready: timeout('host readiness', ready),
     outcome: boundedOutcome,
+    handoff: boundedHandoff,
     liveStatus: timeout('live Bubblewrap status', liveStatus),
     statusLines: () => [...statusLines],
     release: () => { if (!released) { released = true; child.stdin.end('release\n'); } },
-    releaseTurn: () => { if (config.phase === 'shell' && !released) { released = true; child.stdin.write('turn\n'); } },
-    releaseShutdown: () => { if (config.phase === 'shell' && released && !shutdownReleased) {
+    releaseTurn: () => { if (['shell', 'held-shell'].includes(config.phase) && !released) {
+      released = true; child.stdin.write('turn\n'); } },
+    sendDecision: decision => { if (config.phase !== 'held-shell' || !released || decisionSent) {
+      throw fault('NATIVE_HELD_DECISION_SEQUENCE', 'held decision was sent outside its one-use window');
+    }
+      decisionSent = true;
+      child.stdin.write(`${JSON.stringify(decision)}\n`);
+    },
+    releaseShutdown: () => { if (['shell', 'held-shell'].includes(config.phase) && released && !shutdownReleased) {
       shutdownReleased = true; child.stdin.end('shutdown\n');
     } },
     abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } }, finished };
@@ -1544,7 +1748,8 @@ export function decodeShellOutcomeLine(line) {
   try { parsed = JSON.parse(line); }
   catch { throw fault('GUEST_OUTPUT_INVALID', 'shell outcome JSON invalid'); }
   if (parsed?.kind === 'guest_outcome' &&
-      ['guest_shell_outcome', 'native_shell_approval_pending'].includes(parsed.result?.kind)) return parsed.result;
+      ['guest_shell_outcome', 'native_shell_approval_pending',
+        'native_shell_held_decided'].includes(parsed.result?.kind)) return parsed.result;
   if (parsed?.kind === 'guest_transport_error' && parsed.stage === 'native_turn' &&
       /^[A-Z][A-Z0-9_]{0,63}$/.test(parsed.code ?? '') &&
       typeof parsed.message === 'string' && Buffer.byteLength(parsed.message) <= 400 &&
@@ -1887,6 +2092,84 @@ export function validateShellOutcome(ready, outcome) {
     toolItemId: tool[0].itemId, dummyAuthVisible: tool[0].dummyAuthVisible };
 }
 
+export function validateHeldHandoff(ready, handoff, command, workspace, protectedRoot, token) {
+  if (handoff?.kind !== 'native_shell_live_approval' ||
+      !/^[0-9a-f]{32}$/.test(handoff.handoffId ?? '') || handoff.command !== command ||
+      handoff.waitBudgetMs !== HELD_INPUT_MS ||
+      !Number.isFinite(Date.parse(handoff.expiresAt)) ||
+      Date.parse(handoff.expiresAt) <= Date.now() ||
+      Date.parse(handoff.expiresAt) > Date.now() + HELD_INPUT_MS ||
+      handoff.approval?.sessionId !== ready.metadata.sessionId ||
+      handoff.approval.toolCallId !== SHELL_CALL || handoff.approval.toolName !== 'bash' ||
+      handoff.approval.commandMatch !== true ||
+      !Number.isSafeInteger(handoff.approval.requirementId?.sourceIndex) ||
+      handoff.approval.requirementId.approvalId !== handoff.approval.approvalId ||
+      handoff.effects?.workspaceWrite !== join(workspace, 'shell-canary') ||
+      handoff.effects.protectedDirect !== join(protectedRoot, token) ||
+      handoff.effects.protectedSymlink !== join(workspace, 'protected-link', token) ||
+      handoff.effects.protectedProc !== `/proc/1/root${join(protectedRoot, token)}` ||
+      handoff.effects.dummyAuth !== `${GUEST_HOME}/.config/muse/auth.json` ||
+      !Array.isArray(handoff.approval.choices) || handoff.approval.choices.length < 1 ||
+      handoff.approval.choices.length > 16 ||
+      handoff.approval.choices.some(choice => typeof choice.choiceId !== 'string' ||
+        typeof choice.decision !== 'string' || typeof choice.label !== 'string' ||
+        typeof choice.scope !== 'string')) {
+    throw fault('NATIVE_HELD_HANDOFF_INVALID', 'held host presentation differed from fresh shell fixture');
+  }
+  return handoff;
+}
+
+export function validateHeldShellOutcome(ready, outcome) {
+  const held = outcome?.held;
+  if (outcome?.kind !== 'native_shell_held_decided' || held?.kind !== 'decided' ||
+      held.presentation?.approval?.sessionId !== ready.metadata.sessionId ||
+      held.presentation.approval.approvalId !== outcome.event?.approval?.approvalId ||
+      outcome.pending?.approvals?.length !== 1 ||
+      JSON.stringify(outcome.pending.approvals[0]) !== JSON.stringify(held.presentation.approval) ||
+      held.decision?.ack?.status !== 'accepted' || held.decision.ack.terminal !== true ||
+      held.decision.ack.commandId !== held.decision.commandId ||
+      held.resolved?.kind !== 'approval/resolved' ||
+      held.resolved.approvalId !== held.presentation.approval.approvalId ||
+      held.resolved.sessionId !== outcome.sessionId || held.resolved.turnId !== outcome.turnId ||
+      held.resolved.decidedByCommandId !== held.decision.commandId ||
+      held.resolved.resolvedBy !== 'user' ||
+      held.resolved.decision !== held.decision.choice?.decision ||
+      held.item?.callId !== SHELL_CALL || held.item.turnId !== outcome.turnId ||
+      held.terminal?.turnId !== outcome.turnId || held.terminal.sessionId !== outcome.sessionId ||
+      outcome.observations?.approvals?.length !== 1 ||
+      JSON.stringify(outcome.observations.approvals[0]) !== JSON.stringify(held.presentation.approval)) {
+    throw fault('NATIVE_HELD_OUTCOME_INVALID', 'held decision lacked correlated resolution, tool and turn');
+  }
+  validateHeldDecision(held.presentation, { kind: 'choice', handoffId: held.presentation.handoffId,
+    sessionId: outcome.sessionId, turnId: outcome.turnId, callId: SHELL_CALL,
+    approvalId: held.presentation.approval.approvalId,
+    requirementId: held.presentation.approval.requirementId,
+    choiceId: held.decision.choice.choiceId }, false);
+  if (outcome.observations.items?.length !== 1 ||
+      JSON.stringify(held.item) !== JSON.stringify(outcome.observations.items[0])) {
+    throw fault('NATIVE_HELD_OUTCOME_INVALID', 'held tool item differs from observed item');
+  }
+  if (held.decision.choice.decision === 'approved') {
+    return validateShellOutcome(ready, { ...outcome, kind: 'guest_shell_outcome',
+      event: { kind: 'turn_completed', terminal: held.terminal.terminal,
+        turnId: held.terminal.turnId, sessionId: held.terminal.sessionId }, pending: null });
+  }
+  if (held.decision.choice.decision === 'abort' && held.terminal.terminal === 'cancelled' &&
+      held.item.status === 'completed' && held.item.commandMatch === true &&
+      held.item.tool === 'bash' && held.item.abortDenial === true &&
+      held.item.outputMarkers === false && held.item.workspaceReportedWritten === null &&
+      held.item.dummyAuthVisible === null && held.item.outputShape?.type === 'string' &&
+      held.item.outputShape.bytes === Buffer.byteLength('tool denied: approval aborted') &&
+      outcome.providerRequests.filter(request => request.kind === 'matching_tool_result').length === 0 &&
+      outcome.observations.items[0].callId === SHELL_CALL) {
+    validateShellOutcome(ready, { ...outcome, kind: 'native_shell_approval_pending',
+      observations: { ...outcome.observations, items: [] } });
+    return { kind: 'native_shell_held_rejected', turnId: outcome.turnId,
+      approvalId: held.presentation.approval.approvalId };
+  }
+  throw fault('NATIVE_HELD_OUTCOME_INVALID', 'held choice outcome is outside reviewed native behavior');
+}
+
 async function shellEffects(workspace, protectedRoot, token) {
   let shell = null;
   try { shell = await readFile(join(workspace, 'shell-canary'), 'utf8'); }
@@ -2110,7 +2393,7 @@ export async function readDurableApprovalLog(root, guestPath, identity) {
 export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse',
   checkBubblewrap = probeBubblewrap, stage = stageRuntime, startSentinel = startHostSentinel,
   probe = tcpProbe, launch = runStatusPhase, capture = captureHostIdentities,
-  stop = verifyHostStop } = {}) {
+  stop = verifyHostStop, held = false, requestDecision } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'passeur-muse-native-shell-sandbox-'));
   let sentinel;
   let host;
@@ -2136,7 +2419,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     const prepared = prepareSandbox(sandboxConfig({ workspace, runtime, home, protectedRoot }), guestCommand());
     checkBubblewrap();
     stageName = 'shell_host';
-    host = launch(prepared, { phase: 'shell', workspace, hostPort: sentinel.port,
+    host = launch(prepared, { phase: held ? 'held-shell' : 'shell', workspace, hostPort: sentinel.port,
       protectedRoot, canaryToken: token });
     const [ready, liveStatus] = await Promise.all([host.ready, host.liveStatus]);
     evidence.ready = ready;
@@ -2158,24 +2441,57 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     }
     stageName = 'native_turn';
     host.releaseTurn();
+    let handoffInputError;
+    let chosenInput;
+    if (held) {
+      stageName = 'held_approval';
+      const handoff = await host.handoff;
+      if (handoff?.kind === 'guest_transport_error') {
+        primaryGuestFailure = { stage: handoff.stage, code: handoff.code, message: handoff.message };
+        evidence.primaryGuestFailure = primaryGuestFailure;
+        evidence.earlyGuestFailure = handoff;
+      } else {
+        validateHeldHandoff(ready, handoff, shellProbeCommand(workspace, protectedRoot, token),
+          workspace, protectedRoot, token);
+        evidence.liveHandoff = handoff;
+        let input;
+        try {
+          if (typeof requestDecision !== 'function') {
+            throw fault('NATIVE_HELD_INPUT_UNAVAILABLE', 'no host-controlled human input reader was supplied');
+          }
+          input = await timeout('human held decision', requestDecision(handoff), HELD_WAIT_MS);
+          if (input != null) {
+            validateHeldDecision(handoff, input);
+            chosenInput = input;
+          }
+        } catch (error) {
+          handoffInputError = error;
+          evidence.humanInputError = { code: error.code ?? error.name,
+            message: String(error.message).slice(0, 300) };
+        }
+        host.sendDecision(handoffInputError || input == null ? { kind: 'expire' } : input);
+      }
+    }
     let guestOutcome;
     let outcomeError;
     try { guestOutcome = await host.outcome; evidence.guestOutcome = guestOutcome; }
     catch (error) { outcomeError = error; evidence.outcomeError = { code: error.code ?? error.name,
       message: String(error.message).slice(0, 300) }; }
-    primaryGuestFailure = guestOutcome?.kind === 'guest_transport_error' ?
+    primaryGuestFailure ??= guestOutcome?.kind === 'guest_transport_error' ?
       { stage: guestOutcome.stage, code: guestOutcome.code, message: guestOutcome.message } : null;
     if (primaryGuestFailure) evidence.primaryGuestFailure = primaryGuestFailure;
     host.releaseShutdown();
-    const done = await timeout('shell host exit', host.finished, DEADLINE_MS + 3_000);
+    const done = await timeout('shell host exit', host.finished,
+      (held ? HELD_DEADLINE_MS : DEADLINE_MS) + 3_000);
     evidence.completion = { code: done.code, signal: done.signal, timedOut: done.timedOut,
       overflow: done.overflow, statusClosed: done.statusClosed, statusLines: done.statusLines,
       output: done.output, stderr: done.stderr };
-    if (done.output.length === 3) {
+    const expectedOutput = held && !evidence.earlyGuestFailure ? 4 : 3;
+    if (done.output.length === expectedOutput) {
       try {
-        const finalLine = JSON.parse(done.output[2]);
+        const finalLine = JSON.parse(done.output[expectedOutput - 1]);
         if (finalLine?.kind === 'guest_transport_error') {
-          const finalFailure = decodeShellOutcomeLine(done.output[2]);
+          const finalFailure = decodeShellOutcomeLine(done.output[expectedOutput - 1]);
           evidence.terminalGuestFailure = { stage: finalFailure.stage, code: finalFailure.code,
             message: finalFailure.message, providerRequests: finalFailure.providerRequests };
           primaryGuestFailure ??= { stage: finalFailure.stage, code: finalFailure.code,
@@ -2205,16 +2521,27 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     await captured.fd.close(); captured = undefined;
     if (primaryGuestFailure) throw fault(primaryGuestFailure.code, primaryGuestFailure.message);
     if (stopped.kind !== 'confirmed') throw fault('STOP_UNCONFIRMED', 'shell namespace stop was not confirmed');
+    if (handoffInputError) throw handoffInputError;
     if (outcomeError) throw outcomeError;
-    if (done.code !== 0 || done.output.length !== 3 || done.timedOut || done.overflow ||
-        JSON.stringify(JSON.parse(done.output[2])) !== JSON.stringify(guestOutcome)) {
+    if (done.code !== 0 || done.output.length !== expectedOutput || done.timedOut || done.overflow ||
+        JSON.stringify(JSON.parse(done.output[expectedOutput - 1])) !== JSON.stringify(guestOutcome)) {
       throw fault('GUEST_OUTPUT_INVALID', 'shell terminal output differed from held outcome');
     }
-    const classified = validateShellOutcome(ready, guestOutcome);
+    if (held && guestOutcome?.held?.presentation &&
+        JSON.stringify(guestOutcome.held.presentation) !== JSON.stringify(evidence.liveHandoff)) {
+      throw fault('NATIVE_HELD_HANDOFF_INVALID', 'terminal held presentation differed from live handoff');
+    }
+    if (held && ((guestOutcome.kind === 'native_shell_held_decided') !== Boolean(chosenInput) ||
+        (chosenInput && guestOutcome.held?.decision?.choice?.choiceId !== chosenInput.choiceId))) {
+      throw fault('NATIVE_HELD_OUTCOME_INVALID', 'terminal held decision differed from host-supplied choice');
+    }
+    const classified = held && guestOutcome.kind === 'native_shell_held_decided' ?
+      validateHeldShellOutcome(ready, guestOutcome) : validateShellOutcome(ready, guestOutcome);
     const effects = await shellEffects(workspace, protectedRoot, token);
     if (!effects.protectedIntact || classified.kind === 'native_shell_effect_observed' && !effects.shellWritten ||
         classified.kind === 'native_shell_denial_observed' && !effects.shellAbsent ||
-        classified.kind === 'native_shell_approval_pending' && !effects.shellAbsent) {
+        ['native_shell_approval_pending', 'native_shell_held_rejected'].includes(classified.kind) &&
+          !effects.shellAbsent) {
       throw fault('NATIVE_SHELL_EFFECT_INVALID', 'workspace or protected canary contradicted native outcome');
     }
     if (classified.dummyAuthVisible === true) {
@@ -2252,7 +2579,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     if (host) {
       host.abort();
       try {
-        const done = await timeout('shell shutdown', host.finished, DEADLINE_MS + 3_000);
+        const done = await timeout('shell shutdown', host.finished,
+          (held ? HELD_DEADLINE_MS : DEADLINE_MS) + 3_000);
         evidence.completion ??= { code: done.code, signal: done.signal, timedOut: done.timedOut,
           overflow: done.overflow, statusClosed: done.statusClosed, statusLines: done.statusLines,
           output: done.output, stderr: done.stderr };
@@ -2274,10 +2602,33 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
   return outcome;
 }
 
+export async function qualifyNativeShellHeld(options = {}) {
+  return qualifyNativeShell({ ...options, held: true });
+}
+
 export function diagnosticMode(args) {
   if (args.length === 0) return 'idle-resume';
   if (args.length === 1 && args[0] === '--native-shell') return 'native-shell';
-  throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments or exactly --native-shell');
+  if (args.length === 1 && args[0] === '--native-shell-held') return 'native-shell-held';
+  throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments, --native-shell, or --native-shell-held');
+}
+
+export async function readHeldCliDecision(handoff, input = process.stdin, output = process.stdout) {
+  output.write(`${JSON.stringify({ kind: 'native_shell_live_handoff', result: handoff })}\n`);
+  const lines = createInterface({ input });
+  let timer;
+  try {
+    const next = await Promise.race([lines[Symbol.asyncIterator]().next(),
+      new Promise(resolveResult => { timer = setTimeout(() => resolveResult({ done: true }), HELD_INPUT_MS); })]);
+    if (next.done) return null;
+    if (Buffer.byteLength(next.value) > LIMIT) {
+      throw fault('NATIVE_HELD_INPUT_INVALID', 'human choice line exceeded bound');
+    }
+    let parsed;
+    try { parsed = JSON.parse(next.value); }
+    catch { throw fault('NATIVE_HELD_INPUT_INVALID', 'human choice line was not JSON'); }
+    return parsed;
+  } finally { clearTimeout(timer); lines.close(); }
 }
 
 export async function qualify({ muse = '/home/jeremy/.local/bin/muse',
@@ -2361,10 +2712,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       if (first.done || Buffer.byteLength(first.value) > LIMIT) throw fault('GUEST_INPUT_TOO_LARGE', 'guest input missing or exceeds limit');
       const config = JSON.parse(first.value);
       config.release = async () => (await lines.next()).value;
-      const result = config.phase === 'shell' ? await guestShellRun(config) : await guestRun(config);
+      const result = ['shell', 'held-shell'].includes(config.phase) ?
+        await guestShellRun(config) : await guestRun(config);
       process.stdout.write(`${JSON.stringify(result)}\n`);
       process.exitCode = ['guest_transport_observed', 'guest_resume_observed',
-        'guest_shell_outcome', 'native_shell_approval_pending'].includes(result.kind) ? 0 : 1;
+        'guest_shell_outcome', 'native_shell_approval_pending',
+        'native_shell_held_decided'].includes(result.kind) ? 0 : 1;
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ kind: 'guest_transport_error', code: error.code ?? error.name,
         message: String(error.message).slice(0, 500) })}\n`);
@@ -2373,7 +2726,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   } else {
     try {
       const mode = diagnosticMode(process.argv.slice(2));
-      const result = mode === 'native-shell' ? await qualifyNativeShell() : await qualifyFreshHostResume();
+      const result = mode === 'native-shell-held' ? await qualifyNativeShellHeld({
+        requestDecision: handoff => readHeldCliDecision(handoff),
+      }) : mode === 'native-shell' ? await qualifyNativeShell() : await qualifyFreshHostResume();
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ kind: 'diagnostic_error', code: error.code ?? error.name,
