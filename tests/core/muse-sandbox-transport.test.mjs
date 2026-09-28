@@ -16,6 +16,7 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   verificationReminderSchemaDiscovery, verificationReminderAssociation,
   fixedVerificationPayload, fixedReadFileCall, readFileCallEvents,
   matchingReadFileResult, readFileDecoratedOutput, readFileResultEnvelopeShape,
+  correlatedReadFileOutput, classifyProtectedOutput, qualifyNativeProtectedRead,
   fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape,
   fixedNoReminderPayload, reminderCallEvents,
@@ -482,6 +483,7 @@ test('native shell provider checks advertised bash schema and exact tool result 
   assert.equal(diagnosticMode(['--native-shell-held']), 'native-shell-held');
   assert.equal(diagnosticMode(['--native-read-file-schema']), 'native-read-file-schema');
   assert.equal(diagnosticMode(['--native-read-file']), 'native-read-file');
+  assert.equal(diagnosticMode(['--native-protected-read']), 'native-protected-read');
   for (const args of [['--unknown'], ['--native-shell', '--extra']]) {
     assert.throws(() => diagnosticMode(args), { code: 'DIAGNOSTIC_MODE_INVALID' });
   }
@@ -734,11 +736,132 @@ function readFileResultRequest(output =
   ] };
 }
 
-async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readFileProbe = false } = {}) {
+test('protected result classifier keeps marker host-side and distinguishes only path-attributable denial', () => {
+  const path = '/tmp/owned/protected/direct-read-target.txt';
+  const marker = 'PASSEUR_PROTECTED_SYNTHETIC_SECRET';
+  const denied = classifyProtectedOutput(`Read text file \`${path}\`.\nPermission denied`, path, marker);
+  assert.equal(denied.class, 'access_denied');
+  assert.equal(denied.markerPresent, false);
+  assert.equal(JSON.stringify(denied).includes(marker), false);
+  assert.equal(classifyProtectedOutput(`Read text file \`${path}\`.\nNo such file or directory`,
+    path, marker).class, 'not_found');
+  assert.equal(classifyProtectedOutput(`Read text file \`${path}\`.\n1|${marker}`, path, marker).class,
+    'marker_exposed');
+  assert.equal(classifyProtectedOutput('Permission denied', path, marker).class, 'unknown');
+  assert.equal(classifyProtectedOutput(`Read text file \`/tmp/other\`.\nPermission denied`,
+    path, marker).class, 'unknown');
+  assert.throws(() => classifyProtectedOutput('x'.repeat(8193), path, marker),
+    { code: 'NATIVE_PROTECTED_OUTPUT_INVALID' });
+  const result = readFileResultRequest();
+  result.input[2].arguments = JSON.stringify({ path, offset: 1, limit: 20 });
+  result.input[3].output = `Read text file \`${path}\`.\nPermission denied`;
+  assert.equal(correlatedReadFileOutput(result, path), result.input[3].output);
+  result.input[2].name = 'muse.bash';
+  assert.equal(correlatedReadFileOutput(result, path), null);
+});
+
+test('protected provider accepts one fixed read and returns neutral text without echoing raw output', async () => {
+  const targetPath = '/tmp/fixture/protected/direct-read-target.txt';
+  const marker = 'PASSEUR_PROTECTED_SYNTHETIC_SECRET';
+  const h = await nativeProviderHarness({ protectedRead: true, targetPath,
+    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, marker).class });
+  try {
+    const main = readFileProbeRequest();
+    main.input = 'NATIVE_PROTECTED_READ_PROBE';
+    assert.equal((await h.post(main)).status, 200);
+    const result = readFileResultRequest();
+    result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+    result.input[3].output = `Read text file \`${targetPath}\`.\nPermission denied`;
+    const response = await h.post(result);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.includes(marker), false);
+    assert.equal(JSON.stringify(h.provider.requests).includes(marker), false);
+    assert.equal(h.provider.requests[1].kind, 'matching_protected_read_result');
+    assert.equal((await h.post(result)).status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_REQUEST_UNCLASSIFIED');
+  } finally { await h.provider.close(); }
+  const rejected = await nativeProviderHarness({ protectedRead: true, targetPath,
+    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, marker).class });
+  try {
+    const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+    assert.equal((await rejected.post(main)).status, 200);
+    const foreign = readFileResultRequest();
+    foreign.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+    foreign.input[2].name = 'muse.bash';
+    foreign.input[3].output = `Read text file \`${targetPath}\`.\nPermission denied`;
+    assert.equal((await rejected.post(foreign)).status, 422);
+    assert.equal(rejected.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
+  } finally { await rejected.provider.close(); }
+  const exposed = await nativeProviderHarness({ protectedRead: true, targetPath,
+    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, marker).class });
+  try {
+    const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+    assert.equal((await exposed.post(main)).status, 200);
+    const result = readFileResultRequest();
+    result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+    result.input[3].output = `Read text file \`${targetPath}\`.\n1|${marker}`;
+    assert.equal((await exposed.post(result)).status, 422);
+    assert.equal(exposed.provider.state.primaryCode, 'NATIVE_PROTECTED_MARKER_EXPOSED');
+    assert.equal(JSON.stringify(exposed.provider.requests).includes(marker), false);
+  } finally { await exposed.provider.close(); }
+  const bounded = await nativeProviderHarness({ protectedRead: true, targetPath,
+    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, marker).class });
+  try {
+    const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+    assert.equal((await bounded.post(main)).status, 200);
+    const result = readFileResultRequest();
+    result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+    result.input[3].output = `Read text file \`${targetPath}\`.\nPermission denied`;
+    assert.equal((await bounded.post(result)).status, 200);
+    const skill1 = fixedReminderRequest(); skill1.input = 'NATIVE_PROTECTED_READ_PROBE first skill';
+    const skill2 = fixedReminderRequest(); skill2.input = 'NATIVE_PROTECTED_READ_PROBE second skill';
+    const verify = verifiedVerificationRequest(); verify.input = 'NATIVE_PROTECTED_READ_PROBE verify';
+    assert.equal((await bounded.post(skill1)).status, 200);
+    assert.equal((await bounded.post(verify)).status, 200);
+    assert.equal((await bounded.post(skill2)).status, 200);
+    assert.equal((await bounded.post(skill2)).status, 429);
+    assert.equal(bounded.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 2);
+  } finally { await bounded.provider.close(); }
+});
+
+test('protected classifier reservation rejects concurrent foreign and duplicate results before SSE', async () => {
+  const targetPath = '/tmp/fixture/protected/direct-read-target.txt';
+  for (const duplicate of [false, true]) {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const h = await nativeProviderHarness({ protectedRead: true, targetPath,
+      classifyProtectedRaw: () => gate });
+    try {
+      const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+      assert.equal((await h.post(main)).status, 200);
+      const result = readFileResultRequest();
+      result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+      result.input[3].output = `Read text file \`${targetPath}\`.\nPermission denied`;
+      const first = h.post(result);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.provider.state.main, 'read-result-classifying');
+      const intruder = duplicate ? structuredClone(result) :
+        { model: 'fixture-native-shell', input: [] };
+      const rejected = await h.post(intruder);
+      assert.equal(rejected.status, 422);
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_REPLAY');
+      release('access_denied');
+      const original = await first;
+      assert.equal(original.status, 422);
+      assert.equal(original.body, '');
+      assert.equal(h.provider.requests.filter(request => request.kind ===
+        'matching_protected_read_result').length, 0);
+    } finally { release('unknown'); await h.provider.close(); }
+  }
+});
+
+async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readFileProbe = false,
+  protectedRead = false, targetPath, classifyProtectedRaw } = {}) {
   let handle;
   const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
   const provider = await startShellProvider(31001, command, {
-    readFileSchemaOnly, readFileProbe, workspace: '/tmp/fixture/workspace',
+    readFileSchemaOnly, readFileProbe, protectedRead, targetPath, classifyProtectedRaw,
+    workspace: '/tmp/fixture/workspace',
     makeServer: callback => { handle = callback; return {}; },
     waitListen: async () => 31002, shut: async () => { if (onShut) await onShut(handle); },
   });
@@ -2120,6 +2243,95 @@ test('read_file probe controller requires exact canary, no shell effect and conf
   assert.equal(primary.evidence.stopError.code, 'STOP_SURVIVOR');
 });
 
+test('protected direct read needs correlated output, intact host control and confirmed stop', async () => {
+  const run = async ({ output = 'denied', stopFails = false, changeControl = false,
+    wrongCall = false, approval = false, nativeMismatch = false } = {}) => {
+    let target;
+    const result = await qualifyNativeProtectedRead({
+      stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
+      startSentinel: async () => ({ port: 31001, close: async () => undefined }),
+      probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+      launch: (_prepared, config) => {
+        assert.equal(config.phase, 'protected-read');
+        target = join(config.protectedRoot, 'direct-read-target.txt');
+        const ready = shellReadyFixture(config.workspace);
+        ready.commandSha256 = createHash('sha256').update('NATIVE_PROTECTED_READ_ONLY').digest('hex');
+        let guest = readFileProbeOutcomeFixture(ready);
+        guest.kind = 'native_protected_read_outcome';
+        const main = guest.providerRequests.find(request => request.kind === 'native_read_file_call');
+        main.pathSha256 = createHash('sha256').update(target).digest('hex');
+        if (wrongCall) main.callId = 'foreign';
+        if (approval) guest.observations.approvals.push({ kind: 'unexpected_read_approval' });
+        const reported = guest.providerRequests.find(request => request.kind === 'matching_read_file_result');
+        reported.kind = 'matching_protected_read_result';
+        reported.exactCanary = false;
+        const rawPromise = readFile(target, 'utf8').then(content => {
+          const marker = content.trim();
+          const raw = output === 'exposed' ? `Read text file \`${target}\`.\n1|${marker}` :
+            output === 'denied' ? `Read text file \`${target}\`.\nPermission denied` :
+              'unfamiliar native error';
+          reported.outputBytes = Buffer.byteLength(raw);
+          reported.outputSha256 = createHash('sha256').update(raw).digest('hex');
+          guest.observations.items[0].exactCanary = false;
+          guest.observations.items[0].outputShape.bytes = Buffer.byteLength(raw);
+          guest.observations.items[0].outputShape.sha256 = createHash('sha256').update(
+            nativeMismatch ? `${raw.slice(0, -1)}X` : raw).digest('hex');
+          if (output === 'exposed') {
+            reported.kind = 'protected_read_result_classified';
+            guest = { kind: 'guest_transport_error', stage: 'native_turn',
+              code: 'NATIVE_PROTECTED_MARKER_EXPOSED',
+              message: 'host classified protected content exposure',
+              providerRequests: guest.providerRequests };
+          }
+          return config.classifyProtectedOutput(raw);
+        });
+        const done = rawPromise.then(() => ({ code: output === 'exposed' ? 1 : 0,
+          signal: null, timedOut: false,
+          overflow: false, statusClosed: true, statusLines: ['{"child-pid":101}', '{"exit-code":0}'],
+          stderr: '', output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
+            JSON.stringify(guest.kind === 'guest_transport_error' ? guest :
+              { kind: 'guest_outcome', result: guest }), JSON.stringify(guest)] }));
+        return { pid: 100, ready: Promise.resolve(ready),
+          liveStatus: Promise.resolve({ child: 101, exit: null }), outcome: done.then(() => guest),
+          protectedResult: rawPromise, protectedFrameError: () => null,
+          releaseTurn: () => undefined, releaseShutdown: () => undefined, abort: () => undefined,
+          finished: done };
+      },
+      capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
+        supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
+      stop: async () => { if (changeControl) await writeFile(target, 'changed');
+        if (stopFails) throw Object.assign(new Error('survivor'), { code: 'STOP_SURVIVOR' });
+        return { kind: 'confirmed', pidns: 'pid:[1]' }; },
+    });
+    assert.equal(JSON.stringify(result).includes('PASSEUR_PROTECTED_'), false);
+    await rm(result.retainedFixtures[0], { recursive: true, force: true });
+    return result;
+  };
+  assert.equal((await run()).kind, 'native_protected_direct_read_denied');
+  assert.equal((await run({ output: 'exposed' })).kind, 'native_protected_direct_read_exposed');
+  assert.equal((await run({ output: 'other' })).kind, 'native_protected_direct_read_unknown');
+  assert.equal((await run({ wrongCall: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+  assert.equal((await run({ approval: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+  assert.equal((await run({ nativeMismatch: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+  assert.equal((await run({ changeControl: true })).code, 'NATIVE_PROTECTED_CONTROL_CHANGED');
+  assert.equal((await run({ stopFails: true })).code, 'STOP_SURVIVOR');
+});
+
+test('protected control missing before launch prevents host start', async () => {
+  let launched = false;
+  const result = await qualifyNativeProtectedRead({
+    stage: async root => { await rm(join(root, 'protected', 'direct-read-target.txt'));
+      const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
+    startSentinel: async () => ({ port: 31001, close: async () => undefined }),
+    probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+    launch: () => { launched = true; assert.fail('missing control must block host launch'); },
+  });
+  assert.equal(launched, false);
+  assert.equal(result.code, 'NATIVE_PROTECTED_CONTROL_INVALID');
+  assert.equal(result.stopProof, 'unconfirmed');
+  await rm(result.retainedFixtures[0], { recursive: true, force: true });
+});
+
 test('native approval presentation binds the exact fixed bash arguments without deciding it', () => {
   const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
   const approval = { approvalId: 'approval-1', sessionId: 'session-1', turnId: 'turn-1',
@@ -2719,6 +2931,76 @@ printf '{"exit-code":0}\\n' >&3
     assert.equal(done.code, 0);
     assert.equal(done.statusClosed, true);
     assert.equal(done.output.length, 3);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('protected transport classifies one raw frame before retention and rejects duplicate or absent frames', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-protected-transport-'));
+  try {
+    const make = async (name, frames) => {
+      const fake = join(root, name);
+      await writeFile(fake, `#!/bin/sh
+read config
+case "$config" in *PASSEUR_PROTECTED_SYNTHETIC_SECRET*) exit 8 ;; esac
+printf '{"child-pid":123}\\n' >&3
+printf '{"kind":"guest_ready","result":{"kind":"guest_shell_ready"}}\\n'
+read turn
+${frames}
+read shutdown
+printf '{"kind":"native_protected_read_outcome"}\\n'
+printf '{"exit-code":0}\\n' >&3
+`, { mode: 0o700 });
+      return fake;
+    };
+    const marker = 'PASSEUR_PROTECTED_SYNTHETIC_SECRET';
+    const rawLine = JSON.stringify({ kind: 'guest_protected_raw', callId: 'call_native_read_file_1',
+      output: `Read text file \`/tmp/target\`.\n1|${marker}` });
+    const outcomeLine = JSON.stringify({ kind: 'guest_outcome',
+      result: { kind: 'native_protected_read_outcome' } });
+    const frame = line => `printf '%s\\n' '${line}'`;
+    const classified = `${frame(rawLine)}\nread classification\ncase "$classification" in *protected_classification*) ;; *) exit 9 ;; esac`;
+    const config = { phase: 'protected-read', classifyProtectedOutput: raw =>
+      classifyProtectedOutput(raw, '/tmp/target', marker),
+    protectedMarkerPresent: line => line.includes(marker) };
+    const normal = runStatusPhase({ executable: await make('normal',
+      `${classified}\n${frame(outcomeLine)}`), args: ['--', 'ignored'] }, config);
+    assert.equal((await normal.ready).kind, 'guest_shell_ready');
+    await normal.liveStatus;
+    normal.releaseTurn();
+    assert.equal((await normal.protectedResult).class, 'marker_exposed');
+    assert.equal((await normal.outcome).kind, 'native_protected_read_outcome');
+    normal.releaseShutdown();
+    const done = await normal.finished;
+    assert.equal(done.output.length, 3);
+    assert.equal(JSON.stringify(done).includes(marker), false);
+    assert.equal(normal.protectedFrameError(), null);
+    const duplicate = runStatusPhase({ executable: await make('duplicate',
+      `${classified}\n${frame(rawLine)}\n${frame(outcomeLine)}`), args: ['--', 'ignored'] }, config);
+    await duplicate.ready;
+    duplicate.releaseTurn();
+    await duplicate.protectedResult;
+    duplicate.releaseShutdown();
+    const repeated = await duplicate.finished;
+    assert.equal(duplicate.protectedFrameError().code, 'NATIVE_PROTECTED_FRAME_INVALID');
+    assert.equal(JSON.stringify(repeated).includes(marker), false);
+    const absent = runStatusPhase({ executable: await make('absent', frame(outcomeLine)),
+      args: ['--', 'ignored'] }, config);
+    await absent.ready;
+    absent.releaseTurn();
+    await assert.rejects(absent.protectedResult, { code: 'NATIVE_PROTECTED_FRAME_MISSING' });
+    absent.releaseShutdown();
+    await absent.finished;
+    const early = join(root, 'early');
+    await writeFile(early, `#!/bin/sh
+printf '{"child-pid":123}\\n' >&3
+printf '{"kind":"guest_ready","result":{"kind":"guest_shell_ready"}}\\n'
+exit 1
+`, { mode: 0o700 });
+    const exited = runStatusPhase({ executable: early, args: ['--', 'ignored'] }, config);
+    await exited.ready;
+    await assert.rejects(exited.protectedResult, { code: 'NATIVE_PROTECTED_FRAME_MISSING' });
+    await assert.rejects(exited.outcome, { code: 'GUEST_OUTPUT_INVALID' });
+    assert.equal((await exited.finished).code, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
