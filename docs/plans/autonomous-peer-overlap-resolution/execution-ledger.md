@@ -1,5 +1,10 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-28 — first installed tool description measures 7,637 bytes
+
+- Operation `continue` from reviewed description-capture commit `101a114`. Parent pure focused tests passed 18/18 with eight local-network skips and elevated local-only tests passed 26/26. Independent Astra High cleared a JSON-type P2 and confirmed that only failed description type/byte count enters the bounded artifact.
+- One fresh installed no-account synthetic host rejected the first Responses POST as `NATIVE_TOOLS_INVALID`, now measuring the index-0 `FUNCTION_DESCRIPTION` as a string of 7,637 UTF-8 bytes against the existing 2,048-byte limit. No description content was retained. Native turn failed; exact four-process stop was confirmed. Capture `/tmp/passeur-muse-native-credential-relay-iwyb9J/socket/first-rejected-native-post.json` SHA-256 `baa81300a804c68a53cb5fc093faa64298425e359aa335165ba28347376b1a0d`; bounded `/tmp/passeur-muse-native-credential-relay-description-size-evidence-20260928.json` SHA-256 `d959879f60e31bb00f516b2755dd50d88841a34918f4c36f7db1745c30b90bea`. The `/tmp` root remained and the reported `/dev/shm` runtime disappeared after exit. A separate reviewed synthetic-only first-function description admission follows; no real-provider disclosure policy was changed.
+
 ## 2026-09-28 — installed tool function zero fails description check
 
 - Operation `continue` from reviewed function-subtype commit `37e411e`. Parent pure focused tests passed 18/18 with eight local-network skips; elevated local-only tests passed 26/26. Independent Astra High matched old/new acceptance over 381 function mutations and found no P0/P1/P2.

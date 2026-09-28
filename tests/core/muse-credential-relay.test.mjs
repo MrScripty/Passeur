@@ -322,6 +322,34 @@ test('native tool rejection identifies only the first bounded failure family and
     { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure,
   { code: 'FUNCTION_DESCRIPTION', functionIndex: 0,
     descriptionType: 'string', descriptionBytes: 2_052 });
+  const mainTools = description => [{ ...validNamespace,
+    tools: fullTools({ description }) }];
+  assert.equal(requestDecision(post, body(envelope(mainTools('😀'.repeat(2_048)))),
+    nativePolicy).ok, true);
+  for (const surrogate of ['\ud800', '\udc00']) {
+    const malformed = body(envelope(mainTools('x'.repeat(2_048) + surrogate)));
+    assert.equal(requestDecision(post, malformed, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+    assert.equal(nativeRejectionProjection(malformed,
+      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' })
+      .tools.failure.code, 'FUNCTION_DESCRIPTION');
+  }
+  const mainOver = body(envelope(mainTools('😀'.repeat(2_049))));
+  assert.equal(requestDecision(post, mainOver, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+  assert.deepEqual(nativeRejectionProjection(mainOver,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure,
+  { code: 'FUNCTION_DESCRIPTION', functionIndex: 0,
+    descriptionType: 'string', descriptionBytes: 8_196 });
+  const secondOver = body(envelope([{ ...validNamespace,
+    tools: fullTools({ description: 'x'.repeat(8_192) }).map((tool, index) =>
+      index === 1 ? { ...tool, description: 'x'.repeat(2_049) } : tool) }]));
+  assert.deepEqual(nativeRejectionProjection(secondOver,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }).tools.failure,
+  { code: 'FUNCTION_DESCRIPTION', functionIndex: 1,
+    descriptionType: 'string', descriptionBytes: 2_049 });
+  assert.equal(requestDecision(post, secondOver, nativePolicy).code, 'NATIVE_TOOLS_INVALID');
+  assert.equal(JSON.stringify(nativeRejectionProjection(mainOver,
+    { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' }))
+    .includes('😀'), false);
 });
 
 test('guest headers and auth cannot select upstream authority or identity', () => {

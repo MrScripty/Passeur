@@ -179,8 +179,10 @@ function nativeToolsFailure(tools) {
       return failure('FUNCTION_FIELDS', index);
     if (tool.strict !== undefined && typeof tool.strict !== 'boolean')
       return failure('FUNCTION_STRICT', index);
+    const descriptionLimit = namespace.tools.length === 25 && index === 0 ? 8_192 : 2_048;
     if (tool.description !== undefined && (typeof tool.description !== 'string' ||
-        Buffer.byteLength(tool.description) > 2_048))
+        Buffer.byteLength(tool.description) > descriptionLimit ||
+        Buffer.from(tool.description, 'utf8').toString('utf8') !== tool.description))
       return { ...failure('FUNCTION_DESCRIPTION', index),
         descriptionType: tool.description === null ? 'null' :
           Array.isArray(tool.description) ? 'array' : typeof tool.description,
