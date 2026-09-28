@@ -813,18 +813,18 @@ export function matchingReadFileResult(body, workspace) {
     readFileDecoratedOutput(workspace);
 }
 
-export function classifyProtectedOutput(raw, targetPath, marker) {
+export function classifyProtectedOutput(raw, targetPath, workspace, marker) {
   if (typeof raw !== 'string' || Buffer.byteLength(raw) > PROTECTED_OUTPUT_LIMIT ||
-      typeof targetPath !== 'string' || typeof marker !== 'string' || !marker) {
+      typeof targetPath !== 'string' || typeof workspace !== 'string' ||
+      typeof marker !== 'string' || !marker) {
     throw fault('NATIVE_PROTECTED_OUTPUT_INVALID', 'protected read output exceeded the bounded host classifier');
   }
   const markerPresent = raw.includes(marker);
-  const escaped = targetPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const prefix = 'Read text file `' + escaped + '`\\.\\n';
-  const denied = new RegExp(`^${prefix}(?:Error: )?(?:Permission denied|Access denied)\\n?$`, 'i');
-  const missing = new RegExp(`^${prefix}(?:Error: )?(?:No such file or directory|File not found)\\n?$`, 'i');
-  return { class: markerPresent ? 'marker_exposed' : denied.test(raw) ? 'access_denied' :
-    missing.test(raw) ? 'not_found' : 'unknown', markerPresent,
+  const exactMissing = `tool failed: No such file or directory (os error 2); requested absolute path "${targetPath}"; ` +
+    `resolved candidate "${targetPath}"; Active Workspace Root "${workspace}". ` +
+    'Relative paths resolve from the Active Workspace Root. Shell `cd`/`workdir` affects only that shell call ' +
+    'and does not change this root. Absolute paths may be used only when the current filesystem policy allows them.';
+  return { class: markerPresent ? 'marker_exposed' : raw === exactMissing ? 'not_found' : 'unknown', markerPresent,
   bytes: Buffer.byteLength(raw), sha256: createHash('sha256').update(raw).digest('hex'),
   pathSha256: createHash('sha256').update(targetPath).digest('hex') };
 }
@@ -979,6 +979,14 @@ export async function startShellProvider(forbiddenPort, command, {
   const maxAttempts = readFileProbe || protectedRead ? 5 : 3;
   const retainedRequestLimit = readFileProbe || protectedRead ? 9 : 7;
   const requests = [];
+  let readClassification = null;
+  let pendingSecondAdmission = null;
+  const settleReadClassification = accepted => {
+    if (readClassification && !readClassification.settled) {
+      readClassification.settled = true;
+      readClassification.resolve(accepted);
+    }
+  };
   const state = { main: 'unseen', reminder: 'unseen', verification: 'unseen',
     skillDigests: [],
     failed: false, admissionClosed: false,
@@ -998,6 +1006,7 @@ export async function startShellProvider(forbiddenPort, command, {
   const reject = (code, summary, response, status = 422) => {
     state.failed = true;
     state.primaryCode ??= code;
+    settleReadClassification(false);
     if (summary) summary.rejection = code;
     if (!rejectionReported) {
       rejectionReported = true;
@@ -1043,6 +1052,13 @@ export async function startShellProvider(forbiddenPort, command, {
     // Body completion can reorder concurrent requests. Attribution uses the state at admission.
     const issuanceAtAdmission = { main: state.main, reminder: state.reminder,
       verification: state.verification };
+    if (protectedRead && issuanceAtAdmission.main === 'read-result-classifying' &&
+        issuanceAtAdmission.reminder === 'none-issued') {
+      if (pendingSecondAdmission !== null) {
+        reject('NATIVE_REMINDER_SEQUENCE_INVALID', summary, response); return;
+      }
+      pendingSecondAdmission = summary.responseIndex;
+    }
     state.active++;
     try {
       let body = '';
@@ -1118,6 +1134,9 @@ export async function startShellProvider(forbiddenPort, command, {
         const reminder = recognizedReminderSchema(parsed);
         if (reminder) {
           const ordinal = readFileProbe || protectedRead ? state.skillDigests.length + 1 : 1;
+          const secondDuringClassification = protectedRead && ordinal === 2 &&
+            issuanceAtAdmission.main === 'read-result-classifying' &&
+            pendingSecondAdmission === summary.responseIndex;
           const association = readFileProbe || protectedRead ? verificationReminderAssociation(parsed,
             issuanceAtAdmission, summary.responseIndex) : null;
           const firstPrelude = parsed.previous_response_id == null &&
@@ -1129,9 +1148,11 @@ export async function startShellProvider(forbiddenPort, command, {
               (ordinal === 1 && state.reminder !== 'unseen') ||
               (ordinal === 1 && !firstPrelude &&
                 !((readFileProbe || protectedRead) && issuanceAtAdmission.main === 'read-result-accepted')) ||
+              (ordinal === 2 && pendingSecondAdmission !== null &&
+                pendingSecondAdmission !== summary.responseIndex) ||
               (ordinal === 2 && (state.reminder !== 'none-issued' ||
-                issuanceAtAdmission.main !== 'read-result-accepted' ||
-                state.main !== 'read-result-accepted')) ||
+                !(secondDuringClassification || issuanceAtAdmission.main === 'read-result-accepted' &&
+                  state.main === 'read-result-accepted'))) ||
               (association && (association.omittedItems !== 0 ||
                 association.httpRelation === 'foreign'))) {
             throw fault('NATIVE_REMINDER_SEQUENCE_INVALID', 'skill reminder request is replayed or unreviewed');
@@ -1141,6 +1162,13 @@ export async function startShellProvider(forbiddenPort, command, {
             throw fault('NATIVE_REMINDER_REPLAY', 'canonical skill reminder request repeated');
           }
           const payload = fixedNoReminderPayload(parsed);
+          if (secondDuringClassification) {
+            if (!readClassification ||
+                !await timeout('protected result before second reminder', readClassification.promise, 6_000) ||
+                state.failed || state.main !== 'read-result-accepted') {
+              throw fault('NATIVE_REMINDER_SEQUENCE_INVALID', 'protected result was not accepted before second reminder');
+            }
+          }
           const identities = ordinal === 2 ? { responseId: REMINDER_RESPONSE2,
             itemId: REMINDER_ITEM2, callId: REMINDER_CALL2 } :
             { responseId: REMINDER_RESPONSE, itemId: REMINDER_ITEM, callId: REMINDER_CALL };
@@ -1247,6 +1275,10 @@ export async function startShellProvider(forbiddenPort, command, {
             }
             // Reserve the only result slot before host classification suspends this handler.
             state.main = 'read-result-classifying';
+            readClassification = { settled: false };
+            readClassification.promise = new Promise(resolveValue => {
+              readClassification.resolve = resolveValue;
+            });
             summary.kind = 'protected_read_result_classified';
             summary.forCallId = READ_CALL;
             summary.outputBytes = Buffer.byteLength(raw);
@@ -1285,6 +1317,7 @@ export async function startShellProvider(forbiddenPort, command, {
           summary.nativeChildAssociation = 'unknown';
           response.writeHead(200, { 'content-type': 'text/event-stream' });
           response.end(output);
+          if (protectedRead) settleReadClassification(true);
           return;
         }
         if (protectedRead && state.main === 'read-result-classifying') {
@@ -1316,7 +1349,10 @@ export async function startShellProvider(forbiddenPort, command, {
         if (!summary.verificationSchema) summary.schemaShape = rejectedToolSchemaShape(parsed);
         reject(error.code ?? 'NATIVE_REQUEST_UNCLASSIFIED', summary, response);
       }
-    } finally { state.active--; }
+    } finally {
+      if (pendingSecondAdmission === summary.responseIndex) pendingSecondAdmission = null;
+      state.active--;
+    }
   });
   const port = await waitListen(server);
   try { assertPortSeparation(forbiddenPort, port); }
@@ -2802,7 +2838,7 @@ export function validateReadFileOutcome(ready, outcome, workspace,
       outcome.observations?.approvals?.length !== 0 ||
       outcome.observations?.items?.length !== 1 ||
       item?.callId !== READ_CALL || item.turnId !== outcome.turnId ||
-      item.tool !== 'read_file' || item.status !== 'completed' ||
+      item.tool !== 'read_file' || item.status !== (protectedRead ? 'failed' : 'completed') ||
       item.argsMatch !== true || item.exactCanary !== !protectedRead ||
       item.outputShape?.type !== 'string' ||
       item.outputShape.bytes !== (protectedRead ? result[0].outputBytes :
@@ -3280,7 +3316,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
       workspace, hostPort: sentinel.port,
       protectedRoot, canaryToken: token,
       ...(protectedRead ? { classifyProtectedOutput: raw =>
-        classifyProtectedOutput(raw, protectedControl.path, protectedMarker),
+        classifyProtectedOutput(raw, protectedControl.path, workspace, protectedMarker),
       protectedMarkerPresent: line => line.includes(protectedMarker) } : {}) });
     const [ready, liveStatus] = await Promise.all([host.ready, host.liveStatus]);
     evidence.ready = ready;

@@ -736,25 +736,45 @@ function readFileResultRequest(output =
   ] };
 }
 
+function installedProtectedError(path, workspace) {
+  return `tool failed: No such file or directory (os error 2); requested absolute path "${path}"; ` +
+    `resolved candidate "${path}"; Active Workspace Root "${workspace}". ` +
+    'Relative paths resolve from the Active Workspace Root. Shell `cd`/`workdir` affects only that shell call ' +
+    'and does not change this root. Absolute paths may be used only when the current filesystem policy allows them.';
+}
+
 test('protected result classifier keeps marker host-side and distinguishes only path-attributable denial', () => {
   const path = '/tmp/owned/protected/direct-read-target.txt';
+  const workspace = '/tmp/owned/workspace';
   const marker = 'PASSEUR_PROTECTED_SYNTHETIC_SECRET';
-  const denied = classifyProtectedOutput(`Read text file \`${path}\`.\nPermission denied`, path, marker);
-  assert.equal(denied.class, 'access_denied');
+  const exact = installedProtectedError(path, workspace);
+  const installedRoot = '/tmp/passeur-muse-protected-read-F923Wy';
+  const installed = installedProtectedError(join(installedRoot, 'protected', 'direct-read-target.txt'),
+    join(installedRoot, 'workspace'));
+  assert.equal(Buffer.byteLength(installed), 538);
+  assert.equal(createHash('sha256').update(installed).digest('hex'),
+    'f62b5c40ee913caf8e8229befbbc5ffa20038f7fe4d3eabc5f86b1c3d35d1b7b');
+  const denied = classifyProtectedOutput(exact, path, workspace, marker);
+  assert.equal(denied.class, 'not_found');
   assert.equal(denied.markerPresent, false);
   assert.equal(JSON.stringify(denied).includes(marker), false);
-  assert.equal(classifyProtectedOutput(`Read text file \`${path}\`.\nNo such file or directory`,
-    path, marker).class, 'not_found');
-  assert.equal(classifyProtectedOutput(`Read text file \`${path}\`.\n1|${marker}`, path, marker).class,
+  assert.equal(classifyProtectedOutput(`Read text file \`${path}\`.\n1|${marker}`,
+    path, workspace, marker).class,
     'marker_exposed');
-  assert.equal(classifyProtectedOutput('Permission denied', path, marker).class, 'unknown');
-  assert.equal(classifyProtectedOutput(`Read text file \`/tmp/other\`.\nPermission denied`,
-    path, marker).class, 'unknown');
-  assert.throws(() => classifyProtectedOutput('x'.repeat(8193), path, marker),
+  assert.equal(classifyProtectedOutput(`${exact}${marker}`, path, workspace, marker).class,
+    'marker_exposed');
+  for (const raw of ['Permission denied', exact.slice(13), `${exact}\n`,
+    exact.replace('(os error 2)', '(os error 13)'),
+    exact.replace(`requested absolute path "${path}"`, 'requested absolute path "/tmp/other"'),
+    exact.replace(`resolved candidate "${path}"`, 'resolved candidate "/tmp/other"'),
+    exact.replace(`Active Workspace Root "${workspace}"`, 'Active Workspace Root "/tmp/other"')]) {
+    assert.equal(classifyProtectedOutput(raw, path, workspace, marker).class, 'unknown');
+  }
+  assert.throws(() => classifyProtectedOutput('x'.repeat(8193), path, workspace, marker),
     { code: 'NATIVE_PROTECTED_OUTPUT_INVALID' });
   const result = readFileResultRequest();
   result.input[2].arguments = JSON.stringify({ path, offset: 1, limit: 20 });
-  result.input[3].output = `Read text file \`${path}\`.\nPermission denied`;
+  result.input[3].output = exact;
   assert.equal(correlatedReadFileOutput(result, path), result.input[3].output);
   result.input[2].name = 'muse.bash';
   assert.equal(correlatedReadFileOutput(result, path), null);
@@ -764,14 +784,15 @@ test('protected provider accepts one fixed read and returns neutral text without
   const targetPath = '/tmp/fixture/protected/direct-read-target.txt';
   const marker = 'PASSEUR_PROTECTED_SYNTHETIC_SECRET';
   const h = await nativeProviderHarness({ protectedRead: true, targetPath,
-    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, marker).class });
+    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath,
+      '/tmp/fixture/workspace', marker).class });
   try {
     const main = readFileProbeRequest();
     main.input = 'NATIVE_PROTECTED_READ_PROBE';
     assert.equal((await h.post(main)).status, 200);
     const result = readFileResultRequest();
     result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
-    result.input[3].output = `Read text file \`${targetPath}\`.\nPermission denied`;
+    result.input[3].output = installedProtectedError(targetPath, '/tmp/fixture/workspace');
     const response = await h.post(result);
     assert.equal(response.status, 200);
     assert.equal(response.body.includes(marker), false);
@@ -781,19 +802,21 @@ test('protected provider accepts one fixed read and returns neutral text without
     assert.equal(h.provider.state.primaryCode, 'NATIVE_REQUEST_UNCLASSIFIED');
   } finally { await h.provider.close(); }
   const rejected = await nativeProviderHarness({ protectedRead: true, targetPath,
-    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, marker).class });
+    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath,
+      '/tmp/fixture/workspace', marker).class });
   try {
     const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
     assert.equal((await rejected.post(main)).status, 200);
     const foreign = readFileResultRequest();
     foreign.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
     foreign.input[2].name = 'muse.bash';
-    foreign.input[3].output = `Read text file \`${targetPath}\`.\nPermission denied`;
+    foreign.input[3].output = installedProtectedError(targetPath, '/tmp/fixture/workspace');
     assert.equal((await rejected.post(foreign)).status, 422);
     assert.equal(rejected.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
   } finally { await rejected.provider.close(); }
   const exposed = await nativeProviderHarness({ protectedRead: true, targetPath,
-    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, marker).class });
+    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath,
+      '/tmp/fixture/workspace', marker).class });
   try {
     const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
     assert.equal((await exposed.post(main)).status, 200);
@@ -805,13 +828,14 @@ test('protected provider accepts one fixed read and returns neutral text without
     assert.equal(JSON.stringify(exposed.provider.requests).includes(marker), false);
   } finally { await exposed.provider.close(); }
   const bounded = await nativeProviderHarness({ protectedRead: true, targetPath,
-    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, marker).class });
+    classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath,
+      '/tmp/fixture/workspace', marker).class });
   try {
     const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
     assert.equal((await bounded.post(main)).status, 200);
     const result = readFileResultRequest();
     result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
-    result.input[3].output = `Read text file \`${targetPath}\`.\nPermission denied`;
+    result.input[3].output = installedProtectedError(targetPath, '/tmp/fixture/workspace');
     assert.equal((await bounded.post(result)).status, 200);
     const skill1 = fixedReminderRequest(); skill1.input = 'NATIVE_PROTECTED_READ_PROBE first skill';
     const skill2 = fixedReminderRequest(); skill2.input = 'NATIVE_PROTECTED_READ_PROBE second skill';
@@ -836,7 +860,7 @@ test('protected classifier reservation rejects concurrent foreign and duplicate 
       assert.equal((await h.post(main)).status, 200);
       const result = readFileResultRequest();
       result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
-      result.input[3].output = `Read text file \`${targetPath}\`.\nPermission denied`;
+      result.input[3].output = installedProtectedError(targetPath, '/tmp/fixture/workspace');
       const first = h.post(result);
       await new Promise(resolve => setImmediate(resolve));
       assert.equal(h.provider.state.main, 'read-result-classifying');
@@ -845,7 +869,7 @@ test('protected classifier reservation rejects concurrent foreign and duplicate 
       const rejected = await h.post(intruder);
       assert.equal(rejected.status, 422);
       assert.equal(h.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_REPLAY');
-      release('access_denied');
+      release('not_found');
       const original = await first;
       assert.equal(original.status, 422);
       assert.equal(original.body, '');
@@ -853,6 +877,109 @@ test('protected classifier reservation rejects concurrent foreign and duplicate 
         'matching_protected_read_result').length, 0);
     } finally { release('unknown'); await h.provider.close(); }
   }
+});
+
+test('protected second skill admitted during classification waits for accepted marker-free result', async () => {
+  const targetPath = '/tmp/fixture/protected/direct-read-target.txt';
+  for (const className of ['not_found', 'marker_exposed']) {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const h = await nativeProviderHarness({ protectedRead: true, targetPath,
+      classifyProtectedRaw: () => gate });
+    try {
+      const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+      const skill1 = fixedReminderRequest(); skill1.input = 'NATIVE_PROTECTED_READ_PROBE first skill';
+      const skill2 = fixedReminderRequest(); skill2.input = 'NATIVE_PROTECTED_READ_PROBE second skill';
+      const result = readFileResultRequest();
+      result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+      result.input[3].output = installedProtectedError(targetPath, '/tmp/fixture/workspace');
+      assert.equal((await h.post(main)).status, 200);
+      assert.equal((await h.post(skill1)).status, 200);
+      const first = h.post(result);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.provider.state.main, 'read-result-classifying');
+      let secondDone = false;
+      const second = h.post(skill2).then(value => { secondDone = true; return value; });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(secondDone, false);
+      assert.equal(h.provider.state.active, 2);
+      release(className);
+      const [readResponse, reminderResponse] = await Promise.all([first, second]);
+      if (className === 'not_found') {
+        assert.equal(readResponse.status, 200);
+        assert.equal(reminderResponse.status, 200);
+        assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 2);
+        assert.equal(h.provider.requests.find(request => request.ordinal === 2)?.callId,
+          'call_native_reminder_2');
+      } else {
+        assert.equal(readResponse.status, 422);
+        assert.equal(reminderResponse.status, 422);
+        assert.equal(reminderResponse.body, '');
+        assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 1);
+      }
+    } finally { release('unknown'); await h.provider.close(); }
+  }
+});
+
+test('protected second skill admission survives delayed body only after result acceptance', async () => {
+  const targetPath = '/tmp/fixture/protected/direct-read-target.txt';
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = await nativeProviderHarness({ protectedRead: true, targetPath,
+    classifyProtectedRaw: () => gate });
+  try {
+    const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+    const skill1 = fixedReminderRequest(); skill1.input = 'NATIVE_PROTECTED_READ_PROBE first skill';
+    const skill2 = fixedReminderRequest(); skill2.input = 'NATIVE_PROTECTED_READ_PROBE second skill';
+    const result = readFileResultRequest();
+    result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+    result.input[3].output = installedProtectedError(targetPath, '/tmp/fixture/workspace');
+    assert.equal((await h.post(main)).status, 200);
+    assert.equal((await h.post(skill1)).status, 200);
+    const first = h.post(result);
+    await new Promise(resolve => setImmediate(resolve));
+    const request = new Readable({ read() {} });
+    request.method = 'POST'; request.url = '/responses';
+    const response = { status: null, body: null, writeHead(status) { this.status = status; return this; },
+      end(value = '') { this.body = value; return this; } };
+    const handling = h.handle(request, response);
+    assert.equal(h.provider.state.active, 2);
+    release('not_found');
+    assert.equal((await first).status, 200);
+    request.push(JSON.stringify(skill2)); request.push(null);
+    await handling;
+    assert.equal(response.status, 200);
+    assert.equal(h.provider.requests.find(requestSummary => requestSummary.ordinal === 2)?.responseIndex, 4);
+  } finally { release('unknown'); await h.provider.close(); }
+});
+
+test('third protected skill while result and second reminder wait aborts both responses', async () => {
+  const targetPath = '/tmp/fixture/protected/direct-read-target.txt';
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = await nativeProviderHarness({ protectedRead: true, targetPath,
+    classifyProtectedRaw: () => gate });
+  try {
+    const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+    const skill1 = fixedReminderRequest(); skill1.input = 'NATIVE_PROTECTED_READ_PROBE first skill';
+    const skill2 = fixedReminderRequest(); skill2.input = 'NATIVE_PROTECTED_READ_PROBE second skill';
+    const skill3 = fixedReminderRequest(); skill3.input = 'NATIVE_PROTECTED_READ_PROBE third skill';
+    const result = readFileResultRequest();
+    result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+    result.input[3].output = installedProtectedError(targetPath, '/tmp/fixture/workspace');
+    assert.equal((await h.post(main)).status, 200);
+    assert.equal((await h.post(skill1)).status, 200);
+    const first = h.post(result);
+    await new Promise(resolve => setImmediate(resolve));
+    const second = h.post(skill2);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.provider.state.active, 2);
+    assert.equal((await h.post(skill3)).status, 429);
+    release('not_found');
+    assert.equal((await first).status, 422);
+    assert.equal((await second).status, 422);
+    assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 1);
+  } finally { release('unknown'); await h.provider.close(); }
 });
 
 async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readFileProbe = false,
@@ -2245,7 +2372,7 @@ test('read_file probe controller requires exact canary, no shell effect and conf
 
 test('protected direct read needs correlated output, intact host control and confirmed stop', async () => {
   const run = async ({ output = 'denied', stopFails = false, changeControl = false,
-    wrongCall = false, approval = false, nativeMismatch = false } = {}) => {
+    wrongCall = false, approval = false, nativeMismatch = false, wrongStatus = false } = {}) => {
     let target;
     const result = await qualifyNativeProtectedRead({
       stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
@@ -2258,6 +2385,7 @@ test('protected direct read needs correlated output, intact host control and con
         ready.commandSha256 = createHash('sha256').update('NATIVE_PROTECTED_READ_ONLY').digest('hex');
         let guest = readFileProbeOutcomeFixture(ready);
         guest.kind = 'native_protected_read_outcome';
+        guest.observations.items[0].status = wrongStatus ? 'completed' : 'failed';
         const main = guest.providerRequests.find(request => request.kind === 'native_read_file_call');
         main.pathSha256 = createHash('sha256').update(target).digest('hex');
         if (wrongCall) main.callId = 'foreign';
@@ -2268,7 +2396,7 @@ test('protected direct read needs correlated output, intact host control and con
         const rawPromise = readFile(target, 'utf8').then(content => {
           const marker = content.trim();
           const raw = output === 'exposed' ? `Read text file \`${target}\`.\n1|${marker}` :
-            output === 'denied' ? `Read text file \`${target}\`.\nPermission denied` :
+            output === 'denied' ? installedProtectedError(target, config.workspace) :
               'unfamiliar native error';
           reported.outputBytes = Buffer.byteLength(raw);
           reported.outputSha256 = createHash('sha256').update(raw).digest('hex');
@@ -2313,6 +2441,7 @@ test('protected direct read needs correlated output, intact host control and con
   assert.equal((await run({ wrongCall: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
   assert.equal((await run({ approval: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
   assert.equal((await run({ nativeMismatch: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+  assert.equal((await run({ wrongStatus: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
   assert.equal((await run({ changeControl: true })).code, 'NATIVE_PROTECTED_CONTROL_CHANGED');
   assert.equal((await run({ stopFails: true })).code, 'STOP_SURVIVOR');
 });
@@ -2960,7 +3089,7 @@ printf '{"exit-code":0}\\n' >&3
     const frame = line => `printf '%s\\n' '${line}'`;
     const classified = `${frame(rawLine)}\nread classification\ncase "$classification" in *protected_classification*) ;; *) exit 9 ;; esac`;
     const config = { phase: 'protected-read', classifyProtectedOutput: raw =>
-      classifyProtectedOutput(raw, '/tmp/target', marker),
+      classifyProtectedOutput(raw, '/tmp/target', '/tmp/workspace', marker),
     protectedMarkerPresent: line => line.includes(marker) };
     const normal = runStatusPhase({ executable: await make('normal',
       `${classified}\n${frame(outcomeLine)}`), args: ['--', 'ignored'] }, config);
