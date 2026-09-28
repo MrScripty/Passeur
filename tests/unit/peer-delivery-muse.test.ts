@@ -322,7 +322,7 @@ describe("Muse peer delivery at settled turns", () => {
     }
   });
 
-  it("rebinds a callback input created before the native peer turn is returned", async () => {
+  it("holds an early callback until the native peer turn is durably correlated", async () => {
     const taskId = envelope.recipient_task_id;
     const actor = { owner_id: "owner", client_id: "client" };
     let stored: TaskControl = { ...initialControl(taskId, actor.owner_id), phase: "active" };
@@ -336,7 +336,10 @@ describe("Muse peer delivery at settled turns", () => {
     let sends = 0;
     const native = { ...session(async () => {
       if (++sends === 1) return turn(final());
-      void approval({ approvalId: "approval-1", toolName: "shell", rawArgs: "{}", subject: {},
+      void approval({ approvalId: "approval-1", sessionId: "same-muse-session", turnId: "native-turn",
+        toolCallId: "call-1", itemId: "item-1", taskId: "native-task-1", viewCursor: "cursor-1",
+        currentRequirementId: { approvalId: "approval-1", sourceIndex: 0 },
+        toolName: "shell", rawArgs: "{}", subject: { kind: "shell" },
         availableChoices: [{ choiceId: "deny", label: "Deny", decision: "denied", scope: "once" }] });
       await sendHeld;
       return turn(final(envelope.idempotency_key));
@@ -352,7 +355,7 @@ describe("Muse peer delivery at settled turns", () => {
       approve: (request, signal) => broker.request(taskId, { kind: "permission", approval: request }, request.id, signal).then(choice_id => ({ choice_id })),
       input: async () => { throw Error("unexpected clarification"); },
       peer: { next: async () => ++nexts === 1 ? envelope : undefined,
-        delivered: async () => { expect(stored.native.turn_id).toBe("native-turn"); expect(stored.inputs[0]?.turn_id).toBe("native-turn"); delivered++; return "current" as const; },
+        delivered: async () => { expect(stored.native.turn_id).toBe("native-turn"); delivered++; return "current" as const; },
         observed: async () => { observed++; return "current" as const; } },
       onEvent: async event => {
         events.push(event);
@@ -366,12 +369,15 @@ describe("Muse peer delivery at settled turns", () => {
         });
       },
     });
+    for (let attempt = 0; attempt < 100 && sends < 2; attempt++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(sends).toBe(2);
+    expect(stored.inputs).toHaveLength(0);
+    releaseSend();
     for (let attempt = 0; attempt < 100 && !stored.inputs.some(input => input.state === "pending"); attempt++)
       await new Promise(resolve => setTimeout(resolve, 1));
     const pending = stored.inputs.find(input => input.state === "pending");
     expect(pending).toBeDefined();
-    expect(pending!.turn_id).not.toBe("native-turn");
-    releaseSend();
+    expect(pending!.turn_id).toBe("native-turn");
     for (let attempt = 0; attempt < 100 && !delivered; attempt++) await new Promise(resolve => setTimeout(resolve, 1));
     expect(delivered).toBe(1);
     const claim = await broker.claim(taskId, pending!.input_id, actor, stored.control_generation);
@@ -379,7 +385,7 @@ describe("Muse peer delivery at settled turns", () => {
     expect((await running).status).toBe("completed");
     expect(stored.inputs[0]?.state).toBe("settled");
     expect(observed).toBe(1);
-    expect(events.some(event => event.kind === "turn_correlated" && event.provisional_turn_id === pending!.turn_id && event.turn_id === "native-turn")).toBe(true);
+    expect(events.some(event => event.kind === "turn_correlated" && event.turn_id === "native-turn")).toBe(true);
     const unrelated = structuredClone(stored);
     unrelated.native.turn_id = "provisional"; unrelated.native.coverage = "unknown";
     unrelated.inputs[0]!.state = "pending"; unrelated.inputs[0]!.turn_id = "another-turn";
@@ -402,7 +408,8 @@ describe("Muse peer delivery at settled turns", () => {
     const broker = new InputBroker(controls, 16);
     const events: WorkerEvent[] = [];
     const prompts: string[] = [];
-    const native = session(async ({ input }) => { prompts.push(input[0]!.text); return turn(prompts.length === 1 ? firstText : final()); });
+    const native = session(async ({ input }) => { prompts.push(input[0]!.text);
+      return { ...turn(prompts.length === 1 ? firstText : final()), turnId: `native-turn-${prompts.length}` }; });
     const adapter = new MuseSdkAdapter(options, starter(native));
     const runInput: WorkerInput = {
       request: { schema_version: 3, agent_id: "muse", request_key: "clarification", mode: "review", objective: "Review",
@@ -416,8 +423,12 @@ describe("Muse peer delivery at settled turns", () => {
       onEvent: async event => {
         events.push(event);
         if (event.kind === "turn_settled") await broker.settleTurn(taskId, event.turn_id);
-        if (event.kind === "turn_started" || event.kind === "turn_settled") await controls.change(taskId, state => {
-          if (event.kind === "turn_started") state.native.turn_id = event.turn_id;
+        if (event.kind === "turn_started" || event.kind === "turn_correlated" || event.kind === "turn_settled") await controls.change(taskId, state => {
+          if (event.kind === "turn_started") {
+            state.native.turn_id = event.turn_id; state.native.native_session_id = event.native_session_id;
+            state.native.state = "observed_live"; state.native.coverage = "unknown";
+          }
+          else if (event.kind === "turn_correlated") correlateNativeTurn(state, event);
           else if (state.native.turn_id !== event.turn_id) throw Error("turn correlation lost");
         });
       },
@@ -455,7 +466,7 @@ describe("Muse peer delivery at settled turns", () => {
     const native = session(async () => ++sends === 1 ? turn(final()) : { ...turn(final(envelope.idempotency_key)), turnId: "" });
     const result = await run(new MuseSdkAdapter(options, starter(native)),
       { next: async () => envelope, delivered: async () => { delivered++; return "current" as const; }, observed: async () => "current" as const }, async () => {});
-    expect(result).toMatchObject({ status: "failed", error: { code: "PEER_DELIVERY_NATIVE_ID_UNKNOWN" } });
+    expect(result).toMatchObject({ status: "failed", error: { code: "MUSE_TURN_ID_UNKNOWN" } });
     expect(sends).toBe(2); expect(delivered).toBe(0);
   });
 
@@ -498,7 +509,7 @@ describe("Muse peer delivery at settled turns", () => {
     expect(sends).toBe(2); expect(observed).toBe(0);
   });
 
-  it("keeps ordinary lifecycle events compatible without a session ID and fails closed before peer delivery", async () => {
+  it("fails before the first turn when the native session ID is missing", async () => {
     let sends = 0, delivered = 0, observed = 0;
     const native = session(async () => ++sends === 1 ? turn(final()) : turn(final(envelope.idempotency_key)), () => [], "same-muse-session", true);
     const events: WorkerEvent[] = [];
@@ -506,8 +517,8 @@ describe("Muse peer delivery at settled turns", () => {
       { next: async () => sends === 1 ? envelope : undefined, delivered: async () => { delivered++; return "current" as const; }, observed: async () => { observed++; return "current" as const; } },
       async event => { events.push(event); });
     expect(result).toMatchObject({ status: "failed", error: { code: "MUSE_SESSION_ID_UNKNOWN" } });
-    expect(sends).toBe(1); expect(delivered).toBe(0); expect(observed).toBe(0);
-    expect(events.filter(event => event.kind === "turn_started" || event.kind === "turn_settled").every(event => !("native_session_id" in event))).toBe(true);
+    expect(sends).toBe(0); expect(delivered).toBe(0); expect(observed).toBe(0);
+    expect(events.filter(event => event.kind === "turn_started" || event.kind === "turn_settled")).toHaveLength(0);
   });
 
   it("leaves an interrupted continuation without a receipt or retry", async () => {

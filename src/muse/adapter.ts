@@ -1,6 +1,6 @@
 import { MuseClient, readSessionDurability, spawnMspConnection, type ApprovalDecisionInput, type MuseClientSpawnOptions, type TurnOutcome } from "@muse-code/sdk";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as observeAgain } from "node:timers/promises";
 import { BridgeError, errorInfo, safeText } from "../core/errors.js";
 import { settlesWithin, throwIfAborted, withAbort } from "../core/async.js";
@@ -53,12 +53,25 @@ function cancelledRun(signal: AbortSignal, workerStop: WorkerRun["worker_stop"])
   return { status: "cancelled",
     summary: "Task explicitly cancelled", worker_assessment: "unknown", blockers: [], questions: [], checks: [], worker_stop: workerStop };
 }
+const boundedNativeId = (value: unknown): value is string => typeof value === "string" && value.length > 0 &&
+  Buffer.byteLength(value, "utf8") <= 256 && !value.includes("\0");
+const nativeIdSchema = z.string().refine(boundedNativeId, "native identifier is not bounded");
 const approvalSchema = z.object({
-  approvalId: z.string().min(1).max(256), toolName: z.string().min(1).max(256), rawArgs: z.string().max(16_384),
+  approvalId: nativeIdSchema, sessionId: nativeIdSchema,
+  turnId: nativeIdSchema, toolCallId: nativeIdSchema,
+  itemId: nativeIdSchema, taskId: nativeIdSchema,
+  viewCursor: nativeIdSchema,
+  currentRequirementId: z.object({ approvalId: nativeIdSchema,
+    sourceIndex: z.number().int().nonnegative().safe() }),
+  toolName: z.string().min(1).max(256), rawArgs: z.string().max(16_384),
   subject: z.record(z.string(), z.unknown()).refine((value) => Buffer.byteLength(JSON.stringify(value)) <= 8192, "approval subject exceeds its bound"),
   availableChoices: z.array(z.object({ choiceId: z.string().min(1).max(256), label: z.string().max(512),
     decision: z.string().min(1).max(128), scope: z.string().min(1).max(128) })).min(1).max(16),
 }).refine((value) => new Set(value.availableChoices.map((choice) => choice.choiceId)).size === value.availableChoices.length, "duplicate native approval choices");
+
+function nativeStageId(approvalId: string, sourceIndex: number): string {
+  return `muse-stage:${createHash("sha256").update(JSON.stringify([approvalId, sourceIndex])).digest("hex")}`;
+}
 
 function peerContinuationPrompt(envelope: PeerDeliveryEnvelope): string {
   const prompt = peerDeliveryPrompt(envelope, "muse");
@@ -82,11 +95,20 @@ export class MuseSdkAdapter implements WorkerAdapter {
     const remaining = () => Math.max(1, cleanupDeadline - Date.now());
     const events = new Set<Promise<void>>(), native = new Set<Promise<unknown>>(), approvals = new Set<Promise<ApprovalDecisionInput>>();
     const approvalIds = new Set<string>();
+    let approvalStages = new Map<string, { stageId: string; sourceIndex: number;
+      toolCallId: string; itemId: string; taskId: string }>();
+    let seenApprovalStages = new Set<string>();
+    let turnOpen = false;
+    let turnCorrelation: { promise: Promise<{ sessionId: string; turnId: string }>;
+      resolve: (identity: { sessionId: string; turnId: string }) => void; reject: (reason: unknown) => void } | undefined;
+    let approvalFailure: Promise<never> | undefined, rejectApprovalFailure: ((reason: unknown) => void) | undefined;
+    let approvalError: BridgeError | undefined;
     let nativeFailure: Promise<never> | undefined;
     const wait = <T>(work: Promise<T>): Promise<T> => {
       native.add(work);
       void work.then(() => native.delete(work), () => native.delete(work));
-      return withAbort(nativeFailure ? Promise.race([work, nativeFailure]) : work, signal);
+      return withAbort(Promise.race([work, ...(nativeFailure ? [nativeFailure] : []),
+        ...(approvalFailure ? [approvalFailure] : [])]), signal);
     };
     const emit = (event: import("../agents/types.js").WorkerEvent): Promise<void> => {
       if (signal.aborted) return Promise.resolve();
@@ -109,14 +131,12 @@ export class MuseSdkAdapter implements WorkerAdapter {
       client = await wait(startup.ready); startup = undefined;
       throwIfAborted(signal);
       const session = await wait(client.startSession({ workspaceRoot: input.workspace, modelId: this.options.model, approvalMode: "onRequest" }));
-      const sessionId = typeof session.sessionId === "string" && session.sessionId.length > 0 &&
-        Buffer.byteLength(session.sessionId, "utf8") <= 256 && !session.sessionId.includes("\0") ? session.sessionId : undefined;
-      const turnStartedEvent = (turnId: string): import("../agents/types.js").WorkerEvent => sessionId === undefined
-        ? { kind: "turn_started", turn_id: turnId }
-        : { kind: "turn_started", turn_id: turnId, native_session_id: sessionId };
-      const turnSettledEvent = (turnId: string, terminal: "completed" | "failed" | "cancelled"): import("../agents/types.js").WorkerEvent => sessionId === undefined
-        ? { kind: "turn_settled", turn_id: turnId, terminal }
-        : { kind: "turn_settled", turn_id: turnId, native_session_id: sessionId, terminal };
+      if (!boundedNativeId(session.sessionId)) throw new BridgeError("MUSE_SESSION_ID_UNKNOWN", "Muse did not establish a bounded native session identity");
+      const sessionId = session.sessionId;
+      const turnStartedEvent = (turnId: string): import("../agents/types.js").WorkerEvent =>
+        ({ kind: "turn_started", turn_id: turnId, native_session_id: sessionId });
+      const turnSettledEvent = (turnId: string, terminal: "completed" | "failed" | "cancelled"): import("../agents/types.js").WorkerEvent =>
+        ({ kind: "turn_settled", turn_id: turnId, native_session_id: sessionId, terminal });
       const reported = session.opening?.result.session.modelId;
       if (typeof reported !== "string" || reported !== this.options.model) throw new BridgeError("MUSE_MODEL_MISMATCH", "Muse did not report the requested model");
       reportedModel = reported;
@@ -164,45 +184,109 @@ export class MuseSdkAdapter implements WorkerAdapter {
           const parsed = approvalSchema.safeParse(raw);
           if (!parsed.success) throw new BridgeError("MUSE_APPROVAL_INVALID", "Native approval fields violate the consumed contract");
           const request = parsed.data;
-          if (approvalIds.has(request.approvalId)) throw new BridgeError("MUSE_APPROVAL_INVALID", "Native approval ID is already outstanding");
-          approvalIds.add(request.approvalId);
+          const correlation = turnCorrelation;
+          if (!correlation) throw new BridgeError("MUSE_APPROVAL_UNCORRELATED", "Native approval has no accepted turn");
+          const stageId = nativeStageId(request.approvalId, request.currentRequirementId.sourceIndex);
+          if (seenApprovalStages.has(stageId)) throw new BridgeError("MUSE_APPROVAL_INVALID", "Native approval stage was already presented");
+          const prior = approvalStages.get(request.approvalId);
+          if (prior && (prior.toolCallId !== request.toolCallId || prior.itemId !== request.itemId ||
+              prior.taskId !== request.taskId || request.currentRequirementId.sourceIndex <= prior.sourceIndex)) {
+            approvalStages.delete(request.approvalId);
+            approvalError ??= new BridgeError("MUSE_APPROVAL_IDENTITY_CHANGED", "Native approval changed its stable identity or replayed a requirement");
+            if (approvalIds.has(prior.stageId)) await emit({ kind: "input_withdrawn", native_id: prior.stageId });
+            rejectApprovalFailure?.(approvalError);
+            throw approvalError;
+          }
+          approvalStages.set(request.approvalId, { stageId, sourceIndex: request.currentRequirementId.sourceIndex,
+            toolCallId: request.toolCallId, itemId: request.itemId, taskId: request.taskId });
+          seenApprovalStages.add(stageId);
+          if (prior && approvalIds.has(prior.stageId)) {
+            // The SDK can deliver an updated requirement while the earlier handler still awaits a person.
+            // Invalidate that handler synchronously, then durably withdraw its pending input.
+            approvalError ??= new BridgeError("MUSE_APPROVAL_STAGE_SUPERSEDED", "Native approval requirement changed before the prior choice returned");
+            await emit({ kind: "input_withdrawn", native_id: prior.stageId });
+            rejectApprovalFailure?.(approvalError);
+            throw approvalError;
+          }
+          const identity = await wait(correlation.promise);
+          if (!turnOpen || turnCorrelation !== correlation || request.sessionId !== identity.sessionId || request.turnId !== identity.turnId ||
+              request.currentRequirementId.approvalId !== request.approvalId) {
+            throw new BridgeError("MUSE_APPROVAL_UNCORRELATED", "Native approval differs from the current accepted turn or requirement");
+          }
+          if (approvalStages.get(request.approvalId)?.stageId !== stageId) throw new BridgeError("MUSE_APPROVAL_STAGE_SUPERSEDED", "Native approval requirement changed before correlation");
+          approvalIds.add(stageId);
           try {
             await emit({ kind: "approval_requested", approval_id: request.approvalId, tool: request.toolName });
+            if (eventError) throw new BridgeError("MUSE_APPROVAL_OBSERVATION_FAILED", "Native approval observation could not be recorded");
+            if (approvalStages.get(request.approvalId)?.stageId !== stageId) throw new BridgeError("MUSE_APPROVAL_STAGE_SUPERSEDED", "Native approval requirement changed before presentation");
             const choices = request.availableChoices.filter((choice) => choice.scope === "once" || choice.decision.startsWith("denied"));
             if (!choices.length) throw new BridgeError("APPROVAL_UNSUPPORTED", "Muse offered no single-operation or denial decision");
-            const decision = await input.approve({ id: request.approvalId, tool: request.toolName, raw_args: request.rawArgs,
-              subject: request.subject, workspace: input.workspace, task_id: input.task_id,
+            const subject = { ...request.subject, native: { session_id: request.sessionId,
+              turn_id: request.turnId, approval_id: request.approvalId, tool_call_id: request.toolCallId,
+              item_id: request.itemId, task_id: request.taskId, view_cursor: request.viewCursor,
+              current_requirement_id: request.currentRequirementId } };
+            if (Buffer.byteLength(JSON.stringify(subject)) > 8192) throw new BridgeError("MUSE_APPROVAL_INVALID", "Native approval subject exceeds its bound");
+            const decision = await input.approve({ id: stageId, tool: request.toolName, raw_args: request.rawArgs,
+              subject, workspace: input.workspace, task_id: input.task_id,
               choices: choices.map((choice) => ({ id: choice.choiceId, label: choice.label, decision: choice.decision, scope: choice.scope })),
             }, signal);
             throwIfAborted(signal);
+            if (approvalError) throw approvalError;
+            if (approvalStages.get(request.approvalId)?.stageId !== stageId) throw new BridgeError("MUSE_APPROVAL_STAGE_SUPERSEDED", "Native approval requirement changed before SDK dispatch");
             if (!choices.some((choice) => choice.choiceId === decision.choice_id)) throw new BridgeError("APPROVAL_INVALID", "The decision was not offered for this native request");
             return { choiceId: decision.choice_id };
-          } finally { approvalIds.delete(request.approvalId); }
+          } finally { approvalIds.delete(stageId); }
         })();
+        void pending.catch((error: unknown) => {
+          approvalError ??= error instanceof BridgeError ? error :
+            new BridgeError("MUSE_APPROVAL_HANDLER_FAILED", "Native approval handler failed before SDK dispatch");
+          rejectApprovalFailure?.(approvalError);
+        });
         approvals.add(pending);
         void pending.then(() => approvals.delete(pending), () => approvals.delete(pending));
         return pending;
       });
-      session.onApprovalError(() => { void emit({ kind: "evidence_omitted", reason: "Native approval error excluded from diagnostics" }); });
+      session.onApprovalError((failure) => {
+        approvalError ??= new BridgeError(failure.kind === "submitFailed" ? "MUSE_APPROVAL_DISPATCH_UNKNOWN" :
+          failure.kind === "unofferedChoice" ? "MUSE_APPROVAL_CHOICE_INVALID" : "MUSE_APPROVAL_HANDLER_FAILED",
+        "Muse SDK could not complete the native approval decision");
+        rejectApprovalFailure?.(approvalError);
+      });
       throwIfAborted(signal);
       let prompt = input.prompt;
       while (true) {
         throwIfAborted(signal);
+        if (approvalError) throw approvalError;
         peerEvidenceUnknown = false;
+        seenApprovalStages = new Set();
+        approvalStages = new Map();
+        approvalFailure = new Promise<never>((_resolve, reject) => { rejectApprovalFailure = reject; });
+        approvalFailure.catch(() => undefined);
+        turnCorrelation = (() => {
+          let resolve!: (identity: { sessionId: string; turnId: string }) => void;
+          let reject!: (reason: unknown) => void;
+          const promise = new Promise<{ sessionId: string; turnId: string }>((yes, no) => { resolve = yes; reject = no; });
+          promise.catch(() => undefined);
+          return { promise, resolve, reject };
+        })();
+        turnOpen = true;
         // Keep the provisional local observation for callbacks that race the SDK's
         // send response. A peer receipt must instead use the SDK's native turn ID.
         const localTurnId = randomUUID();
         await emit(turnStartedEvent(localTurnId));
-        if (eventError) throw eventError;
-        if (peerTurn && sessionId === undefined) throw new BridgeError("MUSE_SESSION_ID_UNKNOWN", "Muse did not establish a native session identity for peer delivery");
-        const turn = await wait(session.sendUserTurn({ input: [{ type: "text", text: prompt }], displayText: `Passeur task ${input.task_id}` }));
-        if (peerTurn && (typeof turn.turnId !== "string" || !turn.turnId || Buffer.byteLength(turn.turnId, "utf8") > 256 || turn.turnId.includes("\0"))) {
-          throw new BridgeError("PEER_DELIVERY_NATIVE_ID_UNKNOWN", "Muse did not establish a bounded native peer turn identity");
-        }
-        const turnId = peerTurn ? turn.turnId : localTurnId;
-        if (peerTurn) await emit({ kind: "turn_correlated", provisional_turn_id: localTurnId, turn_id: turnId, native_session_id: sessionId! });
-        if (eventError) throw eventError;
-        let supersededPeer = peerTurn ? await wait(input.peer!.delivered(peerTurn.idempotency_key, turnId, sessionId!)) === "superseded" : false;
+        if (eventError) throw new BridgeError("MUSE_NATIVE_OBSERVATION_FAILED", "Provisional native turn observation could not be recorded");
+        let turn;
+        try {
+          turn = await wait(session.sendUserTurn({ input: [{ type: "text", text: prompt }], displayText: `Passeur task ${input.task_id}` }));
+          // Correlation may fail before this accepted turn is consumed; retain its terminal rejection.
+          turn.completed.catch(() => undefined);
+          if (!boundedNativeId(turn.turnId)) throw new BridgeError("MUSE_TURN_ID_UNKNOWN", "Muse did not establish a bounded native turn identity");
+          await emit({ kind: "turn_correlated", provisional_turn_id: localTurnId, turn_id: turn.turnId, native_session_id: sessionId });
+          if (eventError) throw new BridgeError("MUSE_NATIVE_CORRELATION_FAILED", "Accepted native turn identity could not be recorded");
+          turnCorrelation.resolve({ sessionId, turnId: turn.turnId });
+        } catch (error) { turnCorrelation.reject(error); throw error; }
+        const turnId = turn.turnId;
+        let supersededPeer = peerTurn ? await wait(input.peer!.delivered(peerTurn.idempotency_key, turnId, sessionId)) === "superseded" : false;
         let lastText: string | undefined;
         consumeError = undefined;
         consume = (async () => {
@@ -222,7 +306,9 @@ export class MuseSdkAdapter implements WorkerAdapter {
           }
         })().catch((error: unknown) => { consumeError = error; });
         const outcome = await wait(Promise.all([turn.completed, consume]).then(([terminal]) => terminal));
+        turnOpen = false;
         if (consumeError) throw consumeError;
+        if (approvalError) throw approvalError;
         if (eventError) throw eventError;
         const status = outcomeStatus(outcome);
         // A native turn may end before known background items settle. Snapshot checks are
@@ -312,6 +398,8 @@ export class MuseSdkAdapter implements WorkerAdapter {
         result = { status: "completed", ...report, checks: [...checks, ...report.checks].slice(0, 200), reported_model: reported, worker_stop: stopped }; break;
       }
     } catch (error) {
+      turnOpen = false;
+      turnCorrelation?.reject(error);
       const detail = error instanceof BridgeError ? errorInfo(error) : { code: "MUSE_RUNTIME_ERROR", message: "Muse runtime failed; native error details are excluded from persisted diagnostics" };
       result = input.signal.aborted ? { ...cancelledRun(input.signal, stopped), checks } : {
         status: "failed", summary: detail.message, worker_assessment: "unknown", blockers: [], questions: [], checks,
@@ -324,6 +412,11 @@ export class MuseSdkAdapter implements WorkerAdapter {
       await stop();
       if (consume && !await settlesWithin(consume, remaining())) stopped = "unconfirmed";
       if (!await settlesWithin(Promise.allSettled([...native, ...approvals, ...events]), remaining())) stopped = "unconfirmed";
+    }
+    if (approvalError && !input.signal.aborted && result.status === "completed") {
+      const detail = errorInfo(approvalError);
+      result = { status: "failed", summary: detail.message, worker_assessment: "unknown", blockers: [], questions: [],
+        checks, error: detail, worker_stop: stopped, ...(reportedModel ? { reported_model: reportedModel } : {}) };
     }
     return { ...result, worker_stop: stopped };
   }

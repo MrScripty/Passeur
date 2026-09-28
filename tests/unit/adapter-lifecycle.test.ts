@@ -49,8 +49,8 @@ describe("owned Muse startup and cancellation", () => {
   for (const rejectIterator of [false, true]) it(`settles output draining after cancellation (reject=${rejectIterator})`, async () => {
     let close!: () => void; const closed = new Promise<void>((resolve) => { close = resolve; });
     let begun!: () => void; const started = new Promise<void>((resolve) => { begun = resolve; });
-    const turn = { completed: Promise.resolve({ kind: "completed", params: { terminal: "completed" } }), items: async function* () { begun(); await closed; if (rejectIterator) throw new Error("closed"); } };
-    const session = { fold: {current:true,items:{list:()=>[],isTerminalUnknown:()=>false}}, opening: { result: { session: { modelId: "model" } } }, onApproval() {}, onApprovalError() {}, sendUserTurn: async () => turn };
+    const turn = { turnId: "native-turn", completed: Promise.resolve({ kind: "completed", params: { terminal: "completed" } }), items: async function* () { begun(); await closed; if (rejectIterator) throw new Error("closed"); } };
+    const session = { sessionId: "native-session", fold: {current:true,items:{list:()=>[],isTerminalUnknown:()=>false}}, opening: { result: { session: { modelId: "model" } } }, onApproval() {}, onApprovalError() {}, sendUserTurn: async () => turn };
     const controller = new AbortController(); const adapter = new MuseSdkAdapter(options, starts({ startSession: async () => session, close: async () => { close(); } }));
     const unhandled: unknown[] = []; const handler = (error: unknown) => unhandled.push(error); process.on("unhandledRejection", handler);
     try {
@@ -71,9 +71,9 @@ it("observes native host death while awaiting an explicit continuation", async (
   let die!: (error: Error) => void, entered!: () => void;
   const failure = new Promise<never>((_resolve,reject)=>{die=reject;}); failure.catch(()=>undefined);
   const waiting = new Promise<void>(resolve=>{entered=resolve;});
-  const session = { fold: {current:true,items:{list:()=>[],isTerminalUnknown:()=>false}},
+  const session = { sessionId: "native-session", fold: {current:true,items:{list:()=>[],isTerminalUnknown:()=>false}},
     opening:{result:{session:{modelId:"model"}}},onApproval(){},onApprovalError(){},
-    sendUserTurn:async()=>({completed:Promise.resolve({kind:"completed",params:{terminal:"completed"}}),items:async function*(){yield {kind:"agentMessage",text:'PASSEUR_MESSAGE {"schema_version":2,"kind":"input_required","question":"Which output?"}'};}}) };
+    sendUserTurn:async()=>({turnId:"native-turn",completed:Promise.resolve({kind:"completed",params:{terminal:"completed"}}),items:async function*(){yield {kind:"agentMessage",text:'PASSEUR_MESSAGE {"schema_version":2,"kind":"input_required","question":"Which output?"}'};}}) };
   const client={startSession:async()=>session,close:async()=>{}};
   const adapter=new MuseSdkAdapter(options,()=>({ready:Promise.resolve(client as never),failure,close:async()=>{}}));
   const result=adapter.run({request,policy,workspace:"/work",prompt:"fixture",task_id:"fixture",signal:new AbortController().signal,
@@ -86,8 +86,8 @@ it("observes native host death while awaiting an explicit continuation", async (
 it("waits for an explicitly in-progress native item instead of timing it out", async () => {
   let released=false, observed!:()=>void;const started=new Promise<void>(resolve=>{observed=resolve;});
   const item={itemId:"background",kind:"userShell",status:"inProgress"};
-  const session={fold:{current:true,items:{list:()=>[item],isTerminalUnknown:()=>false}},opening:{result:{session:{modelId:"model"}}},onApproval(){},onApprovalError(){},
-    sendUserTurn:async()=>({completed:Promise.resolve({kind:"completed",params:{terminal:"completed"}}),items:async function*(){yield {kind:"agentMessage",text:'PASSEUR_MESSAGE {"schema_version":2,"kind":"final","summary":"done","assessment":"met","blockers":[],"questions":[],"checks":[]}'};}})};
+  const session={sessionId:"native-session",fold:{current:true,items:{list:()=>[item],isTerminalUnknown:()=>false}},opening:{result:{session:{modelId:"model"}}},onApproval(){},onApprovalError(){},
+    sendUserTurn:async()=>({turnId:"native-turn",completed:Promise.resolve({kind:"completed",params:{terminal:"completed"}}),items:async function*(){yield {kind:"agentMessage",text:'PASSEUR_MESSAGE {"schema_version":2,"kind":"final","summary":"done","assessment":"met","blockers":[],"questions":[],"checks":[]}'};}})};
   const adapter=new MuseSdkAdapter(options,starts({startSession:async()=>session,close:async()=>{expect(released).toBe(true);}}));
   let settled=false;
   const running=adapter.run({request,policy,workspace:"/work",prompt:"fixture",task_id:"fixture",signal:new AbortController().signal,
@@ -95,3 +95,81 @@ it("waits for an explicitly in-progress native item instead of timing it out", a
   await started;await Promise.resolve();expect(settled).toBe(false);released=true;item.status="completed";
   expect(await running).toMatchObject({status:"completed",worker_stop:"confirmed"});
 });
+
+it("does not present an early approval when durable native correlation fails", async () => {
+  let approval!: (request: unknown) => Promise<unknown>, presentations = 0;
+  const native = { sessionId: "native-session", fold: { current: true,
+    items: { list: () => [], isTerminalUnknown: () => false } },
+    opening: { result: { session: { modelId: "model" } } },
+    onApproval(callback: typeof approval) { approval = callback; }, onApprovalError() {},
+    sendUserTurn: async () => {
+      const decided = approval({ approvalId: "approval", sessionId: "native-session", turnId: "native-turn",
+        toolCallId: "call", itemId: "item", taskId: "task", viewCursor: "cursor",
+        currentRequirementId: { approvalId: "approval", sourceIndex: 0 },
+        toolName: "bash", rawArgs: "{}", subject: { kind: "shell" },
+        availableChoices: [{ choiceId: "deny", label: "Deny", decision: "denied", scope: "once" }] });
+      return { turnId: "native-turn", completed: decided.then(() => ({ kind: "completed", params: { terminal: "completed" } })),
+        items: async function* () {} };
+    } };
+  const adapter = new MuseSdkAdapter(options, starts({ startSession: async () => native, close: async () => {} }));
+  const result = await adapter.run({ request, policy, workspace: "/work", prompt: "fixture", task_id: "fixture",
+    signal: new AbortController().signal,
+    approve: async () => { presentations++; return { choice_id: "deny" }; },
+    input: async () => { throw Error("unexpected clarification"); },
+    onEvent: async event => { if (event.kind === "turn_correlated") throw Error("durable write failed"); } });
+  expect(result).toMatchObject({ status: "failed", error: { code: "MUSE_NATIVE_CORRELATION_FAILED" } });
+  expect(presentations).toBe(0);
+});
+
+for (const failureKind of ["submitFailed", "handlerThrew"] as const)
+  it(`does not report success when SDK ${failureKind} arrives after the terminal event`, async () => {
+    let approval!: (request: unknown) => Promise<unknown>;
+    let failed!: (failure: { kind: typeof failureKind; approvalId: string; error: Error }) => void;
+    const native = { sessionId: "native-session", fold: { current: true,
+      items: { list: () => [], isTerminalUnknown: () => false } },
+      opening: { result: { session: { modelId: "model" } } },
+      onApproval(callback: typeof approval) { approval = callback; }, onApprovalError(callback: typeof failed) { failed = callback; },
+      sendUserTurn: async () => ({ turnId: "native-turn", completed: approval({
+        approvalId: "approval", sessionId: "native-session", turnId: "native-turn", toolCallId: "call",
+        itemId: "item", taskId: "task", viewCursor: "cursor",
+        currentRequirementId: { approvalId: "approval", sourceIndex: 0 },
+        toolName: "bash", rawArgs: "{}", subject: { kind: "shell" },
+        availableChoices: [{ choiceId: "deny", label: "Deny", decision: "denied", scope: "once" }],
+      }).then(() => ({ kind: "completed", params: { terminal: "completed" } })),
+      items: async function* () { yield { kind: "agentMessage", text: 'PASSEUR_MESSAGE {"schema_version":2,"kind":"final","summary":"done","assessment":"met","blockers":[],"questions":[],"checks":[]}' }; } }),
+    };
+    const adapter = new MuseSdkAdapter(options, starts({ startSession: async () => native, close: async () => {} }));
+    const result = await adapter.run({ request, policy, workspace: "/work", prompt: "fixture", task_id: "fixture",
+      signal: new AbortController().signal,
+      approve: async () => ({ choice_id: "deny" }), input: async () => { throw Error("unexpected input"); },
+      onEvent: async event => { if (event.kind === "turn_settled") queueMicrotask(() =>
+        failed({ kind: failureKind, approvalId: "approval", error: Error("late SDK failure") })); } });
+    expect(result).toMatchObject({ status: "failed", worker_stop: "confirmed",
+      error: { code: failureKind === "submitFailed" ? "MUSE_APPROVAL_DISPATCH_UNKNOWN" : "MUSE_APPROVAL_HANDLER_FAILED" } });
+  });
+
+for (const changed of ["toolCallId", "itemId", "taskId"] as const)
+  it(`rejects a changed native approval ${changed} on the next requirement`, async () => {
+    let approval!: (request: unknown) => Promise<unknown>, presentations = 0;
+    const base = { approvalId: "approval", sessionId: "native-session", turnId: "native-turn",
+      toolCallId: "call", itemId: "item", taskId: "task", viewCursor: "cursor",
+      currentRequirementId: { approvalId: "approval", sourceIndex: 0 },
+      toolName: "bash", rawArgs: "{}", subject: { kind: "shell" },
+      availableChoices: [{ choiceId: "deny", label: "Deny", decision: "denied", scope: "once" }] };
+    const native = { sessionId: "native-session", fold: { current: true,
+      items: { list: () => [], isTerminalUnknown: () => false } },
+      opening: { result: { session: { modelId: "model" } } },
+      onApproval(callback: typeof approval) { approval = callback; }, onApprovalError() {},
+      sendUserTurn: async () => ({ turnId: "native-turn", completed: (async () => {
+        await approval(base);
+        await approval({ ...base, currentRequirementId: { approvalId: "approval", sourceIndex: 1 },
+          [changed]: "foreign" });
+        return { kind: "completed", params: { terminal: "completed" } };
+      })(), items: async function* () {} }) };
+    const adapter = new MuseSdkAdapter(options, starts({ startSession: async () => native, close: async () => {} }));
+    const result = await adapter.run({ request, policy, workspace: "/work", prompt: "fixture", task_id: "fixture",
+      signal: new AbortController().signal, approve: async () => { presentations++; return { choice_id: "deny" }; },
+      input: async () => { throw Error("unexpected input"); }, onEvent: async () => {} });
+    expect(result).toMatchObject({ status: "failed", error: { code: "MUSE_APPROVAL_IDENTITY_CHANGED" } });
+    expect(presentations).toBe(1);
+  });
