@@ -54,6 +54,8 @@ const READ_CANARY_CONTENT = 'PASSEUR_NATIVE_READ_CANARY\n';
 const PROTECTED_READ_NAME = 'direct-read-target.txt';
 const DUMMY_AUTH_PATH = `${GUEST_HOME}/.config/muse/auth.json`;
 const PROTECTED_OUTPUT_LIMIT = 8192;
+const OUTER_RESULT_EVIDENCE_LIMIT = 8192;
+const LINUX_O_CLOEXEC = 0o2000000;
 const PROTECTED_ROUTES = new Set(['direct', 'symlink', 'proc']);
 const REMINDER_PAYLOAD = Object.freeze({ advisory_text: null, confidence: 'low', decision: 'none',
   priority: 'normal', reason: 'Disposable scripted protocol probe; no skill reminder is being proposed.',
@@ -969,7 +971,8 @@ export function shellResultEnvelopeShape(body, issuanceAtAdmission = {}, command
     const entry = item && typeof item === 'object' && !Array.isArray(item) ? item : null;
     const keys = entry ? Object.keys(entry) : [];
     const args = entry?.arguments;
-    const argsBytes = typeof args === 'string' ? Buffer.byteLength(args) : null;
+    const argsText = args === undefined ? null : typeof args === 'string' ? args : JSON.stringify(args);
+    const argsBytes = argsText === null ? null : Buffer.byteLength(argsText);
     let parsedArgs;
     if (argsBytes !== null && argsBytes <= 4096) {
       try { parsedArgs = JSON.parse(args); } catch { /* summary remains unmatched */ }
@@ -981,6 +984,7 @@ export function shellResultEnvelopeShape(body, issuanceAtAdmission = {}, command
       JSON.stringify(output);
     const outputBytes = outputText === null ? null : Buffer.byteLength(outputText);
     const markers = shellOutputMarkers(output);
+    const content = entry?.content;
     return { type: entry?.type === 'function_call_output' ? 'function_call_output' :
       entry?.type === 'function_call' ? 'function_call' :
         entry?.type === 'message' ? 'message' : 'other',
@@ -993,11 +997,22 @@ export function shellResultEnvelopeShape(body, issuanceAtAdmission = {}, command
         'issued_reminder' : entry?.call_id == null ? 'absent' : 'other',
     nameClass: entry?.name === 'muse.bash' ? 'muse.bash' : entry?.name === 'bash' ? 'bash' :
       entry?.name == null ? 'absent' : 'other',
+    nameLength: typeof entry?.name === 'string' ? entry.name.length : null,
+    nameSha256: typeof entry?.name === 'string' ?
+      createHash('sha256').update(entry.name).digest('hex') : null,
+    roleClass: ['developer', 'user', 'assistant', 'tool'].includes(entry?.role) ? entry.role :
+      entry?.role == null ? 'absent' : 'other',
+    contentKind: Array.isArray(content) ? 'array' : content === null ? 'null' : typeof content,
+    contentPartCount: Array.isArray(content) ? content.length : null,
+    contentPartTypes: Array.isArray(content) ? content.slice(0, 8).map(part =>
+      ['input_text', 'output_text', 'text'].includes(part?.type) ? part.type : 'other') : [],
+    omittedContentParts: Array.isArray(content) ? Math.max(0, content.length - 8) : 0,
     namespaceClass: entry?.namespace === 'muse' ? 'muse' : entry?.namespace == null ? 'absent' : 'other',
     statusClass: ['completed', 'failed', 'in_progress'].includes(entry?.status) ? entry.status :
       entry?.status == null ? 'absent' : 'other',
     argumentsType: args === null ? 'null' : typeof args,
     argumentsBytes: argsBytes,
+    argumentsSha256: argsBytes !== null ? createHash('sha256').update(argsText).digest('hex') : null,
     argumentsExactFixed: command !== null && isDeepStrictEqual(parsedArgs,
       { command, description: 'Disposable native shell qualification' }),
     outputType: output === null ? 'null' : typeof output,
@@ -1006,7 +1021,7 @@ export function shellResultEnvelopeShape(body, issuanceAtAdmission = {}, command
     outputMarkers: markers ? { workspaceWritten: markers.workspaceWritten,
       dummyAuthVisible: markers.dummyAuthVisible } : null };
   }) : [];
-  return { model: summarizedShellModel(body?.model),
+  const shape = { model: summarizedShellModel(body?.model),
     previousResponse: body?.previous_response_id === SHELL_RESPONSE &&
       issuanceAtAdmission.main === 'call-issued' ? 'issued_shell' :
       body?.previous_response_id === REMINDER_RESPONSE &&
@@ -1015,6 +1030,72 @@ export function shellResultEnvelopeShape(body, issuanceAtAdmission = {}, command
     inputType: Array.isArray(input) ? 'array' : typeof input,
     inputCount: Array.isArray(input) ? input.length : null,
     omittedItems: Array.isArray(input) ? Math.max(0, input.length - 6) : 0, items };
+  while (shape.items.length && Buffer.byteLength(JSON.stringify(shape)) > 4096) {
+    shape.items.pop(); shape.omittedItems++;
+  }
+  return shape;
+}
+
+export async function persistOuterShellResultEvidence(projection, requestIndex, directory, {
+  write = writeFile,
+} = {}) {
+  if (!Number.isInteger(requestIndex) || requestIndex < 1 || requestIndex > 3 ||
+      typeof directory !== 'string' || !directory.startsWith('/')) {
+    throw fault('NATIVE_RESULT_EVIDENCE_INVALID', 'outer shell result evidence destination was invalid');
+  }
+  const name = `outer-shell-result-${requestIndex}.json`;
+  const bytes = Buffer.from(`${JSON.stringify({ schemaVersion: 1, requestIndex, projection })}\n`);
+  if (bytes.length > OUTER_RESULT_EVIDENCE_LIMIT) {
+    throw fault('NATIVE_RESULT_EVIDENCE_BUDGET', 'outer shell result evidence exceeded its standalone bound');
+  }
+  await write(join(directory, name), bytes, { mode: 0o600, flag: 'wx' });
+  return { name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+export async function inspectOuterShellResultEvidence(directory, { openFile = open } = {}) {
+  const files = [];
+  for (let requestIndex = 1; requestIndex <= 3; requestIndex++) {
+    const name = `outer-shell-result-${requestIndex}.json`;
+    const path = join(directory, name);
+    let file;
+    try { file = await openFile(path, constants.O_RDONLY | constants.O_NOFOLLOW |
+      constants.O_NONBLOCK | LINUX_O_CLOEXEC); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    try {
+      const before = await file.stat({ bigint: true });
+      if (!before.isFile() || before.nlink !== 1n ||
+          before.uid !== BigInt(process.getuid()) || before.size < 1n ||
+          before.size > BigInt(OUTER_RESULT_EVIDENCE_LIMIT)) {
+        throw fault('NATIVE_RESULT_EVIDENCE_INVALID', 'outer shell result evidence file identity was invalid');
+      }
+      const bytes = Buffer.alloc(Number(before.size) + 1);
+      let length = 0;
+      while (length < bytes.length) {
+        const { bytesRead } = await file.read(bytes, length, bytes.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      const after = await file.stat({ bigint: true });
+      if (length !== Number(before.size) || !after.isFile() ||
+          ['dev', 'ino', 'uid', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs']
+            .some(key => before[key] !== after[key])) {
+        throw fault('NATIVE_RESULT_EVIDENCE_INVALID', 'outer shell result evidence changed while read');
+      }
+      let parsed;
+      try { parsed = JSON.parse(bytes.subarray(0, length).toString('utf8')); }
+      catch { throw fault('NATIVE_RESULT_EVIDENCE_INVALID', 'outer shell result evidence JSON was invalid'); }
+      if (parsed?.schemaVersion !== 1 || parsed.requestIndex !== requestIndex ||
+          !parsed.projection || typeof parsed.projection !== 'object' ||
+          Array.isArray(parsed.projection)) {
+        throw fault('NATIVE_RESULT_EVIDENCE_INVALID', 'outer shell result evidence identity was invalid');
+      }
+      files.push({ name, bytes: length,
+        sha256: createHash('sha256').update(bytes.subarray(0, length)).digest('hex') });
+    } finally {
+      await file.close();
+    }
+  }
+  return files;
 }
 
 export function shellTextEvents(text = 'Fixture shell result observed.',
@@ -1046,7 +1127,8 @@ export function shellTextEvents(text = 'Fixture shell result observed.',
 export async function startShellProvider(forbiddenPort, command, {
   makeServer = createServer, waitListen = listen, shut = close,
   readFileSchemaOnly = false, readFileProbe = false, protectedRead = false, dummyAuthRead = false,
-  outerOnly = false,
+  outerOnly = false, resultEvidenceDir = null,
+  persistResultEvidence = persistOuterShellResultEvidence,
   workspace, targetPath,
   classifyProtectedRaw,
 } = {}) {
@@ -1405,12 +1487,25 @@ export async function startShellProvider(forbiddenPort, command, {
           throw fault('NATIVE_READ_FILE_RESULT_REPLAY', 'another native result arrived during classification');
         }
         if (state.main === 'call-issued') {
-          if (outerOnly) summary.resultEnvelope = shellResultEnvelopeShape(parsed,
-            issuanceAtAdmission, command);
+          if (outerOnly) state.main = 'shell-result-classifying';
+          const projection = outerOnly ? shellResultEnvelopeShape(parsed,
+            issuanceAtAdmission, command) : null;
+          if (outerOnly) {
+            try { summary.resultEvidence = await persistResultEvidence(projection,
+              summary.responseIndex, resultEvidenceDir); }
+            catch (error) { summary.resultEvidenceError = error.code ?? 'NATIVE_RESULT_EVIDENCE_WRITE_FAILED'; }
+          }
+          if (state.failed) throw fault('NATIVE_REQUEST_REJECTED',
+            'another native request failed during shell result classification');
           if (!matchingShellResult(parsed)) {
-            summary.resultEnvelope ??= shellResultEnvelopeShape(parsed, issuanceAtAdmission, command);
+            if (!outerOnly) summary.resultEnvelope = shellResultEnvelopeShape(parsed,
+              issuanceAtAdmission, command);
             throw fault('NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN', 'native result envelope differs from reviewed call identity');
           }
+          if (outerOnly && !summary.resultEvidence) {
+            throw fault('NATIVE_RESULT_EVIDENCE_WRITE_FAILED', 'outer shell result evidence was not persisted');
+          }
+          if (outerOnly) summary.resultEnvelope = projection;
           const events = shellTextEvents();
           const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
           const outputBytes = Buffer.byteLength(output);
@@ -1426,6 +1521,9 @@ export async function startShellProvider(forbiddenPort, command, {
           response.writeHead(200, { 'content-type': 'text/event-stream' });
           response.end(output);
           return;
+        }
+        if (outerOnly && state.main === 'shell-result-classifying') {
+          throw fault('NATIVE_TOOL_RESULT_REPLAY', 'another shell result arrived during classification');
         }
         throw fault('NATIVE_REQUEST_UNCLASSIFIED', 'native request is neither reviewed stream');
       } catch (error) {
@@ -1842,6 +1940,7 @@ export async function guestShellRun(config) {
       shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
     provider = await startShellProvider(config.hostPort, command,
       { readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly,
+        ...(outerOnly ? { resultEvidenceDir: GUEST_HOME } : {}),
         workspace, targetPath,
         ...(boundaryRead ? { classifyProtectedRaw: async raw => {
           process.stdout.write(`${JSON.stringify({ kind: 'guest_protected_raw',
@@ -3449,6 +3548,12 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
   let protectedMarker;
   let dummyAuthControl;
   let dummyAuthMarker;
+  const retainOuterResultEvidence = async () => {
+    if (!outerOnly || evidence.outerResultEvidence || evidence.outerResultEvidenceError) return;
+    try { evidence.outerResultEvidence = await inspectOuterShellResultEvidence(join(root, 'home')); }
+    catch (error) { evidence.outerResultEvidenceError = { code: error.code ?? error.name,
+      message: String(error.message).slice(0, 200) }; }
+  };
   try {
     const workspace = join(root, 'workspace');
     const home = join(root, 'home');
@@ -3619,6 +3724,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     evidence.completion = { code: done.code, signal: done.signal, timedOut: done.timedOut,
       overflow: done.overflow, statusClosed: done.statusClosed, statusLines: done.statusLines,
       output: done.output, stderr: done.stderr };
+    await retainOuterResultEvidence();
     const expectedOutput = held && !evidence.earlyGuestFailure ? 4 : 3;
     if (done.output.length === expectedOutput) {
       try {
@@ -3776,6 +3882,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         evidence.completion ??= { code: done.code, signal: done.signal, timedOut: done.timedOut,
           overflow: done.overflow, statusClosed: done.statusClosed, statusLines: done.statusLines,
           output: done.output, stderr: done.stderr };
+        await retainOuterResultEvidence();
         if (captured && !stopAttempted) {
           try {
             const terminal = parseBubblewrapStatus(done.statusLines);
@@ -3787,6 +3894,9 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         }
       } catch { /* retained root and unconfirmed stop */ }
     }
+    // A timed-out or rejected completion can still leave a fully written structural artifact.
+    // This snapshot is evidence only; it does not imply a stopped guest or a stable final file.
+    await retainOuterResultEvidence();
     if (captured) try { await captured.fd.close(); } catch { /* retained root */ }
     if (sentinel) try { await sentinel.close(); } catch { /* retained root */ }
   }

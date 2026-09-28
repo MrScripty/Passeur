@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, open, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -20,7 +20,7 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   qualifyNativeProtectedRead, qualifyNativeProtectedSymlinkRead, qualifyNativeProtectedProcRead,
   qualifyNativeDummyAuthRead,
   fixedBashCall, bashCallEvents, shellTextEvents,
-  shellResultEnvelopeShape,
+  shellResultEnvelopeShape, persistOuterShellResultEvidence, inspectOuterShellResultEvidence,
   fixedNoReminderPayload, reminderCallEvents,
   approvalSummary, validateShellReady, validateShellOutcome, validateReadFileSchemaOutcome,
   validateReadFileOutcome, qualifyNativeShell, qualifyNativeReadFileSchema, qualifyNativeReadFile,
@@ -1185,11 +1185,14 @@ test('third protected skill while result and second reminder wait aborts both re
 });
 
 async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readFileProbe = false,
-  protectedRead = false, dummyAuthRead = false, targetPath, classifyProtectedRaw } = {}) {
+  protectedRead = false, dummyAuthRead = false, outerOnly = false,
+  resultEvidenceDir = null, persistResultEvidence, targetPath, classifyProtectedRaw } = {}) {
   let handle;
   const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
   const provider = await startShellProvider(31001, command, {
-    readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, targetPath, classifyProtectedRaw,
+    readFileSchemaOnly, readFileProbe, protectedRead, dummyAuthRead, outerOnly,
+    resultEvidenceDir, ...(persistResultEvidence ? { persistResultEvidence } : {}),
+    targetPath, classifyProtectedRaw,
     workspace: '/tmp/fixture/workspace',
     makeServer: callback => { handle = callback; return {}; },
     waitListen: async () => 31002, shut: async () => { if (onShut) await onShut(handle); },
@@ -2071,6 +2074,122 @@ test('outer shell result discovery records bounded structure and issued refs wit
   assert.equal(shape.items[1].outputMarkers, null);
   assert.equal(JSON.stringify(shape).includes(secret), false);
   assert.equal(shellResultEnvelopeShape(body, { main: 'unseen' }, command).previousResponse, 'other');
+  const unknownName = structuredClone(body);
+  unknownName.input[0].name = secret;
+  const unknownShape = shellResultEnvelopeShape(unknownName, { main: 'call-issued' }, command);
+  assert.equal(unknownShape.items[0].nameClass, 'other');
+  assert.equal(unknownShape.items[0].nameLength, secret.length);
+  assert.equal(unknownShape.items[0].nameSha256, createHash('sha256').update(secret).digest('hex'));
+  assert.equal(JSON.stringify(unknownShape).includes(secret), false);
+  const objectArgs = structuredClone(body);
+  objectArgs.input[0].arguments = { command, description: 'Disposable native shell qualification' };
+  const objectShape = shellResultEnvelopeShape(objectArgs, { main: 'call-issued' }, command);
+  assert.equal(objectShape.items[0].argumentsType, 'object');
+  assert.equal(objectShape.items[0].argumentsBytes,
+    Buffer.byteLength(JSON.stringify(objectArgs.input[0].arguments)));
+  assert.equal(objectShape.items[0].argumentsExactFixed, true);
+});
+
+test('outer shell unknown result persists standalone redacted evidence before original rejection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-shell-envelope-'));
+  const secret = 'sk_test_12345_SUPPOSED_SECRET';
+  const h = await nativeProviderHarness({ outerOnly: true, resultEvidenceDir: root });
+  try {
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    const body = { ...shellResultRequest(), previous_response_id: undefined,
+      input: [
+        { type: 'message', role: 'developer', content: secret },
+        { type: 'message', role: 'user', content: secret },
+        { type: 'function_call', id: 'fc_native_shell_1', call_id: 'call_native_shell_1',
+          name: 'muse.bash', arguments: JSON.stringify({ command: h.command,
+            description: 'Disposable native shell qualification' }) },
+        { type: 'function_call_output', call_id: 'call_native_shell_1', output: secret },
+      ] };
+    assert.equal((await h.post(body)).status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+    const summary = h.provider.requests[1];
+    assert.equal(summary.resultEnvelope, undefined);
+    assert.equal(summary.resultEvidence.name, 'outer-shell-result-2.json');
+    const bytes = await readFile(join(root, summary.resultEvidence.name));
+    assert.ok(bytes.length <= 8192);
+    assert.equal(bytes.includes(secret), false);
+    const saved = JSON.parse(bytes);
+    assert.equal(saved.schemaVersion, 1);
+    assert.equal(saved.requestIndex, 2);
+    assert.equal(saved.projection.inputCount, 4);
+    assert.deepEqual(saved.projection.items.map(item => item.type),
+      ['message', 'message', 'function_call', 'function_call_output']);
+    assert.equal(saved.projection.items[2].nameClass, 'muse.bash');
+    assert.equal(saved.projection.items[2].argumentsExactFixed, true);
+    assert.equal(saved.projection.items[3].outputBytes, Buffer.byteLength(secret));
+    assert.equal(saved.projection.items[3].outputSha256,
+      createHash('sha256').update(secret).digest('hex'));
+    assert.deepEqual(await inspectOuterShellResultEvidence(root), [summary.resultEvidence]);
+  } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('outer shell evidence failure preserves the original unknown-envelope error', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-shell-envelope-fail-'));
+  const h = await nativeProviderHarness({ outerOnly: true, resultEvidenceDir: join(root, 'missing') });
+  try {
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    const unknown = shellResultRequest({ input: [{ type: 'function_call_output',
+      call_id: 'call_native_shell_1', output: { private: 'secret' } }] });
+    assert.equal((await h.post(unknown)).status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+    assert.equal(h.provider.requests[1].resultEvidence, undefined);
+    assert.equal(typeof h.provider.requests[1].resultEvidenceError, 'string');
+  } finally { await h.provider.close(); await rm(root, { recursive: true, force: true }); }
+  const dir = await mkdtemp(join(tmpdir(), 'passeur-shell-envelope-bound-'));
+  try {
+    await assert.rejects(persistOuterShellResultEvidence({ arbitrary: 'x'.repeat(9000) }, 1, dir),
+      { code: 'NATIVE_RESULT_EVIDENCE_BUDGET' });
+    assert.deepEqual(await readdir(dir), []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('outer shell evidence inspection rejects links, oversized files and in-flight replacement', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-shell-evidence-inspect-'));
+  const name = 'outer-shell-result-1.json';
+  const path = join(root, name);
+  try {
+    await symlink('/dev/null', path);
+    await assert.rejects(inspectOuterShellResultEvidence(root));
+    await rm(path);
+    await writeFile(path, 'x'.repeat(8193));
+    await assert.rejects(inspectOuterShellResultEvidence(root),
+      { code: 'NATIVE_RESULT_EVIDENCE_INVALID' });
+    await rm(path);
+    await persistOuterShellResultEvidence({ items: [] }, 1, root);
+    await assert.rejects(inspectOuterShellResultEvidence(root, {
+      openFile: async (candidate, flags) => {
+        const file = await open(candidate, flags);
+        await writeFile(candidate, 'x'.repeat(32));
+        return file;
+      },
+    }), { code: 'NATIVE_RESULT_EVIDENCE_INVALID' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('outer shell result reservation prevents a 200 after a concurrent rejected request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-shell-envelope-race-'));
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = await nativeProviderHarness({ outerOnly: true, resultEvidenceDir: root,
+    persistResultEvidence: async (...args) => { await gate;
+      return persistOuterShellResultEvidence(...args); } });
+  try {
+    assert.equal((await h.post(mainNativeRequest())).status, 200);
+    const first = h.post(shellResultRequest());
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.provider.state.main, 'shell-result-classifying');
+    assert.equal((await h.post(shellResultRequest())).status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_TOOL_RESULT_REPLAY');
+    release();
+    assert.equal((await first).status, 422);
+    assert.equal(h.provider.requests.some(request => request.kind === 'matching_tool_result'), false);
+    assert.equal((await inspectOuterShellResultEvidence(root)).length, 1);
+  } finally { release(); await h.provider.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('main call, result and reminder accept independent orders and overlap', async () => {
@@ -3171,7 +3290,7 @@ test('native shell controller verifies effects, stop and durable approval termin
     workspaceReportedWritten = true, dummyAuthVisible = false, guestFailure = false,
     finishedReject = false, terminalInvalid = false, lateGuestFailure = false,
     approvalLog = 'abort', held = false, outerOnly = false, wrongNativeArgs = false,
-    outerResultMismatch = false,
+    outerResultMismatch = false, persistResult = false,
     heldInput = null, heldDecided = false } = {}) => {
     let fixtureRoot;
     let fixtureReady;
@@ -3266,15 +3385,21 @@ test('native shell controller verifies effects, stop and durable approval termin
           code: 'NATIVE_REQUEST_BUDGET_EXCEEDED', message: 'late provider request after provisional outcome',
           providerRequests: [...outcome.providerRequests,
             { method: 'POST', path: '/responses', rejection: 'NATIVE_REQUEST_BUDGET_EXCEEDED' }] } : outcome;
-        const finished = finishedReject ? Promise.reject(Object.assign(new Error('host exit timed out'),
-          { code: 'PROBE_DEADLINE' })) : Promise.resolve({ code: guestFailure || lateGuestFailure ? 1 : 0, signal: null,
+        const evidenceWritten = persistResult ? persistOuterShellResultEvidence(
+          shellResultEnvelopeShape({ model: 'fixture-native-shell', input: [
+            { type: 'message', role: 'developer', content: 'private prompt' },
+            { type: 'function_call_output', call_id: 'call_native_shell_1', output: 'private output' },
+          ] }, { main: 'call-issued' }, shellProbeCommand(config.workspace, config.protectedRoot,
+            'protected-canary')), 2, join(fixtureRoot, 'home')) : Promise.resolve();
+        const finished = finishedReject ? evidenceWritten.then(() => { throw Object.assign(
+          new Error('host exit timed out'), { code: 'PROBE_DEADLINE' }); }) : Promise.resolve({ code: guestFailure || lateGuestFailure ? 1 : 0, signal: null,
           timedOut: false, overflow: false, statusClosed: true,
           statusLines: terminalInvalid ? ['{"child-pid":101}', 'bad-json'] :
             ['{"child-pid":101}', `{"exit-code":${guestFailure || lateGuestFailure ? 1 : 0}}`], stderr: '',
           output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
             ...(held || outerOnly) && !guestFailure ? [JSON.stringify({ kind: 'guest_handoff', result: handoff })] : [],
             JSON.stringify(guestFailure ? outcome : { kind: 'guest_outcome', result: outcome }),
-            JSON.stringify(finalOutcome)] });
+            JSON.stringify(finalOutcome)] }).then(async done => { await evidenceWritten; return done; });
         finished.catch(() => undefined);
         return { pid: 100, ready: Promise.resolve(ready),
           liveStatus: Promise.resolve({ child: 101, exit: null }), outcome: Promise.resolve(outcome),
@@ -3373,10 +3498,13 @@ test('native shell controller verifies effects, stop and durable approval termin
       requirementId: handoff.approval.requirementId, choiceId: 'allow_once' }) });
   assert.equal(outerVisible.kind, 'native_shell_effect_observed');
   assert.equal(outerVisible.classified.dummyAuthVisible, true);
-  const outerPrimary = await run({ outerOnly: true, guestFailure: true, stopFails: true });
+  const outerPrimary = await run({ outerOnly: true, guestFailure: true,
+    stopFails: true, persistResult: true });
   assert.equal(outerPrimary.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(outerPrimary.evidence.primaryGuestFailure.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(outerPrimary.evidence.stopError.code, 'STOP_SURVIVOR');
+  assert.equal(outerPrimary.evidence.outerResultEvidence.length, 1);
+  assert.equal(outerPrimary.evidence.outerResultEvidence[0].name, 'outer-shell-result-2.json');
   assert.equal(outerPrimary.testSentDecision, undefined);
   for (const approvalLog of ['absent', 'mismatch', 'ambiguous', 'incomplete']) {
     const unknown = await run({ approval: true, approvalLog });
@@ -3404,6 +3532,13 @@ test('native shell controller verifies effects, stop and durable approval termin
   assert.equal(completionFailed.evidence.primaryGuestFailure.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(completionFailed.evidence.secondaryError.code, 'PROBE_DEADLINE');
   assert.equal(completionFailed.stopProof, 'unconfirmed');
+  const outerCompletionFailed = await run({ outerOnly: true, guestFailure: true,
+    finishedReject: true, persistResult: true });
+  assert.equal(outerCompletionFailed.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
+  assert.equal(outerCompletionFailed.evidence.secondaryError.code, 'PROBE_DEADLINE');
+  assert.equal(outerCompletionFailed.stopProof, 'unconfirmed');
+  assert.equal(outerCompletionFailed.evidence.outerResultEvidence[0].name,
+    'outer-shell-result-2.json');
   const terminalFailed = await run({ guestFailure: true, terminalInvalid: true });
   assert.equal(terminalFailed.code, 'NATIVE_TOOL_RESULT_ENVELOPE_UNKNOWN');
   assert.equal(terminalFailed.evidence.terminalError.code, 'BWRAP_STATUS_INVALID');
