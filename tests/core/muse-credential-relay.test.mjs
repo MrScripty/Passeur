@@ -398,6 +398,52 @@ test('native schema type rejection reports bounded shape without schema values',
   }
 });
 
+test('only the reviewed first function admits a distinct six-type depth-one union', () => {
+  const secret = 'secret-credential-or-property-name';
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const six = ['object', 'array', 'string', 'number', 'boolean', 'null'];
+  const tools = (parameters, functionIndex = 0, count = 25) => [{ type: 'namespace',
+    name: 'muse', tools: Array.from({ length: count }, (_, index) => ({ type: 'function',
+      name: count === 1 ? 'submit_reminder_decision' : index === 1 ? 'read_file' : `native_${index}`,
+      parameters: index === functionIndex ? parameters : { type: 'object' } })) }];
+  const payload = entries => body({ model: nativePolicy.model,
+    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools: entries });
+  const atDepthOne = type => ({ type: 'object', properties: { [secret]: { type } } });
+  for (const type of [six, six.slice(0, 5), six.slice(0, 3)]) {
+    assert.equal(requestDecision(post, payload(tools(atDepthOne(type))), nativePolicy).ok, true);
+  }
+  const cases = [
+    [tools(atDepthOne([...six, 'integer'])), 0, 1, 7, 0,
+      ['object', 'array', 'string', 'integer', 'number', 'boolean', 'null']],
+    [tools(atDepthOne([...six.slice(0, 5), 'string'])), 0, 1, 6, 0,
+      ['object', 'array', 'string', 'number', 'boolean']],
+    [tools(atDepthOne(['object', 'object'])), 0, 1, 2, 0, ['object']],
+    [tools(atDepthOne([...six.slice(0, 5), secret])), 0, 1, 6, 1, six.slice(0, 5)],
+    [tools(atDepthOne([...six.slice(0, 5), 17])), 0, 1, 6, 1, six.slice(0, 5)],
+    [tools(atDepthOne([])), 0, 1, 0, 0, []],
+    [tools({ type: six }), 0, 0, 6, 0, six],
+    [tools({ type: 'object', properties: { [secret]: atDepthOne(six.slice(0, 4)) } }),
+      0, 2, 4, 0, six.slice(0, 4)],
+    [tools(atDepthOne(six.slice(0, 4)), 1), 1, 1, 4, 0, six.slice(0, 4)],
+    [tools(atDepthOne(six.slice(0, 4)), 0, 1), 0, 1, 4, 0, six.slice(0, 4)],
+  ];
+  for (const [entries, functionIndex, depth, memberCount, unknownMemberCount,
+    recognizedTypes] of cases) {
+    const requestBody = payload(entries);
+    assert.deepEqual(requestDecision(post, requestBody, nativePolicy),
+      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
+    const projection = nativeRejectionProjection(requestBody,
+      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
+    assert.deepEqual(projection.tools.failure, { code: 'SCHEMA_TYPE', functionIndex,
+      schemaType: { depth, class: 'array', memberCount, moreMembers: false,
+        recognizedTypes, unknownMemberCount } });
+    assert.equal(JSON.stringify(projection).includes(secret), false);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+  }
+});
+
 test('guest headers and auth cannot select upstream authority or identity', () => {
   for (const headers of [
     { authorization: 'Bearer external' }, { cookie: 'session=anything' },
