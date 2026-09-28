@@ -400,25 +400,25 @@ export function reminderCallEvents(payload) {
   ];
 }
 
-export function mainSchemaDiscovery(body) {
+function selectedToolSchemaDiscovery(body, { name, index, digest, marker }) {
   const namespace = body?.tools?.length === 1 ? body.tools[0] : null;
   const functions = namespace?.tools;
   const inputText = JSON.stringify(body?.input);
   if (body?.model !== SHELL_MODEL || namespace?.type !== 'namespace' || namespace.name !== 'muse' ||
       !Array.isArray(functions) || functions.length !== 25 ||
       functions.some(tool => tool?.type !== 'function' || typeof tool.name !== 'string') ||
-      body.previous_response_id != null || !inputText?.includes('NATIVE_SHELL_PROBE') ||
+      body.previous_response_id != null || !inputText?.includes(marker) ||
       (Array.isArray(body.input) && body.input.some(item => item?.type === 'function_call_output'))) return null;
   const digestName = name => createHash('sha256').update(name).digest('hex');
-  const entries = functions.map((tool, index) => ({ index, name: tool.name === 'bash' ? 'bash' : '[other]',
+  const entries = functions.map((tool, index) => ({ index, name: tool.name === name ? name : '[other]',
     nameLength: Buffer.byteLength(tool.name), nameSha256: digestName(tool.name),
     parameterKeys: tool.parameters && typeof tool.parameters === 'object' && !Array.isArray(tool.parameters) ?
       Object.keys(tool.parameters).filter(key => ['type', 'properties', 'required', 'additionalProperties',
         'anyOf', 'oneOf', 'allOf'].includes(key)) : [] }));
-  const bashIndexes = functions.flatMap((tool, index) => tool.name === 'bash' ? [index] : []);
-  const identityValid = bashIndexes.length === 1 && bashIndexes[0] === 11 &&
-    digestName(functions[11].name) === '37d2b12d5d9abc2a364ef9448767ee03938e383c0284193477dc7618f4b7c6c2';
-  const selectedTool = identityValid ? functions[11] : null;
+  const matchingIndexes = functions.flatMap((tool, position) => tool.name === name ? [position] : []);
+  const identityValid = matchingIndexes.length === 1 && matchingIndexes[0] === index &&
+    digestName(functions[index].name) === digest;
+  const selectedTool = identityValid ? functions[index] : null;
   const safeIdentifier = value => value === 'max_output_tokens' || typeof value === 'string' &&
     /^[A-Za-z][A-Za-z0-9_]{0,47}$/.test(value) &&
     !/(?:secret|token|password|credential|authorization|bearer|cookie|header|api_key|^sk_)/i.test(value);
@@ -501,13 +501,14 @@ export function mainSchemaDiscovery(body) {
     const fields = Object.keys(selectedTool);
     if (fields.some(key => !['type', 'name', 'parameters', 'strict', 'description'].includes(key)) ||
         selectedTool.strict !== undefined && typeof selectedTool.strict !== 'boolean') context.unsupported++;
-    selected = { index: 11, name: 'bash', type: 'function',
+    selected = { index, name, type: 'function',
       strict: selectedTool.strict === true ? true : selectedTool.strict === false ? false :
         selectedTool.strict === undefined ? 'unspecified' : 'invalid',
       schema: project(selectedTool.parameters) };
   }
   const summary = { namespace: 'muse', functionCount: functions.length, omittedFunctions: 0,
-    functions: entries, bashCount: bashIndexes.length, identityValid, selected,
+    functions: entries, [`${name === 'bash' ? 'bash' : 'readFile'}Count`]: matchingIndexes.length,
+    identityValid, selected,
     unsupportedCount: context.unsupported, omittedConstraints: context.omitted,
     selectedComplete: identityValid && context.unsupported === 0 && context.omitted === 0 };
   if (Buffer.byteLength(JSON.stringify(summary)) > 16_384) {
@@ -517,6 +518,28 @@ export function mainSchemaDiscovery(body) {
   }
   if (Buffer.byteLength(JSON.stringify(summary)) > 16_384) {
     summary.functions = entries.map(({ index, name, nameSha256 }) => ({ index, name, nameSha256 }));
+  }
+  return summary;
+}
+
+export function mainSchemaDiscovery(body) {
+  return selectedToolSchemaDiscovery(body, { name: 'bash', index: 11,
+    digest: '37d2b12d5d9abc2a364ef9448767ee03938e383c0284193477dc7618f4b7c6c2',
+    marker: 'NATIVE_SHELL_PROBE' });
+}
+
+export function readFileSchemaDiscovery(body) {
+  const summary = selectedToolSchemaDiscovery(body, { name: 'read_file', index: 1,
+    digest: 'c9f8123bd2726fc2414267256101446c45647b4754b1bad58feaf205125b4c96',
+    marker: 'NATIVE_READ_FILE_SCHEMA_PROBE' });
+  if (summary?.identityValid) {
+    const parameters = body.tools[0].tools[1].parameters;
+    const names = parameters?.properties && typeof parameters.properties === 'object' &&
+      !Array.isArray(parameters.properties) ? Object.keys(parameters.properties) : [];
+    if (parameters?.type !== 'object' || names.length === 0 ||
+        !Array.isArray(parameters.required) ||
+        parameters.required.some(required => !names.includes(required)) ||
+        !Object.hasOwn(parameters, 'additionalProperties')) summary.selectedComplete = false;
   }
   return summary;
 }
@@ -604,25 +627,25 @@ export function shellResultEnvelopeShape(body) {
     omittedItems: Array.isArray(input) ? Math.max(0, input.length - 4) : 0, items };
 }
 
-export function shellTextEvents() {
-  const text = 'Fixture shell result observed.';
+export function shellTextEvents(text = 'Fixture shell result observed.',
+  responseId = SHELL_TEXT_RESPONSE, messageId = 'msg_native_shell_2') {
   const part = value => ({ type: 'output_text', text: value, annotations: [] });
-  const textItem = status => ({ type: 'message', id: 'msg_native_shell_2', role: 'assistant',
+  const textItem = status => ({ type: 'message', id: messageId, role: 'assistant',
     status, content: status === 'completed' ?
       [part(text)] : [] });
-  const frame = (status, output) => ({ id: SHELL_TEXT_RESPONSE, object: 'response',
+  const frame = (status, output) => ({ id: responseId, object: 'response',
     model: SHELL_MODEL, status, output });
   return [
     { type: 'response.created', sequence_number: 1, response: frame('in_progress', []) },
     { type: 'response.output_item.added', sequence_number: 2, output_index: 0, item: textItem('in_progress') },
     { type: 'response.content_part.added', sequence_number: 3, output_index: 0,
-      item_id: 'msg_native_shell_2', content_index: 0, part: part('') },
+      item_id: messageId, content_index: 0, part: part('') },
     { type: 'response.output_text.delta', sequence_number: 4, output_index: 0,
-      item_id: 'msg_native_shell_2', content_index: 0, delta: text },
+      item_id: messageId, content_index: 0, delta: text },
     { type: 'response.output_text.done', sequence_number: 5, output_index: 0,
-      item_id: 'msg_native_shell_2', content_index: 0, text },
+      item_id: messageId, content_index: 0, text },
     { type: 'response.content_part.done', sequence_number: 6, output_index: 0,
-      item_id: 'msg_native_shell_2', content_index: 0, part: part(text) },
+      item_id: messageId, content_index: 0, part: part(text) },
     { type: 'response.output_item.done', sequence_number: 7, output_index: 0, item: textItem('completed') },
     { type: 'response.completed', sequence_number: 8, response: {
       ...frame('completed', [textItem('completed')]),
@@ -631,7 +654,7 @@ export function shellTextEvents() {
 }
 
 export async function startShellProvider(forbiddenPort, command, {
-  makeServer = createServer, waitListen = listen, shut = close,
+  makeServer = createServer, waitListen = listen, shut = close, readFileSchemaOnly = false,
 } = {}) {
   const requests = [];
   const state = { main: 'unseen', reminder: 'unseen', failed: false, admissionClosed: false,
@@ -721,7 +744,8 @@ export async function startShellProvider(forbiddenPort, command, {
         const reminder = recognizedReminderSchema(parsed);
         if (reminder) {
           if (state.reminder !== 'unseen' || parsed.previous_response_id != null ||
-              !JSON.stringify(parsed.input)?.includes('NATIVE_SHELL_PROBE') ||
+              !JSON.stringify(parsed.input)?.includes(readFileSchemaOnly ?
+                'NATIVE_READ_FILE_SCHEMA_PROBE' : 'NATIVE_SHELL_PROBE') ||
               (Array.isArray(parsed.input) && parsed.input.some(item => item?.type === 'function_call_output'))) {
             throw fault('NATIVE_REMINDER_SEQUENCE_INVALID', 'duplicate or correlated reminder request');
           }
@@ -743,10 +767,28 @@ export async function startShellProvider(forbiddenPort, command, {
           response.end(output);
           return;
         }
-        const main = mainSchemaDiscovery(parsed);
+        const main = readFileSchemaOnly ? readFileSchemaDiscovery(parsed) : mainSchemaDiscovery(parsed);
         if (main) {
           if (state.main !== 'unseen') throw fault('NATIVE_MAIN_REPLAY', 'duplicate main request');
           summary.mainSchema = main;
+          if (readFileSchemaOnly) {
+            const events = shellTextEvents('Schema observed; no file tool was called.',
+              'resp_native_read_file_schema_1', 'msg_native_read_file_schema_1');
+            const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+            const outputBytes = Buffer.byteLength(output) + Buffer.byteLength(JSON.stringify(main));
+            if (state.outputBytes + outputBytes > LIMIT) {
+              throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'read_file schema evidence exceeds output budget');
+            }
+            state.main = 'schema-observed';
+            state.outputBytes += outputBytes;
+            summary.kind = 'native_read_file_schema';
+            summary.responseId = 'resp_native_read_file_schema_1';
+            summary.schemaSha256 = main.selected &&
+              createHash('sha256').update(JSON.stringify(main.selected)).digest('hex');
+            response.writeHead(200, { 'content-type': 'text/event-stream' });
+            response.end(output);
+            return;
+          }
           const selected = fixedBashCall(parsed, command);
           const events = bashCallEvents(selected.arguments);
           const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
@@ -1154,6 +1196,7 @@ export async function guestShellRun(config) {
   const native = `${GUEST_RUNTIME}/muse-bin-${VERSION}`;
   const namespace = await readlink('/proc/self/ns/net');
   const held = config.phase === 'held-shell';
+  const readFileSchemaOnly = config.phase === 'read-file-schema';
   let provider;
   let host;
   let stage = 'network';
@@ -1168,7 +1211,7 @@ export async function guestShellRun(config) {
     const loopback = spawnSync('/usr/sbin/ip', ['-o', 'link', 'show', 'lo'], { encoding: 'utf8', timeout: 2_000 });
     if (!loopbackReady(loopback)) throw fault('GUEST_LOOPBACK_UNAVAILABLE', 'guest loopback unavailable');
     const command = shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
-    provider = await startShellProvider(config.hostPort, command);
+    provider = await startShellProvider(config.hostPort, command, { readFileSchemaOnly });
     const sentinel = await tcpProbe('127.0.0.1', config.hostPort);
     const external = await tcpProbe('203.0.113.1', 443);
     if (sentinel.kind === 'connected' || !classifyNoRoute(external)) {
@@ -1283,7 +1326,9 @@ export async function guestShellRun(config) {
     commands.push('turn/start');
     const ack = await timeout('turn/start', initialized.connection.command('turn/start', {
       sessionId: metadata.sessionId,
-      input: [{ type: 'text', text: 'NATIVE_SHELL_PROBE: Use the advertised bash tool once to run the disposable command. Report its result.' }],
+      input: [{ type: 'text', text: readFileSchemaOnly ?
+        'NATIVE_READ_FILE_SCHEMA_PROBE: Describe the advertised read_file arguments. Do not call any tool.' :
+        'NATIVE_SHELL_PROBE: Use the advertised bash tool once to run the disposable command. Report its result.' }],
     }, { maxAttempts: 1 }));
     if (ack.status !== 'accepted' || ack.disposition !== 'started' || ack.startedNewTurn !== true ||
         typeof ack.turnId !== 'string') {
@@ -1296,12 +1341,16 @@ export async function guestShellRun(config) {
     if (provider.state.primaryCode) {
       throw fault(provider.state.primaryCode, 'guest provider rejected the native Responses request');
     }
-    if (event.kind === 'turn_completed' && provider.state.main !== 'result-accepted') {
+    if (event.kind === 'turn_completed' && provider.state.main !==
+        (readFileSchemaOnly ? 'schema-observed' : 'result-accepted')) {
       const late = await Promise.race([provider.rejection, pause(500).then(() => null)]);
       if (late) throw fault(late.code, 'guest provider rejected the native Responses request');
       throw fault('NATIVE_TOOL_RESULT_MISSING', 'native turn ended without a correlated bash result');
     }
     let pending = null;
+    if (readFileSchemaOnly && event.kind !== 'turn_completed') {
+      throw fault('NATIVE_READ_FILE_SCHEMA_EVENT_INVALID', 'schema-only turn requested an approval or tool');
+    }
     if (event.kind === 'approval') {
       pending = await timeout('approval/listPending', initialized.connection.request('approval/listPending',
         { sessionId: metadata.sessionId }));
@@ -1372,7 +1421,8 @@ export async function guestShellRun(config) {
     if (provider.state.primaryCode) {
       throw fault(provider.state.primaryCode, 'guest provider rejected a request before outcome publication');
     }
-    const result = { kind: heldResult?.kind === 'decided' ? 'native_shell_held_decided' :
+    const result = { kind: readFileSchemaOnly ? 'native_read_file_schema_outcome' :
+      heldResult?.kind === 'decided' ? 'native_shell_held_decided' :
       event.kind === 'approval' ? 'native_shell_approval_pending' : 'guest_shell_outcome',
       stage, sessionId: metadata.sessionId, turnId: ack.turnId, turnAck: { status: ack.status,
         disposition: ack.disposition, startedNewTurn: ack.startedNewTurn }, event,
@@ -1646,7 +1696,7 @@ export function runStatusPhase(prepared, config) {
   }
   createInterface({ input: child.stdout }).on('line', line => {
     append(output, line);
-    if (['first', 'resume', 'shell', 'held-shell'].includes(config.phase) && output.length === 1) {
+    if (['first', 'resume', 'shell', 'held-shell', 'read-file-schema'].includes(config.phase) && output.length === 1) {
       try {
         const parsed = JSON.parse(line);
         if (parsed.kind !== 'guest_ready' || parsed.result?.kind !==
@@ -1672,7 +1722,7 @@ export function runStatusPhase(prepared, config) {
         handoffResolve(parsed.result);
       } catch (error) { handoffReject(error); }
     }
-    if ((config.phase === 'shell' && output.length === 2) ||
+    if ((['shell', 'read-file-schema'].includes(config.phase) && output.length === 2) ||
         (config.phase === 'held-shell' && output.length === 3)) {
       try {
         outcomeResolve(decodeShellOutcomeLine(line));
@@ -1707,7 +1757,7 @@ export function runStatusPhase(prepared, config) {
     child.once('close', (code, signal) => {
       clearTimeout(timer);
       if (output.length === 0) readyReject(fault('GUEST_OUTPUT_INVALID', 'phase exited before readiness'));
-      if (config.phase === 'shell' && output.length < 2 ||
+      if (['shell', 'read-file-schema'].includes(config.phase) && output.length < 2 ||
           config.phase === 'held-shell' && output.length < 3) {
         outcomeReject(fault('GUEST_OUTPUT_INVALID', 'shell exited before outcome'));
       }
@@ -1718,7 +1768,7 @@ export function runStatusPhase(prepared, config) {
       resolveResult({ code, signal, timedOut, overflow, output, stderr, statusLines, statusClosed });
     });
   });
-  const boundedOutcome = ['shell', 'held-shell'].includes(config.phase) ?
+  const boundedOutcome = ['shell', 'held-shell', 'read-file-schema'].includes(config.phase) ?
     timeout('shell outcome', outcome, config.phase === 'held-shell' ? HELD_DEADLINE_MS : DEADLINE_MS) : undefined;
   boundedOutcome?.catch(() => undefined);
   const boundedHandoff = config.phase === 'held-shell' ? timeout('held approval handoff', handoff) : undefined;
@@ -1729,7 +1779,7 @@ export function runStatusPhase(prepared, config) {
     liveStatus: timeout('live Bubblewrap status', liveStatus),
     statusLines: () => [...statusLines],
     release: () => { if (!released) { released = true; child.stdin.end('release\n'); } },
-    releaseTurn: () => { if (['shell', 'held-shell'].includes(config.phase) && !released) {
+    releaseTurn: () => { if (['shell', 'held-shell', 'read-file-schema'].includes(config.phase) && !released) {
       released = true; child.stdin.write('turn\n'); } },
     sendDecision: decision => { if (config.phase !== 'held-shell' || !released || decisionSent) {
       throw fault('NATIVE_HELD_DECISION_SEQUENCE', 'held decision was sent outside its one-use window');
@@ -1737,7 +1787,7 @@ export function runStatusPhase(prepared, config) {
       decisionSent = true;
       child.stdin.write(`${JSON.stringify(decision)}\n`);
     },
-    releaseShutdown: () => { if (['shell', 'held-shell'].includes(config.phase) && released && !shutdownReleased) {
+    releaseShutdown: () => { if (['shell', 'held-shell', 'read-file-schema'].includes(config.phase) && released && !shutdownReleased) {
       shutdownReleased = true; child.stdin.end('shutdown\n');
     } },
     abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } }, finished };
@@ -1748,7 +1798,7 @@ export function decodeShellOutcomeLine(line) {
   try { parsed = JSON.parse(line); }
   catch { throw fault('GUEST_OUTPUT_INVALID', 'shell outcome JSON invalid'); }
   if (parsed?.kind === 'guest_outcome' &&
-      ['guest_shell_outcome', 'native_shell_approval_pending',
+      ['guest_shell_outcome', 'native_read_file_schema_outcome', 'native_shell_approval_pending',
         'native_shell_held_decided'].includes(parsed.result?.kind)) return parsed.result;
   if (parsed?.kind === 'guest_transport_error' && parsed.stage === 'native_turn' &&
       /^[A-Z][A-Z0-9_]{0,63}$/.test(parsed.code ?? '') &&
@@ -2003,6 +2053,61 @@ export function validateShellReady(ready, workspace, sentinelPort) {
     throw fault('NATIVE_SHELL_READY_INVALID', 'shell host readiness is not an idle isolated native session');
   }
   return ready;
+}
+
+export function validateReadFileSchemaOutcome(ready, outcome) {
+  const requests = outcome?.providerRequests;
+  const responses = requests?.filter(request => request.path === '/responses');
+  const main = responses?.filter(request => request.kind === 'native_read_file_schema');
+  const reminder = responses?.filter(request => request.kind === 'native_reminder_call');
+  if (outcome?.kind !== 'native_read_file_schema_outcome' ||
+      outcome.sessionId !== ready.metadata.sessionId || !outcome.turnId ||
+      outcome.turnAck?.status !== 'accepted' || outcome.turnAck?.disposition !== 'started' ||
+      outcome.turnAck?.startedNewTurn !== true ||
+      outcome.event?.kind !== 'turn_completed' || outcome.event.terminal !== 'completed' ||
+      outcome.event.turnId !== outcome.turnId || outcome.event.sessionId !== outcome.sessionId ||
+      outcome.pending !== null ||
+      outcome.commands?.join(',') !== 'session/start,session/read,turn/start' ||
+      !Array.isArray(requests) || requests.length > 7 ||
+      requests.filter(request => request.method === 'GET' && request.path === '/muse-code/models').length < 1 ||
+      requests.filter(request => request.method === 'GET').length > 4 ||
+      responses?.length !== 1 + reminder.length || main?.length !== 1 || reminder?.length > 1 ||
+      requests.some(request => request.rejection !== undefined || !(
+        request.method === 'GET' && request.path === '/muse-code/models' ||
+        request.method === 'POST' && request.path === '/responses')) ||
+      outcome.observations?.approvals?.length !== 0 || outcome.observations?.items?.length !== 0 ||
+      outcome.observations?.protocolErrors?.length !== 0 ||
+      outcome.observations?.reminders?.length > reminder.length ||
+      outcome.observations?.reminders?.some(item => item.callId !== REMINDER_CALL ||
+        item.turnId !== outcome.turnId || item.status !== 'completed') ||
+      Object.values(outcome.observations?.omitted ?? {}).some(count => count !== 0) ||
+      reminder.some(request => request.model !== SHELL_MODEL ||
+        request.responseId !== REMINDER_RESPONSE || request.itemId !== REMINDER_ITEM ||
+        request.callId !== REMINDER_CALL || request.payloadSha256 !==
+          createHash('sha256').update(JSON.stringify(REMINDER_PAYLOAD)).digest('hex')) ||
+      main[0].model !== SHELL_MODEL || main[0].responseId !== 'resp_native_read_file_schema_1' ||
+      main[0].mainSchema?.namespace !== 'muse' || main[0].mainSchema.functionCount !== 25 ||
+      !Number.isSafeInteger(main[0].mainSchema.readFileCount) ||
+      main[0].mainSchema.readFileCount < 0 || main[0].mainSchema.readFileCount > 25 ||
+      main[0].mainSchema.omittedFunctions !== 0 ||
+      typeof main[0].mainSchema.identityValid !== 'boolean' ||
+      (main[0].mainSchema.selected !== null &&
+        (main[0].mainSchema.identityValid !== true ||
+         main[0].mainSchema.selected.name !== 'read_file' ||
+         main[0].mainSchema.selected.index !== 1)) ||
+      (main[0].mainSchema.selectedComplete === true &&
+        (main[0].mainSchema.identityValid !== true ||
+         main[0].mainSchema.readFileCount !== 1 ||
+         !main[0].mainSchema.selected ||
+         main[0].mainSchema.unsupportedCount !== 0 ||
+         main[0].mainSchema.omittedConstraints !== 0 ||
+         main[0].mainSchema.selectedTruncated === true)) ||
+      main[0].schemaSha256 !== (main[0].mainSchema.selected &&
+        createHash('sha256').update(JSON.stringify(main[0].mainSchema.selected)).digest('hex'))) {
+    throw fault('NATIVE_READ_FILE_SCHEMA_OUTCOME_INVALID', 'native read_file schema observation was not isolated');
+  }
+  return { kind: main[0].mainSchema.selectedComplete ? 'native_read_file_schema_observed' :
+    'native_read_file_schema_incomplete', schema: main[0].mainSchema };
 }
 
 export function validateShellOutcome(ready, outcome) {
@@ -2393,8 +2498,9 @@ export async function readDurableApprovalLog(root, guestPath, identity) {
 export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse',
   checkBubblewrap = probeBubblewrap, stage = stageRuntime, startSentinel = startHostSentinel,
   probe = tcpProbe, launch = runStatusPhase, capture = captureHostIdentities,
-  stop = verifyHostStop, held = false, requestDecision } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'passeur-muse-native-shell-sandbox-'));
+  stop = verifyHostStop, held = false, readFileSchemaOnly = false, requestDecision } = {}) {
+  const root = await mkdtemp(join(tmpdir(), readFileSchemaOnly ?
+    'passeur-muse-read-file-schema-' : 'passeur-muse-native-shell-sandbox-'));
   let sentinel;
   let host;
   let captured;
@@ -2419,7 +2525,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     const prepared = prepareSandbox(sandboxConfig({ workspace, runtime, home, protectedRoot }), guestCommand());
     checkBubblewrap();
     stageName = 'shell_host';
-    host = launch(prepared, { phase: held ? 'held-shell' : 'shell', workspace, hostPort: sentinel.port,
+    host = launch(prepared, { phase: held ? 'held-shell' : readFileSchemaOnly ? 'read-file-schema' : 'shell',
+      workspace, hostPort: sentinel.port,
       protectedRoot, canaryToken: token });
     const [ready, liveStatus] = await Promise.all([host.ready, host.liveStatus]);
     evidence.ready = ready;
@@ -2535,12 +2642,13 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         (chosenInput && guestOutcome.held?.decision?.choice?.choiceId !== chosenInput.choiceId))) {
       throw fault('NATIVE_HELD_OUTCOME_INVALID', 'terminal held decision differed from host-supplied choice');
     }
-    const classified = held && guestOutcome.kind === 'native_shell_held_decided' ?
-      validateHeldShellOutcome(ready, guestOutcome) : validateShellOutcome(ready, guestOutcome);
+    const classified = readFileSchemaOnly ? validateReadFileSchemaOutcome(ready, guestOutcome) :
+      held && guestOutcome.kind === 'native_shell_held_decided' ?
+        validateHeldShellOutcome(ready, guestOutcome) : validateShellOutcome(ready, guestOutcome);
     const effects = await shellEffects(workspace, protectedRoot, token);
     if (!effects.protectedIntact || classified.kind === 'native_shell_effect_observed' && !effects.shellWritten ||
         classified.kind === 'native_shell_denial_observed' && !effects.shellAbsent ||
-        ['native_shell_approval_pending', 'native_shell_held_rejected'].includes(classified.kind) &&
+        (readFileSchemaOnly || ['native_shell_approval_pending', 'native_shell_held_rejected'].includes(classified.kind)) &&
           !effects.shellAbsent) {
       throw fault('NATIVE_SHELL_EFFECT_INVALID', 'workspace or protected canary contradicted native outcome');
     }
@@ -2606,11 +2714,16 @@ export async function qualifyNativeShellHeld(options = {}) {
   return qualifyNativeShell({ ...options, held: true });
 }
 
+export async function qualifyNativeReadFileSchema(options = {}) {
+  return qualifyNativeShell({ ...options, readFileSchemaOnly: true });
+}
+
 export function diagnosticMode(args) {
   if (args.length === 0) return 'idle-resume';
   if (args.length === 1 && args[0] === '--native-shell') return 'native-shell';
   if (args.length === 1 && args[0] === '--native-shell-held') return 'native-shell-held';
-  throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments, --native-shell, or --native-shell-held');
+  if (args.length === 1 && args[0] === '--native-read-file-schema') return 'native-read-file-schema';
+  throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments, --native-shell, --native-shell-held, or --native-read-file-schema');
 }
 
 export async function readHeldCliDecision(handoff, input = process.stdin, output = process.stdout) {
@@ -2712,12 +2825,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       if (first.done || Buffer.byteLength(first.value) > LIMIT) throw fault('GUEST_INPUT_TOO_LARGE', 'guest input missing or exceeds limit');
       const config = JSON.parse(first.value);
       config.release = async () => (await lines.next()).value;
-      const result = ['shell', 'held-shell'].includes(config.phase) ?
+      const result = ['shell', 'held-shell', 'read-file-schema'].includes(config.phase) ?
         await guestShellRun(config) : await guestRun(config);
       process.stdout.write(`${JSON.stringify(result)}\n`);
       process.exitCode = ['guest_transport_observed', 'guest_resume_observed',
         'guest_shell_outcome', 'native_shell_approval_pending',
-        'native_shell_held_decided'].includes(result.kind) ? 0 : 1;
+        'native_shell_held_decided', 'native_read_file_schema_outcome'].includes(result.kind) ? 0 : 1;
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ kind: 'guest_transport_error', code: error.code ?? error.name,
         message: String(error.message).slice(0, 500) })}\n`);
@@ -2728,7 +2841,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       const mode = diagnosticMode(process.argv.slice(2));
       const result = mode === 'native-shell-held' ? await qualifyNativeShellHeld({
         requestDecision: handoff => readHeldCliDecision(handoff),
-      }) : mode === 'native-shell' ? await qualifyNativeShell() : await qualifyFreshHostResume();
+      }) : mode === 'native-shell' ? await qualifyNativeShell() :
+        mode === 'native-read-file-schema' ? await qualifyNativeReadFileSchema() :
+          await qualifyFreshHostResume();
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ kind: 'diagnostic_error', code: error.code ?? error.name,

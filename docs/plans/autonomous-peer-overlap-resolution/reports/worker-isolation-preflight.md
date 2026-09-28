@@ -1,5 +1,11 @@
 # G2 worker isolation preflight
 
+## Native read_file declaration and reminder continuation frontier — 2026-09-27
+
+The schema-only `muse.read_file` candidate passed parent direct focused 53/53, syntax/diff checks and independent Astra High review with no remaining P1/P2 after its transport phase-gate repair. Script SHA-256 `239c69eec91b3940945a53a3db077c6699378d6bdb967fcb3587aa695b5903c2`; test SHA-256 `d283ccdf4e97db1f6d06900c914c7de541f90d2b53a5c42aa15609f985b65a9f`. One fresh installed no-account run observed `muse.read_file` function index 1 and complete `strict:false` object schema: required `path:string`, optional `limit:integer` 1–2000 and `offset:integer` minimum 1, no extra properties and no omitted/unsupported constraints. The provider emitted no file/shell call or approval.
+
+The native host first sent a 43,516-byte recognized reminder request, then a 91,975-byte main request, then a 13,137-byte request with the same reminder function identity but a changed three-property declaration. The probe rejected the last request as primary `NATIVE_REMINDER_SCHEMA_INVALID` without a function response; guest error exit made strict stop proof unconfirmed. Full bounded `/tmp/passeur-muse-read-file-schema-evidence-20260927.json` SHA-256 `d1c2ad6047cd3aedbe0b4118464f29e11535ec2c2d86245ff3fc0054e4107705`, retained `/tmp/passeur-muse-read-file-schema-lONtMa`. This is declaration evidence only. A reviewed continuation contract is needed before a fixed read-only file-tool probe.
+
 ## Fresh held native approval, no human decision — 2026-09-27
 
 The opt-in held-host diagnostic passed parent direct focused 48/48, syntax/diff checks and independent Astra High review with no remaining P1/P2. Script SHA-256 `35fca3e30dbf09ef6bc41193ed7e45790b4e5a3daa7db82d6885d71e412b7daa`; test SHA-256 `edce7fc2d6d946c814cdd5f72a69c439dc136e3c862e8b280d487e14df3d68e5`. It holds one fresh disposable installed host at the exact native `bash` approval, presents the full command, effects, identities and offered choices, and requires a guarded current `approval/decide` plus authoritative resolution and tool/turn evidence before reporting a shell effect.
