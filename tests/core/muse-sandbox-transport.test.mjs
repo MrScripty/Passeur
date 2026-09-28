@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -16,7 +16,8 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   verificationReminderSchemaDiscovery, verificationReminderAssociation,
   fixedVerificationPayload, fixedReadFileCall, readFileCallEvents,
   matchingReadFileResult, readFileDecoratedOutput, readFileResultEnvelopeShape,
-  correlatedReadFileOutput, classifyProtectedOutput, qualifyNativeProtectedRead,
+  correlatedReadFileOutput, classifyProtectedOutput, protectedReadPath,
+  qualifyNativeProtectedRead, qualifyNativeProtectedSymlinkRead, qualifyNativeProtectedProcRead,
   fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape,
   fixedNoReminderPayload, reminderCallEvents,
@@ -484,6 +485,8 @@ test('native shell provider checks advertised bash schema and exact tool result 
   assert.equal(diagnosticMode(['--native-read-file-schema']), 'native-read-file-schema');
   assert.equal(diagnosticMode(['--native-read-file']), 'native-read-file');
   assert.equal(diagnosticMode(['--native-protected-read']), 'native-protected-read');
+  assert.equal(diagnosticMode(['--native-protected-read-symlink']), 'native-protected-read-symlink');
+  assert.equal(diagnosticMode(['--native-protected-read-proc']), 'native-protected-read-proc');
   for (const args of [['--unknown'], ['--native-shell', '--extra']]) {
     assert.throws(() => diagnosticMode(args), { code: 'DIAGNOSTIC_MODE_INVALID' });
   }
@@ -780,6 +783,29 @@ test('protected result classifier keeps marker host-side and distinguishes only 
   assert.equal(correlatedReadFileOutput(result, path), null);
 });
 
+test('protected route selector binds distinct requested paths and exact candidate diagnostics', () => {
+  const workspace = '/tmp/owned/workspace';
+  const root = '/tmp/owned/protected';
+  const direct = `${root}/direct-read-target.txt`;
+  const symlinkPath = `${workspace}/protected-link/direct-read-target.txt`;
+  const procPath = `/proc/1/root${direct}`;
+  assert.equal(protectedReadPath('direct', workspace, root), direct);
+  assert.equal(protectedReadPath('symlink', workspace, root), symlinkPath);
+  assert.equal(protectedReadPath('proc', workspace, root), procPath);
+  assert.throws(() => protectedReadPath('foreign', workspace, root),
+    { code: 'NATIVE_PROTECTED_ROUTE_INVALID' });
+  const marker = 'PASSEUR_PROTECTED_SYNTHETIC_SECRET';
+  for (const path of [symlinkPath, procPath]) {
+    assert.equal(classifyProtectedOutput(installedProtectedError(path, workspace),
+      path, workspace, marker).class, 'not_found');
+    assert.equal(classifyProtectedOutput(installedProtectedError(path, workspace).replace(
+      `resolved candidate "${path}"`, `resolved candidate "${direct}"`),
+    path, workspace, marker).class, 'unknown');
+    assert.equal(classifyProtectedOutput(installedProtectedError(path, workspace),
+      direct, workspace, marker).class, 'unknown');
+  }
+});
+
 test('protected provider accepts one fixed read and returns neutral text without echoing raw output', async () => {
   const targetPath = '/tmp/fixture/protected/direct-read-target.txt';
   const marker = 'PASSEUR_PROTECTED_SYNTHETIC_SECRET';
@@ -846,6 +872,48 @@ test('protected provider accepts one fixed read and returns neutral text without
     assert.equal((await bounded.post(skill2)).status, 429);
     assert.equal(bounded.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 2);
   } finally { await bounded.provider.close(); }
+});
+
+test('symlink and proc providers issue one selected read path and reject route substitution', async () => {
+  const workspace = '/tmp/fixture/workspace';
+  const root = '/tmp/fixture/protected';
+  for (const route of ['symlink', 'proc']) {
+    const targetPath = protectedReadPath(route, workspace, root);
+    const h = await nativeProviderHarness({ protectedRead: true, targetPath,
+      classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, workspace,
+        'PASSEUR_PROTECTED_SYNTHETIC_SECRET').class });
+    try {
+      const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+      const call = await h.post(main);
+      assert.equal(call.status, 200);
+      assert.equal(call.body.includes(targetPath), true);
+      const foreign = readFileResultRequest();
+      foreign.input[2].arguments = JSON.stringify({ path: protectedReadPath('direct', workspace, root),
+        offset: 1, limit: 20 });
+      foreign.input[3].output = installedProtectedError(targetPath, workspace);
+      assert.equal((await h.post(foreign)).status, 422);
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
+    } finally { await h.provider.close(); }
+    const accepted = await nativeProviderHarness({ protectedRead: true, targetPath,
+      classifyProtectedRaw: raw => classifyProtectedOutput(raw, targetPath, workspace,
+        'PASSEUR_PROTECTED_SYNTHETIC_SECRET').class });
+    try {
+      const main = readFileProbeRequest(); main.input = 'NATIVE_PROTECTED_READ_PROBE';
+      const skill1 = fixedReminderRequest(); skill1.input = 'NATIVE_PROTECTED_READ_PROBE first skill';
+      const skill2 = fixedReminderRequest(); skill2.input = 'NATIVE_PROTECTED_READ_PROBE second skill';
+      const result = readFileResultRequest();
+      result.input[2].arguments = JSON.stringify({ path: targetPath, offset: 1, limit: 20 });
+      result.input[3].output = installedProtectedError(targetPath, workspace);
+      assert.equal((await accepted.post(main)).status, 200);
+      assert.equal((await accepted.post(skill1)).status, 200);
+      assert.equal((await accepted.post(result)).status, 200);
+      assert.equal((await accepted.post(skill2)).status, 200);
+      assert.equal(accepted.provider.requests.filter(request =>
+        request.kind === 'matching_protected_read_result').length, 1);
+      assert.equal(accepted.provider.requests.find(request => request.ordinal === 2)?.callId,
+        'call_native_reminder_2');
+    } finally { await accepted.provider.close(); }
+  }
 });
 
 test('protected classifier reservation rejects concurrent foreign and duplicate results before SSE', async () => {
@@ -2370,33 +2438,56 @@ test('read_file probe controller requires exact canary, no shell effect and conf
   assert.equal(primary.evidence.stopError.code, 'STOP_SURVIVOR');
 });
 
-test('protected direct read needs correlated output, intact host control and confirmed stop', async () => {
-  const run = async ({ output = 'denied', stopFails = false, changeControl = false,
-    wrongCall = false, approval = false, nativeMismatch = false, wrongStatus = false } = {}) => {
+test('protected read routes need correlated output, intact host controls and confirmed stop', async () => {
+  const run = async ({ route = 'direct', output = 'denied', stopFails = false, changeControl = false,
+    wrongCall = false, approval = false, nativeMismatch = false, wrongStatus = false,
+    tamperLinkBefore = false, tamperLinkAfter = null, wrongProc = false,
+    wrongProcNamespace = false,
+    substitutePath = false, changedCandidate = false } = {}) => {
     let target;
-    const result = await qualifyNativeProtectedRead({
-      stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
+    let workspace;
+    let protectedRoot;
+    const qualifier = route === 'direct' ? qualifyNativeProtectedRead :
+      route === 'symlink' ? qualifyNativeProtectedSymlinkRead : qualifyNativeProtectedProcRead;
+    const result = await qualifier({
+      stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime);
+        if (tamperLinkBefore) { const link = join(root, 'workspace', 'protected-link');
+          if (tamperLinkBefore === 'replace') {
+            const replacement = join(root, 'workspace', 'new-protected-link');
+            await symlink(join(root, 'protected'), replacement); await rename(replacement, link);
+          } else { await rm(link); await symlink('/tmp/other', link); } }
+        return runtime; },
       startSentinel: async () => ({ port: 31001, close: async () => undefined }),
       probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
       launch: (_prepared, config) => {
         assert.equal(config.phase, 'protected-read');
-        target = join(config.protectedRoot, 'direct-read-target.txt');
+        assert.equal(config.protectedRoute, route);
+        workspace = config.workspace;
+        protectedRoot = config.protectedRoot;
+        target = protectedReadPath(route, workspace, protectedRoot);
         const ready = shellReadyFixture(config.workspace);
         ready.commandSha256 = createHash('sha256').update('NATIVE_PROTECTED_READ_ONLY').digest('hex');
+        if (route === 'proc') ready.procPid1 = { pid: 1,
+          pidns: wrongProcNamespace ? 'pid:[foreign]' : 'pid:[fixture]',
+          start: wrongProc ? 'wrong' : '12345' };
         let guest = readFileProbeOutcomeFixture(ready);
         guest.kind = 'native_protected_read_outcome';
         guest.observations.items[0].status = wrongStatus ? 'completed' : 'failed';
         const main = guest.providerRequests.find(request => request.kind === 'native_read_file_call');
-        main.pathSha256 = createHash('sha256').update(target).digest('hex');
+        main.pathSha256 = createHash('sha256').update(substitutePath ?
+          join(config.protectedRoot, 'direct-read-target.txt') : target).digest('hex');
         if (wrongCall) main.callId = 'foreign';
         if (approval) guest.observations.approvals.push({ kind: 'unexpected_read_approval' });
         const reported = guest.providerRequests.find(request => request.kind === 'matching_read_file_result');
         reported.kind = 'matching_protected_read_result';
         reported.exactCanary = false;
-        const rawPromise = readFile(target, 'utf8').then(content => {
+        const rawPromise = readFile(join(config.protectedRoot, 'direct-read-target.txt'), 'utf8').then(content => {
           const marker = content.trim();
           const raw = output === 'exposed' ? `Read text file \`${target}\`.\n1|${marker}` :
-            output === 'denied' ? installedProtectedError(target, config.workspace) :
+            output === 'denied' ? (changedCandidate ? installedProtectedError(target, config.workspace).replace(
+              `resolved candidate "${target}"`,
+              `resolved candidate "${join(config.protectedRoot, 'direct-read-target.txt')}"`) :
+              installedProtectedError(target, config.workspace)) :
               'unfamiliar native error';
           reported.outputBytes = Buffer.byteLength(raw);
           reported.outputSha256 = createHash('sha256').update(raw).digest('hex');
@@ -2426,8 +2517,17 @@ test('protected direct read needs correlated output, intact host control and con
           finished: done };
       },
       capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
-        supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
-      stop: async () => { if (changeControl) await writeFile(target, 'changed');
+        supervisor: { netns: 'net:[2]' }, pidns: 'pid:[fixture]', boot: 'boot-a',
+        init: { nspid: [1], pidns: 'pid:[fixture]', start: '12345', netns: 'net:[2]', boot: 'boot-a' },
+        fd: { close: async () => undefined } }),
+      stop: async () => { if (changeControl) await writeFile(join(protectedRoot, 'direct-read-target.txt'), 'changed');
+        if (tamperLinkAfter) {
+          const link = join(workspace, 'protected-link');
+          if (tamperLinkAfter === 'replace') {
+            const replacement = join(workspace, 'new-protected-link');
+            await symlink(protectedRoot, replacement); await rename(replacement, link);
+          } else { await rm(link); await symlink('/tmp/other', link); }
+        }
         if (stopFails) throw Object.assign(new Error('survivor'), { code: 'STOP_SURVIVOR' });
         return { kind: 'confirmed', pidns: 'pid:[1]' }; },
     });
@@ -2444,6 +2544,26 @@ test('protected direct read needs correlated output, intact host control and con
   assert.equal((await run({ wrongStatus: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
   assert.equal((await run({ changeControl: true })).code, 'NATIVE_PROTECTED_CONTROL_CHANGED');
   assert.equal((await run({ stopFails: true })).code, 'STOP_SURVIVOR');
+  for (const route of ['symlink', 'proc']) {
+    assert.equal((await run({ route })).kind, `native_protected_${route}_read_denied`);
+    assert.equal((await run({ route, changedCandidate: true })).kind,
+      `native_protected_${route}_read_unknown`);
+    assert.equal((await run({ route, substitutePath: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+    assert.equal((await run({ route, output: 'exposed' })).kind,
+      `native_protected_${route}_read_exposed`);
+    assert.equal((await run({ route, stopFails: true })).code, 'STOP_SURVIVOR');
+  }
+  assert.equal((await run({ route: 'symlink', tamperLinkAfter: 'retarget' })).code,
+    'NATIVE_PROTECTED_LINK_INVALID');
+  assert.equal((await run({ route: 'symlink', tamperLinkAfter: 'replace' })).code,
+    'NATIVE_PROTECTED_LINK_INVALID');
+  assert.equal((await run({ route: 'proc', wrongProc: true })).code, 'NATIVE_PROC_PID1_UNBOUND');
+  assert.equal((await run({ route: 'proc', wrongProcNamespace: true })).code,
+    'NATIVE_PROC_PID1_UNBOUND');
+  assert.equal((await run({ route: 'symlink', tamperLinkBefore: true })).code,
+    'NATIVE_PROTECTED_LINK_INVALID');
+  assert.equal((await run({ route: 'symlink', tamperLinkBefore: 'replace' })).code,
+    'NATIVE_PROTECTED_LINK_INVALID');
 });
 
 test('protected control missing before launch prevents host start', async () => {

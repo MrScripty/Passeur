@@ -51,6 +51,7 @@ const READ_CANARY_NAME = 'read-canary.txt';
 const READ_CANARY_CONTENT = 'PASSEUR_NATIVE_READ_CANARY\n';
 const PROTECTED_READ_NAME = 'direct-read-target.txt';
 const PROTECTED_OUTPUT_LIMIT = 8192;
+const PROTECTED_ROUTES = new Set(['direct', 'symlink', 'proc']);
 const REMINDER_PAYLOAD = Object.freeze({ advisory_text: null, confidence: 'low', decision: 'none',
   priority: 'normal', reason: 'Disposable scripted protocol probe; no skill reminder is being proposed.',
   skill_id: null, visible_for_steps: 1 });
@@ -629,7 +630,7 @@ export function fixedReadFileCall(body, workspace, targetPath = join(workspace, 
   if (!observed?.selectedComplete || !observed.identityValid ||
       !isDeepStrictEqual(observed.selected, FIXED_READ_SCHEMA) ||
       typeof workspace !== 'string' || !workspace.startsWith('/tmp/') ||
-      typeof targetPath !== 'string' || !targetPath.startsWith('/tmp/')) {
+      !boundedReadTarget(targetPath)) {
     throw fault('NATIVE_READ_FILE_SCHEMA_INVALID', 'read_file declaration differs from reviewed workspace read');
   }
   return { namespace: 'muse', name: 'read_file',
@@ -780,7 +781,7 @@ export function readFileDecoratedOutput(workspace) {
 
 export function correlatedReadFileOutput(body, targetPath) {
   if (body?.model !== SHELL_MODEL || Object.hasOwn(body, 'previous_response_id') ||
-      typeof targetPath !== 'string' || !targetPath.startsWith('/tmp/') ||
+      !boundedReadTarget(targetPath) ||
       !Array.isArray(body.input) || body.input.length !== 4) return null;
   const schema = selectedToolSchemaDiscovery(body, { name: 'read_file', index: 1,
     digest: 'c9f8123bd2726fc2414267256101446c45647b4754b1bad58feaf205125b4c96',
@@ -827,6 +828,22 @@ export function classifyProtectedOutput(raw, targetPath, workspace, marker) {
   return { class: markerPresent ? 'marker_exposed' : raw === exactMissing ? 'not_found' : 'unknown', markerPresent,
   bytes: Buffer.byteLength(raw), sha256: createHash('sha256').update(raw).digest('hex'),
   pathSha256: createHash('sha256').update(targetPath).digest('hex') };
+}
+
+export function protectedReadPath(route, workspace, protectedRoot) {
+  if (!PROTECTED_ROUTES.has(route) || typeof workspace !== 'string' ||
+      typeof protectedRoot !== 'string' || !workspace.startsWith('/tmp/') ||
+      !protectedRoot.startsWith('/tmp/')) {
+    throw fault('NATIVE_PROTECTED_ROUTE_INVALID', 'protected read route or fixture path invalid');
+  }
+  const direct = join(protectedRoot, PROTECTED_READ_NAME);
+  return route === 'direct' ? direct : route === 'symlink' ?
+    join(workspace, 'protected-link', PROTECTED_READ_NAME) : `/proc/1/root${direct}`;
+}
+
+function boundedReadTarget(path) {
+  return typeof path === 'string' &&
+    (path.startsWith('/tmp/') || path.startsWith('/proc/1/root/tmp/'));
 }
 
 export function readFileResultEnvelopeShape(body, issuedAtRequest = {}, workspace) {
@@ -1714,8 +1731,9 @@ export async function guestShellRun(config) {
   const readFileSchemaOnly = config.phase === 'read-file-schema';
   const readFileProbe = config.phase === 'read-file-probe';
   const protectedRead = config.phase === 'protected-read';
+  const protectedRoute = protectedRead ? config.protectedRoute : null;
   const readFileTurn = readFileProbe || protectedRead;
-  const targetPath = protectedRead ? join(config.protectedRoot, PROTECTED_READ_NAME) :
+  const targetPath = protectedRead ? protectedReadPath(protectedRoute, workspace, config.protectedRoot) :
     join(workspace, READ_CANARY_NAME);
   let provider;
   let host;
@@ -1874,11 +1892,15 @@ export async function guestShellRun(config) {
     if (!provider.requests.some(request => request.method === 'GET' && request.path === '/muse-code/models')) {
       throw fault('NATIVE_CATALOG_MISSING', 'native host did not request guest catalog');
     }
+    const procInit = protectedRoute === 'proc' ? procIdentity(await readFile('/proc/1/stat', 'utf8')) : null;
+    const procPid1 = procInit ? { pidns: await readlink('/proc/1/ns/pid'),
+      pid: procInit.pid, start: procInit.start } : null;
     const ready = { kind: 'guest_shell_ready', nativeIdentity, guestNamespace: namespace,
       nativeNamespace: nativeIdentity.namespace, hostPort: config.hostPort, guestPort: provider.port,
       commandSha256: createHash('sha256').update(command).digest('hex'),
       ...(readFileProbe ? { readCanarySha256:
         createHash('sha256').update(READ_CANARY_CONTENT).digest('hex') } : {}),
+      ...(procPid1 ? { procPid1 } : {}),
       sentinel, external, canaries, sessionDirectories, metadata, commands: [...commands],
       posture: { approvalMode: 'onRequest', modelId: SHELL_MODEL, providerId: 'meta',
         sandbox: 'native_default_no_override' },
@@ -3039,6 +3061,21 @@ async function shellEffects(workspace, protectedRoot, token, extraProtectedName 
       link.isSymbolicLink() };
 }
 
+async function verifyProtectedLink(linkPath, protectedRoot, expected = null) {
+  let stat;
+  let target;
+  let after;
+  try { stat = await lstat(linkPath); target = await readlink(linkPath); after = await lstat(linkPath); }
+  catch { throw fault('NATIVE_PROTECTED_LINK_INVALID', 'protected workspace link was unavailable'); }
+  if (!stat.isSymbolicLink() || stat.nlink !== 1 || target !== protectedRoot ||
+      stat.dev !== after.dev || stat.ino !== after.ino || stat.uid !== after.uid ||
+      expected && (stat.dev !== expected.dev || stat.ino !== expected.ino ||
+        stat.uid !== expected.uid || target !== expected.target)) {
+    throw fault('NATIVE_PROTECTED_LINK_INVALID', 'protected workspace link identity or target changed');
+  }
+  return { dev: stat.dev, ino: stat.ino, uid: stat.uid, target };
+}
+
 export function classifyDurableApprovalLog(bytes, { sessionId, turnId, approvalId,
   callId = SHELL_CALL, command, workspace }) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > APPROVAL_LOG_LIMIT) {
@@ -3251,9 +3288,10 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
   checkBubblewrap = probeBubblewrap, stage = stageRuntime, startSentinel = startHostSentinel,
   probe = tcpProbe, launch = runStatusPhase, capture = captureHostIdentities,
   stop = verifyHostStop, held = false, readFileSchemaOnly = false, readFileProbe = false,
-  protectedRead = false,
+  protectedRead = false, protectedRoute = 'direct',
   requestDecision } = {}) {
-  const root = await mkdtemp(join(tmpdir(), protectedRead ? 'passeur-muse-protected-read-' :
+  const root = await mkdtemp(join(tmpdir(), protectedRead ?
+    `passeur-muse-protected-${protectedRoute === 'direct' ? 'read' : protectedRoute}-` :
     readFileProbe ? 'passeur-muse-read-file-probe-' : readFileSchemaOnly ?
     'passeur-muse-read-file-schema-' : 'passeur-muse-native-shell-sandbox-'));
   let sentinel;
@@ -3265,6 +3303,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
   let primaryGuestFailure;
   const evidence = {};
   let protectedControl;
+  let protectedTarget;
+  let protectedLink;
   let protectedMarker;
   try {
     const workspace = join(root, 'workspace');
@@ -3277,6 +3317,10 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     if (readFileProbe) await writeFile(join(workspace, READ_CANARY_NAME), READ_CANARY_CONTENT,
       { mode: 0o600 });
     if (protectedRead) {
+      protectedTarget = protectedReadPath(protectedRoute, workspace, protectedRoot);
+      protectedLink = await verifyProtectedLink(join(workspace, 'protected-link'), protectedRoot);
+      evidence.protectedLink = { targetSha256: createHash('sha256').update(protectedRoot).digest('hex'),
+        identityObserved: true };
       const path = join(protectedRoot, PROTECTED_READ_NAME);
       protectedMarker = `PASSEUR_PROTECTED_${randomBytes(24).toString('hex')}`;
       await writeFile(path, `${protectedMarker}\n`, { mode: 0o600, flag: 'wx' });
@@ -3290,6 +3334,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         sha256: createHash('sha256').update(`${protectedMarker}\n`).digest('hex') };
       evidence.protectedControl = { pathSha256: createHash('sha256').update(path).digest('hex'),
         bytes: protectedControl.bytes, sha256: protectedControl.sha256, regular: true };
+      evidence.protectedRoute = protectedRoute;
+      evidence.protectedTargetSha256 = createHash('sha256').update(protectedTarget).digest('hex');
     }
     const runtime = await stage(root, muse);
     sentinel = await startSentinel();
@@ -3299,6 +3345,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     const prepared = prepareSandbox(sandboxConfig({ workspace, runtime, home, protectedRoot }), guestCommand());
     checkBubblewrap();
     if (protectedRead) {
+      await verifyProtectedLink(join(workspace, 'protected-link'), protectedRoot, protectedLink);
       let stat;
       try { stat = await lstat(protectedControl.path); }
       catch { throw fault('NATIVE_PROTECTED_CONTROL_INVALID', 'protected file missing before sandbox launch'); }
@@ -3315,8 +3362,9 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
       readFileSchemaOnly ? 'read-file-schema' : 'shell',
       workspace, hostPort: sentinel.port,
       protectedRoot, canaryToken: token,
+      ...(protectedRead ? { protectedRoute } : {}),
       ...(protectedRead ? { classifyProtectedOutput: raw =>
-        classifyProtectedOutput(raw, protectedControl.path, workspace, protectedMarker),
+        classifyProtectedOutput(raw, protectedTarget, workspace, protectedMarker),
       protectedMarkerPresent: line => line.includes(protectedMarker) } : {}) });
     const [ready, liveStatus] = await Promise.all([host.ready, host.liveStatus]);
     evidence.ready = ready;
@@ -3341,6 +3389,18 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         captured.supervisor.netns !== ready.guestNamespace) {
       throw fault('STOP_ASSOCIATION_INVALID', 'native shell host marker differs from observed process tree');
     }
+    if (protectedRead && protectedRoute !== 'proc' && Object.hasOwn(ready, 'procPid1')) {
+      throw fault('NATIVE_PROC_PID1_UNBOUND', 'non-proc read carried a proc PID 1 claim');
+    }
+    if (protectedRoute === 'proc' && protectedRead &&
+        (Object.keys(ready.procPid1 ?? {}).sort().join(',') !== 'pid,pidns,start' ||
+          ready.procPid1.pid !== 1 || ready.procPid1.pidns !== captured.pidns ||
+          ready.procPid1.start !== captured.init?.start ||
+          captured.init?.nspid?.at(-1) !== 1 || captured.init.pidns !== captured.pidns ||
+          captured.init.netns !== ready.guestNamespace || captured.init.boot !== captured.boot)) {
+      throw fault('NATIVE_PROC_PID1_UNBOUND', 'guest proc PID 1 differs from captured namespace init');
+    }
+    if (protectedRoute === 'proc' && protectedRead) evidence.procPid1Bound = true;
     stageName = 'native_turn';
     host.releaseTurn();
     let handoffInputError;
@@ -3431,6 +3491,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
       if (host.protectedFrameError?.()) throw host.protectedFrameError();
       protectedOutput = await host.protectedResult;
       evidence.protectedOutput = protectedOutput;
+      await verifyProtectedLink(join(workspace, 'protected-link'), protectedRoot, protectedLink);
+      evidence.protectedLinkAfter = { intact: true };
       let stat;
       try { stat = await lstat(protectedControl.path); }
       catch { throw fault('NATIVE_PROTECTED_CONTROL_CHANGED', 'protected file missing after host stop'); }
@@ -3444,7 +3506,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
       const correlated = guestOutcome?.providerRequests?.find(request =>
         request.kind === (primaryGuestFailure?.code === 'NATIVE_PROTECTED_MARKER_EXPOSED' ?
           'protected_read_result_classified' : 'matching_protected_read_result'));
-      if (protectedOutput.pathSha256 !== evidence.protectedControl.pathSha256 ||
+      if (protectedOutput.pathSha256 !== evidence.protectedTargetSha256 ||
           protectedOutput.sha256 !== correlated?.outputSha256 ||
           protectedOutput.bytes !== correlated?.outputBytes || correlated?.forCallId !== READ_CALL) {
         throw fault('NATIVE_PROTECTED_OUTPUT_ASSOCIATION_INVALID', 'host classification differed from correlated result');
@@ -3466,7 +3528,7 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
       throw fault('NATIVE_HELD_OUTCOME_INVALID', 'terminal held decision differed from host-supplied choice');
     }
     const classified = protectedRead ? validateReadFileOutcome(ready, guestOutcome, workspace,
-      { protectedRead, targetPath: protectedControl.path }) :
+      { protectedRead, targetPath: protectedTarget }) :
       readFileProbe ? validateReadFileOutcome(ready, guestOutcome, workspace) :
       readFileSchemaOnly ? validateReadFileSchemaOutcome(ready, guestOutcome) :
       held && guestOutcome.kind === 'native_shell_held_decided' ?
@@ -3505,9 +3567,9 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
       }
     }
     if (protectedRead) finalKind = protectedOutput.class === 'marker_exposed' ?
-      'native_protected_direct_read_exposed' :
+      `native_protected_${protectedRoute}_read_exposed` :
       ['access_denied', 'not_found'].includes(protectedOutput.class) ?
-        'native_protected_direct_read_denied' : 'native_protected_direct_read_unknown';
+        `native_protected_${protectedRoute}_read_denied` : `native_protected_${protectedRoute}_read_unknown`;
     outcome = { kind: finalKind, classified, effects, evidence };
   } catch (error) {
     if (primaryGuestFailure && error.code !== primaryGuestFailure.code) {
@@ -3516,8 +3578,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     }
     outcome = { kind: protectedRead && primaryGuestFailure?.code === 'NATIVE_PROTECTED_MARKER_EXPOSED' &&
       evidence.stop?.kind === 'confirmed' && evidence.protectedControlAfter?.intact === true &&
-      evidence.protectedOutput?.class === 'marker_exposed' ?
-      'native_protected_direct_read_exposed' : 'native_shell_error',
+      evidence.protectedLinkAfter?.intact === true && evidence.protectedOutput?.class === 'marker_exposed' ?
+      `native_protected_${protectedRoute}_read_exposed` : 'native_shell_error',
       stage: primaryGuestFailure?.stage ?? stageName,
       code: primaryGuestFailure?.code ?? error.code ?? error.name,
       message: (primaryGuestFailure?.message ?? String(error.message)).slice(0, 400),
@@ -3562,7 +3624,15 @@ export async function qualifyNativeReadFile(options = {}) {
 }
 
 export async function qualifyNativeProtectedRead(options = {}) {
-  return qualifyNativeShell({ ...options, protectedRead: true });
+  return qualifyNativeShell({ ...options, protectedRead: true, protectedRoute: 'direct' });
+}
+
+export async function qualifyNativeProtectedSymlinkRead(options = {}) {
+  return qualifyNativeShell({ ...options, protectedRead: true, protectedRoute: 'symlink' });
+}
+
+export async function qualifyNativeProtectedProcRead(options = {}) {
+  return qualifyNativeShell({ ...options, protectedRead: true, protectedRoute: 'proc' });
 }
 
 export function diagnosticMode(args) {
@@ -3572,6 +3642,8 @@ export function diagnosticMode(args) {
   if (args.length === 1 && args[0] === '--native-read-file-schema') return 'native-read-file-schema';
   if (args.length === 1 && args[0] === '--native-read-file') return 'native-read-file';
   if (args.length === 1 && args[0] === '--native-protected-read') return 'native-protected-read';
+  if (args.length === 1 && args[0] === '--native-protected-read-symlink') return 'native-protected-read-symlink';
+  if (args.length === 1 && args[0] === '--native-protected-read-proc') return 'native-protected-read-proc';
   throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments or an exact admitted native diagnostic flag');
 }
 
@@ -3695,6 +3767,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         mode === 'native-read-file-schema' ? await qualifyNativeReadFileSchema() :
           mode === 'native-read-file' ? await qualifyNativeReadFile() :
           mode === 'native-protected-read' ? await qualifyNativeProtectedRead() :
+          mode === 'native-protected-read-symlink' ? await qualifyNativeProtectedSymlinkRead() :
+          mode === 'native-protected-read-proc' ? await qualifyNativeProtectedProcRead() :
           await qualifyFreshHostResume();
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } catch (error) {
