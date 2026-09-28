@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { lstat, mkdtemp, mkdir, open, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { EventEmitter } from 'node:events';
 import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, guestEnvironment,
   pinnedBinary, pinnedNode, qualify, retainHostRoot, sandboxConfig, stageRuntime, validateIdleRead,
   verifiedNativeNamespace, verifyNativeServeArgs, loopbackReady, parseBubblewrapStatus, verifyHostStop,
@@ -23,7 +25,7 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   shellResultEnvelopeShape, persistOuterShellResultEvidence, inspectOuterShellResultEvidence,
   outerShellTranscript, outerShellItemMarkers, matchingOuterShellResult,
   readFileCanaryFixture, nativeCallerGate, runNativeShellLifecycle, releaseAndStartNativeTurn,
-  spawnNativeHost,
+  spawnNativeHost, awaitRecordedNativeTurn, writeTurnAcknowledgement,
   guestShellRun,
   fixedNoReminderPayload, reminderCallEvents,
   approvalSummary, validateShellReady, validateShellOutcome, validateReadFileSchemaOutcome,
@@ -129,6 +131,103 @@ test('native host spawn is gated at the side effect after caller failure settles
     value => { owned = value; }), host);
   assert.equal(spawned, 1);
   assert.equal(owned, host);
+});
+
+test('accepted native turn waits for exact host record before consuming buffered terminal or approval', async () => {
+  const ack = { status: 'accepted', disposition: 'started', startedNewTurn: true, turnId: 'turn-1' };
+  let release;
+  const line = new Promise(resolve => { release = resolve; });
+  const frames = [];
+  const accepted = awaitRecordedNativeTurn({ turnCheckpointId: 'checkpoint-1', release: () => line },
+    'session-1', ack, operation => operation(), frame => frames.push(frame));
+  const consumed = [];
+  const earlyNativeEvents = [Promise.resolve({ kind: 'approval' }),
+    Promise.resolve({ kind: 'turn_completed' })];
+  const continuation = accepted.then(async () => {
+    for (const event of earlyNativeEvents) consumed.push((await event).kind);
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(consumed, []);
+  assert.deepEqual(frames, [{ kind: 'guest_turn_accepted', schemaVersion: 1,
+    checkpointId: 'checkpoint-1', sessionId: 'session-1', turnId: 'turn-1',
+    status: 'accepted', disposition: 'started', startedNewTurn: true }]);
+  release(JSON.stringify({ kind: 'host_turn_recorded', schemaVersion: 1,
+    checkpointId: 'checkpoint-1', sessionId: 'session-1', turnId: 'turn-1' }));
+  await continuation;
+  assert.deepEqual(consumed, ['approval', 'turn_completed']);
+  for (const changed of [
+    { turnId: 'foreign' }, { sessionId: 'foreign' }, { checkpointId: 'foreign' },
+    { schemaVersion: 2 }, { extra: true },
+  ]) {
+    const wrong = JSON.stringify({ kind: 'host_turn_recorded', schemaVersion: 1,
+      checkpointId: 'checkpoint-1', sessionId: 'session-1', turnId: 'turn-1', ...changed });
+    await assert.rejects(awaitRecordedNativeTurn({ turnCheckpointId: 'checkpoint-1',
+      release: async () => wrong }, 'session-1', ack, operation => operation(), () => undefined),
+    { code: 'NATIVE_TURN_RECORD_INVALID' });
+  }
+  await assert.rejects(awaitRecordedNativeTurn({ turnCheckpointId: 'checkpoint-1',
+    release: async () => 'x'.repeat(2049) }, 'session-1', ack, operation => operation(), () => undefined),
+  { code: 'NATIVE_TURN_RECORD_INVALID' });
+  await assert.rejects(awaitRecordedNativeTurn({ turnCheckpointId: 'checkpoint-1',
+    release: async () => { throw Object.assign(new Error('EOF'), { code: 'HOST_CHANNEL_CLOSED' }); } },
+  'session-1', ack, operation => operation(), () => undefined), { code: 'HOST_CHANNEL_CLOSED' });
+  await assert.rejects(awaitRecordedNativeTurn({ turnCheckpointId: '\0', release: async () => '' },
+    'session-1', ack, operation => operation(), () => undefined), { code: 'NATIVE_TURN_CHECKPOINT_INVALID' });
+});
+
+test('guest accepted-turn barrier has a five-second deadline without an implicit acknowledgement', async () => {
+  const frames = [];
+  const started = Date.now();
+  await assert.rejects(awaitRecordedNativeTurn({ turnCheckpointId: 'checkpoint-deadline',
+    release: () => new Promise(() => undefined) }, 'session-1',
+  { status: 'accepted', disposition: 'started', startedNewTurn: true, turnId: 'turn-1' },
+  operation => operation(), frame => frames.push(frame)), { code: 'PROBE_DEADLINE' });
+  assert.equal(frames.length, 1);
+  assert.ok(Date.now() - started >= 4_900);
+});
+
+test('turn acknowledgement waits for write callback and cannot upgrade after error or close', async () => {
+  class DeferredPipe extends EventEmitter {
+    destroyed = false;
+    writableEnded = false;
+    write(_payload, callback) { this.callback = callback; return true; }
+  }
+  const gate = nativeCallerGate();
+  const pendingPipe = new DeferredPipe();
+  let completed = false;
+  const pending = writeTurnAcknowledgement(pendingPipe, 'ack\n', gate.run, 500)
+    .then(() => { completed = true; });
+  for (let count = 0; count < 10 && !pendingPipe.callback; count++) await Promise.resolve();
+  assert.equal(typeof pendingPipe.callback, 'function');
+  assert.equal(completed, false);
+  pendingPipe.callback();
+  await pending;
+  assert.equal(completed, true);
+
+  const failedPipe = new DeferredPipe();
+  const failed = writeTurnAcknowledgement(failedPipe, 'ack\n', gate.run, 500);
+  for (let count = 0; count < 10 && !failedPipe.callback; count++) await Promise.resolve();
+  failedPipe.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }));
+  await assert.rejects(failed, { code: 'EPIPE' });
+  failedPipe.callback();
+  await Promise.resolve();
+  assert.equal(failedPipe.listenerCount('error'), 0);
+
+  const closedPipe = new DeferredPipe();
+  const closed = writeTurnAcknowledgement(closedPipe, 'ack\n', gate.run, 500);
+  for (let count = 0; count < 10 && !closedPipe.callback; count++) await Promise.resolve();
+  closedPipe.destroyed = true;
+  closedPipe.emit('close');
+  await assert.rejects(closed, { code: 'NATIVE_TURN_ACK_UNCERTAIN' });
+  closedPipe.callback();
+
+  const callbackThenClose = new DeferredPipe();
+  const raced = writeTurnAcknowledgement(callbackThenClose, 'ack\n', gate.run, 500);
+  for (let count = 0; count < 10 && !callbackThenClose.callback; count++) await Promise.resolve();
+  callbackThenClose.callback();
+  callbackThenClose.destroyed = true;
+  callbackThenClose.emit('close');
+  await assert.rejects(raced, { code: 'NATIVE_TURN_ACK_UNCERTAIN' });
 });
 
 test('local provider adapter keeps catalog, freeze, final comparison and first rejection', async () => {
@@ -3862,6 +3961,234 @@ printf '{"exit-code":0}\\n' >&3
     await assert.rejects(failed.ready, { code: 'GUEST_OUTPUT_INVALID' });
     await assert.rejects(failed.outcome, { code: 'GUEST_OUTPUT_INVALID' });
     assert.equal((await failed.finished).code, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('opt-in turn checkpoint records the accepted IDs before guest outcome and keeps legacy framing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-turn-checkpoint-'));
+  try {
+    const fake = join(root, 'fake-bwrap');
+    const recordedPath = join(root, 'recorded-ack');
+    const ready = JSON.stringify({ kind: 'guest_ready', result: { kind: 'guest_shell_ready',
+      metadata: { sessionId: 'session-1' } } });
+    const accepted = JSON.stringify({ kind: 'guest_turn_accepted', schemaVersion: 1,
+      checkpointId: 'checkpoint-1', sessionId: 'session-1', turnId: 'turn-1',
+      status: 'accepted', disposition: 'started', startedNewTurn: true });
+    const outcome = JSON.stringify({ kind: 'guest_outcome', result: { kind: 'native_read_file_outcome' } });
+    await writeFile(fake, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '%s\\n' '${ready}'
+read turn
+[ "$turn" = turn ] || exit 4
+printf '%s\\n' '${accepted}'
+read ack || exit 5
+printf '%s\\n' "$ack" > '${recordedPath}'
+printf '%s\\n' '${outcome}'
+read shutdown
+[ "$shutdown" = shutdown ] || exit 6
+printf '{"kind":"native_read_file_outcome"}\\n'
+printf '{"exit-code":0}\\n' >&3
+`, { mode: 0o700 });
+    const host = runStatusPhase({ executable: fake, args: ['--', 'ignored'] },
+      { phase: 'read-file-probe', turnCheckpointId: 'checkpoint-1' });
+    assert.equal((await host.ready).metadata.sessionId, 'session-1');
+    await assert.rejects(host.recordAndAckTurn(async () => undefined), { code: 'NATIVE_TURN_RECORD_SEQUENCE' });
+    host.releaseTurn();
+    const checkpoint = await host.turnAccepted;
+    assert.deepEqual(checkpoint, { schemaVersion: 1, checkpointId: 'checkpoint-1',
+      sessionId: 'session-1', turnId: 'turn-1', status: 'accepted',
+      disposition: 'started', startedNewTurn: true });
+    let persist;
+    const delayed = new Promise(resolve => { persist = resolve; });
+    const recording = host.recordAndAckTurn(async selected => {
+      assert.deepEqual(selected, checkpoint);
+      await delayed;
+    });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(existsSync(recordedPath), false);
+    assert.deepEqual(host.turnCheckpoint(), { accepted: checkpoint, durableRecordConfirmed: false,
+      recorded: false, error: null });
+    await assert.rejects(host.recordAndAckTurn(async () => undefined), { code: 'NATIVE_TURN_RECORD_SEQUENCE' });
+    assert.throws(() => host.releaseShutdown(), { code: 'NATIVE_TURN_RECORD_SEQUENCE' });
+    persist();
+    assert.deepEqual(await recording, checkpoint);
+    assert.equal((await host.outcome).kind, 'native_read_file_outcome');
+    host.releaseShutdown();
+    const done = await host.finished;
+    assert.equal(done.code, 0);
+    assert.equal(done.output.length, 3);
+    assert.deepEqual(JSON.parse(await readFile(recordedPath, 'utf8')),
+      { kind: 'host_turn_recorded', schemaVersion: 1, checkpointId: 'checkpoint-1',
+        sessionId: 'session-1', turnId: 'turn-1' });
+    assert.deepEqual(host.turnCheckpoint(), { accepted: checkpoint, durableRecordConfirmed: true,
+      recorded: true, error: null });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('turn checkpoint refuses foreign, duplicate, premature and unrecorded outcomes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-turn-checkpoint-invalid-'));
+  try {
+    const ready = JSON.stringify({ kind: 'guest_ready', result: { kind: 'guest_shell_ready',
+      metadata: { sessionId: 'session-1' } } });
+    const accepted = JSON.stringify({ kind: 'guest_turn_accepted', schemaVersion: 1,
+      checkpointId: 'checkpoint-1', sessionId: 'session-1', turnId: 'turn-1',
+      status: 'accepted', disposition: 'started', startedNewTurn: true });
+    const outcome = JSON.stringify({ kind: 'guest_outcome', result: { kind: 'native_read_file_outcome' } });
+    const make = async (name, lines) => {
+      const fake = join(root, name);
+      await writeFile(fake, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '%s\\n' '${ready}'
+read turn
+[ "$turn" = turn ] || exit 4
+${lines.map(line => `printf '%s\\n' '${line}'`).join('\n')}
+read rest || exit 5
+`, { mode: 0o700 });
+      return fake;
+    };
+    for (const [name, lines, code] of [
+      ['foreign', [accepted.replace('"session-1"', '"foreign"')], 'NATIVE_TURN_CHECKPOINT_INVALID'],
+      ['foreign-checkpoint', [accepted.replace('"checkpoint-1"', '"foreign"')], 'NATIVE_TURN_CHECKPOINT_INVALID'],
+      ['duplicate', [accepted, accepted], 'NATIVE_TURN_CHECKPOINT_INVALID'],
+      ['premature', [outcome], 'NATIVE_TURN_CHECKPOINT_SEQUENCE'],
+      ['unrecorded', [accepted, outcome], 'NATIVE_TURN_CHECKPOINT_SEQUENCE'],
+    ]) {
+      const host = runStatusPhase({ executable: await make(name, lines), args: ['--', 'ignored'] },
+        { phase: 'read-file-probe', turnCheckpointId: 'checkpoint-1' });
+      await host.ready;
+      host.releaseTurn();
+      if (name === 'duplicate' || name === 'unrecorded') await host.turnAccepted;
+      else await assert.rejects(host.turnAccepted, { code });
+      await assert.rejects(host.outcome, { code });
+      await host.finished;
+    }
+    const disabled = runStatusPhase({ executable: await make('disabled', [accepted]), args: ['--', 'ignored'] },
+      { phase: 'read-file-probe' });
+    await disabled.ready; disabled.releaseTurn();
+    assert.equal(disabled.turnAccepted, undefined);
+    await assert.rejects(disabled.outcome, { code: 'NATIVE_TURN_CHECKPOINT_INVALID' });
+    await disabled.finished;
+    const earlyFile = join(root, 'early-frame');
+    await writeFile(earlyFile, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '%s\\n' '${accepted}'
+`, { mode: 0o700 });
+    const early = runStatusPhase({ executable: earlyFile, args: ['--', 'ignored'] },
+      { phase: 'read-file-probe', turnCheckpointId: 'checkpoint-1' });
+    await assert.rejects(early.ready, { code: 'NATIVE_TURN_CHECKPOINT_INVALID' });
+    await assert.rejects(early.turnAccepted, { code: 'NATIVE_TURN_CHECKPOINT_INVALID' });
+    await early.finished;
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('turn recorder failure and caller failure emit no acknowledgement and preserve typed guest error', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-turn-checkpoint-failure-'));
+  try {
+    const marker = join(root, 'unexpected-ack');
+    const ready = JSON.stringify({ kind: 'guest_ready', result: { kind: 'guest_shell_ready',
+      metadata: { sessionId: 'session-1' } } });
+    const accepted = JSON.stringify({ kind: 'guest_turn_accepted', schemaVersion: 1,
+      checkpointId: 'checkpoint-1', sessionId: 'session-1', turnId: 'turn-1',
+      status: 'accepted', disposition: 'started', startedNewTurn: true });
+    const fake = join(root, 'fake-bwrap');
+    await writeFile(fake, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '%s\\n' '${ready}'
+read turn
+[ "$turn" = turn ] || exit 4
+printf '%s\\n' '${accepted}'
+read ack || exit 5
+printf '%s\\n' "$ack" > '${marker}'
+`, { mode: 0o700 });
+    const failed = runStatusPhase({ executable: fake, args: ['--', 'ignored'] },
+      { phase: 'read-file-probe', turnCheckpointId: 'checkpoint-1' });
+    await failed.ready; failed.releaseTurn(); await failed.turnAccepted;
+    await assert.rejects(failed.recordAndAckTurn(async () => {
+      throw Object.assign(new Error('durable event write failed'), { code: 'EVENT_PERSIST_FAILED' });
+    }), { code: 'EVENT_PERSIST_FAILED' });
+    await assert.rejects(failed.outcome, { code: 'EVENT_PERSIST_FAILED' });
+    await failed.finished;
+    assert.equal(existsSync(marker), false);
+    assert.equal(failed.turnCheckpoint().recorded, false);
+
+    let failCaller;
+    const callerFailure = new Promise((_, reject) => { failCaller = reject; });
+    const raced = runStatusPhase({ executable: fake, args: ['--', 'ignored'] },
+      { phase: 'read-file-probe', turnCheckpointId: 'checkpoint-1', turnCallerFailure: callerFailure });
+    await raced.ready; raced.releaseTurn(); await raced.turnAccepted;
+    let releaseRecorder;
+    const recording = raced.recordAndAckTurn(async () => new Promise(resolve => { releaseRecorder = resolve; }));
+    for (let count = 0; count < 10 && !releaseRecorder; count++) await Promise.resolve();
+    assert.equal(typeof releaseRecorder, 'function');
+    failCaller(Object.assign(new Error('provider rejected'), { code: 'PROVIDER_REJECTED' }));
+    await assert.rejects(recording, { code: 'PROVIDER_REJECTED' });
+    releaseRecorder();
+    await assert.rejects(raced.outcome, { code: 'PROVIDER_REJECTED' });
+    await raced.finished;
+    assert.equal(existsSync(marker), false);
+
+    const before = join(root, 'before-checkpoint');
+    const guestFailure = JSON.stringify({ kind: 'guest_transport_error', stage: 'native_turn',
+      code: 'PROVIDER_REJECTED', message: 'bounded provider failure', providerRequests: [] });
+    await writeFile(before, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '%s\\n' '${ready}'
+read turn
+[ "$turn" = turn ] || exit 4
+printf '%s\\n' '${guestFailure}'
+exit 1
+`, { mode: 0o700 });
+    const early = runStatusPhase({ executable: before, args: ['--', 'ignored'] },
+      { phase: 'read-file-probe', turnCheckpointId: 'checkpoint-1' });
+    await early.ready; early.releaseTurn();
+    await assert.rejects(early.turnAccepted, { code: 'PROVIDER_REJECTED' });
+    assert.deepEqual(await early.outcome, JSON.parse(guestFailure));
+    assert.equal((await early.finished).code, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('closed guest stdin before accepted frame cannot turn durable record into acknowledged turn', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-turn-closed-stdin-'));
+  try {
+    const fake = join(root, 'fake-bwrap');
+    const ready = JSON.stringify({ kind: 'guest_ready', result: { kind: 'guest_shell_ready',
+      metadata: { sessionId: 'session-1' } } });
+    const accepted = JSON.stringify({ kind: 'guest_turn_accepted', schemaVersion: 1,
+      checkpointId: 'checkpoint-1', sessionId: 'session-1', turnId: 'turn-1',
+      status: 'accepted', disposition: 'started', startedNewTurn: true });
+    await writeFile(fake, `#!/bin/sh
+read config
+printf '{"child-pid":123}\\n' >&3
+printf '%s\\n' '${ready}'
+read turn
+[ "$turn" = turn ] || exit 4
+exec 0<&-
+printf '%s\\n' '${accepted}'
+sleep 1
+exit 1
+`, { mode: 0o700 });
+    const host = runStatusPhase({ executable: fake, args: ['--', 'ignored'] },
+      { phase: 'read-file-probe', turnCheckpointId: 'checkpoint-1' });
+    await host.ready; host.releaseTurn();
+    const checkpoint = await host.turnAccepted;
+    let persisted = false;
+    await assert.rejects(host.recordAndAckTurn(async selected => {
+      assert.deepEqual(selected, checkpoint);
+      persisted = true;
+    }), error => ['EPIPE', 'ERR_STREAM_DESTROYED', 'NATIVE_TURN_ACK_UNCERTAIN'].includes(error.code));
+    assert.equal(persisted, true);
+    assert.equal(host.turnCheckpoint().durableRecordConfirmed, true);
+    assert.equal(host.turnCheckpoint().recorded, false);
+    assert.ok(host.turnCheckpoint().error);
+    assert.throws(() => host.releaseShutdown(), { code: 'NATIVE_TURN_RECORD_SEQUENCE' });
+    await assert.rejects(host.outcome);
+    assert.equal((await host.finished).code, 1);
+    assert.equal(host.turnCheckpoint().recorded, false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -55,6 +55,7 @@ const PROTECTED_READ_NAME = 'direct-read-target.txt';
 const DUMMY_AUTH_PATH = `${GUEST_HOME}/.config/muse/auth.json`;
 const PROTECTED_OUTPUT_LIMIT = 8192;
 const OUTER_RESULT_EVIDENCE_LIMIT = 8192;
+const TURN_CHECKPOINT_FRAME_LIMIT = 2048;
 const LINUX_O_CLOEXEC = 0o2000000;
 const PROTECTED_ROUTES = new Set(['direct', 'symlink', 'proc']);
 const REMINDER_PAYLOAD = Object.freeze({ advisory_text: null, confidence: 'low', decision: 'none',
@@ -87,6 +88,14 @@ export function nativeCallerGate(callerFailure) {
 }
 
 function fault(code, message) { return Object.assign(new Error(message), { code }); }
+function controlId(value) {
+  return typeof value === 'string' && value.length > 0 &&
+    Buffer.byteLength(value, 'utf8') <= 256 && !value.includes('\0');
+}
+function exactKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value) &&
+    isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort());
+}
 function canonicalRequestDigest(value) {
   let nodes = 0;
   const ordered = (entry, depth = 0) => {
@@ -2001,6 +2010,71 @@ export async function releaseAndStartNativeTurn(release, startTurn, gate) {
   return timeout('turn/start', gate(startTurn));
 }
 
+export async function awaitRecordedNativeTurn(config, sessionId, ack, gate,
+  emit = frame => process.stdout.write(`${JSON.stringify(frame)}\n`)) {
+  if (config.turnCheckpointId === undefined) return null;
+  if (!controlId(config.turnCheckpointId) || !controlId(sessionId) || !controlId(ack.turnId) ||
+      ack.status !== 'accepted' || ack.disposition !== 'started' || ack.startedNewTurn !== true) {
+    throw fault('NATIVE_TURN_CHECKPOINT_INVALID', 'accepted native turn checkpoint identity or acknowledgement invalid');
+  }
+  const accepted = { kind: 'guest_turn_accepted', schemaVersion: 1,
+    checkpointId: config.turnCheckpointId, sessionId, turnId: ack.turnId,
+    status: 'accepted', disposition: 'started', startedNewTurn: true };
+  const encoded = `${JSON.stringify(accepted)}\n`;
+  if (Buffer.byteLength(encoded) > TURN_CHECKPOINT_FRAME_LIMIT) {
+    throw fault('NATIVE_TURN_CHECKPOINT_INVALID', 'accepted native turn checkpoint exceeded frame limit');
+  }
+  emit(accepted);
+  const line = await timeout('host turn recording', gate(() => config.release()), 5_000);
+  if (typeof line !== 'string' || Buffer.byteLength(line) + 2 > TURN_CHECKPOINT_FRAME_LIMIT) {
+    throw fault('NATIVE_TURN_RECORD_INVALID', 'host turn recording frame exceeded limit');
+  }
+  let recorded;
+  try { recorded = JSON.parse(line); }
+  catch { throw fault('NATIVE_TURN_RECORD_INVALID', 'host turn recording frame was not JSON'); }
+  if (!exactKeys(recorded, ['kind', 'schemaVersion', 'checkpointId', 'sessionId', 'turnId']) ||
+      recorded.kind !== 'host_turn_recorded' || recorded.schemaVersion !== 1 ||
+      recorded.checkpointId !== accepted.checkpointId || recorded.sessionId !== sessionId ||
+      recorded.turnId !== ack.turnId) {
+    throw fault('NATIVE_TURN_RECORD_INVALID', 'host turn recording did not match the accepted turn');
+  }
+  return accepted;
+}
+
+export async function writeTurnAcknowledgement(stream, payload, gate, remainingMs,
+  childClosed = () => false) {
+  let cancel;
+  const pending = gate(() => new Promise((resolveWrite, rejectWrite) => {
+    let settled = false;
+    const closed = () => fault('NATIVE_TURN_ACK_UNCERTAIN', 'turn acknowledgement pipe closed before write completion');
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      stream.off('error', onError);
+      stream.off('close', onClose);
+      if (error || stream.destroyed || stream.writableEnded || childClosed()) rejectWrite(error || closed());
+      else resolveWrite();
+    };
+    const onError = error => finish(error);
+    const onClose = () => finish(closed());
+    cancel = () => finish(closed());
+    if (stream.destroyed || stream.writableEnded || childClosed()) { finish(closed()); return; }
+    stream.once('error', onError);
+    stream.once('close', onClose);
+    try { stream.write(payload, error => {
+      if (error) finish(error);
+      else queueMicrotask(() => finish());
+    }); }
+    catch (error) { finish(error); }
+  }));
+  try {
+    await timeout('turn acknowledgement write', pending, remainingMs);
+    if (stream.destroyed || stream.writableEnded || childClosed()) {
+      throw fault('NATIVE_TURN_ACK_UNCERTAIN', 'turn acknowledgement pipe closed after write completion');
+    }
+  } finally { cancel?.(); }
+}
+
 export async function spawnNativeHost(gate, create, own) {
   return gate(() => {
     const host = create();
@@ -2227,6 +2301,7 @@ export async function runNativeShellLifecycle(config, { providerPort, callerFail
         typeof ack.turnId !== 'string') {
       throw fault('NATIVE_TURN_ACK_INVALID', 'native turn was not admitted as one fresh turn');
     }
+    await awaitRecordedNativeTurn(config, metadata.sessionId, ack, withCaller);
     const event = await timeout('native turn or approval', withCaller(() => observed), 15_000);
     let pending = null;
     if ((readFileSchemaOnly || readFileTurn) && event.kind !== 'turn_completed') {
@@ -2626,8 +2701,14 @@ export async function verifyHostStop(capture, status, exit, {
 
 export function runStatusPhase(prepared, config) {
   const { classifyProtectedOutput: hostProtectedClassifier,
-    protectedMarkerPresent, ...guestConfig } = config;
+    protectedMarkerPresent, turnCallerFailure, ...guestConfig } = config;
   const protectedPhase = ['protected-read', 'dummy-auth-read'].includes(config.phase);
+  const turnCheckpointEnabled = config.turnCheckpointId !== undefined;
+  if (turnCheckpointEnabled && (!controlId(config.turnCheckpointId) ||
+      !['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe',
+        'protected-read', 'dummy-auth-read'].includes(config.phase))) {
+    throw fault('NATIVE_TURN_CHECKPOINT_INVALID', 'turn checkpoint requires a valid ID and native phase');
+  }
   if (protectedPhase && (typeof hostProtectedClassifier !== 'function' ||
       typeof protectedMarkerPresent !== 'function')) {
     throw fault('NATIVE_PROTECTED_CLASSIFIER_MISSING', 'host protected classifier was absent');
@@ -2658,6 +2739,21 @@ export function runStatusPhase(prepared, config) {
   let protectedFrameError = null;
   let protectedResolve;
   let protectedReject;
+  let turnAcceptedResolve;
+  let turnAcceptedReject;
+  let readyValue;
+  let turnCheckpoint;
+  let turnCheckpointAt;
+  let turnDurableRecordConfirmed = false;
+  let turnRecorded = false;
+  let turnRecording = false;
+  let turnCheckpointError;
+  let childClosed = false;
+  const turnCaller = turnCheckpointEnabled ? nativeCallerGate(turnCallerFailure) : undefined;
+  const turnAccepted = turnCheckpointEnabled ? new Promise((resolveValue, rejectValue) => {
+    turnAcceptedResolve = resolveValue; turnAcceptedReject = rejectValue;
+  }) : undefined;
+  turnAccepted?.catch(() => undefined);
   const protectedResult = protectedPhase ? new Promise((resolveValue, rejectValue) => {
     protectedResolve = resolveValue; protectedReject = rejectValue;
   }) : undefined;
@@ -2671,6 +2767,21 @@ export function runStatusPhase(prepared, config) {
   outcome.catch(() => undefined);
   handoff.catch(() => undefined);
   liveStatus.catch(() => undefined);
+  const failTurnCheckpoint = error => {
+    if (turnCheckpointError) return;
+    turnCheckpointError = error;
+    turnAcceptedReject?.(error);
+    outcomeReject(error);
+    handoffReject(error);
+    if (output.length === 0) readyReject(error);
+    if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
+  };
+  if (turnCheckpointEnabled && turnCallerFailure !== undefined) {
+    Promise.resolve(turnCallerFailure).then(
+      () => failTurnCheckpoint(fault('NATIVE_TURN_CALLER_FAILED', 'turn recorder caller settled without failure')),
+      reason => failTurnCheckpoint(reason instanceof Error ? reason : fault('NATIVE_TURN_CALLER_FAILED',
+        'turn recorder caller failed without an Error'))).catch(() => undefined);
+  }
   const append = (array, line) => {
     array.push(line);
     if (Buffer.byteLength(array.join('\n')) > LIMIT) { overflow = true; child.kill('SIGTERM'); }
@@ -2683,6 +2794,38 @@ export function runStatusPhase(prepared, config) {
     });
   }
   createInterface({ input: child.stdout }).on('line', line => {
+    let control;
+    try { control = JSON.parse(line); } catch { /* ordinary output decoder owns malformed lines */ }
+    if (control?.kind === 'guest_turn_accepted') {
+      if (!turnCheckpointEnabled || turnCheckpoint || output.length !== 1 || !released ||
+          !exactKeys(control, ['kind', 'schemaVersion', 'checkpointId', 'sessionId', 'turnId',
+            'status', 'disposition', 'startedNewTurn']) ||
+          Buffer.byteLength(line) + 2 > TURN_CHECKPOINT_FRAME_LIMIT ||
+          control.schemaVersion !== 1 || control.checkpointId !== config.turnCheckpointId ||
+          !controlId(control.sessionId) || !controlId(control.turnId) ||
+          control.sessionId !== readyValue?.metadata?.sessionId ||
+          control.status !== 'accepted' || control.disposition !== 'started' ||
+          control.startedNewTurn !== true) {
+        failTurnCheckpoint(fault('NATIVE_TURN_CHECKPOINT_INVALID', 'guest accepted-turn control frame was invalid'));
+        return;
+      }
+      turnCheckpoint = Object.freeze({ schemaVersion: 1, checkpointId: control.checkpointId,
+        sessionId: control.sessionId, turnId: control.turnId,
+        status: 'accepted', disposition: 'started', startedNewTurn: true });
+      turnCheckpointAt = Date.now();
+      turnAcceptedResolve(turnCheckpoint);
+      return;
+    }
+    if (turnCheckpointEnabled && output.length >= 1 && !turnRecorded) {
+      if (!turnCheckpoint && control?.kind === 'guest_transport_error') {
+        turnAcceptedReject(fault(control.code ?? 'GUEST_OUTPUT_INVALID',
+          'guest failed before accepted-turn checkpoint'));
+      } else {
+        failTurnCheckpoint(fault('NATIVE_TURN_CHECKPOINT_SEQUENCE',
+          'guest output preceded the recorded-turn acknowledgement'));
+        return;
+      }
+    }
     if (protectedPhase && output.length === 0 && protectedMarkerPresent(line)) {
       const error = fault('NATIVE_PROTECTED_FRAME_INVALID', 'protected marker appeared outside result frame');
       protectedFrameError = error; readyReject(error); outcomeReject(error); protectedReject(error);
@@ -2744,6 +2887,7 @@ export function runStatusPhase(prepared, config) {
               config.phase === 'resume' ? 'guest_resume_observed' : 'guest_shell_ready')) {
           throw fault('GUEST_OUTPUT_INVALID', 'first phase readiness was invalid');
         }
+        readyValue = parsed.result;
         readyResolve(parsed.result);
       } catch (error) { readyReject(error); }
     }
@@ -2788,9 +2932,11 @@ export function runStatusPhase(prepared, config) {
   const finished = new Promise(resolveResult => {
     child.once('error', error => {
       clearTimeout(timer);
+      childClosed = true;
       readyReject(error);
       outcomeReject(error);
       handoffReject(error);
+      turnAcceptedReject?.(error);
       protectedReject?.(error);
       statusReject(error);
       resolveResult({ code: null, signal: null, error: error.code ?? error.name, timedOut, overflow,
@@ -2798,7 +2944,10 @@ export function runStatusPhase(prepared, config) {
     });
     child.once('close', (code, signal) => {
       clearTimeout(timer);
+      childClosed = true;
       if (output.length === 0) readyReject(fault('GUEST_OUTPUT_INVALID', 'phase exited before readiness'));
+      if (turnCheckpointEnabled && !turnCheckpoint) turnAcceptedReject(fault('NATIVE_TURN_CHECKPOINT_MISSING',
+        'guest exited before accepted-turn checkpoint'));
       if (['shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && output.length < 2 ||
           ['held-shell', 'outer-held-shell'].includes(config.phase) && output.length < 3) {
         outcomeReject(fault('GUEST_OUTPUT_INVALID', 'shell exited before outcome'));
@@ -2819,23 +2968,61 @@ export function runStatusPhase(prepared, config) {
   boundedHandoff?.catch(() => undefined);
   const boundedProtectedResult = protectedPhase ? timeout('protected result classification', protectedResult) : undefined;
   boundedProtectedResult?.catch(() => undefined);
+  const boundedTurnAccepted = turnCheckpointEnabled ? timeout('native turn acceptance', turnAccepted) : undefined;
+  boundedTurnAccepted?.catch(() => undefined);
   return { pid: child.pid, ready: timeout('host readiness', ready),
     outcome: boundedOutcome,
     handoff: boundedHandoff,
     protectedResult: boundedProtectedResult,
+    turnAccepted: boundedTurnAccepted,
+    recordAndAckTurn: async recorder => {
+      if (!turnCheckpointEnabled || typeof recorder !== 'function' || !turnCheckpoint || turnRecording || turnRecorded ||
+          turnCheckpointError || childClosed || !released || shutdownReleased) {
+        throw fault('NATIVE_TURN_RECORD_SEQUENCE', 'turn recorder was unavailable or already used');
+      }
+      turnRecording = true;
+      try {
+        const remaining = 5_000 - (Date.now() - turnCheckpointAt);
+        if (remaining <= 0) throw fault('NATIVE_TURN_RECORD_DEADLINE', 'turn recording window expired');
+        await timeout('durable turn record', turnCaller.run(() => recorder({ ...turnCheckpoint })), remaining);
+        turnDurableRecordConfirmed = true;
+        if (turnCaller.error()) throw turnCaller.error();
+        if (turnCheckpointError || childClosed || timedOut || overflow || child.stdin.destroyed ||
+            child.stdin.writableEnded || Date.now() - turnCheckpointAt >= 5_000) {
+          throw fault('NATIVE_TURN_RECORD_DEADLINE', 'turn recording could not be acknowledged to the live guest');
+        }
+        const acknowledgement = { kind: 'host_turn_recorded', schemaVersion: 1,
+          checkpointId: turnCheckpoint.checkpointId, sessionId: turnCheckpoint.sessionId,
+          turnId: turnCheckpoint.turnId };
+        await writeTurnAcknowledgement(child.stdin, `${JSON.stringify(acknowledgement)}\n`, turnCaller.run,
+          Math.max(1, 5_000 - (Date.now() - turnCheckpointAt)), () => childClosed || !!turnCheckpointError);
+        if (turnCheckpointError || timedOut || overflow || Date.now() - turnCheckpointAt >= 5_000) {
+          throw fault('NATIVE_TURN_ACK_UNCERTAIN', 'turn acknowledgement completion crossed a failed boundary');
+        }
+        turnRecorded = true;
+        return { ...turnCheckpoint };
+      } catch (error) { failTurnCheckpoint(error); throw error; }
+    },
+    turnCheckpoint: () => ({ accepted: turnCheckpoint ? { ...turnCheckpoint } : null,
+      durableRecordConfirmed: turnDurableRecordConfirmed, recorded: turnRecorded,
+      error: turnCheckpointError?.code ?? null }),
     protectedFrameError: () => protectedFrameError,
     liveStatus: timeout('live Bubblewrap status', liveStatus),
     statusLines: () => [...statusLines],
     release: () => { if (!released) { released = true; child.stdin.end('release\n'); } },
     releaseTurn: () => { if (['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && !released) {
       released = true; child.stdin.write('turn\n'); } },
-    sendDecision: decision => { if (!['held-shell', 'outer-held-shell'].includes(config.phase) || !released || decisionSent) {
+    sendDecision: decision => { if (!['held-shell', 'outer-held-shell'].includes(config.phase) || !released || decisionSent ||
+        turnCheckpointEnabled && !turnRecorded) {
       throw fault('NATIVE_HELD_DECISION_SEQUENCE', 'held decision was sent outside its one-use window');
     }
       decisionSent = true;
       child.stdin.write(`${JSON.stringify(decision)}\n`);
     },
-    releaseShutdown: () => { if (['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && released && !shutdownReleased) {
+    releaseShutdown: () => { if (turnCheckpointEnabled && !turnRecorded) {
+      throw fault('NATIVE_TURN_RECORD_SEQUENCE', 'shutdown release preceded recorded turn');
+    }
+      if (['shell', 'held-shell', 'outer-held-shell', 'read-file-schema', 'read-file-probe', 'protected-read', 'dummy-auth-read'].includes(config.phase) && released && !shutdownReleased) {
       shutdownReleased = true; child.stdin.end('shutdown\n');
     } },
     abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } }, finished };
