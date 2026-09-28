@@ -430,70 +430,109 @@ export function mainSchemaDiscovery(body) {
   if (body?.model !== SHELL_MODEL || namespace?.type !== 'namespace' || namespace.name !== 'muse' ||
       !Array.isArray(functions) || functions.length !== 25 ||
       functions.some(tool => tool?.type !== 'function' || typeof tool.name !== 'string') ||
-      body.previous_response_id != null ||
-      !inputText?.includes('NATIVE_SHELL_PROBE') ||
+      body.previous_response_id != null || !inputText?.includes('NATIVE_SHELL_PROBE') ||
       (Array.isArray(body.input) && body.input.some(item => item?.type === 'function_call_output'))) return null;
-  const safeName = name => ['bash', 'shell', 'exec_command', 'run_shell_command', 'terminal',
-    'command', 'script', 'submit_reminder_decision'].includes(name) ? name : '[other]';
-  const entries = functions.map((tool, index) => ({ index, name: safeName(tool.name),
-    nameLength: Buffer.byteLength(tool.name),
-    nameSha256: createHash('sha256').update(tool.name).digest('hex'),
+  const digestName = name => createHash('sha256').update(name).digest('hex');
+  const entries = functions.map((tool, index) => ({ index, name: tool.name === 'bash' ? 'bash' : '[other]',
+    nameLength: Buffer.byteLength(tool.name), nameSha256: digestName(tool.name),
     parameterKeys: tool.parameters && typeof tool.parameters === 'object' && !Array.isArray(tool.parameters) ?
       Object.keys(tool.parameters).filter(key => ['type', 'properties', 'required', 'additionalProperties',
         'anyOf', 'oneOf', 'allOf'].includes(key)) : [] }));
-  const candidates = functions.map((tool, index) => ({ tool, index })).filter(({ tool }) =>
-    /(?:bash|shell|exec|command|terminal)/i.test(tool.name));
-  const structural = (schema, depth = 0) => {
-    if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 4) return { unresolved: true };
+  const bashIndexes = functions.flatMap((tool, index) => tool.name === 'bash' ? [index] : []);
+  const identityValid = bashIndexes.length === 1 && bashIndexes[0] === 11 &&
+    digestName(functions[11].name) === '37d2b12d5d9abc2a364ef9448767ee03938e383c0284193477dc7618f4b7c6c2';
+  const selectedTool = identityValid ? functions[11] : null;
+  const safeIdentifier = value => value === 'max_output_tokens' || typeof value === 'string' &&
+    /^[A-Za-z][A-Za-z0-9_]{0,47}$/.test(value) &&
+    !/(?:secret|token|password|credential|authorization|bearer|cookie|header|api_key|^sk_)/i.test(value);
+  const safeLiteral = value => value === null || typeof value === 'boolean' ||
+    typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1_000_000 ||
+    typeof value === 'string' && /^[A-Za-z0-9_.-]{0,32}$/.test(value) &&
+      !/(?:secret|token|password|credential|authorization|bearer|cookie|header|api_key|^sk_)/i.test(value);
+  const identifier = value => safeIdentifier(value) ? value : {
+    unsafe: true, length: typeof value === 'string' ? Buffer.byteLength(value) : null,
+    sha256: typeof value === 'string' ? digestName(value) : null };
+  const context = { nodes: 0, unsupported: 0, omitted: 0 };
+  if (Object.keys(namespace).some(key => !['type', 'name', 'tools', 'description'].includes(key))) {
+    context.unsupported++;
+  }
+  const project = (schema, depth = 0) => {
+    if (!schema || typeof schema !== 'object' || Array.isArray(schema) || depth > 6 ||
+        ++context.nodes > 128) { context.unsupported++; return { incomplete: true }; }
     const result = {};
     for (const [key, value] of Object.entries(schema)) {
-      if (['description', 'title', 'default', 'examples'].includes(key)) continue;
-      if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
-        if (Object.keys(value).some(name => safeName(name) === '[other]')) result.unresolved = true;
-        result.properties = Object.fromEntries(Object.entries(value).slice(0, 32).map(([name, property]) =>
-          [safeName(name), structural(property, depth + 1)]));
-        if (Object.keys(value).length > 32) result.omittedProperties = Object.keys(value).length - 32;
-      } else if (key === 'items' && value && typeof value === 'object') result.items = structural(value, depth + 1);
-      else if (['anyOf', 'oneOf', 'allOf'].includes(key) && Array.isArray(value)) {
-        result[key] = value.slice(0, 8).map(item => structural(item, depth + 1));
-        if (value.length > 8) result[`omitted${key}`] = value.length - 8;
-      } else if (key === 'required' && Array.isArray(value)) {
-        if (value.some(name => safeName(name) === '[other]')) result.unresolved = true;
-        result.required = value.slice(0, 32).map(safeName);
-        if (value.length > 32) result.omittedRequired = value.length - 32;
-      }
-      else if (key === 'enum' && Array.isArray(value)) {
-        result.enumCount = value.length;
-        result.enumTypes = [...new Set(value.map(item => item === null ? 'null' : typeof item))];
-        result.unresolved = true;
-      }
-      else if (key === 'type' && (typeof value === 'string' || Array.isArray(value))) {
+      if (['description', 'title', 'examples'].includes(key)) continue;
+      if (key === 'default') { context.unsupported++; continue; }
+      if (key === 'type') {
         const types = Array.isArray(value) ? value : [value];
-        const valid = types.length > 0 && types.every(type => ['object', 'array', 'string', 'integer',
-          'number', 'boolean', 'null'].includes(type)) && new Set(types).size === types.length;
-        result.type = valid ? value : '[unresolved]';
-        if (!valid) result.unresolved = true;
-      }
+        if (!types.length || types.some(type => !['object', 'array', 'string', 'integer',
+          'number', 'boolean', 'null'].includes(type)) || new Set(types).size !== types.length) {
+          context.unsupported++; result.type = '[unsupported]';
+        } else result.type = value;
+      } else if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+        const fields = Object.entries(value);
+        result.propertyCount = fields.length;
+        result.properties = fields.slice(0, 32).map(([name, property]) => {
+          if (!safeIdentifier(name)) context.unsupported++;
+          return { name: identifier(name), schema: project(property, depth + 1) };
+        });
+        if (fields.length > 32) { context.omitted += fields.length - 32; result.omittedProperties = fields.length - 32; }
+      } else if (key === 'required' && Array.isArray(value)) {
+        result.requiredCount = value.length;
+        result.required = value.slice(0, 32).map(name => {
+          if (!safeIdentifier(name)) context.unsupported++;
+          return identifier(name);
+        });
+        if (new Set(value).size !== value.length) context.unsupported++;
+        if (value.length > 32) { context.omitted += value.length - 32; result.omittedRequired = value.length - 32; }
+      } else if (key === 'enum' && Array.isArray(value)) {
+        result.enumCount = value.length;
+        result.enum = value.slice(0, 16).map(item => {
+          if (safeLiteral(item)) return item;
+          context.unsupported++;
+          return { unsafe: true, type: item === null ? 'null' : typeof item };
+        });
+        if (!value.length || new Set(value.map(item => JSON.stringify(item))).size !== value.length) context.unsupported++;
+        if (value.length > 16) { context.omitted += value.length - 16; result.omittedEnum = value.length - 16; }
+      } else if (key === 'const') {
+        if (safeLiteral(value)) result.const = value;
+        else { context.unsupported++; result.const = { unsafe: true, type: value === null ? 'null' : typeof value }; }
+      } else if (key === 'nullable' && typeof value === 'boolean') result.nullable = value;
       else if (key === 'additionalProperties' && typeof value === 'boolean') result.additionalProperties = value;
-      else if (['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
-        'minLength', 'maxLength', 'minItems', 'maxItems'].includes(key) &&
-        typeof value === 'number' && Number.isFinite(value)) result[key] = value;
-      else result.unresolved = true;
+      else if (key === 'additionalProperties' && value && typeof value === 'object' && !Array.isArray(value)) {
+        result.additionalProperties = project(value, depth + 1);
+      } else if (key === 'items' && value && typeof value === 'object' && !Array.isArray(value)) {
+        result.items = project(value, depth + 1);
+      } else if (['anyOf', 'oneOf', 'allOf'].includes(key) && Array.isArray(value)) {
+        result[key] = value.slice(0, 8).map(item => project(item, depth + 1));
+        if (!value.length) context.unsupported++;
+        if (value.length > 8) { context.omitted += value.length - 8; result[`omitted${key}`] = value.length - 8; }
+      } else if (['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+        'minLength', 'maxLength', 'minItems', 'maxItems', 'minProperties', 'maxProperties'].includes(key) &&
+        typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1_000_000 &&
+        (!['minLength', 'maxLength', 'minItems', 'maxItems', 'minProperties', 'maxProperties'].includes(key) ||
+          Number.isInteger(value) && value >= 0) && (key !== 'multipleOf' || value > 0)) {
+        result[key] = value;
+      } else {
+        context.unsupported++;
+      }
     }
     return result;
   };
-  const selected = candidates.length === 1 ? { index: candidates[0].index,
-    name: safeName(candidates[0].tool.name),
-    strict: candidates[0].tool.strict === true ? true :
-      candidates[0].tool.strict === false ? false : 'unspecified',
-    schema: structural(candidates[0].tool.parameters) } : null;
-  const complete = value => value === null || typeof value !== 'object' ||
-    (Array.isArray(value) ? value.every(complete) :
-      Object.entries(value).every(([key, child]) =>
-        !key.startsWith('omitted') && key !== 'unresolved' && complete(child)));
+  let selected = null;
+  if (selectedTool) {
+    const fields = Object.keys(selectedTool);
+    if (fields.some(key => !['type', 'name', 'parameters', 'strict', 'description'].includes(key)) ||
+        selectedTool.strict !== undefined && typeof selectedTool.strict !== 'boolean') context.unsupported++;
+    selected = { index: 11, name: 'bash', type: 'function',
+      strict: selectedTool.strict === true ? true : selectedTool.strict === false ? false :
+        selectedTool.strict === undefined ? 'unspecified' : 'invalid',
+      schema: project(selectedTool.parameters) };
+  }
   const summary = { namespace: 'muse', functionCount: functions.length, omittedFunctions: 0,
-    functions: entries, candidateCount: candidates.length, selected,
-    selectedComplete: selected !== null && complete(selected.schema) };
+    functions: entries, bashCount: bashIndexes.length, identityValid, selected,
+    unsupportedCount: context.unsupported, omittedConstraints: context.omitted,
+    selectedComplete: identityValid && context.unsupported === 0 && context.omitted === 0 };
   if (Buffer.byteLength(JSON.stringify(summary)) > 16_384) {
     summary.selected = null;
     summary.selectedTruncated = true;

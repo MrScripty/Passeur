@@ -660,10 +660,10 @@ test('fixed reminder payload is schema bound and its six SSE events preserve nam
 function mainNativeRequest() {
   return { model: 'fixture-native-shell', input: 'NATIVE_SHELL_PROBE', tools: [{
     type: 'namespace', name: 'muse', tools: Array.from({ length: 25 }, (_, index) => ({
-      type: 'function', name: index === 12 ? 'bash' : `native_${index}`,
-      parameters: { type: 'object', properties: index === 12 ?
+      type: 'function', name: index === 11 ? 'bash' : index === 12 ? 'bash_input' : `native_${index}`,
+      parameters: { type: 'object', properties: index === 11 ?
         { command: { type: 'string' } } : { value: { type: 'string' } },
-      required: [index === 12 ? 'command' : 'value'], additionalProperties: false },
+      required: [index === 11 ? 'command' : 'value'], additionalProperties: false },
     })) }] };
 }
 
@@ -688,12 +688,15 @@ test('main request discovers all 25 functions without a shell call or raw values
   const secret = 'sk_test_12345_SUPPOSED_SECRET';
   const main = mainNativeRequest();
   main.tools[0].tools[0].name = secret;
-  main.tools[0].tools[12].description = secret;
-  main.tools[0].tools[12].parameters.properties.command.enum = [secret];
+  main.tools[0].tools[11].description = secret;
+  main.tools[0].tools[11].parameters.properties.command.enum = [secret];
   const summary = mainSchemaDiscovery(main);
   assert.equal(summary.functionCount, 25);
   assert.equal(summary.functions.length, 25);
   assert.equal(summary.selected.name, 'bash');
+  assert.equal(summary.selected.index, 11);
+  assert.equal(summary.functions[12].name, '[other]');
+  assert.equal(summary.identityValid, true);
   assert.equal(summary.selectedComplete, false);
   assert.deepEqual(summary.selected.schema.required, ['command']);
   assert.equal(summary.functions[0].name, '[other]');
@@ -701,13 +704,13 @@ test('main request discovers all 25 functions without a shell call or raw values
   assert.ok(Buffer.byteLength(JSON.stringify(summary)) <= 16_384);
   assert.equal(mainSchemaDiscovery(mainNativeRequest()).selectedComplete, true);
   const unreviewed = mainNativeRequest();
-  unreviewed.tools[0].tools[12].parameters.properties.command.pattern = secret;
+  unreviewed.tools[0].tools[11].parameters.properties.command.pattern = secret;
   assert.equal(mainSchemaDiscovery(unreviewed).selectedComplete, false);
   const invalidType = mainNativeRequest();
-  invalidType.tools[0].tools[12].parameters.properties.command.type = 'UNKNOWN_TYPE';
+  invalidType.tools[0].tools[11].parameters.properties.command.type = 'UNKNOWN_TYPE';
   assert.equal(mainSchemaDiscovery(invalidType).selectedComplete, false);
   const duplicateType = mainNativeRequest();
-  duplicateType.tools[0].tools[12].parameters.properties.command.type = ['string', 'string'];
+  duplicateType.tools[0].tools[11].parameters.properties.command.type = ['string', 'string'];
   assert.equal(mainSchemaDiscovery(duplicateType).selectedComplete, false);
   const h = await nativeProviderHarness();
   const response = await h.post(main);
@@ -717,6 +720,68 @@ test('main request discovers all 25 functions without a shell call or raw values
   assert.equal(h.provider.requests[0].callId, undefined);
   assert.deepEqual(await h.provider.rejection, { kind: 'provider_rejected', code: 'NATIVE_MAIN_SCHEMA_ONLY' });
   await h.provider.close();
+});
+
+test('exact bash selection rejects missing, duplicate, moved and wrong namespace identity', () => {
+  const changed = transform => { const request = mainNativeRequest(); transform(request); return mainSchemaDiscovery(request); };
+  assert.equal(changed(body => { body.tools[0].tools[11].name = 'bash_input'; }).selectedComplete, false);
+  assert.equal(changed(body => { body.tools[0].tools[12].name = 'bash'; }).selectedComplete, false);
+  assert.equal(changed(body => { [body.tools[0].tools[11], body.tools[0].tools[12]] =
+    [body.tools[0].tools[12], body.tools[0].tools[11]]; }).selectedComplete, false);
+  assert.equal(changed(body => { body.tools[0].name = 'other'; }), null);
+});
+
+test('selected bash schema retains distinct safe names, nested constraints and exact safe enums', () => {
+  const body = mainNativeRequest();
+  const selected = body.tools[0].tools[11];
+  selected.strict = true;
+  selected.parameters.properties.alpha_feature = { type: ['string', 'null'], enum: ['fast', 'slow', null],
+    minLength: 1, maxLength: 32, description: 'hidden prompt' };
+  selected.parameters.properties.beta_feature = { type: 'array', minItems: 0, maxItems: 3,
+    items: { anyOf: [{ type: 'number', minimum: -1.5, maximum: 8.5 }, { type: 'null' }] } };
+  selected.parameters.properties.max_output_tokens = { minimum: 1, type: 'integer' };
+  selected.parameters.required.push('alpha_feature', 'beta_feature');
+  const summary = mainSchemaDiscovery(body);
+  assert.equal(summary.selectedComplete, true);
+  assert.equal(summary.selected.strict, true);
+  assert.deepEqual(summary.selected.schema.required, ['command', 'alpha_feature', 'beta_feature']);
+  assert.deepEqual(summary.selected.schema.properties.map(field => field.name),
+    ['command', 'alpha_feature', 'beta_feature', 'max_output_tokens']);
+  assert.deepEqual(summary.selected.schema.properties[1].schema.enum, ['fast', 'slow', null]);
+  assert.deepEqual(summary.selected.schema.properties[2].schema.items.anyOf[0].minimum, -1.5);
+  assert.deepEqual(summary.selected.schema.properties[3],
+    { name: 'max_output_tokens', schema: { minimum: 1, type: 'integer' } });
+  assert.equal(JSON.stringify(summary).includes('hidden prompt'), false);
+});
+
+test('unsafe identifiers, unsupported constraints, depth and budget remain incomplete', () => {
+  const secret = 'sk_test_12345_SUPPOSED_SECRET';
+  const unsafe = mainNativeRequest();
+  unsafe.tools[0].tools[11].parameters.properties[secret] = { type: 'string' };
+  unsafe.tools[0].tools[11].parameters.required.push(secret);
+  const unsafeSummary = mainSchemaDiscovery(unsafe);
+  assert.equal(unsafeSummary.selectedComplete, false);
+  assert.equal(JSON.stringify(unsafeSummary).includes(secret), false);
+  assert.notDeepEqual(unsafeSummary.selected.schema.properties.at(-1).name,
+    unsafeSummary.selected.schema.properties.at(-2).name);
+  const deep = mainNativeRequest();
+  let nested = deep.tools[0].tools[11].parameters.properties.command;
+  for (let index = 0; index < 9; index++) { nested.items = { type: 'array' }; nested = nested.items; }
+  assert.equal(mainSchemaDiscovery(deep).selectedComplete, false);
+  const unsafeStrict = mainNativeRequest();
+  unsafeStrict.tools[0].tools[11].strict = { secret };
+  const strictSummary = mainSchemaDiscovery(unsafeStrict);
+  assert.equal(strictSummary.selectedComplete, false);
+  assert.equal(JSON.stringify(strictSummary).includes(secret), false);
+  const budget = mainNativeRequest();
+  budget.tools[0].tools[11].parameters.properties = Object.fromEntries(Array.from({ length: 32 }, (_, i) =>
+    [`field_${i}`, { type: 'string', enum: Array.from({ length: 16 }, (_, j) =>
+      `v${i}_${j}_${'x'.repeat(23)}`) }]));
+  budget.tools[0].tools[11].parameters.required = Object.keys(budget.tools[0].tools[11].parameters.properties);
+  const bounded = mainSchemaDiscovery(budget);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= 16_384);
+  assert.equal(bounded.selectedComplete, false);
+  assert.equal(bounded.selectedTruncated, true);
 });
 
 test('main and reminder streams accept either order and concurrent arrival without cross-stream correlation', async () => {
@@ -942,8 +1007,8 @@ test('native shell controller verifies effects and requires stop even for pendin
       launch: (_prepared, config) => {
         const ready = shellReadyFixture(config.workspace);
         const outcome = guestFailure ? { kind: 'guest_transport_error', stage: 'native_turn',
-          code: 'NATIVE_REMINDER_SCHEMA_ONLY', message: 'schema-only stop',
-          providerRequests: [{ method: 'POST', path: '/responses', kind: 'native_reminder_schema_only' }] } :
+          code: 'NATIVE_MAIN_SCHEMA_ONLY', message: 'schema-only stop',
+          providerRequests: [{ method: 'POST', path: '/responses', kind: 'native_main_schema_discovery' }] } :
           shellOutcomeFixture(ready, approval, workspaceReportedWritten);
         if (!approval && !guestFailure) outcome.observations.items[0].dummyAuthVisible = dummyAuthVisible;
         const finished = finishedReject ? Promise.reject(Object.assign(new Error('host exit timed out'),
@@ -985,17 +1050,17 @@ test('native shell controller verifies effects and requires stop even for pendin
   assert.equal(uncertain.code, 'STOP_SURVIVOR');
   assert.equal(uncertain.stopProof, 'unconfirmed');
   const primary = await run({ guestFailure: true, stopFails: true });
-  assert.equal(primary.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
-  assert.equal(primary.evidence.primaryGuestFailure.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
+  assert.equal(primary.code, 'NATIVE_MAIN_SCHEMA_ONLY');
+  assert.equal(primary.evidence.primaryGuestFailure.code, 'NATIVE_MAIN_SCHEMA_ONLY');
   assert.equal(primary.evidence.stopError.code, 'STOP_SURVIVOR');
   assert.equal(primary.stopProof, 'unconfirmed');
   const completionFailed = await run({ guestFailure: true, finishedReject: true });
-  assert.equal(completionFailed.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
-  assert.equal(completionFailed.evidence.primaryGuestFailure.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
+  assert.equal(completionFailed.code, 'NATIVE_MAIN_SCHEMA_ONLY');
+  assert.equal(completionFailed.evidence.primaryGuestFailure.code, 'NATIVE_MAIN_SCHEMA_ONLY');
   assert.equal(completionFailed.evidence.secondaryError.code, 'PROBE_DEADLINE');
   assert.equal(completionFailed.stopProof, 'unconfirmed');
   const terminalFailed = await run({ guestFailure: true, terminalInvalid: true });
-  assert.equal(terminalFailed.code, 'NATIVE_REMINDER_SCHEMA_ONLY');
+  assert.equal(terminalFailed.code, 'NATIVE_MAIN_SCHEMA_ONLY');
   assert.equal(terminalFailed.evidence.terminalError.code, 'BWRAP_STATUS_INVALID');
   assert.equal(terminalFailed.stopProof, 'unconfirmed');
 });
