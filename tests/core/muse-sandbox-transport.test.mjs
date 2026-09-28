@@ -15,7 +15,7 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   startShellProvider, mainSchemaDiscovery, readFileSchemaDiscovery,
   verificationReminderSchemaDiscovery, verificationReminderAssociation,
   fixedVerificationPayload, fixedReadFileCall, readFileCallEvents,
-  matchingReadFileResult, readFileResultEnvelopeShape,
+  matchingReadFileResult, readFileDecoratedOutput, readFileResultEnvelopeShape,
   fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape,
   fixedNoReminderPayload, reminderCallEvents,
@@ -722,9 +722,16 @@ function verifiedVerificationRequest() {
   return body;
 }
 
-function readFileResultRequest(output = 'PASSEUR_NATIVE_READ_CANARY\n') {
-  return { model: 'fixture-native-shell', previous_response_id: 'resp_native_read_file_1',
-    input: [{ type: 'function_call_output', call_id: 'call_native_read_file_1', output }] };
+function readFileResultRequest(output =
+  'Read text file `/tmp/fixture/workspace/read-canary.txt`.\n1|PASSEUR_NATIVE_READ_CANARY') {
+  return { model: 'fixture-native-shell', tools: readFileProbeRequest().tools, input: [
+    { type: 'message', role: 'developer', content: 'fixed test developer content' },
+    { type: 'message', role: 'user', content: 'fixed test user content' },
+    { type: 'function_call', id: 'fc_native_read_file_1', call_id: 'call_native_read_file_1',
+      name: 'muse.read_file', arguments: JSON.stringify({
+        path: '/tmp/fixture/workspace/read-canary.txt', offset: 1, limit: 20 }) },
+    { type: 'function_call_output', call_id: 'call_native_read_file_1', output },
+  ] };
 }
 
 async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readFileProbe = false } = {}) {
@@ -1056,11 +1063,13 @@ test('fixed verification none and read_file calls bind exact schemas, paths and 
   assert.equal(readFrames[4].item.namespace, 'muse');
   assert.equal(verifyFrames[4].item.name, 'submit_reminder_decision');
   assert.notEqual(readFrames[4].item.call_id, verifyFrames[4].item.call_id);
-  assert.equal(matchingReadFileResult(readFileResultRequest()), true);
-  assert.equal(matchingReadFileResult(readFileResultRequest('wrong')), false);
+  assert.equal(readFileDecoratedOutput('/tmp/fixture/workspace'),
+    'Read text file `/tmp/fixture/workspace/read-canary.txt`.\n1|PASSEUR_NATIVE_READ_CANARY');
+  assert.equal(matchingReadFileResult(readFileResultRequest(), '/tmp/fixture/workspace'), true);
+  assert.equal(matchingReadFileResult(readFileResultRequest('wrong'), '/tmp/fixture/workspace'), false);
   assert.equal(matchingReadFileResult({ ...readFileResultRequest(),
-    input: [{ ...readFileResultRequest().input[0], extra: true }] }), false);
-  assert.equal(readFileResultEnvelopeShape(readFileResultRequest('private output')).items[0].exactCanary, false);
+    input: [{ ...readFileResultRequest().input[0], extra: true }] }, '/tmp/fixture/workspace'), false);
+  assert.equal(readFileResultEnvelopeShape(readFileResultRequest('private output')).items[3].exactCanary, false);
   assert.equal(JSON.stringify(readFileResultEnvelopeShape(readFileResultRequest('private output')))
     .includes('private output'), false);
 });
@@ -1157,6 +1166,49 @@ test('read_file mismatch identifies HTTP name and fixed args without revealing v
   assert.equal(oversized.items[2].argumentsExactFixed, false);
 });
 
+test('exact read result rejects changed roles, IDs, args, output and extra items', () => {
+  const workspace = '/tmp/fixture/workspace';
+  const original = readFileResultRequest();
+  assert.equal(matchingReadFileResult(original, workspace), true);
+  const edits = [
+    body => { delete body.tools; },
+    body => { body.tools[0].tools[1].parameters.properties.offset.minimum = 0; },
+    body => { body.previous_response_id = null; },
+    body => { body.input[0].role = 'user'; },
+    body => { body.input[1].role = 'assistant'; },
+    body => { body.input[0].content = [{ type: 'input_text', text: 'other' }]; },
+    body => { body.input[1].content = ''; },
+    body => { body.input[0].extra = true; },
+    body => { body.input[1].id = 'foreign'; },
+    body => { body.input[2].name = 'read_file'; },
+    body => { body.input[2].name = 'muse.bash'; },
+    body => { body.input[2].id = 'other'; },
+    body => { body.input[2].call_id = 'other'; },
+    body => { body.input[2].namespace = 'muse'; },
+    body => { body.input[2].arguments = '{'; },
+    body => { body.input[2].arguments = JSON.stringify({ path: '/tmp/other', offset: 1, limit: 20 }); },
+    body => { body.input[2].arguments = JSON.stringify({
+      path: '/tmp/fixture/workspace/read-canary.txt', offset: 0, limit: 20 }); },
+    body => { body.input[2].arguments = JSON.stringify({
+      path: '/tmp/fixture/workspace/read-canary.txt', offset: 1, limit: 21 }); },
+    body => { body.input[2].arguments = JSON.stringify({
+      path: '/tmp/fixture/workspace/read-canary.txt', offset: 1, limit: 20, extra: true }); },
+    body => { body.input[3].call_id = 'call_native_reminder_1'; },
+    body => { body.input[3].output += '\n'; },
+    body => { body.input[3].output = body.input[3].output.replace('Read text file', 'Read file'); },
+    body => { body.input[3].output = body.input[3].output.replace('read-canary.txt', 'other.txt'); },
+    body => { body.input[3].output = body.input[3].output.replace('1|', '2|'); },
+    body => { body.input[3].output = body.input[3].output.replace('PASSEUR', 'OTHER'); },
+    body => { body.input[3].extra = true; },
+    body => { body.input.push(structuredClone(body.input[3])); },
+  ];
+  for (const edit of edits) {
+    const changed = structuredClone(original);
+    edit(changed);
+    assert.equal(matchingReadFileResult(changed, workspace), false);
+  }
+});
+
 test('probe provider accepts one workspace read and both independent reminder schemas in bounded orders', async () => {
   const skill = { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE' };
   const cases = [
@@ -1219,7 +1271,7 @@ test('probe provider rejects result substitution, schema drift and unexpected ve
     const wrong = readFileResultRequest('PASSEUR_NATIVE_READ_CANARY\nextra');
     assert.equal((await h.post(wrong)).status, 422);
     assert.equal(h.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
-    assert.equal(h.provider.requests[1].resultEnvelope.items[0].exactCanary, false);
+    assert.equal(h.provider.requests[1].resultEnvelope.items[3].exactCanary, false);
     assert.equal((await h.post(readFileResultRequest())).status, 429);
   } finally { await h.provider.close(); }
   const structural = await nativeProviderHarness({ readFileProbe: true });
@@ -1280,8 +1332,8 @@ test('read result admitted before its call stays unissued when its body arrives 
     assert.equal(response.status, 422);
     assert.equal(h.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
     assert.equal(h.provider.requests[0].responseIndex, 1);
-    assert.equal(h.provider.requests[0].resultEnvelope.previousResponse, 'known_unissued');
-    assert.equal(h.provider.requests[0].resultEnvelope.items[0].callId, 'known_unissued');
+    assert.equal(h.provider.requests[0].resultEnvelope.previousResponse, 'absent');
+    assert.equal(h.provider.requests[0].resultEnvelope.items[2].callId, 'known_unissued');
     assert.deepEqual(h.provider.requests[0].resultEnvelope.issuedAtRequest,
       { read: false, readText: false, skill: false, verification: false });
     assert.equal(h.provider.state.main, 'read-call-issued');
@@ -1702,7 +1754,9 @@ function readFileProbeOutcomeFixture(ready) {
     event: { kind: 'turn_completed', terminal: 'completed', turnId, sessionId: ready.metadata.sessionId },
     observations: { approvals: [], items: [{ itemId: 'item-read', turnId,
       callId: 'call_native_read_file_1', tool: 'read_file', status: 'completed',
-      argsMatch: true, exactCanary: true }], reminders: [], protocolErrors: [],
+      argsMatch: true, exactCanary: true,
+      outputShape: { type: 'string', bytes: Buffer.byteLength(readFileDecoratedOutput(workspace)) } }],
+    reminders: [], protocolErrors: [],
     omitted: { approvals: 0, items: 0, reminders: 0, protocolErrors: 0 } },
     providerRequests: [{ method: 'GET', path: '/muse-code/models' },
       { method: 'POST', path: '/responses', kind: 'native_read_file_call', model: 'fixture-native-shell',
@@ -1717,7 +1771,12 @@ function readFileProbeOutcomeFixture(ready) {
         payloadSha256: createHash('sha256').update(JSON.stringify(fixedVerificationPayload(verifiedVerificationRequest())))
           .digest('hex') },
       { method: 'POST', path: '/responses', kind: 'matching_read_file_result', model: 'fixture-native-shell',
-        responseId: 'resp_native_read_file_2', forCallId: 'call_native_read_file_1', exactCanary: true }] };
+        responseId: 'resp_native_read_file_2', forCallId: 'call_native_read_file_1', exactCanary: true,
+        previousResponse: 'absent', inputCount: 4, callItemId: 'fc_native_read_file_1',
+        functionName: 'muse.read_file', argumentsExactFixed: true,
+        outputBytes: Buffer.byteLength(readFileDecoratedOutput(workspace)),
+        outputSha256: createHash('sha256').update(readFileDecoratedOutput(workspace)).digest('hex'),
+        nativeChildAssociation: 'unknown' }] };
 }
 
 test('read_file outcome requires exact call, result, reminders, turn and no approval', () => {
@@ -1739,9 +1798,13 @@ test('read_file outcome requires exact call, result, reminders, turn and no appr
   for (const edit of [
     value => { value.providerRequests[1].pathSha256 = 'wrong'; },
     value => { value.providerRequests[3].forCallId = 'other'; },
+    value => { value.providerRequests[3].functionName = 'read_file'; },
+    value => { value.providerRequests[3].outputSha256 = 'other'; },
+    value => { value.providerRequests[3].inputCount = 5; },
     value => { value.providerRequests.push(structuredClone(value.providerRequests[1])); },
     value => { value.observations.approvals.push({ kind: 'unexpected_read_approval' }); },
     value => { value.observations.items[0].exactCanary = false; },
+    value => { value.observations.items[0].outputShape.bytes++; },
     value => { value.providerRequests[2].verificationSchema.selectedComplete = false; },
     value => { value.providerRequests[1].mainSchema.identityValid = false; },
     value => { value.providerRequests[2].verificationSchema.identityValid = false; },

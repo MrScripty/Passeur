@@ -738,12 +738,36 @@ export function readFileCallEvents(args) {
   ];
 }
 
-export function matchingReadFileResult(body) {
-  return body?.model === SHELL_MODEL && body.previous_response_id === READ_RESPONSE &&
-    Array.isArray(body.input) && body.input.length === 1 &&
-    body.input[0]?.type === 'function_call_output' && body.input[0].call_id === READ_CALL &&
-    Object.keys(body.input[0]).sort().join(',') === 'call_id,output,type' &&
-    body.input[0].output === READ_CANARY_CONTENT;
+export function readFileDecoratedOutput(workspace) {
+  return `Read text file \`${join(workspace, READ_CANARY_NAME)}\`.\n1|${READ_CANARY_CONTENT.trimEnd()}`;
+}
+
+export function matchingReadFileResult(body, workspace) {
+  if (body?.model !== SHELL_MODEL || Object.hasOwn(body, 'previous_response_id') ||
+      typeof workspace !== 'string' || !workspace.startsWith('/tmp/') ||
+      !Array.isArray(body.input) || body.input.length !== 4) return false;
+  const schema = selectedToolSchemaDiscovery(body, { name: 'read_file', index: 1,
+    digest: 'c9f8123bd2726fc2414267256101446c45647b4754b1bad58feaf205125b4c96',
+    marker: null, allowFunctionOutput: true });
+  if (!schema?.identityValid || !schema.selectedComplete ||
+      !isDeepStrictEqual(schema.selected, FIXED_READ_SCHEMA)) return false;
+  const [developer, user, call, output] = body.input;
+  if (!isDeepStrictEqual(Object.keys(developer ?? {}).sort(), ['content', 'role', 'type']) ||
+      developer.type !== 'message' || developer.role !== 'developer' ||
+      typeof developer.content !== 'string' || !developer.content ||
+      !isDeepStrictEqual(Object.keys(user ?? {}).sort(), ['content', 'role', 'type']) ||
+      user.type !== 'message' || user.role !== 'user' ||
+      typeof user.content !== 'string' || !user.content ||
+      !isDeepStrictEqual(Object.keys(call ?? {}).sort(), ['arguments', 'call_id', 'id', 'name', 'type']) ||
+      call.type !== 'function_call' || call.id !== READ_ITEM || call.call_id !== READ_CALL ||
+      call.name !== 'muse.read_file' || typeof call.arguments !== 'string' ||
+      Buffer.byteLength(call.arguments) > 4096 ||
+      !isDeepStrictEqual(Object.keys(output ?? {}).sort(), ['call_id', 'output', 'type']) ||
+      output.type !== 'function_call_output' || output.call_id !== READ_CALL ||
+      output.output !== readFileDecoratedOutput(workspace)) return false;
+  try { return isDeepStrictEqual(JSON.parse(call.arguments),
+    { path: join(workspace, READ_CANARY_NAME), offset: 1, limit: 20 }); }
+  catch { return false; }
 }
 
 export function readFileResultEnvelopeShape(body, issuedAtRequest = {}, workspace) {
@@ -1119,7 +1143,8 @@ export async function startShellProvider(forbiddenPort, command, {
           return;
         }
         if (readFileProbe && state.main === 'read-call-issued') {
-          if (issuanceAtAdmission.main !== 'read-call-issued' || !matchingReadFileResult(parsed)) {
+          if (issuanceAtAdmission.main !== 'read-call-issued' ||
+              !matchingReadFileResult(parsed, workspace)) {
             summary.resultEnvelope = readFileResultEnvelopeShape(parsed, issuanceAtAdmission, workspace);
             throw fault('NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN', 'read_file result differs from issued call and canary');
           }
@@ -1135,6 +1160,14 @@ export async function startShellProvider(forbiddenPort, command, {
           summary.responseId = READ_TEXT_RESPONSE;
           summary.forCallId = READ_CALL;
           summary.exactCanary = true;
+          summary.previousResponse = 'absent';
+          summary.inputCount = 4;
+          summary.callItemId = READ_ITEM;
+          summary.functionName = 'muse.read_file';
+          summary.argumentsExactFixed = true;
+          summary.outputBytes = Buffer.byteLength(parsed.input[3].output);
+          summary.outputSha256 = createHash('sha256').update(parsed.input[3].output).digest('hex');
+          summary.nativeChildAssociation = 'unknown';
           response.writeHead(200, { 'content-type': 'text/event-stream' });
           response.end(output);
           return;
@@ -1617,7 +1650,7 @@ export async function guestShellRun(config) {
           } catch { /* unmatched below */ }
           observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
             tool: item.tool, status: item.status, argsMatch,
-            exactCanary: item.visibleOutput === READ_CANARY_CONTENT, outputShape });
+            exactCanary: item.visibleOutput === readFileDecoratedOutput(workspace), outputShape });
         } else observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
           tool: item.tool, status: item.status, outputShape, commandMatch: (() => {
             try { return JSON.parse(item.args)?.command === command; } catch { return false; }
@@ -2513,6 +2546,13 @@ export function validateReadFileOutcome(ready, outcome, workspace) {
         JSON.stringify(main[0].mainSchema.selected)).digest('hex') ||
       result[0].model !== SHELL_MODEL || result[0].responseId !== READ_TEXT_RESPONSE ||
       result[0].forCallId !== READ_CALL || result[0].exactCanary !== true ||
+      result[0].previousResponse !== 'absent' || result[0].inputCount !== 4 ||
+      result[0].callItemId !== READ_ITEM || result[0].functionName !== 'muse.read_file' ||
+      result[0].argumentsExactFixed !== true ||
+      result[0].outputBytes !== Buffer.byteLength(readFileDecoratedOutput(workspace)) ||
+      result[0].outputSha256 !== createHash('sha256').update(
+        readFileDecoratedOutput(workspace)).digest('hex') ||
+      result[0].nativeChildAssociation !== 'unknown' ||
       verification[0].model !== SHELL_MODEL || verification[0].responseId !== VERIFY_RESPONSE ||
       verification[0].itemId !== VERIFY_ITEM || verification[0].callId !== VERIFY_CALL ||
       verification[0].verificationSchema?.selectedComplete !== true ||
@@ -2529,6 +2569,8 @@ export function validateReadFileOutcome(ready, outcome, workspace) {
       item?.callId !== READ_CALL || item.turnId !== outcome.turnId ||
       item.tool !== 'read_file' || item.status !== 'completed' ||
       item.argsMatch !== true || item.exactCanary !== true ||
+      item.outputShape?.type !== 'string' ||
+      item.outputShape.bytes !== Buffer.byteLength(readFileDecoratedOutput(workspace)) ||
       outcome.observations?.protocolErrors?.length !== 0 ||
       Object.values(outcome.observations?.omitted ?? {}).some(count => count !== 0) ||
       !Array.isArray(observedReminders) ||
