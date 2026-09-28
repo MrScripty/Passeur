@@ -137,6 +137,42 @@ test('native read profile is separate and forwards only canonical reviewed envel
       offset: 1, limit: 20 }) }] }), native).ok, false);
 });
 
+test('native cache key admits only 45 or 46 printable ASCII bytes and remains omitted', () => {
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const base = { model: nativePolicy.model, input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras,
+    tools: [{ type: 'namespace', name: 'muse', tools: [{ type: 'function',
+      name: 'submit_reminder_decision', parameters: {} }] }] };
+  const firstKey = 'A'.repeat(45);
+  const secondKey = 'B'.repeat(46);
+  const first = requestDecision(post, body({ ...base, prompt_cache_key: firstKey }), nativePolicy);
+  const second = requestDecision(post, body({ ...base, prompt_cache_key: secondKey }), nativePolicy);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.deepEqual(first.body, second.body);
+  assert.equal(JSON.parse(second.body).prompt_cache_key, undefined);
+  const validProjection = nativeRejectionProjection(body({ ...base,
+    prompt_cache_key: secondKey }), { index: 1, stage: 'replay', code: 'NATIVE_REQUEST_REPLAY' });
+  assert.equal(validProjection.diagnostic.violations.NATIVE_CACHE_KEY_INVALID, undefined);
+  for (const key of [undefined, null, 46, '', 'x'.repeat(44), 'x'.repeat(47),
+    'x'.repeat(45) + '\n', '\0' + 'x'.repeat(44), 'x'.repeat(44) + '\x7f',
+    'x'.repeat(22) + '\x1f' + 'x'.repeat(22), 'x'.repeat(44) + 'é',
+    'x'.repeat(44) + '😀']) {
+    const payload = body({ ...base, prompt_cache_key: key });
+    assert.equal(requestDecision(post, payload, nativePolicy).code,
+      key === undefined ? 'NATIVE_TOP_LEVEL_FIELDS' : 'NATIVE_CACHE_KEY_INVALID');
+    const projected = nativeRejectionProjection(payload,
+      { index: 2, stage: 'admission', code: 'NATIVE_CACHE_KEY_INVALID' });
+    assert.equal(projected.diagnostic.violations.NATIVE_CACHE_KEY_INVALID, 1);
+    if (key === 'x'.repeat(45) + '\n')
+      assert.equal(projected.topLevel.observedExtraFieldShapes.promptCacheKey.format, 'other');
+    const artifact = `${JSON.stringify(projected)}\n`;
+    if (typeof key === 'string' && key.length >= 40) assert.equal(artifact.includes(key), false);
+    assert.ok(Buffer.byteLength(artifact) <= 4_096);
+  }
+});
+
 test('native SSE requires complete ordered events and one completed terminal', () => {
   const frames = [
     { type: 'response.created', sequence_number: 1 },
@@ -924,7 +960,10 @@ test('native broker keeps separate catalog/Responses budgets and rejects canonic
     for (let i = 0; i < 4; i++) assert.equal(await sendNative('GET', '/muse-code/models'), 200);
     assert.equal(await sendNative('GET', '/muse-code/models'), 429);
     assert.equal(await sendNative('POST', '/responses', nativeBody('NATIVE_READ_FILE_PROBE: 0')), 200);
-    assert.equal(await sendNative('POST', '/responses', nativeBody('NATIVE_READ_FILE_PROBE: 0')), 403);
+    const changedKey = 'secret-cache-key-'.padEnd(46, 'Q');
+    assert.equal(await sendNative('POST', '/responses', JSON.stringify({
+      ...JSON.parse(nativeBody('NATIVE_READ_FILE_PROBE: 0')),
+      prompt_cache_key: changedKey })), 403);
     assert.equal(await sendNative('POST', '/responses', JSON.stringify({
       ...JSON.parse(nativeBody('NATIVE_READ_FILE_PROBE: another')),
       reasoning: { effort: 'secret-native-reasoning' } })), 403);
@@ -940,6 +979,8 @@ test('native broker keeps separate catalog/Responses budgets and rejects canonic
     assert.equal(captured.requestIndex, 2);
     assert.deepEqual(captured.failedPredicates, ['NATIVE_REQUEST_REPLAY']);
     assert.equal(JSON.stringify(captured).includes('NATIVE_READ_FILE_PROBE: 0'), false);
+    assert.equal(JSON.stringify(captured).includes(changedKey), false);
+    assert.equal(captured.diagnostic.violations.NATIVE_CACHE_KEY_INVALID, undefined);
     const later = JSON.parse(await readFile(join(root, 'rejected-native-post-3.json'), 'utf8'));
     assert.equal(later.requestIndex, 3);
     assert.deepEqual(later.failedPredicates, ['NATIVE_REASONING_INVALID']);

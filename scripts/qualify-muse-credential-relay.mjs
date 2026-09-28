@@ -108,6 +108,17 @@ function nativeInputAllowed(input) {
 function wellFormedUtf8(value) {
   return Buffer.from(value, 'utf8').toString('utf8') === value;
 }
+function printableAscii(value) {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code > 0x7e) return false;
+  }
+  return true;
+}
+function nativeCacheKeyAllowed(value) {
+  return typeof value === 'string' && [45, 46].includes(value.length) &&
+    printableAscii(value);
+}
 // Metadata is transported to the synthetic provider, never interpreted here.
 // The state is shared across every advertised function in one namespace.
 function inspectNativeMetadata(root, functionIndex, state, report, stopOnIssue = false) {
@@ -295,8 +306,7 @@ export function requestDecision(request, body, policy) {
         return reject('NATIVE_INSTRUCTIONS_INVALID');
       if (parsed.max_output_tokens !== 128_000)
         return reject('NATIVE_OUTPUT_TOKENS_INVALID');
-      if (typeof parsed.prompt_cache_key !== 'string' ||
-          !/^[\x20-\x7e]{45}$/.test(parsed.prompt_cache_key))
+      if (!nativeCacheKeyAllowed(parsed.prompt_cache_key))
         return reject('NATIVE_CACHE_KEY_INVALID');
       if (parsed.store !== false || parsed.stream !== true)
         return reject('NATIVE_MODE_INVALID');
@@ -485,8 +495,7 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
         byteCount: typeof object.instructions === 'string' ?
           Math.min(Buffer.byteLength(object.instructions), 32_769) : null });
     if (object.max_output_tokens !== 128_000) note('NATIVE_OUTPUT_TOKENS_INVALID');
-    if (typeof object.prompt_cache_key !== 'string' ||
-        !/^[\x20-\x7e]{45}$/.test(object.prompt_cache_key)) note('NATIVE_CACHE_KEY_INVALID');
+    if (!nativeCacheKeyAllowed(object.prompt_cache_key)) note('NATIVE_CACHE_KEY_INVALID');
     if (object.store !== false || object.stream !== true) note('NATIVE_MODE_INVALID');
     if (object.model !== NATIVE_MODEL) note('NATIVE_MODEL_INVALID');
     if (object.previous_response_id !== undefined &&
@@ -618,7 +627,7 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
           class: outputTokenValue === null ? type(outputTokens) : 'safe_positive_integer' },
         promptCacheKey: { byteCount: cacheKeyBytes,
           format: typeof cacheKey !== 'string' ? type(cacheKey) : cacheKey.length === 0 ?
-            'empty' : /^[\x20-\x7e]+$/.test(cacheKey) ? 'printable_ascii' : 'other' },
+            'empty' : printableAscii(cacheKey) ? 'printable_ascii' : 'other' },
         reasoning: reasoningShape,
         store: typeof object?.store === 'boolean' ? object.store : type(object?.store),
         stream: typeof object?.stream === 'boolean' ? object.stream : type(object?.stream),
