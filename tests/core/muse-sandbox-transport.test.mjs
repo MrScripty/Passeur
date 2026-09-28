@@ -12,7 +12,9 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   assertHostAssociation,
   matchingShellResult, shellOutputMarkers, shellProbeCommand,
   rejectedToolSchemaShape, summarizedShellModel, recognizedReminderSchema, decodeShellOutcomeLine,
-  startShellProvider, mainSchemaDiscovery, readFileSchemaDiscovery, fixedBashCall, bashCallEvents, shellTextEvents,
+  startShellProvider, mainSchemaDiscovery, readFileSchemaDiscovery,
+  verificationReminderSchemaDiscovery, verificationReminderAssociation,
+  fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape,
   fixedNoReminderPayload, reminderCallEvents,
   approvalSummary, validateShellReady, validateShellOutcome, validateReadFileSchemaOutcome,
@@ -685,6 +687,18 @@ function readFileNativeRequest() {
   return body;
 }
 
+function verificationReminderRequest() {
+  const body = fixedReminderRequest();
+  body.input = 'NATIVE_READ_FILE_SCHEMA_PROBE';
+  body.tools[0].tools[0].strict = false;
+  body.tools[0].tools[0].parameters = { type: 'object', additionalProperties: false,
+    properties: { decision: { type: 'string', enum: ['none', 'verify'] },
+      reason: { type: ['string', 'null'], maxLength: 120 },
+      confidence: { type: 'integer', minimum: 0, maximum: 10 } },
+    required: ['decision', 'reason', 'confidence'] };
+  return body;
+}
+
 async function nativeProviderHarness({ onShut, readFileSchemaOnly = false } = {}) {
   let handle;
   const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
@@ -827,6 +841,160 @@ test('read_file schema provider emits no call in either reminder order and bound
     assert.equal(capped.provider.state.primaryCode, 'NATIVE_OUTPUT_BUDGET_EXCEEDED');
     assert.equal(capped.provider.requests[0].kind, undefined);
   } finally { await capped.provider.close(); }
+});
+
+test('verification reminder schema is distinct from the fixed seven-field payload', () => {
+  const body = verificationReminderRequest();
+  const summary = verificationReminderSchemaDiscovery(body);
+  assert.equal(summary.selectedComplete, true);
+  assert.equal(summary.reminderCount, 1);
+  assert.equal(summary.selected.strict, false);
+  assert.equal(summary.selected.schema.propertyCount, 3);
+  assert.deepEqual(summary.selected.schema.required, ['decision', 'reason', 'confidence']);
+  assert.deepEqual(summary.selected.schema.properties[0].schema.enum, ['none', 'verify']);
+  assert.deepEqual(summary.selected.schema.properties[1].schema.type, ['string', 'null']);
+  assert.deepEqual(summary.selected.schema.properties[2].schema, { type: 'integer', minimum: 0, maximum: 10 });
+  assert.equal(verificationReminderSchemaDiscovery(fixedReminderRequest()), null);
+  assert.throws(() => fixedNoReminderPayload(body), { code: 'NATIVE_REMINDER_SCHEMA_INVALID' });
+  const secret = 'sk_test_12345_SUPPOSED_SECRET';
+  const unsafe = verificationReminderRequest();
+  unsafe.tools[0].tools[0].parameters.properties[secret] = { type: 'string' };
+  const incomplete = verificationReminderSchemaDiscovery(unsafe);
+  assert.equal(incomplete.selectedComplete, false);
+  assert.equal(JSON.stringify(incomplete).includes(secret), false);
+  const unsupported = verificationReminderRequest();
+  unsupported.tools[0].tools[0].parameters.properties.reason.pattern = '.*';
+  assert.equal(verificationReminderSchemaDiscovery(unsupported).selectedComplete, false);
+  const duplicate = verificationReminderRequest();
+  duplicate.tools[0].tools.push(structuredClone(duplicate.tools[0].tools[0]));
+  assert.equal(verificationReminderSchemaDiscovery(duplicate), null);
+  const foreign = verificationReminderRequest();
+  foreign.tools[0].tools[0].name = 'read_file';
+  assert.equal(verificationReminderSchemaDiscovery(foreign), null);
+});
+
+test('verification reminder association exposes only issued references and unknown child linkage', () => {
+  const state = { main: 'schema-observed', reminder: 'none-issued' };
+  const body = verificationReminderRequest();
+  body.previous_response_id = 'resp_native_read_file_schema_1';
+  body.input = [{ type: 'message', id: 'msg_native_read_file_schema_1', content: 'private prompt' },
+    { type: 'function_call_output', call_id: 'call_native_reminder_1', output: 'private argument' }];
+  const associated = verificationReminderAssociation(body, state, 3);
+  assert.equal(associated.requestIndex, 3);
+  assert.equal(associated.previousResponse, 'issued_main');
+  assert.equal(associated.inputCount, 2);
+  assert.deepEqual(associated.itemFacts.map(item => item.type), ['message', 'function_call_output']);
+  assert.equal(associated.httpRelation, 'ambiguous');
+  assert.equal(associated.nativeReminderChildRelation, 'unknown');
+  assert.equal(JSON.stringify(associated).includes('private'), false);
+  assert.equal(verificationReminderAssociation({ ...body, previous_response_id: 'foreign' }, state, 3)
+    .httpRelation, 'foreign');
+  assert.equal(verificationReminderAssociation({ ...body, previous_response_id: undefined,
+    input: 'opaque text' }, state, 1).httpRelation, 'unknown');
+  assert.equal(verificationReminderAssociation({ ...body, previous_response_id: 'resp_native_read_file_schema_1' },
+    { main: 'unseen', reminder: 'unseen' }, 1).httpRelation, 'foreign');
+});
+
+test('verification reminder provider captures a bounded schema and emits no variant function response', async () => {
+  for (const order of ['main-first', 'reminder-first']) {
+    const h = await nativeProviderHarness({ readFileSchemaOnly: true });
+    try {
+      const first = order === 'main-first' ? readFileNativeRequest() :
+        { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_SCHEMA_PROBE' };
+      const second = order === 'main-first' ?
+        { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_SCHEMA_PROBE' } : readFileNativeRequest();
+      assert.equal((await h.post(first)).status, 200);
+      assert.equal((await h.post(second)).status, 200);
+      const variant = verificationReminderRequest();
+      variant.previous_response_id = 'resp_native_read_file_schema_1';
+      const response = await h.post(variant);
+      assert.equal(response.status, 422);
+      assert.equal(response.body, '');
+      assert.equal(h.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_SCHEMA_ONLY');
+      const recorded = h.provider.requests[2];
+      assert.equal(recorded.kind, 'native_verification_reminder_schema');
+      assert.equal(recorded.association.requestIndex, 3);
+      assert.equal(recorded.association.previousResponse, 'issued_main');
+      assert.equal(recorded.association.nativeReminderChildRelation, 'unknown');
+      assert.equal(recorded.verificationSchema.selectedComplete, true);
+      assert.equal(recorded.selectedNameSha256,
+        '4a3837b69a6fc85cd9a85f75160accf94f068c870f8ff8b6f44e60d138080f45');
+      assert.equal(h.provider.requests.filter(request => request.kind === 'native_reminder_call').length, 1);
+      assert.equal(h.provider.requests.filter(request => request.kind === 'native_tool_call').length, 0);
+      assert.equal((await h.post(variant)).status, 429);
+    } finally { await h.provider.close(); }
+  }
+  const h = await nativeProviderHarness({ readFileSchemaOnly: true });
+  try {
+    const changed = verificationReminderRequest();
+    changed.tools[0].tools[0].parameters.properties.reason.pattern = '.*';
+    assert.equal((await h.post(changed)).status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_SCHEMA_INCOMPLETE');
+    assert.equal(h.provider.requests[0].verificationSchema.selectedComplete, false);
+  } finally { await h.provider.close(); }
+  const foreign = await nativeProviderHarness({ readFileSchemaOnly: true });
+  try {
+    const variant = verificationReminderRequest();
+    variant.previous_response_id = 'foreign-response';
+    assert.equal((await foreign.post(variant)).status, 422);
+    assert.equal(foreign.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_ASSOCIATION_FOREIGN');
+    assert.equal(foreign.provider.requests[0].association.httpRelation, 'foreign');
+  } finally { await foreign.provider.close(); }
+  const capped = await nativeProviderHarness({ readFileSchemaOnly: true });
+  try {
+    capped.provider.state.outputBytes = 65_535;
+    assert.equal((await capped.post(verificationReminderRequest())).status, 422);
+    assert.equal(capped.provider.state.primaryCode, 'NATIVE_OUTPUT_BUDGET_EXCEEDED');
+    assert.equal(capped.provider.requests[0].kind, undefined);
+  } finally { await capped.provider.close(); }
+  for (const edit of [
+    body => { body.tools[0].tools.push(structuredClone(body.tools[0].tools[0])); },
+    body => { body.tools[0].tools[0].name = 'submit_reminder_decision_changed'; },
+  ]) {
+    const changed = await nativeProviderHarness({ readFileSchemaOnly: true });
+    try {
+      const body = verificationReminderRequest();
+      edit(body);
+      assert.equal((await changed.post(body)).status, 422);
+      assert.equal(changed.provider.state.primaryCode, 'NATIVE_REQUEST_UNCLASSIFIED');
+      assert.equal(changed.provider.requests[0].kind, undefined);
+    } finally { await changed.provider.close(); }
+  }
+  const omitted = await nativeProviderHarness({ readFileSchemaOnly: true });
+  try {
+    const body = verificationReminderRequest();
+    body.input = Array.from({ length: 17 }, () => ({ type: 'message' }));
+    assert.equal((await omitted.post(body)).status, 422);
+    assert.equal(omitted.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_ASSOCIATION_INCOMPLETE');
+    assert.equal(omitted.provider.requests[0].association.omittedItems, 1);
+  } finally { await omitted.provider.close(); }
+});
+
+test('verification association is bound at request admission across paused body completion', async () => {
+  const h = await nativeProviderHarness({ readFileSchemaOnly: true });
+  try {
+    const first = new Readable({ read() {} });
+    first.method = 'POST'; first.url = '/responses';
+    const firstResponse = { status: null, body: null,
+      writeHead(status) { this.status = status; return this; },
+      end(value = '') { this.body = value; return this; } };
+    const pending = h.handle(first, firstResponse);
+    assert.equal(h.provider.state.active, 1);
+    assert.equal((await h.post(readFileNativeRequest())).status, 200);
+    const variant = verificationReminderRequest();
+    variant.previous_response_id = 'resp_native_read_file_schema_1';
+    first.push(JSON.stringify(variant));
+    first.push(null);
+    await pending;
+    assert.equal(firstResponse.status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_ASSOCIATION_FOREIGN');
+    const recorded = h.provider.requests[0];
+    assert.equal(recorded.responseIndex, 1);
+    assert.equal(recorded.association.requestIndex, 1);
+    assert.deepEqual(recorded.association.issuedAtRequest, { main: false, reminder: false });
+    assert.equal(recorded.association.previousResponse, 'foreign');
+    assert.equal(h.provider.requests[1].kind, 'native_read_file_schema');
+  } finally { await h.provider.close(); }
 });
 
 test('selected bash schema retains distinct safe names, nested constraints and exact safe enums', () => {
@@ -1260,7 +1428,8 @@ test('read_file outcome requires one schema, no native file call and exact turn'
 });
 
 test('read_file controller keeps schema observation separate from confirmed stop and primary error', async () => {
-  const run = async ({ stopFails = false, guestFailure = false, incomplete = false } = {}) => {
+  const run = async ({ stopFails = false, guestFailure = false, incomplete = false,
+    guestFailureCode = 'NATIVE_REQUEST_UNCLASSIFIED' } = {}) => {
     const result = await qualifyNativeReadFileSchema({
       stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
       startSentinel: async () => ({ port: 31001, close: async () => undefined }),
@@ -1269,8 +1438,8 @@ test('read_file controller keeps schema observation separate from confirmed stop
         assert.equal(config.phase, 'read-file-schema');
         const ready = shellReadyFixture(config.workspace);
         const outcome = guestFailure ? { kind: 'guest_transport_error', stage: 'native_turn',
-          code: 'NATIVE_REQUEST_UNCLASSIFIED', message: 'unreviewed native request',
-          providerRequests: [{ method: 'POST', path: '/responses', rejection: 'NATIVE_REQUEST_UNCLASSIFIED' }] } :
+          code: guestFailureCode, message: 'unreviewed native request',
+          providerRequests: [{ method: 'POST', path: '/responses', rejection: guestFailureCode }] } :
           readFileOutcomeFixture(ready);
         if (incomplete) outcome.providerRequests[1].mainSchema.selectedComplete = false;
         const done = { code: guestFailure ? 1 : 0, signal: null, timedOut: false, overflow: false,
@@ -1304,6 +1473,11 @@ test('read_file controller keeps schema observation separate from confirmed stop
   assert.equal(primary.code, 'NATIVE_REQUEST_UNCLASSIFIED');
   assert.equal(primary.evidence.primaryGuestFailure.code, 'NATIVE_REQUEST_UNCLASSIFIED');
   assert.equal(primary.evidence.stopError.code, 'STOP_SURVIVOR');
+  const discovery = await run({ guestFailure: true, stopFails: true,
+    guestFailureCode: 'NATIVE_VERIFY_REMINDER_SCHEMA_ONLY' });
+  assert.equal(discovery.code, 'NATIVE_VERIFY_REMINDER_SCHEMA_ONLY');
+  assert.equal(discovery.evidence.primaryGuestFailure.code, 'NATIVE_VERIFY_REMINDER_SCHEMA_ONLY');
+  assert.equal(discovery.evidence.stopError.code, 'STOP_SURVIVOR');
 });
 
 test('native approval presentation binds the exact fixed bash arguments without deciding it', () => {

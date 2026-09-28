@@ -400,15 +400,19 @@ export function reminderCallEvents(payload) {
   ];
 }
 
-function selectedToolSchemaDiscovery(body, { name, index, digest, marker }) {
+function selectedToolSchemaDiscovery(body, { name, index, digest, marker,
+  functionCount = 25, countName = name === 'bash' ? 'bashCount' : 'readFileCount',
+  allowPrevious = false, allowFunctionOutput = false }) {
   const namespace = body?.tools?.length === 1 ? body.tools[0] : null;
   const functions = namespace?.tools;
   const inputText = JSON.stringify(body?.input);
   if (body?.model !== SHELL_MODEL || namespace?.type !== 'namespace' || namespace.name !== 'muse' ||
-      !Array.isArray(functions) || functions.length !== 25 ||
+      !Array.isArray(functions) || functions.length !== functionCount ||
       functions.some(tool => tool?.type !== 'function' || typeof tool.name !== 'string') ||
-      body.previous_response_id != null || !inputText?.includes(marker) ||
-      (Array.isArray(body.input) && body.input.some(item => item?.type === 'function_call_output'))) return null;
+      !allowPrevious && body.previous_response_id != null ||
+      marker && !inputText?.includes(marker) ||
+      !allowFunctionOutput && Array.isArray(body.input) &&
+        body.input.some(item => item?.type === 'function_call_output')) return null;
   const digestName = name => createHash('sha256').update(name).digest('hex');
   const entries = functions.map((tool, index) => ({ index, name: tool.name === name ? name : '[other]',
     nameLength: Buffer.byteLength(tool.name), nameSha256: digestName(tool.name),
@@ -507,7 +511,7 @@ function selectedToolSchemaDiscovery(body, { name, index, digest, marker }) {
       schema: project(selectedTool.parameters) };
   }
   const summary = { namespace: 'muse', functionCount: functions.length, omittedFunctions: 0,
-    functions: entries, [`${name === 'bash' ? 'bash' : 'readFile'}Count`]: matchingIndexes.length,
+    functions: entries, [countName]: matchingIndexes.length,
     identityValid, selected,
     unsupportedCount: context.unsupported, omittedConstraints: context.omitted,
     selectedComplete: identityValid && context.unsupported === 0 && context.omitted === 0 };
@@ -542,6 +546,58 @@ export function readFileSchemaDiscovery(body) {
         !Object.hasOwn(parameters, 'additionalProperties')) summary.selectedComplete = false;
   }
   return summary;
+}
+
+export function verificationReminderSchemaDiscovery(body) {
+  const tool = body?.tools?.[0]?.tools?.[0];
+  if (tool?.name !== 'submit_reminder_decision' ||
+      Object.keys(tool.parameters?.properties ?? {}).length === 7) return null;
+  const summary = selectedToolSchemaDiscovery(body, { name: 'submit_reminder_decision', index: 0,
+    digest: '4a3837b69a6fc85cd9a85f75160accf94f068c870f8ff8b6f44e60d138080f45',
+    marker: null, functionCount: 1, countName: 'reminderCount',
+    allowPrevious: true, allowFunctionOutput: true });
+  if (summary) {
+    const parameters = tool.parameters;
+    const names = parameters?.properties && typeof parameters.properties === 'object' &&
+      !Array.isArray(parameters.properties) ? Object.keys(parameters.properties) : [];
+    if (parameters?.type !== 'object' || names.length !== 3 ||
+        !Array.isArray(parameters.required) || parameters.required.length !== 3 ||
+        parameters.required.some(required => !names.includes(required)) ||
+        !Object.hasOwn(parameters, 'additionalProperties')) summary.selectedComplete = false;
+  }
+  return summary;
+}
+
+export function verificationReminderAssociation(body, state, requestIndex) {
+  const issuedMain = state.main === 'schema-observed';
+  const issuedReminder = state.reminder === 'none-issued';
+  const previous = body?.previous_response_id == null ? 'absent' :
+    body.previous_response_id === 'resp_native_read_file_schema_1' && issuedMain ? 'issued_main' :
+      body.previous_response_id === REMINDER_RESPONSE && issuedReminder ? 'issued_reminder' : 'foreign';
+  const input = body?.input;
+  const items = Array.isArray(input) ? input : [];
+  const itemFacts = items.slice(0, 16).map(item => ({
+    type: ['message', 'function_call_output', 'function_call', 'reasoning'].includes(item?.type) ?
+      item.type : '[other]',
+    itemId: item?.id == null ? 'absent' :
+      item.id === 'msg_native_read_file_schema_1' && issuedMain ? 'issued_main' :
+        item.id === REMINDER_ITEM && issuedReminder ? 'issued_reminder' : 'foreign',
+    callId: item?.call_id == null ? 'absent' :
+      item.call_id === REMINDER_CALL && issuedReminder ? 'issued_reminder' : 'foreign',
+  }));
+  const foreign = previous === 'foreign' || itemFacts.some(item =>
+    item.itemId === 'foreign' || item.callId === 'foreign');
+  const mainReference = previous === 'issued_main' || itemFacts.some(item => item.itemId === 'issued_main');
+  const reminderReference = previous === 'issued_reminder' || itemFacts.some(item =>
+    item.itemId === 'issued_reminder' || item.callId === 'issued_reminder');
+  return { requestIndex, previousResponse: previous,
+    inputKind: Array.isArray(input) ? 'array' : typeof input === 'string' ? 'string' : '[other]',
+    inputCount: Array.isArray(input) ? input.length : null, itemFacts,
+    omittedItems: Math.max(0, items.length - 16),
+    issuedAtRequest: { main: issuedMain, reminder: issuedReminder },
+    httpRelation: foreign ? 'foreign' : mainReference && reminderReference ? 'ambiguous' :
+      mainReference ? 'issued_main' : reminderReference ? 'issued_reminder' : 'unknown',
+    nativeReminderChildRelation: 'unknown' };
 }
 
 const FIXED_BASH_SCHEMA = Object.freeze({ index: 11, name: 'bash', type: 'function', strict: false,
@@ -716,6 +772,8 @@ export async function startShellProvider(forbiddenPort, command, {
     if (state.failed || state.admissionClosed || state.attempts > 3 || state.active >= 2) {
       reject('NATIVE_REQUEST_BUDGET_EXCEEDED', summary, response, 429); return;
     }
+    // Body completion can reorder concurrent requests. Attribution uses the state at admission.
+    const issuanceAtAdmission = { main: state.main, reminder: state.reminder };
     state.active++;
     try {
       let body = '';
@@ -741,6 +799,28 @@ export async function startShellProvider(forbiddenPort, command, {
       // this already-admitted stream finish under its original permission.
       if (state.failed) { reject('NATIVE_REQUEST_REJECTED', summary, response); return; }
       try {
+        if (readFileSchemaOnly) {
+          const verification = verificationReminderSchemaDiscovery(parsed);
+          if (verification) {
+            const association = verificationReminderAssociation(parsed, issuanceAtAdmission,
+              summary.responseIndex);
+            const evidenceBytes = Buffer.byteLength(JSON.stringify({ verification, association }));
+            if (state.outputBytes + evidenceBytes > LIMIT) {
+              throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'verification reminder evidence exceeds bound');
+            }
+            state.outputBytes += evidenceBytes;
+            summary.kind = 'native_verification_reminder_schema';
+            summary.selectedNameSha256 =
+              '4a3837b69a6fc85cd9a85f75160accf94f068c870f8ff8b6f44e60d138080f45';
+            summary.verificationSchema = verification;
+            summary.association = association;
+            throw fault(association.omittedItems ? 'NATIVE_VERIFY_REMINDER_ASSOCIATION_INCOMPLETE' :
+              association.httpRelation === 'foreign' ? 'NATIVE_VERIFY_REMINDER_ASSOCIATION_FOREIGN' :
+                verification.selectedComplete ? 'NATIVE_VERIFY_REMINDER_SCHEMA_ONLY' :
+                  'NATIVE_VERIFY_REMINDER_SCHEMA_INCOMPLETE',
+            'unreviewed verification reminder observed without a function response');
+          }
+        }
         const reminder = recognizedReminderSchema(parsed);
         if (reminder) {
           if (state.reminder !== 'unseen' || parsed.previous_response_id != null ||
@@ -833,7 +913,7 @@ export async function startShellProvider(forbiddenPort, command, {
         }
         throw fault('NATIVE_REQUEST_UNCLASSIFIED', 'native request is neither reviewed stream');
       } catch (error) {
-        summary.schemaShape = rejectedToolSchemaShape(parsed);
+        if (!summary.verificationSchema) summary.schemaShape = rejectedToolSchemaShape(parsed);
         reject(error.code ?? 'NATIVE_REQUEST_UNCLASSIFIED', summary, response);
       }
     } finally { state.active--; }
