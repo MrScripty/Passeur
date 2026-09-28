@@ -22,6 +22,14 @@ const MODEL = 'fixture-relay-model';
 const NATIVE_MODEL = 'fixture-native-shell';
 const NATIVE_REQUEST_LIMIT = 262_144;
 const NATIVE_AGGREGATE_REQUEST_LIMIT = NATIVE_REQUEST_LIMIT * 5;
+// Field names only. This vocabulary changes capture evidence, never request admission.
+const NATIVE_TOP_LEVEL_CAPTURE_FIELDS = Object.freeze([
+  'background', 'conversation', 'include', 'instructions', 'max_output_tokens',
+  'max_tool_calls', 'metadata', 'parallel_tool_calls', 'prompt', 'prompt_cache_key',
+  'prompt_cache_retention', 'reasoning', 'safety_identifier', 'service_tier',
+  'store', 'stream', 'stream_options', 'temperature', 'text', 'tool_choice',
+  'top_logprobs', 'top_p', 'truncation', 'user',
+]);
 const NATIVE_RESPONSE_IDS = new Set(['resp_native_read_file_1', 'resp_native_read_file_2',
   'resp_native_reminder_1', 'resp_native_reminder_2', 'resp_native_verify_reminder_1']);
 const NATIVE_ITEM_IDS = new Set(['fc_native_read_file_1', 'fc_native_reminder_1',
@@ -347,14 +355,19 @@ export function nativeRejectionProjection(body, { index, stage, code, complete =
     })) : [],
     omittedFunctions: Array.isArray(namespace?.tools) ? Math.max(0, namespace.tools.length - 4) : 0,
   }));
+  const baseFields = new Set(['model', 'input', 'tools', 'previous_response_id']);
+  const extraFields = object ? Object.keys(object).filter(key => !baseFields.has(key)) : [];
   return { schemaVersion: 1, requestIndex: index, byteCount: receivedBytes,
     capturedByteCount: body.length, omittedByteCount: Math.max(0, receivedBytes - body.length),
     bodyComplete: complete, capturedSha256: createHash('sha256').update(body).digest('hex'),
     stage, failedPredicates: [code],
     topLevel: { class: type(parsed), knownFieldTypes: Object.fromEntries(
       ['model', 'input', 'tools', 'previous_response_id'].map(key => [key, type(object?.[key])])),
-      unknownFieldCount: object ? Object.keys(object).filter(key =>
-        !['model', 'input', 'tools', 'previous_response_id'].includes(key)).length : 0 },
+      unknownFieldCount: extraFields.length,
+      recognizedExtraFieldTypes: Object.fromEntries(NATIVE_TOP_LEVEL_CAPTURE_FIELDS
+        .filter(key => Object.hasOwn(object ?? {}, key)).map(key => [key, type(object[key])])),
+      unrecognizedExtraFieldCount: extraFields.filter(key =>
+        !NATIVE_TOP_LEVEL_CAPTURE_FIELDS.includes(key)).length },
     input: { class: type(input), itemCount: items.length, itemClasses,
       omittedItems: Math.max(0, items.length - itemClasses.length) },
     previousResponse: classify(object?.previous_response_id, NATIVE_RESPONSE_IDS),

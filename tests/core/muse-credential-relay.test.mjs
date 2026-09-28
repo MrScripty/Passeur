@@ -142,7 +142,8 @@ test('native rejected POST projection is bounded and contains no request values'
   tools: Array.from({ length: 6 }, () => ({ type: 'namespace', name: secret,
     tools: Array.from({ length: 20 }, () => ({ type: 'function', name: secret,
       description: secret, parameters: { type: 'object', description: secret } })) })),
-  [secret]: secret });
+  [secret]: secret, stream: true, reasoning: { summary: secret },
+  max_output_tokens: 42, instructions: secret });
   const projection = nativeRejectionProjection(payload,
     { index: 7, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
   const serialized = JSON.stringify(projection);
@@ -155,6 +156,10 @@ test('native rejected POST projection is bounded and contains no request values'
   assert.equal(projection.tools.omittedNamespaces, 4);
   assert.equal(projection.tools.toolClasses[0].omittedFunctions, 16);
   assert.deepEqual(projection.failedPredicates, ['NATIVE_TOOLS_INVALID']);
+  assert.deepEqual(projection.topLevel.recognizedExtraFieldTypes,
+    { instructions: 'string', max_output_tokens: 'number', reasoning: 'object', stream: 'boolean' });
+  assert.equal(projection.topLevel.unknownFieldCount, 5);
+  assert.equal(projection.topLevel.unrecognizedExtraFieldCount, 1);
 });
 
 test('guest headers and auth cannot select upstream authority or identity', () => {
