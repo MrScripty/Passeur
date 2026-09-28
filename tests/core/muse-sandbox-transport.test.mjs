@@ -14,11 +14,13 @@ import { assertNoTurn, assertPortSeparation, classifyNoRoute, guestCommand, gues
   rejectedToolSchemaShape, summarizedShellModel, recognizedReminderSchema, decodeShellOutcomeLine,
   startShellProvider, mainSchemaDiscovery, readFileSchemaDiscovery,
   verificationReminderSchemaDiscovery, verificationReminderAssociation,
+  fixedVerificationPayload, fixedReadFileCall, readFileCallEvents,
+  matchingReadFileResult, readFileResultEnvelopeShape,
   fixedBashCall, bashCallEvents, shellTextEvents,
   shellResultEnvelopeShape,
   fixedNoReminderPayload, reminderCallEvents,
   approvalSummary, validateShellReady, validateShellOutcome, validateReadFileSchemaOutcome,
-  qualifyNativeShell, qualifyNativeReadFileSchema,
+  validateReadFileOutcome, qualifyNativeShell, qualifyNativeReadFileSchema, qualifyNativeReadFile,
   classifyDurableApprovalLog, readDurableApprovalLog,
   heldApprovalPresentation, validateHeldDecision, validateHeldInitialApproval, submitHeldDecision,
   validateHeldHandoff, validateHeldShellOutcome, qualifyNativeShellHeld, readHeldCliDecision,
@@ -479,6 +481,7 @@ test('native shell provider checks advertised bash schema and exact tool result 
   assert.equal(diagnosticMode(['--native-shell']), 'native-shell');
   assert.equal(diagnosticMode(['--native-shell-held']), 'native-shell-held');
   assert.equal(diagnosticMode(['--native-read-file-schema']), 'native-read-file-schema');
+  assert.equal(diagnosticMode(['--native-read-file']), 'native-read-file');
   for (const args of [['--unknown'], ['--native-shell', '--extra']]) {
     assert.throws(() => diagnosticMode(args), { code: 'DIAGNOSTIC_MODE_INVALID' });
   }
@@ -699,11 +702,36 @@ function verificationReminderRequest() {
   return body;
 }
 
-async function nativeProviderHarness({ onShut, readFileSchemaOnly = false } = {}) {
+function readFileProbeRequest() {
+  const body = readFileNativeRequest();
+  body.input = 'NATIVE_READ_FILE_PROBE';
+  body.tools[0].tools[1].parameters = { type: 'object', additionalProperties: false,
+    properties: { limit: { maximum: 2000, minimum: 1, type: 'integer' },
+      offset: { minimum: 1, type: 'integer' }, path: { type: 'string' } },
+    required: ['path'] };
+  return body;
+}
+
+function verifiedVerificationRequest() {
+  const body = verificationReminderRequest();
+  body.tools[0].tools[0].strict = true;
+  body.tools[0].tools[0].parameters = { type: 'object', additionalProperties: false,
+    properties: { decision: { enum: ['remind', 'none'], type: 'string' },
+      next_step: { type: ['null', 'string'] }, reason: { type: ['null', 'string'] } },
+    required: ['decision', 'next_step', 'reason'] };
+  return body;
+}
+
+function readFileResultRequest(output = 'PASSEUR_NATIVE_READ_CANARY\n') {
+  return { model: 'fixture-native-shell', previous_response_id: 'resp_native_read_file_1',
+    input: [{ type: 'function_call_output', call_id: 'call_native_read_file_1', output }] };
+}
+
+async function nativeProviderHarness({ onShut, readFileSchemaOnly = false, readFileProbe = false } = {}) {
   let handle;
   const command = shellProbeCommand('/tmp/fixture/workspace', '/tmp/fixture/protected', 'protected-canary');
   const provider = await startShellProvider(31001, command, {
-    readFileSchemaOnly,
+    readFileSchemaOnly, readFileProbe, workspace: '/tmp/fixture/workspace',
     makeServer: callback => { handle = callback; return {}; },
     waitListen: async () => 31002, shut: async () => { if (onShut) await onShut(handle); },
   });
@@ -893,6 +921,15 @@ test('verification reminder association exposes only issued references and unkno
     input: 'opaque text' }, state, 1).httpRelation, 'unknown');
   assert.equal(verificationReminderAssociation({ ...body, previous_response_id: 'resp_native_read_file_schema_1' },
     { main: 'unseen', reminder: 'unseen' }, 1).httpRelation, 'foreign');
+  const afterRead = { main: 'read-call-issued', reminder: 'unseen' };
+  assert.equal(verificationReminderAssociation({ ...body, previous_response_id: 'resp_native_read_file_1',
+    input: [{ type: 'function_call_output', call_id: 'call_native_read_file_1' }] },
+  afterRead, 2).httpRelation, 'issued_main');
+  assert.equal(verificationReminderAssociation({ ...body, previous_response_id: 'resp_native_read_file_2',
+    input: [{ type: 'message', id: 'msg_native_read_file_2' }] },
+  { main: 'read-result-accepted', reminder: 'unseen' }, 4).httpRelation, 'issued_main');
+  assert.equal(verificationReminderAssociation({ ...body, previous_response_id: 'resp_native_read_file_1' },
+    { main: 'unseen', reminder: 'unseen' }, 1).httpRelation, 'foreign');
 });
 
 test('verification reminder provider captures a bounded schema and emits no variant function response', async () => {
@@ -995,6 +1032,119 @@ test('verification association is bound at request admission across paused body 
     assert.equal(recorded.association.previousResponse, 'foreign');
     assert.equal(h.provider.requests[1].kind, 'native_read_file_schema');
   } finally { await h.provider.close(); }
+});
+
+test('fixed verification none and read_file calls bind exact schemas, paths and distinct IDs', () => {
+  const verification = fixedVerificationPayload(verifiedVerificationRequest());
+  assert.deepEqual(verification, { decision: 'none', next_step: null,
+    reason: 'Disposable scripted protocol probe; no verification reminder is being proposed.' });
+  assert.throws(() => fixedVerificationPayload(verificationReminderRequest()),
+    { code: 'NATIVE_VERIFY_REMINDER_SCHEMA_INVALID' });
+  const changed = verifiedVerificationRequest();
+  changed.tools[0].tools[0].parameters.properties.reason.maxLength = 20;
+  assert.throws(() => fixedVerificationPayload(changed), { code: 'NATIVE_VERIFY_REMINDER_SCHEMA_INVALID' });
+  const selected = fixedReadFileCall(readFileProbeRequest(), '/tmp/fixture/workspace');
+  assert.deepEqual(selected.arguments, { path: '/tmp/fixture/workspace/read-canary.txt', offset: 1, limit: 20 });
+  assert.equal(JSON.stringify(selected).includes('protected'), false);
+  assert.throws(() => fixedReadFileCall(readFileNativeRequest(), '/tmp/fixture/workspace'),
+    { code: 'NATIVE_READ_FILE_SCHEMA_INVALID' });
+  const readFrames = readFileCallEvents(selected.arguments);
+  const verifyFrames = reminderCallEvents(verification, { responseId: 'resp_native_verify_reminder_1',
+    itemId: 'fc_native_verify_reminder_1', callId: 'call_native_verify_reminder_1' });
+  assert.deepEqual(readFrames.map(frame => frame.type), verifyFrames.map(frame => frame.type));
+  assert.equal(readFrames[4].item.name, 'read_file');
+  assert.equal(readFrames[4].item.namespace, 'muse');
+  assert.equal(verifyFrames[4].item.name, 'submit_reminder_decision');
+  assert.notEqual(readFrames[4].item.call_id, verifyFrames[4].item.call_id);
+  assert.equal(matchingReadFileResult(readFileResultRequest()), true);
+  assert.equal(matchingReadFileResult(readFileResultRequest('wrong')), false);
+  assert.equal(matchingReadFileResult({ ...readFileResultRequest(),
+    input: [{ ...readFileResultRequest().input[0], extra: true }] }), false);
+  assert.equal(readFileResultEnvelopeShape(readFileResultRequest('private output')).items[0].exactCanary, false);
+  assert.equal(JSON.stringify(readFileResultEnvelopeShape(readFileResultRequest('private output')))
+    .includes('private output'), false);
+});
+
+test('probe provider accepts one workspace read and both independent reminder schemas in bounded orders', async () => {
+  const skill = { ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE' };
+  const cases = [
+    [skill, readFileProbeRequest(), verifiedVerificationRequest(), readFileResultRequest()],
+    [verifiedVerificationRequest(), readFileProbeRequest(), readFileResultRequest(), skill],
+  ];
+  for (const sequence of cases) {
+    const h = await nativeProviderHarness({ readFileProbe: true });
+    try {
+      const responses = [];
+      for (const request of sequence) responses.push(await h.post(request));
+      assert.deepEqual(responses.map(response => response.status), [200, 200, 200, 200]);
+      assert.equal(h.provider.state.main, 'read-result-accepted');
+      assert.equal(h.provider.state.reminder, 'none-issued');
+      assert.equal(h.provider.state.verification, 'none-issued');
+      const records = h.provider.requests;
+      assert.deepEqual(records.filter(record => record.kind === 'native_read_file_call')
+        .map(record => record.argumentKeys), [['path', 'offset', 'limit']]);
+      assert.equal(records.filter(record => record.kind === 'matching_read_file_result').length, 1);
+      assert.equal(records.filter(record => record.kind === 'native_verification_reminder_call').length, 1);
+      assert.equal(records.filter(record => record.kind === 'native_reminder_call').length, 1);
+      assert.equal(records.some(record => record.kind === 'native_tool_call'), false);
+      const readBody = responses[sequence.findIndex(request => request?.tools?.[0]?.tools?.length === 25)].body;
+      assert.equal(readBody.includes('"name":"read_file"'), true);
+      assert.equal(readBody.includes('/tmp/fixture/workspace/read-canary.txt'), true);
+      assert.equal(readBody.includes('protected-canary'), false);
+      assert.equal((await h.post(readFileProbeRequest())).status, 429);
+    } finally { await h.provider.close(); }
+  }
+});
+
+test('probe retains four catalog and four Responses requests including the final result', async () => {
+  const h = await nativeProviderHarness({ readFileProbe: true });
+  try {
+    for (let index = 0; index < 4; index++) {
+      const request = Readable.from([]);
+      request.method = 'GET'; request.url = '/muse-code/models';
+      const response = { status: null, writeHead(status) { this.status = status; return this; },
+        end() { return this; } };
+      await h.handle(request, response);
+      assert.equal(response.status, 200);
+    }
+    assert.equal((await h.post({ ...fixedReminderRequest(), input: 'NATIVE_READ_FILE_PROBE' })).status, 200);
+    assert.equal((await h.post(readFileProbeRequest())).status, 200);
+    const verify = verifiedVerificationRequest();
+    verify.previous_response_id = 'resp_native_read_file_1';
+    assert.equal((await h.post(verify)).status, 200);
+    assert.equal((await h.post(readFileResultRequest())).status, 200);
+    assert.equal(h.provider.requests.length, 8);
+    assert.equal(h.provider.requests[7].kind, 'matching_read_file_result');
+    assert.equal(h.provider.requests[6].association.httpRelation, 'issued_main');
+    assert.equal(h.provider.state.omittedRequests, 0);
+  } finally { await h.provider.close(); }
+});
+
+test('probe provider rejects result substitution, schema drift and unexpected verification references', async () => {
+  const h = await nativeProviderHarness({ readFileProbe: true });
+  try {
+    assert.equal((await h.post(readFileProbeRequest())).status, 200);
+    const wrong = readFileResultRequest('PASSEUR_NATIVE_READ_CANARY\nextra');
+    assert.equal((await h.post(wrong)).status, 422);
+    assert.equal(h.provider.state.primaryCode, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
+    assert.equal(h.provider.requests[1].resultEnvelope.items[0].exactCanary, false);
+    assert.equal((await h.post(readFileResultRequest())).status, 429);
+  } finally { await h.provider.close(); }
+  for (const edit of [
+    body => { body.tools[0].tools[1].parameters.properties.offset.minimum = 0; },
+    body => { body.tools[0].tools[1].name = 'read_memory'; },
+  ]) {
+    const changed = await nativeProviderHarness({ readFileProbe: true });
+    try { const body = readFileProbeRequest(); edit(body);
+      assert.equal((await changed.post(body)).status, 422);
+      assert.equal(changed.provider.requests[0].kind === 'native_read_file_call', false);
+    } finally { await changed.provider.close(); }
+  }
+  const foreign = await nativeProviderHarness({ readFileProbe: true });
+  try { const body = verifiedVerificationRequest(); body.previous_response_id = 'foreign';
+    assert.equal((await foreign.post(body)).status, 422);
+    assert.equal(foreign.provider.state.primaryCode, 'NATIVE_VERIFY_REMINDER_ASSOCIATION_INVALID');
+  } finally { await foreign.provider.close(); }
 });
 
 test('selected bash schema retains distinct safe names, nested constraints and exact safe enums', () => {
@@ -1399,6 +1549,81 @@ function readFileOutcomeFixture(ready, reminderFirst = false) {
       ...reminderFirst ? [reminder, main] : [main] ] };
 }
 
+function readFileProbeOutcomeFixture(ready) {
+  const turnId = '0199aabb-ccdd-7eef-8abc-0123456789ac';
+  const workspace = ready.metadata.workspaceRoot;
+  const mainSchema = readFileSchemaDiscovery(readFileProbeRequest(), 'NATIVE_READ_FILE_PROBE');
+  const verificationSchema = verificationReminderSchemaDiscovery(verifiedVerificationRequest());
+  const path = join(workspace, 'read-canary.txt');
+  return { kind: 'native_read_file_outcome', sessionId: ready.metadata.sessionId, turnId,
+    turnAck: { status: 'accepted', disposition: 'started', startedNewTurn: true },
+    commands: ['session/start', 'session/read', 'turn/start'], pending: null,
+    event: { kind: 'turn_completed', terminal: 'completed', turnId, sessionId: ready.metadata.sessionId },
+    observations: { approvals: [], items: [{ itemId: 'item-read', turnId,
+      callId: 'call_native_read_file_1', tool: 'read_file', status: 'completed',
+      argsMatch: true, exactCanary: true }], reminders: [], protocolErrors: [],
+    omitted: { approvals: 0, items: 0, reminders: 0, protocolErrors: 0 } },
+    providerRequests: [{ method: 'GET', path: '/muse-code/models' },
+      { method: 'POST', path: '/responses', kind: 'native_read_file_call', model: 'fixture-native-shell',
+        namespace: 'muse', responseId: 'resp_native_read_file_1', itemId: 'fc_native_read_file_1',
+        callId: 'call_native_read_file_1', argumentKeys: ['path', 'offset', 'limit'], mainSchema,
+        pathSha256: createHash('sha256').update(path).digest('hex'),
+        schemaSha256: createHash('sha256').update(JSON.stringify(mainSchema.selected)).digest('hex') },
+      { method: 'POST', path: '/responses', kind: 'native_verification_reminder_call',
+        model: 'fixture-native-shell', responseId: 'resp_native_verify_reminder_1',
+        itemId: 'fc_native_verify_reminder_1', callId: 'call_native_verify_reminder_1',
+        verificationSchema, association: { httpRelation: 'unknown', omittedItems: 0 },
+        payloadSha256: createHash('sha256').update(JSON.stringify(fixedVerificationPayload(verifiedVerificationRequest())))
+          .digest('hex') },
+      { method: 'POST', path: '/responses', kind: 'matching_read_file_result', model: 'fixture-native-shell',
+        responseId: 'resp_native_read_file_2', forCallId: 'call_native_read_file_1', exactCanary: true }] };
+}
+
+test('read_file outcome requires exact call, result, reminders, turn and no approval', () => {
+  const ready = shellReadyFixture('/tmp/fixture/workspace');
+  ready.readCanarySha256 = createHash('sha256').update('PASSEUR_NATIVE_READ_CANARY\n').digest('hex');
+  const outcome = readFileProbeOutcomeFixture(ready);
+  assert.equal(validateReadFileOutcome(ready, outcome, ready.metadata.workspaceRoot).kind,
+    'native_workspace_read_observed');
+  const full = structuredClone(outcome);
+  full.providerRequests.splice(1, 0, ...Array.from({ length: 3 }, () =>
+    ({ method: 'GET', path: '/muse-code/models' })));
+  assert.equal(validateReadFileOutcome(ready, full, ready.metadata.workspaceRoot).kind,
+    'native_workspace_read_observed');
+  const observed = structuredClone(outcome);
+  observed.observations.reminders = [{ callId: 'call_native_verify_reminder_1',
+    turnId: observed.turnId, status: 'completed', tool: 'submit_reminder_decision', payloadMatch: true }];
+  assert.equal(validateReadFileOutcome(ready, observed, ready.metadata.workspaceRoot).kind,
+    'native_workspace_read_observed');
+  for (const edit of [
+    value => { value.providerRequests[1].pathSha256 = 'wrong'; },
+    value => { value.providerRequests[3].forCallId = 'other'; },
+    value => { value.providerRequests.push(structuredClone(value.providerRequests[1])); },
+    value => { value.observations.approvals.push({ kind: 'unexpected_read_approval' }); },
+    value => { value.observations.items[0].exactCanary = false; },
+    value => { value.providerRequests[2].verificationSchema.selectedComplete = false; },
+    value => { value.providerRequests[1].mainSchema.identityValid = false; },
+    value => { value.providerRequests[2].verificationSchema.identityValid = false; },
+    value => { value.observations.reminders = [{ callId: 'call_native_verify_reminder_1' },
+      { callId: 'call_native_verify_reminder_1' }]; },
+    value => { value.observations.reminders = [{ callId: 'call_native_verify_reminder_1',
+      turnId: value.turnId, status: 'completed', tool: 'bash', payloadMatch: true }]; },
+    value => { value.observations.reminders = [{ callId: 'call_native_verify_reminder_1',
+      turnId: value.turnId, status: 'completed', tool: 'submit_reminder_decision', payloadMatch: false }]; },
+    value => { value.observations.reminders = Array.from({ length: 2 }, () =>
+      ({ callId: 'call_native_verify_reminder_1', turnId: value.turnId, status: 'completed',
+        tool: 'submit_reminder_decision', payloadMatch: true })); },
+    value => { value.observations.reminders = [{ callId: 'call_native_reminder_1',
+      turnId: value.turnId, status: 'completed', tool: 'submit_reminder_decision', payloadMatch: true }]; },
+    value => { value.event.turnId = 'foreign'; },
+  ]) {
+    const changed = structuredClone(outcome);
+    edit(changed);
+    assert.throws(() => validateReadFileOutcome(ready, changed, ready.metadata.workspaceRoot),
+      { code: 'NATIVE_READ_FILE_OUTCOME_INVALID' });
+  }
+});
+
 test('read_file outcome requires one schema, no native file call and exact turn', () => {
   const ready = shellReadyFixture('/tmp/fixture/workspace');
   const outcome = readFileOutcomeFixture(ready);
@@ -1478,6 +1703,54 @@ test('read_file controller keeps schema observation separate from confirmed stop
   assert.equal(discovery.code, 'NATIVE_VERIFY_REMINDER_SCHEMA_ONLY');
   assert.equal(discovery.evidence.primaryGuestFailure.code, 'NATIVE_VERIFY_REMINDER_SCHEMA_ONLY');
   assert.equal(discovery.evidence.stopError.code, 'STOP_SURVIVOR');
+});
+
+test('read_file probe controller requires exact canary, no shell effect and confirmed stop', async () => {
+  const run = async ({ stopFails = false, guestFailure = false, alterCanary = false } = {}) => {
+    const result = await qualifyNativeReadFile({
+      stage: async root => { const runtime = join(root, 'runtime'); await mkdir(runtime); return runtime; },
+      startSentinel: async () => ({ port: 31001, close: async () => undefined }),
+      probe: async () => ({ kind: 'connected' }), checkBubblewrap: () => undefined,
+      launch: (_prepared, config) => {
+        assert.equal(config.phase, 'read-file-probe');
+        const ready = shellReadyFixture(config.workspace);
+        ready.readCanarySha256 = createHash('sha256').update('PASSEUR_NATIVE_READ_CANARY\n').digest('hex');
+        const outcome = guestFailure ? { kind: 'guest_transport_error', stage: 'native_turn',
+          code: 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN', message: 'unknown native result',
+          providerRequests: [{ method: 'POST', path: '/responses',
+            rejection: 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN' }] } : readFileProbeOutcomeFixture(ready);
+        if (alterCanary) outcome.providerRequests[1].pathSha256 = 'wrong';
+        const done = { code: guestFailure ? 1 : 0, signal: null, timedOut: false, overflow: false,
+          statusClosed: true, statusLines: ['{"child-pid":101}', '{"exit-code":0}'], stderr: '',
+          output: [JSON.stringify({ kind: 'guest_ready', result: ready }),
+            JSON.stringify(guestFailure ? outcome : { kind: 'guest_outcome', result: outcome }),
+            JSON.stringify(outcome)] };
+        return { pid: 100, ready: Promise.resolve(ready),
+          liveStatus: Promise.resolve({ child: 101, exit: null }), outcome: Promise.resolve(outcome),
+          releaseTurn: () => undefined, releaseShutdown: () => undefined, abort: () => undefined,
+          finished: Promise.resolve(done) };
+      },
+      capture: async () => ({ native: { nspid: [7], netns: 'net:[2]' },
+        supervisor: { netns: 'net:[2]' }, fd: { close: async () => undefined } }),
+      stop: async () => { if (stopFails) throw Object.assign(new Error('survivor'),
+        { code: 'STOP_SURVIVOR' }); return { kind: 'confirmed', pidns: 'pid:[1]' }; },
+    });
+    assert.equal(result.retainedFixtures.length, 1);
+    await rm(result.retainedFixtures[0], { recursive: true, force: true });
+    return result;
+  };
+  const observed = await run();
+  assert.equal(observed.kind, 'native_workspace_read_observed');
+  assert.equal(observed.evidence.stop.kind, 'confirmed');
+  assert.equal(observed.effects.shellAbsent, true);
+  assert.equal((await run({ alterCanary: true })).code, 'NATIVE_READ_FILE_OUTCOME_INVALID');
+  const uncertain = await run({ stopFails: true });
+  assert.equal(uncertain.code, 'STOP_SURVIVOR');
+  assert.equal(uncertain.stopProof, 'unconfirmed');
+  const primary = await run({ stopFails: true, guestFailure: true });
+  assert.equal(primary.code, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
+  assert.equal(primary.evidence.primaryGuestFailure.code, 'NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN');
+  assert.equal(primary.evidence.stopError.code, 'STOP_SURVIVOR');
 });
 
 test('native approval presentation binds the exact fixed bash arguments without deciding it', () => {
@@ -2048,6 +2321,37 @@ printf '{"exit-code":0}\\n' >&3
     await assert.rejects(failed.ready, { code: 'GUEST_OUTPUT_INVALID' });
     await assert.rejects(failed.outcome, { code: 'GUEST_OUTPUT_INVALID' });
     assert.equal((await failed.finished).code, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('read_file probe transport preserves turn, outcome and shutdown handshakes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-read-file-probe-transport-'));
+  try {
+    const fake = join(root, 'fake-bwrap');
+    await writeFile(fake, `#!/bin/sh
+read config
+case "$config" in *read-file-probe*) ;; *) exit 3 ;; esac
+printf '{"child-pid":123}\\n' >&3
+printf '{"kind":"guest_ready","result":{"kind":"guest_shell_ready"}}\\n'
+read turn
+[ "$turn" = turn ] || exit 4
+printf '{"kind":"guest_outcome","result":{"kind":"native_read_file_outcome"}}\\n'
+read shutdown
+[ "$shutdown" = shutdown ] || exit 5
+printf '{"kind":"native_read_file_outcome"}\\n'
+printf '{"exit-code":0}\\n' >&3
+`, { mode: 0o700 });
+    const host = runStatusPhase({ executable: fake, args: ['--', 'ignored'] },
+      { phase: 'read-file-probe' });
+    assert.equal((await host.ready).kind, 'guest_shell_ready');
+    assert.equal((await host.liveStatus).child, 123);
+    host.releaseTurn();
+    assert.equal((await host.outcome).kind, 'native_read_file_outcome');
+    host.releaseShutdown();
+    const done = await host.finished;
+    assert.equal(done.code, 0);
+    assert.equal(done.statusClosed, true);
+    assert.equal(done.output.length, 3);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

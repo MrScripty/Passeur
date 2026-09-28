@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { once } from 'node:events';
+import { isDeepStrictEqual } from 'node:util';
 import { createInterface } from 'node:readline';
 import { prepareSandbox, probeBubblewrap } from './experiment-worker-sandbox.mjs';
 
@@ -36,9 +37,20 @@ const SHELL_CALL = 'call_native_shell_1';
 const REMINDER_RESPONSE = 'resp_native_reminder_1';
 const REMINDER_ITEM = 'fc_native_reminder_1';
 const REMINDER_CALL = 'call_native_reminder_1';
+const VERIFY_RESPONSE = 'resp_native_verify_reminder_1';
+const VERIFY_ITEM = 'fc_native_verify_reminder_1';
+const VERIFY_CALL = 'call_native_verify_reminder_1';
+const READ_RESPONSE = 'resp_native_read_file_1';
+const READ_ITEM = 'fc_native_read_file_1';
+const READ_CALL = 'call_native_read_file_1';
+const READ_TEXT_RESPONSE = 'resp_native_read_file_2';
+const READ_CANARY_NAME = 'read-canary.txt';
+const READ_CANARY_CONTENT = 'PASSEUR_NATIVE_READ_CANARY\n';
 const REMINDER_PAYLOAD = Object.freeze({ advisory_text: null, confidence: 'low', decision: 'none',
   priority: 'normal', reason: 'Disposable scripted protocol probe; no skill reminder is being proposed.',
   skill_id: null, visible_for_steps: 1 });
+const VERIFY_PAYLOAD = Object.freeze({ decision: 'none', next_step: null,
+  reason: 'Disposable scripted protocol probe; no verification reminder is being proposed.' });
 
 function fault(code, message) { return Object.assign(new Error(message), { code }); }
 function pause(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -381,19 +393,20 @@ export function fixedNoReminderPayload(body) {
   return REMINDER_PAYLOAD;
 }
 
-export function reminderCallEvents(payload) {
+export function reminderCallEvents(payload, { responseId = REMINDER_RESPONSE,
+  itemId = REMINDER_ITEM, callId = REMINDER_CALL } = {}) {
   const args = JSON.stringify(payload);
-  const item = status => ({ type: 'function_call', id: REMINDER_ITEM, call_id: REMINDER_CALL,
+  const item = status => ({ type: 'function_call', id: itemId, call_id: callId,
     namespace: 'muse', name: 'submit_reminder_decision', arguments: status === 'completed' ? args : '', status });
-  const frame = (status, output) => ({ id: REMINDER_RESPONSE, object: 'response',
+  const frame = (status, output) => ({ id: responseId, object: 'response',
     model: SHELL_MODEL, status, output });
   return [
     { type: 'response.created', sequence_number: 1, response: frame('in_progress', []) },
     { type: 'response.output_item.added', sequence_number: 2, output_index: 0, item: item('in_progress') },
     { type: 'response.function_call_arguments.delta', sequence_number: 3, output_index: 0,
-      item_id: REMINDER_ITEM, delta: args },
+      item_id: itemId, delta: args },
     { type: 'response.function_call_arguments.done', sequence_number: 4, output_index: 0,
-      item_id: REMINDER_ITEM, name: 'submit_reminder_decision', arguments: args },
+      item_id: itemId, name: 'submit_reminder_decision', arguments: args },
     { type: 'response.output_item.done', sequence_number: 5, output_index: 0, item: item('completed') },
     { type: 'response.completed', sequence_number: 6, response: {
       ...frame('completed', [item('completed')]), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
@@ -532,10 +545,10 @@ export function mainSchemaDiscovery(body) {
     marker: 'NATIVE_SHELL_PROBE' });
 }
 
-export function readFileSchemaDiscovery(body) {
+export function readFileSchemaDiscovery(body, marker = 'NATIVE_READ_FILE_SCHEMA_PROBE') {
   const summary = selectedToolSchemaDiscovery(body, { name: 'read_file', index: 1,
     digest: 'c9f8123bd2726fc2414267256101446c45647b4754b1bad58feaf205125b4c96',
-    marker: 'NATIVE_READ_FILE_SCHEMA_PROBE' });
+    marker });
   if (summary?.identityValid) {
     const parameters = body.tools[0].tools[1].parameters;
     const names = parameters?.properties && typeof parameters.properties === 'object' &&
@@ -568,11 +581,51 @@ export function verificationReminderSchemaDiscovery(body) {
   return summary;
 }
 
+const FIXED_VERIFY_SCHEMA = Object.freeze({ index: 0, name: 'submit_reminder_decision',
+  type: 'function', strict: true, schema: { additionalProperties: false, propertyCount: 3,
+    properties: [
+      { name: 'decision', schema: { enumCount: 2, enum: ['remind', 'none'], type: 'string' } },
+      { name: 'next_step', schema: { type: ['null', 'string'] } },
+      { name: 'reason', schema: { type: ['null', 'string'] } },
+    ], requiredCount: 3, required: ['decision', 'next_step', 'reason'], type: 'object' } });
+
+export function fixedVerificationPayload(body) {
+  const observed = verificationReminderSchemaDiscovery(body);
+  if (!observed?.selectedComplete || !observed.identityValid ||
+      !isDeepStrictEqual(observed.selected, FIXED_VERIFY_SCHEMA)) {
+    throw fault('NATIVE_VERIFY_REMINDER_SCHEMA_INVALID', 'verification reminder differs from reviewed none contract');
+  }
+  return VERIFY_PAYLOAD;
+}
+
+const FIXED_READ_SCHEMA = Object.freeze({ index: 1, name: 'read_file', type: 'function', strict: false,
+  schema: { additionalProperties: false, propertyCount: 3, properties: [
+    { name: 'limit', schema: { maximum: 2000, minimum: 1, type: 'integer' } },
+    { name: 'offset', schema: { minimum: 1, type: 'integer' } },
+    { name: 'path', schema: { type: 'string' } },
+  ], requiredCount: 1, required: ['path'], type: 'object' } });
+
+export function fixedReadFileCall(body, workspace) {
+  const observed = readFileSchemaDiscovery(body, 'NATIVE_READ_FILE_PROBE');
+  if (!observed?.selectedComplete || !observed.identityValid ||
+      !isDeepStrictEqual(observed.selected, FIXED_READ_SCHEMA) ||
+      typeof workspace !== 'string' || !workspace.startsWith('/tmp/')) {
+    throw fault('NATIVE_READ_FILE_SCHEMA_INVALID', 'read_file declaration differs from reviewed workspace read');
+  }
+  return { namespace: 'muse', name: 'read_file',
+    arguments: { path: join(workspace, READ_CANARY_NAME), offset: 1, limit: 20 } };
+}
+
 export function verificationReminderAssociation(body, state, requestIndex) {
-  const issuedMain = state.main === 'schema-observed';
+  const issuedSchema = state.main === 'schema-observed';
+  const issuedReadCall = ['read-call-issued', 'read-result-accepted'].includes(state.main);
+  const issuedReadResult = state.main === 'read-result-accepted';
+  const issuedMain = issuedSchema || issuedReadCall;
   const issuedReminder = state.reminder === 'none-issued';
   const previous = body?.previous_response_id == null ? 'absent' :
-    body.previous_response_id === 'resp_native_read_file_schema_1' && issuedMain ? 'issued_main' :
+    body.previous_response_id === 'resp_native_read_file_schema_1' && issuedSchema ? 'issued_main' :
+      body.previous_response_id === READ_RESPONSE && issuedReadCall ? 'issued_main' :
+        body.previous_response_id === READ_TEXT_RESPONSE && issuedReadResult ? 'issued_main' :
       body.previous_response_id === REMINDER_RESPONSE && issuedReminder ? 'issued_reminder' : 'foreign';
   const input = body?.input;
   const items = Array.isArray(input) ? input : [];
@@ -580,14 +633,18 @@ export function verificationReminderAssociation(body, state, requestIndex) {
     type: ['message', 'function_call_output', 'function_call', 'reasoning'].includes(item?.type) ?
       item.type : '[other]',
     itemId: item?.id == null ? 'absent' :
-      item.id === 'msg_native_read_file_schema_1' && issuedMain ? 'issued_main' :
+      item.id === 'msg_native_read_file_schema_1' && issuedSchema ? 'issued_main' :
+        item.id === READ_ITEM && issuedReadCall ? 'issued_main' :
+          item.id === 'msg_native_read_file_2' && issuedReadResult ? 'issued_main' :
         item.id === REMINDER_ITEM && issuedReminder ? 'issued_reminder' : 'foreign',
     callId: item?.call_id == null ? 'absent' :
+      item.call_id === READ_CALL && issuedReadCall ? 'issued_main' :
       item.call_id === REMINDER_CALL && issuedReminder ? 'issued_reminder' : 'foreign',
   }));
   const foreign = previous === 'foreign' || itemFacts.some(item =>
     item.itemId === 'foreign' || item.callId === 'foreign');
-  const mainReference = previous === 'issued_main' || itemFacts.some(item => item.itemId === 'issued_main');
+  const mainReference = previous === 'issued_main' || itemFacts.some(item =>
+    item.itemId === 'issued_main' || item.callId === 'issued_main');
   const reminderReference = previous === 'issued_reminder' || itemFacts.some(item =>
     item.itemId === 'issued_reminder' || item.callId === 'issued_reminder');
   return { requestIndex, previousResponse: previous,
@@ -662,6 +719,48 @@ export function matchingShellResult(body) {
     shellOutputMarkers(body.input[0].output) !== null;
 }
 
+export function readFileCallEvents(args) {
+  const serialized = JSON.stringify(args);
+  const item = status => ({ type: 'function_call', id: READ_ITEM, call_id: READ_CALL,
+    namespace: 'muse', name: 'read_file', arguments: status === 'completed' ? serialized : '', status });
+  const frame = (status, output) => ({ id: READ_RESPONSE, object: 'response',
+    model: SHELL_MODEL, status, output });
+  return [
+    { type: 'response.created', sequence_number: 1, response: frame('in_progress', []) },
+    { type: 'response.output_item.added', sequence_number: 2, output_index: 0, item: item('in_progress') },
+    { type: 'response.function_call_arguments.delta', sequence_number: 3, output_index: 0,
+      item_id: READ_ITEM, delta: serialized },
+    { type: 'response.function_call_arguments.done', sequence_number: 4, output_index: 0,
+      item_id: READ_ITEM, namespace: 'muse', name: 'read_file', arguments: serialized },
+    { type: 'response.output_item.done', sequence_number: 5, output_index: 0, item: item('completed') },
+    { type: 'response.completed', sequence_number: 6, response: {
+      ...frame('completed', [item('completed')]), usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+  ];
+}
+
+export function matchingReadFileResult(body) {
+  return body?.model === SHELL_MODEL && body.previous_response_id === READ_RESPONSE &&
+    Array.isArray(body.input) && body.input.length === 1 &&
+    body.input[0]?.type === 'function_call_output' && body.input[0].call_id === READ_CALL &&
+    Object.keys(body.input[0]).sort().join(',') === 'call_id,output,type' &&
+    body.input[0].output === READ_CANARY_CONTENT;
+}
+
+export function readFileResultEnvelopeShape(body) {
+  const input = body?.input;
+  return { model: summarizedShellModel(body?.model),
+    previousResponse: body?.previous_response_id === READ_RESPONSE ? 'issued_read_file' : 'other',
+    inputKind: Array.isArray(input) ? 'array' : '[other]',
+    inputCount: Array.isArray(input) ? input.length : null,
+    items: Array.isArray(input) ? input.slice(0, 4).map(item => ({
+      type: item?.type === 'function_call_output' ? 'function_call_output' : '[other]',
+      callId: item?.call_id === READ_CALL ? 'issued_read_file' : 'other',
+      outputType: typeof item?.output,
+      outputBytes: typeof item?.output === 'string' ? Buffer.byteLength(item.output) : null,
+      exactCanary: item?.output === READ_CANARY_CONTENT,
+    })) : [], omittedItems: Array.isArray(input) ? Math.max(0, input.length - 4) : 0 };
+}
+
 export function shellResultEnvelopeShape(body) {
   const input = body?.input;
   const items = Array.isArray(input) ? input.slice(0, 4).map(item => ({
@@ -710,18 +809,23 @@ export function shellTextEvents(text = 'Fixture shell result observed.',
 }
 
 export async function startShellProvider(forbiddenPort, command, {
-  makeServer = createServer, waitListen = listen, shut = close, readFileSchemaOnly = false,
+  makeServer = createServer, waitListen = listen, shut = close,
+  readFileSchemaOnly = false, readFileProbe = false, workspace,
 } = {}) {
+  const readFileMode = readFileSchemaOnly || readFileProbe;
+  const maxAttempts = readFileProbe ? 4 : 3;
+  const retainedRequestLimit = readFileProbe ? 8 : 7;
   const requests = [];
-  const state = { main: 'unseen', reminder: 'unseen', failed: false, admissionClosed: false,
+  const state = { main: 'unseen', reminder: 'unseen', verification: 'unseen',
+    failed: false, admissionClosed: false,
     active: 0, attempts: 0, catalogAttempts: 0, inputBytes: 0, outputBytes: 0,
     omittedRequests: 0 };
   const record = summary => {
-    if (requests.length < 7) requests.push(summary);
+    if (requests.length < retainedRequestLimit) requests.push(summary);
     else {
       state.omittedRequests++;
-      if (requests.length === 7) requests.push({ kind: 'omitted_requests', count: 1 });
-      else requests[7].count = state.omittedRequests;
+      if (requests.length === retainedRequestLimit) requests.push({ kind: 'omitted_requests', count: 1 });
+      else requests[retainedRequestLimit].count = state.omittedRequests;
     }
   };
   let reportRejection;
@@ -769,7 +873,7 @@ export async function startShellProvider(forbiddenPort, command, {
       summary.path = 'invalid';
       reject('NATIVE_REQUEST_PATH_INVALID', summary, response, 404); return;
     }
-    if (state.failed || state.admissionClosed || state.attempts > 3 || state.active >= 2) {
+    if (state.failed || state.admissionClosed || state.attempts > maxAttempts || state.active >= 2) {
       reject('NATIVE_REQUEST_BUDGET_EXCEEDED', summary, response, 429); return;
     }
     // Body completion can reorder concurrent requests. Attribution uses the state at admission.
@@ -782,7 +886,7 @@ export async function startShellProvider(forbiddenPort, command, {
           const size = Buffer.byteLength(chunk);
           summary.bytes += size;
           state.inputBytes += size;
-          if (summary.bytes > PROVIDER_INPUT_LIMIT || state.inputBytes > PROVIDER_INPUT_LIMIT * 3) {
+          if (summary.bytes > PROVIDER_INPUT_LIMIT || state.inputBytes > PROVIDER_INPUT_LIMIT * maxAttempts) {
             throw fault('REQUEST_TOO_LARGE', 'native provider request exceeds bounded input budget');
           }
           body += chunk;
@@ -799,7 +903,7 @@ export async function startShellProvider(forbiddenPort, command, {
       // this already-admitted stream finish under its original permission.
       if (state.failed) { reject('NATIVE_REQUEST_REJECTED', summary, response); return; }
       try {
-        if (readFileSchemaOnly) {
+        if (readFileMode) {
           const verification = verificationReminderSchemaDiscovery(parsed);
           if (verification) {
             const association = verificationReminderAssociation(parsed, issuanceAtAdmission,
@@ -814,6 +918,31 @@ export async function startShellProvider(forbiddenPort, command, {
               '4a3837b69a6fc85cd9a85f75160accf94f068c870f8ff8b6f44e60d138080f45';
             summary.verificationSchema = verification;
             summary.association = association;
+            if (readFileProbe) {
+              if (state.verification !== 'unseen') {
+                throw fault('NATIVE_VERIFY_REMINDER_REPLAY', 'verification reminder repeated');
+              }
+              if (association.omittedItems || association.httpRelation === 'foreign') {
+                throw fault('NATIVE_VERIFY_REMINDER_ASSOCIATION_INVALID', 'verification request has an unreviewed reference');
+              }
+              const payload = fixedVerificationPayload(parsed);
+              const events = reminderCallEvents(payload, { responseId: VERIFY_RESPONSE,
+                itemId: VERIFY_ITEM, callId: VERIFY_CALL });
+              const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+              if (state.outputBytes + Buffer.byteLength(output) > LIMIT) {
+                throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'verification response exceeds bound');
+              }
+              state.verification = 'none-issued';
+              state.outputBytes += Buffer.byteLength(output);
+              summary.kind = 'native_verification_reminder_call';
+              summary.responseId = VERIFY_RESPONSE;
+              summary.itemId = VERIFY_ITEM;
+              summary.callId = VERIFY_CALL;
+              summary.payloadSha256 = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+              response.writeHead(200, { 'content-type': 'text/event-stream' });
+              response.end(output);
+              return;
+            }
             throw fault(association.omittedItems ? 'NATIVE_VERIFY_REMINDER_ASSOCIATION_INCOMPLETE' :
               association.httpRelation === 'foreign' ? 'NATIVE_VERIFY_REMINDER_ASSOCIATION_FOREIGN' :
                 verification.selectedComplete ? 'NATIVE_VERIFY_REMINDER_SCHEMA_ONLY' :
@@ -824,8 +953,8 @@ export async function startShellProvider(forbiddenPort, command, {
         const reminder = recognizedReminderSchema(parsed);
         if (reminder) {
           if (state.reminder !== 'unseen' || parsed.previous_response_id != null ||
-              !JSON.stringify(parsed.input)?.includes(readFileSchemaOnly ?
-                'NATIVE_READ_FILE_SCHEMA_PROBE' : 'NATIVE_SHELL_PROBE') ||
+              !JSON.stringify(parsed.input)?.includes(readFileProbe ? 'NATIVE_READ_FILE_PROBE' :
+                readFileSchemaOnly ? 'NATIVE_READ_FILE_SCHEMA_PROBE' : 'NATIVE_SHELL_PROBE') ||
               (Array.isArray(parsed.input) && parsed.input.some(item => item?.type === 'function_call_output'))) {
             throw fault('NATIVE_REMINDER_SEQUENCE_INVALID', 'duplicate or correlated reminder request');
           }
@@ -847,7 +976,9 @@ export async function startShellProvider(forbiddenPort, command, {
           response.end(output);
           return;
         }
-        const main = readFileSchemaOnly ? readFileSchemaDiscovery(parsed) : mainSchemaDiscovery(parsed);
+        const main = readFileMode ? readFileSchemaDiscovery(parsed,
+          readFileProbe ? 'NATIVE_READ_FILE_PROBE' : 'NATIVE_READ_FILE_SCHEMA_PROBE') :
+          mainSchemaDiscovery(parsed);
         if (main) {
           if (state.main !== 'unseen') throw fault('NATIVE_MAIN_REPLAY', 'duplicate main request');
           summary.mainSchema = main;
@@ -869,6 +1000,28 @@ export async function startShellProvider(forbiddenPort, command, {
             response.end(output);
             return;
           }
+          if (readFileProbe) {
+            const selected = fixedReadFileCall(parsed, workspace);
+            const events = readFileCallEvents(selected.arguments);
+            const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+            const outputBytes = Buffer.byteLength(output) + Buffer.byteLength(JSON.stringify(main));
+            if (state.outputBytes + outputBytes > LIMIT) {
+              throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'read_file response exceeds bound');
+            }
+            state.main = 'read-call-issued';
+            state.outputBytes += outputBytes;
+            summary.kind = 'native_read_file_call';
+            summary.namespace = 'muse';
+            summary.responseId = READ_RESPONSE;
+            summary.itemId = READ_ITEM;
+            summary.callId = READ_CALL;
+            summary.argumentKeys = Object.keys(selected.arguments);
+            summary.pathSha256 = createHash('sha256').update(selected.arguments.path).digest('hex');
+            summary.schemaSha256 = createHash('sha256').update(JSON.stringify(main.selected)).digest('hex');
+            response.writeHead(200, { 'content-type': 'text/event-stream' });
+            response.end(output);
+            return;
+          }
           const selected = fixedBashCall(parsed, command);
           const events = bashCallEvents(selected.arguments);
           const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
@@ -886,6 +1039,27 @@ export async function startShellProvider(forbiddenPort, command, {
           summary.argumentKeys = Object.keys(selected.arguments);
           summary.commandSha256 = createHash('sha256').update(command).digest('hex');
           summary.schemaSha256 = createHash('sha256').update(JSON.stringify(main.selected)).digest('hex');
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(output);
+          return;
+        }
+        if (readFileProbe && state.main === 'read-call-issued') {
+          if (!matchingReadFileResult(parsed)) {
+            summary.resultEnvelope = readFileResultEnvelopeShape(parsed);
+            throw fault('NATIVE_READ_FILE_RESULT_ENVELOPE_UNKNOWN', 'read_file result differs from issued call and canary');
+          }
+          const events = shellTextEvents('Fixture workspace read observed.', READ_TEXT_RESPONSE,
+            'msg_native_read_file_2');
+          const output = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+          if (state.outputBytes + Buffer.byteLength(output) > LIMIT) {
+            throw fault('NATIVE_OUTPUT_BUDGET_EXCEEDED', 'read_file result response exceeds bound');
+          }
+          state.main = 'read-result-accepted';
+          state.outputBytes += Buffer.byteLength(output);
+          summary.kind = 'matching_read_file_result';
+          summary.responseId = READ_TEXT_RESPONSE;
+          summary.forCallId = READ_CALL;
+          summary.exactCanary = true;
           response.writeHead(200, { 'content-type': 'text/event-stream' });
           response.end(output);
           return;
@@ -1277,6 +1451,7 @@ export async function guestShellRun(config) {
   const namespace = await readlink('/proc/self/ns/net');
   const held = config.phase === 'held-shell';
   const readFileSchemaOnly = config.phase === 'read-file-schema';
+  const readFileProbe = config.phase === 'read-file-probe';
   let provider;
   let host;
   let stage = 'network';
@@ -1291,7 +1466,8 @@ export async function guestShellRun(config) {
     const loopback = spawnSync('/usr/sbin/ip', ['-o', 'link', 'show', 'lo'], { encoding: 'utf8', timeout: 2_000 });
     if (!loopbackReady(loopback)) throw fault('GUEST_LOOPBACK_UNAVAILABLE', 'guest loopback unavailable');
     const command = shellProbeCommand(workspace, config.protectedRoot, config.canaryToken);
-    provider = await startShellProvider(config.hostPort, command, { readFileSchemaOnly });
+    provider = await startShellProvider(config.hostPort, command,
+      { readFileSchemaOnly, readFileProbe, workspace });
     const sentinel = await tcpProbe('127.0.0.1', config.hostPort);
     const external = await tcpProbe('203.0.113.1', 443);
     if (sentinel.kind === 'connected' || !classifyNoRoute(external)) {
@@ -1299,6 +1475,9 @@ export async function guestShellRun(config) {
     }
     const canaries = await canaryChecks(config.protectedRoot, workspace, config.canaryToken);
     if (Object.values(canaries).some(value => value !== true)) throw fault('PROTECTED_CANARY_VISIBLE', 'protected canary visible');
+    if (readFileProbe && await readFile(join(workspace, READ_CANARY_NAME), 'utf8') !== READ_CANARY_CONTENT) {
+      throw fault('NATIVE_READ_CANARY_INVALID', 'owned workspace read canary changed before native turn');
+    }
     stage = 'sessions';
     const sessionDirectories = await prepareSessions(GUEST_HOME);
     const settings = join(GUEST_HOME, '.config', 'muse');
@@ -1320,6 +1499,13 @@ export async function guestShellRun(config) {
     };
     host.onServerRequest(async request => {
       if (request.method !== 'approval/request') throw fault('NATIVE_REQUEST_UNEXPECTED', 'unexpected native request');
+      if (readFileProbe) {
+        observe('approvals', { kind: 'unexpected_read_approval',
+          approvalIdPresent: typeof request.params?.approvalId === 'string',
+          sessionIdPresent: typeof request.params?.sessionId === 'string' });
+        resolveObserved({ kind: 'approval' });
+        return {}; // Receipt only; this probe never decides an approval.
+      }
       if (held && observations.approvals.length > 0) {
         observe('approvals', { approvalId: request.params?.approvalId,
           sessionId: request.params?.sessionId, turnId: request.params?.turnId,
@@ -1341,9 +1527,22 @@ export async function guestShellRun(config) {
           bytes: typeof item.visibleOutput === 'string' ? Buffer.byteLength(item.visibleOutput) : null,
           lines: typeof item.visibleOutput === 'string' && Buffer.byteLength(item.visibleOutput) <= LIMIT ?
             item.visibleOutput.split('\n').length : null };
-        if (item.callId === REMINDER_CALL) {
+        if ([REMINDER_CALL, VERIFY_CALL].includes(item.callId)) {
+          const expected = item.callId === REMINDER_CALL ? REMINDER_PAYLOAD : VERIFY_PAYLOAD;
+          let payloadMatch = false;
+          try { payloadMatch = isDeepStrictEqual(JSON.parse(item.args), expected); }
+          catch { /* unmatched below */ }
           observe('reminders', { itemId: item.itemId, turnId: item.turnId,
-            callId: item.callId, status: item.status });
+            callId: item.callId, tool: item.tool, payloadMatch, status: item.status });
+        } else if (readFileProbe && item.callId === READ_CALL) {
+          let argsMatch = false;
+          try { const args = JSON.parse(item.args);
+            argsMatch = args?.path === join(workspace, READ_CANARY_NAME) &&
+              args.offset === 1 && args.limit === 20 && Object.keys(args).length === 3;
+          } catch { /* unmatched below */ }
+          observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
+            tool: item.tool, status: item.status, argsMatch,
+            exactCanary: item.visibleOutput === READ_CANARY_CONTENT, outputShape });
         } else observe('items', { itemId: item.itemId, turnId: item.turnId, callId: item.callId,
           tool: item.tool, status: item.status, outputShape, commandMatch: (() => {
             try { return JSON.parse(item.args)?.command === command; } catch { return false; }
@@ -1394,6 +1593,8 @@ export async function guestShellRun(config) {
     const ready = { kind: 'guest_shell_ready', nativeIdentity, guestNamespace: namespace,
       nativeNamespace: nativeIdentity.namespace, hostPort: config.hostPort, guestPort: provider.port,
       commandSha256: createHash('sha256').update(command).digest('hex'),
+      ...(readFileProbe ? { readCanarySha256:
+        createHash('sha256').update(READ_CANARY_CONTENT).digest('hex') } : {}),
       sentinel, external, canaries, sessionDirectories, metadata, commands: [...commands],
       posture: { approvalMode: 'onRequest', modelId: SHELL_MODEL, providerId: 'meta',
         sandbox: 'native_default_no_override' },
@@ -1406,7 +1607,9 @@ export async function guestShellRun(config) {
     commands.push('turn/start');
     const ack = await timeout('turn/start', initialized.connection.command('turn/start', {
       sessionId: metadata.sessionId,
-      input: [{ type: 'text', text: readFileSchemaOnly ?
+      input: [{ type: 'text', text: readFileProbe ?
+        `NATIVE_READ_FILE_PROBE: Use the advertised read_file tool once on ${join(workspace, READ_CANARY_NAME)} with offset 1 and limit 20. Report the exact result.` :
+        readFileSchemaOnly ?
         'NATIVE_READ_FILE_SCHEMA_PROBE: Describe the advertised read_file arguments. Do not call any tool.' :
         'NATIVE_SHELL_PROBE: Use the advertised bash tool once to run the disposable command. Report its result.' }],
     }, { maxAttempts: 1 }));
@@ -1422,13 +1625,14 @@ export async function guestShellRun(config) {
       throw fault(provider.state.primaryCode, 'guest provider rejected the native Responses request');
     }
     if (event.kind === 'turn_completed' && provider.state.main !==
-        (readFileSchemaOnly ? 'schema-observed' : 'result-accepted')) {
+        (readFileSchemaOnly ? 'schema-observed' : readFileProbe ?
+          'read-result-accepted' : 'result-accepted')) {
       const late = await Promise.race([provider.rejection, pause(500).then(() => null)]);
       if (late) throw fault(late.code, 'guest provider rejected the native Responses request');
       throw fault('NATIVE_TOOL_RESULT_MISSING', 'native turn ended without a correlated bash result');
     }
     let pending = null;
-    if (readFileSchemaOnly && event.kind !== 'turn_completed') {
+    if ((readFileSchemaOnly || readFileProbe) && event.kind !== 'turn_completed') {
       throw fault('NATIVE_READ_FILE_SCHEMA_EVENT_INVALID', 'schema-only turn requested an approval or tool');
     }
     if (event.kind === 'approval') {
@@ -1501,7 +1705,8 @@ export async function guestShellRun(config) {
     if (provider.state.primaryCode) {
       throw fault(provider.state.primaryCode, 'guest provider rejected a request before outcome publication');
     }
-    const result = { kind: readFileSchemaOnly ? 'native_read_file_schema_outcome' :
+    const result = { kind: readFileProbe ? 'native_read_file_outcome' :
+      readFileSchemaOnly ? 'native_read_file_schema_outcome' :
       heldResult?.kind === 'decided' ? 'native_shell_held_decided' :
       event.kind === 'approval' ? 'native_shell_approval_pending' : 'guest_shell_outcome',
       stage, sessionId: metadata.sessionId, turnId: ack.turnId, turnAck: { status: ack.status,
@@ -1776,7 +1981,7 @@ export function runStatusPhase(prepared, config) {
   }
   createInterface({ input: child.stdout }).on('line', line => {
     append(output, line);
-    if (['first', 'resume', 'shell', 'held-shell', 'read-file-schema'].includes(config.phase) && output.length === 1) {
+    if (['first', 'resume', 'shell', 'held-shell', 'read-file-schema', 'read-file-probe'].includes(config.phase) && output.length === 1) {
       try {
         const parsed = JSON.parse(line);
         if (parsed.kind !== 'guest_ready' || parsed.result?.kind !==
@@ -1802,7 +2007,7 @@ export function runStatusPhase(prepared, config) {
         handoffResolve(parsed.result);
       } catch (error) { handoffReject(error); }
     }
-    if ((['shell', 'read-file-schema'].includes(config.phase) && output.length === 2) ||
+    if ((['shell', 'read-file-schema', 'read-file-probe'].includes(config.phase) && output.length === 2) ||
         (config.phase === 'held-shell' && output.length === 3)) {
       try {
         outcomeResolve(decodeShellOutcomeLine(line));
@@ -1837,7 +2042,7 @@ export function runStatusPhase(prepared, config) {
     child.once('close', (code, signal) => {
       clearTimeout(timer);
       if (output.length === 0) readyReject(fault('GUEST_OUTPUT_INVALID', 'phase exited before readiness'));
-      if (['shell', 'read-file-schema'].includes(config.phase) && output.length < 2 ||
+      if (['shell', 'read-file-schema', 'read-file-probe'].includes(config.phase) && output.length < 2 ||
           config.phase === 'held-shell' && output.length < 3) {
         outcomeReject(fault('GUEST_OUTPUT_INVALID', 'shell exited before outcome'));
       }
@@ -1848,7 +2053,7 @@ export function runStatusPhase(prepared, config) {
       resolveResult({ code, signal, timedOut, overflow, output, stderr, statusLines, statusClosed });
     });
   });
-  const boundedOutcome = ['shell', 'held-shell', 'read-file-schema'].includes(config.phase) ?
+  const boundedOutcome = ['shell', 'held-shell', 'read-file-schema', 'read-file-probe'].includes(config.phase) ?
     timeout('shell outcome', outcome, config.phase === 'held-shell' ? HELD_DEADLINE_MS : DEADLINE_MS) : undefined;
   boundedOutcome?.catch(() => undefined);
   const boundedHandoff = config.phase === 'held-shell' ? timeout('held approval handoff', handoff) : undefined;
@@ -1859,7 +2064,7 @@ export function runStatusPhase(prepared, config) {
     liveStatus: timeout('live Bubblewrap status', liveStatus),
     statusLines: () => [...statusLines],
     release: () => { if (!released) { released = true; child.stdin.end('release\n'); } },
-    releaseTurn: () => { if (['shell', 'held-shell', 'read-file-schema'].includes(config.phase) && !released) {
+    releaseTurn: () => { if (['shell', 'held-shell', 'read-file-schema', 'read-file-probe'].includes(config.phase) && !released) {
       released = true; child.stdin.write('turn\n'); } },
     sendDecision: decision => { if (config.phase !== 'held-shell' || !released || decisionSent) {
       throw fault('NATIVE_HELD_DECISION_SEQUENCE', 'held decision was sent outside its one-use window');
@@ -1867,7 +2072,7 @@ export function runStatusPhase(prepared, config) {
       decisionSent = true;
       child.stdin.write(`${JSON.stringify(decision)}\n`);
     },
-    releaseShutdown: () => { if (['shell', 'held-shell', 'read-file-schema'].includes(config.phase) && released && !shutdownReleased) {
+    releaseShutdown: () => { if (['shell', 'held-shell', 'read-file-schema', 'read-file-probe'].includes(config.phase) && released && !shutdownReleased) {
       shutdownReleased = true; child.stdin.end('shutdown\n');
     } },
     abort: () => { if (!shutdownReleased) { shutdownReleased = true; child.stdin.end(); } }, finished };
@@ -1878,7 +2083,8 @@ export function decodeShellOutcomeLine(line) {
   try { parsed = JSON.parse(line); }
   catch { throw fault('GUEST_OUTPUT_INVALID', 'shell outcome JSON invalid'); }
   if (parsed?.kind === 'guest_outcome' &&
-      ['guest_shell_outcome', 'native_read_file_schema_outcome', 'native_shell_approval_pending',
+      ['guest_shell_outcome', 'native_read_file_schema_outcome', 'native_read_file_outcome',
+        'native_shell_approval_pending',
         'native_shell_held_decided'].includes(parsed.result?.kind)) return parsed.result;
   if (parsed?.kind === 'guest_transport_error' && parsed.stage === 'native_turn' &&
       /^[A-Z][A-Z0-9_]{0,63}$/.test(parsed.code ?? '') &&
@@ -2188,6 +2394,79 @@ export function validateReadFileSchemaOutcome(ready, outcome) {
   }
   return { kind: main[0].mainSchema.selectedComplete ? 'native_read_file_schema_observed' :
     'native_read_file_schema_incomplete', schema: main[0].mainSchema };
+}
+
+export function validateReadFileOutcome(ready, outcome, workspace) {
+  const requests = outcome?.providerRequests;
+  const responses = requests?.filter(request => request.path === '/responses') ?? [];
+  const main = responses.filter(request => request.kind === 'native_read_file_call');
+  const result = responses.filter(request => request.kind === 'matching_read_file_result');
+  const skill = responses.filter(request => request.kind === 'native_reminder_call');
+  const verification = responses.filter(request => request.kind === 'native_verification_reminder_call');
+  const mainIndex = requests?.indexOf(main[0]) ?? -1;
+  const resultIndex = requests?.indexOf(result[0]) ?? -1;
+  const canaryPath = join(workspace, READ_CANARY_NAME);
+  const item = outcome?.observations?.items?.[0];
+  const observedReminders = outcome?.observations?.reminders;
+  const observedReminderIds = Array.isArray(observedReminders) ?
+    observedReminders.map(observed => observed.callId) : [];
+  if (outcome?.kind !== 'native_read_file_outcome' ||
+      outcome.sessionId !== ready.metadata.sessionId || !outcome.turnId ||
+      ready.readCanarySha256 !== createHash('sha256').update(READ_CANARY_CONTENT).digest('hex') ||
+      outcome.turnAck?.status !== 'accepted' || outcome.turnAck?.disposition !== 'started' ||
+      outcome.turnAck?.startedNewTurn !== true ||
+      outcome.event?.kind !== 'turn_completed' || outcome.event.terminal !== 'completed' ||
+      outcome.event.turnId !== outcome.turnId || outcome.event.sessionId !== outcome.sessionId ||
+      outcome.pending !== null || outcome.commands?.join(',') !== 'session/start,session/read,turn/start' ||
+      !Array.isArray(requests) || requests.length > 8 || responses.length > 4 ||
+      main.length !== 1 || result.length !== 1 || skill.length > 1 || verification.length !== 1 ||
+      responses.length !== main.length + result.length + skill.length + verification.length ||
+      mainIndex < 0 || resultIndex <= mainIndex ||
+      requests.some(request => request.rejection !== undefined || !(
+        request.method === 'GET' && request.path === '/muse-code/models' ||
+        request.method === 'POST' && request.path === '/responses')) ||
+      requests.filter(request => request.method === 'GET' && request.path === '/muse-code/models').length < 1 ||
+      requests.filter(request => request.method === 'GET').length > 4 ||
+      main[0].model !== SHELL_MODEL || main[0].namespace !== 'muse' ||
+      main[0].responseId !== READ_RESPONSE || main[0].itemId !== READ_ITEM ||
+      main[0].callId !== READ_CALL || main[0].argumentKeys?.join(',') !== 'path,offset,limit' ||
+      main[0].pathSha256 !== createHash('sha256').update(canaryPath).digest('hex') ||
+      !isDeepStrictEqual(main[0].mainSchema?.selected, FIXED_READ_SCHEMA) ||
+      main[0].mainSchema?.selectedComplete !== true ||
+      main[0].mainSchema?.identityValid !== true ||
+      main[0].schemaSha256 !== createHash('sha256').update(
+        JSON.stringify(main[0].mainSchema.selected)).digest('hex') ||
+      result[0].model !== SHELL_MODEL || result[0].responseId !== READ_TEXT_RESPONSE ||
+      result[0].forCallId !== READ_CALL || result[0].exactCanary !== true ||
+      verification[0].model !== SHELL_MODEL || verification[0].responseId !== VERIFY_RESPONSE ||
+      verification[0].itemId !== VERIFY_ITEM || verification[0].callId !== VERIFY_CALL ||
+      verification[0].verificationSchema?.selectedComplete !== true ||
+      verification[0].verificationSchema?.identityValid !== true ||
+      !isDeepStrictEqual(verification[0].verificationSchema?.selected, FIXED_VERIFY_SCHEMA) ||
+      verification[0].payloadSha256 !== createHash('sha256').update(JSON.stringify(VERIFY_PAYLOAD)).digest('hex') ||
+      verification[0].association?.httpRelation === 'foreign' ||
+      verification[0].association?.omittedItems !== 0 ||
+      skill.some(request => request.responseId !== REMINDER_RESPONSE || request.itemId !== REMINDER_ITEM ||
+        request.callId !== REMINDER_CALL || request.payloadSha256 !==
+          createHash('sha256').update(JSON.stringify(REMINDER_PAYLOAD)).digest('hex')) ||
+      outcome.observations?.approvals?.length !== 0 ||
+      outcome.observations?.items?.length !== 1 ||
+      item?.callId !== READ_CALL || item.turnId !== outcome.turnId ||
+      item.tool !== 'read_file' || item.status !== 'completed' ||
+      item.argsMatch !== true || item.exactCanary !== true ||
+      outcome.observations?.protocolErrors?.length !== 0 ||
+      Object.values(outcome.observations?.omitted ?? {}).some(count => count !== 0) ||
+      !Array.isArray(observedReminders) ||
+      observedReminders.length > skill.length + verification.length ||
+      new Set(observedReminderIds).size !== observedReminderIds.length ||
+      observedReminders.some(observed =>
+        observed.callId !== VERIFY_CALL && !(skill.length && observed.callId === REMINDER_CALL) ||
+        observed.turnId !== outcome.turnId || observed.status !== 'completed' ||
+        observed.tool !== 'submit_reminder_decision' || observed.payloadMatch !== true)) {
+    throw fault('NATIVE_READ_FILE_OUTCOME_INVALID', 'native read_file result was not exact and isolated');
+  }
+  return { kind: 'native_workspace_read_observed', turnId: outcome.turnId,
+    callId: READ_CALL, pathSha256: main[0].pathSha256 };
 }
 
 export function validateShellOutcome(ready, outcome) {
@@ -2578,8 +2857,9 @@ export async function readDurableApprovalLog(root, guestPath, identity) {
 export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse',
   checkBubblewrap = probeBubblewrap, stage = stageRuntime, startSentinel = startHostSentinel,
   probe = tcpProbe, launch = runStatusPhase, capture = captureHostIdentities,
-  stop = verifyHostStop, held = false, readFileSchemaOnly = false, requestDecision } = {}) {
-  const root = await mkdtemp(join(tmpdir(), readFileSchemaOnly ?
+  stop = verifyHostStop, held = false, readFileSchemaOnly = false, readFileProbe = false,
+  requestDecision } = {}) {
+  const root = await mkdtemp(join(tmpdir(), readFileProbe ? 'passeur-muse-read-file-probe-' : readFileSchemaOnly ?
     'passeur-muse-read-file-schema-' : 'passeur-muse-native-shell-sandbox-'));
   let sentinel;
   let host;
@@ -2597,6 +2877,8 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     await Promise.all([mkdir(workspace), mkdir(home), mkdir(protectedRoot)]);
     await writeFile(join(protectedRoot, token), 'host-only');
     await symlink(protectedRoot, join(workspace, 'protected-link'));
+    if (readFileProbe) await writeFile(join(workspace, READ_CANARY_NAME), READ_CANARY_CONTENT,
+      { mode: 0o600 });
     const runtime = await stage(root, muse);
     sentinel = await startSentinel();
     if ((await probe('127.0.0.1', sentinel.port)).kind !== 'connected') {
@@ -2605,13 +2887,18 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
     const prepared = prepareSandbox(sandboxConfig({ workspace, runtime, home, protectedRoot }), guestCommand());
     checkBubblewrap();
     stageName = 'shell_host';
-    host = launch(prepared, { phase: held ? 'held-shell' : readFileSchemaOnly ? 'read-file-schema' : 'shell',
+    host = launch(prepared, { phase: held ? 'held-shell' : readFileProbe ? 'read-file-probe' :
+      readFileSchemaOnly ? 'read-file-schema' : 'shell',
       workspace, hostPort: sentinel.port,
       protectedRoot, canaryToken: token });
     const [ready, liveStatus] = await Promise.all([host.ready, host.liveStatus]);
     evidence.ready = ready;
     evidence.liveStatus = liveStatus;
     validateShellReady(ready, workspace, sentinel.port);
+    if (readFileProbe && ready.readCanarySha256 !==
+        createHash('sha256').update(READ_CANARY_CONTENT).digest('hex')) {
+      throw fault('NATIVE_READ_CANARY_INVALID', 'guest readiness did not bind the owned read canary');
+    }
     if (ready.commandSha256 !== createHash('sha256').update(shellProbeCommand(workspace, protectedRoot, token)).digest('hex')) {
       throw fault('NATIVE_SHELL_READY_INVALID', 'guest shell command differs from host fixture command');
     }
@@ -2722,18 +3009,23 @@ export async function qualifyNativeShell({ muse = '/home/jeremy/.local/bin/muse'
         (chosenInput && guestOutcome.held?.decision?.choice?.choiceId !== chosenInput.choiceId))) {
       throw fault('NATIVE_HELD_OUTCOME_INVALID', 'terminal held decision differed from host-supplied choice');
     }
-    const classified = readFileSchemaOnly ? validateReadFileSchemaOutcome(ready, guestOutcome) :
+    const classified = readFileProbe ? validateReadFileOutcome(ready, guestOutcome, workspace) :
+      readFileSchemaOnly ? validateReadFileSchemaOutcome(ready, guestOutcome) :
       held && guestOutcome.kind === 'native_shell_held_decided' ?
         validateHeldShellOutcome(ready, guestOutcome) : validateShellOutcome(ready, guestOutcome);
     const effects = await shellEffects(workspace, protectedRoot, token);
     if (!effects.protectedIntact || classified.kind === 'native_shell_effect_observed' && !effects.shellWritten ||
         classified.kind === 'native_shell_denial_observed' && !effects.shellAbsent ||
-        (readFileSchemaOnly || ['native_shell_approval_pending', 'native_shell_held_rejected'].includes(classified.kind)) &&
+        (readFileSchemaOnly || readFileProbe ||
+          ['native_shell_approval_pending', 'native_shell_held_rejected'].includes(classified.kind)) &&
           !effects.shellAbsent) {
       throw fault('NATIVE_SHELL_EFFECT_INVALID', 'workspace or protected canary contradicted native outcome');
     }
     if (classified.dummyAuthVisible === true) {
       throw fault('NATIVE_SHELL_AUTH_VISIBLE', 'native shell could read the disposable dummy auth file');
+    }
+    if (readFileProbe && await readFile(join(workspace, READ_CANARY_NAME), 'utf8') !== READ_CANARY_CONTENT) {
+      throw fault('NATIVE_READ_CANARY_INVALID', 'owned workspace read canary changed after native turn');
     }
     if ((await probe('127.0.0.1', sentinel.port)).kind !== 'connected') {
       throw fault('HOST_SENTINEL_UNAVAILABLE', 'host sentinel unavailable after shell host');
@@ -2798,12 +3090,17 @@ export async function qualifyNativeReadFileSchema(options = {}) {
   return qualifyNativeShell({ ...options, readFileSchemaOnly: true });
 }
 
+export async function qualifyNativeReadFile(options = {}) {
+  return qualifyNativeShell({ ...options, readFileProbe: true });
+}
+
 export function diagnosticMode(args) {
   if (args.length === 0) return 'idle-resume';
   if (args.length === 1 && args[0] === '--native-shell') return 'native-shell';
   if (args.length === 1 && args[0] === '--native-shell-held') return 'native-shell-held';
   if (args.length === 1 && args[0] === '--native-read-file-schema') return 'native-read-file-schema';
-  throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments, --native-shell, --native-shell-held, or --native-read-file-schema');
+  if (args.length === 1 && args[0] === '--native-read-file') return 'native-read-file';
+  throw fault('DIAGNOSTIC_MODE_INVALID', 'use no arguments, --native-shell, --native-shell-held, --native-read-file-schema, or --native-read-file');
 }
 
 export async function readHeldCliDecision(handoff, input = process.stdin, output = process.stdout) {
@@ -2905,12 +3202,13 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       if (first.done || Buffer.byteLength(first.value) > LIMIT) throw fault('GUEST_INPUT_TOO_LARGE', 'guest input missing or exceeds limit');
       const config = JSON.parse(first.value);
       config.release = async () => (await lines.next()).value;
-      const result = ['shell', 'held-shell', 'read-file-schema'].includes(config.phase) ?
+      const result = ['shell', 'held-shell', 'read-file-schema', 'read-file-probe'].includes(config.phase) ?
         await guestShellRun(config) : await guestRun(config);
       process.stdout.write(`${JSON.stringify(result)}\n`);
       process.exitCode = ['guest_transport_observed', 'guest_resume_observed',
         'guest_shell_outcome', 'native_shell_approval_pending',
-        'native_shell_held_decided', 'native_read_file_schema_outcome'].includes(result.kind) ? 0 : 1;
+        'native_shell_held_decided', 'native_read_file_schema_outcome',
+        'native_read_file_outcome'].includes(result.kind) ? 0 : 1;
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ kind: 'guest_transport_error', code: error.code ?? error.name,
         message: String(error.message).slice(0, 500) })}\n`);
@@ -2923,6 +3221,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         requestDecision: handoff => readHeldCliDecision(handoff),
       }) : mode === 'native-shell' ? await qualifyNativeShell() :
         mode === 'native-read-file-schema' ? await qualifyNativeReadFileSchema() :
+          mode === 'native-read-file' ? await qualifyNativeReadFile() :
           await qualifyFreshHostResume();
       process.stdout.write(`${JSON.stringify(result)}\n`);
     } catch (error) {
