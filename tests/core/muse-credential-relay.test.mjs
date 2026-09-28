@@ -447,6 +447,55 @@ test('native schema description rejection captures only first bounded shape', ()
   }
 });
 
+test('only reviewed nested first-function description admits well-formed 8192 bytes', () => {
+  const secret = 'secret-description-and-property-name';
+  const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',
+    workspace: '/tmp/native-fixture/workspace' };
+  const post = request('POST', '/responses', { 'content-type': 'application/json' });
+  const tools = (parameters, functionIndex = 0, count = 25) => [{ type: 'namespace',
+    name: 'muse', tools: Array.from({ length: count }, (_, index) => ({ type: 'function',
+      name: count === 1 ? 'submit_reminder_decision' : index === 1 ? 'read_file' : `native_${index}`,
+      parameters: index === functionIndex ? parameters : { type: 'object' } })) }];
+  const envelope = entries => body({ model: nativePolicy.model,
+    input: 'NATIVE_READ_FILE_PROBE', ...nativeExtras, tools: entries });
+  const nested = description => ({ type: 'object', properties: { [secret]:
+    { type: 'string', description } } });
+  for (const description of ['x'.repeat(8_192), '😀'.repeat(2_048),
+    'x'.repeat(2_048)]) {
+    assert.equal(requestDecision(post, envelope(tools(nested(description))), nativePolicy).ok,
+      true);
+  }
+  const cases = [
+    [tools(nested('x'.repeat(8_193))), 0, 1, 'string', 8_193],
+    [tools(nested('😀'.repeat(2_049))), 0, 1, 'string', 8_196],
+    [tools(nested(secret.repeat(300))), 0, 1, 'string',
+      Buffer.byteLength(secret.repeat(300))],
+    [tools(nested('\ud800')), 0, 1, 'string', 3],
+    [tools(nested(null)), 0, 1, 'null', null],
+    [tools({ type: 'object', description: 'x'.repeat(2_049) }),
+      0, 0, 'string', 2_049],
+    [tools({ type: 'object', items: nested('x'.repeat(2_049)) }),
+      0, 2, 'string', 2_049],
+    [tools({ type: 'object', properties: { [secret]:
+      { type: 'string', title: 'x'.repeat(2_049) } } }),
+    0, 1, 'string', 2_049],
+    [tools(nested('x'.repeat(2_049)), 1), 1, 1, 'string', 2_049],
+    [tools(nested('x'.repeat(2_049)), 0, 1), 0, 1, 'string', 2_049],
+  ];
+  for (const [entries, functionIndex, depth, valueClass, byteCount] of cases) {
+    const payload = envelope(entries);
+    assert.deepEqual(requestDecision(post, payload, nativePolicy),
+      { ok: false, code: 'NATIVE_TOOLS_INVALID' });
+    const projection = nativeRejectionProjection(payload,
+      { index: 1, stage: 'admission', code: 'NATIVE_TOOLS_INVALID' });
+    assert.deepEqual(projection.tools.failure,
+      { code: 'SCHEMA_DESCRIPTION', functionIndex, schemaDescription: {
+        depth, class: valueClass, ...(byteCount === null ? {} : { byteCount }) } });
+    assert.equal(JSON.stringify(projection).includes(secret), false);
+    assert.ok(Buffer.byteLength(`${JSON.stringify(projection)}\n`) <= 4_096);
+  }
+});
+
 test('only the reviewed first function admits a distinct six-type depth-one union', () => {
   const secret = 'secret-credential-or-property-name';
   const nativePolicy = { ...policy, profile: 'native-read', model: 'fixture-native-shell',

@@ -174,7 +174,11 @@ function nativeToolsFailure(tools) {
                 typeof item === 'string' && Buffer.byteLength(item) > 2_048)))
           return 'SCHEMA_ENUM';
       } else if (['description', 'title'].includes(key)) {
-        if (typeof value !== 'string' || Buffer.byteLength(value) > 2_048)
+        const expandedDescription = key === 'description' && namespace.tools.length === 25 &&
+          functionIndex === 0 && depth === 1;
+        if (typeof value !== 'string' ||
+            Buffer.byteLength(value) > (expandedDescription ? 8_192 : 2_048) ||
+            expandedDescription && Buffer.from(value, 'utf8').toString('utf8') !== value)
           return { code: 'SCHEMA_DESCRIPTION', schemaDescription: {
             depth, class: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
             ...(typeof value === 'string' ? { byteCount: Buffer.byteLength(value) } : {}),
