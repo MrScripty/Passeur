@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -7,11 +7,98 @@ import { Coordinator } from '../../.passeur-core/src/core/coordinator.js';
 import { AgentRegistry } from '../../.passeur-core/src/agents/registry.js';
 import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
 import { canonicalHash } from '../../.passeur-core/src/core/async.js';
+import { RepositoryRuntime, resolveRepositoryBinding } from '../../.passeur-core/src/core/repository-runtime.js';
+import { operatorToken } from '../../.passeur-core/src/service/operator-token.js';
+import { serviceFixture } from '../fixtures/structural/service-fixture.mjs';
 
 const exec = promisify(execFile), hash = value => createHash('sha256').update(value).digest('hex');
 const hold = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const [root, stage] = process.argv.slice(2);
-if (!root || !['reserved', 'partial', 'result', 'observed'].includes(stage)) throw Error('invalid child stage');
+if (!root || !['reserved', 'partial', 'result', 'observed', 'runtime_receipt'].includes(stage))
+  throw Error('invalid child stage');
+if (stage === 'runtime_receipt') {
+  const fixture = await serviceFixture({ after() {}, name: 'runtime receipt child' });
+  await fixture.service.close();
+  const intent = { project: fixture.root, stateRoot: fixture.state,
+    profilePath: join(fixture.temp, 'missing-profile.json') };
+  const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
+  const token = await operatorToken(binding, true);
+  const actors = [createHash('sha256').update(token).digest('hex'), 'b'.repeat(64), 'c'.repeat(64)]
+    .map(owner_id => ({ owner_id, client_id: randomUUID() }));
+  const workers = [0, 1, 2].map(index => ({ async run(input) {
+    await writeFile(join(input.workspace, 'source.ts'),
+      `export function run() { return ${index + 1}; }\n`);
+    await input.onEvent({ kind: 'turn_started', turn_id: `initial-${index}`,
+      native_session_id: `session-${index}` });
+    await input.onEvent({ kind: 'turn_settled', turn_id: `initial-${index}`,
+      native_session_id: `session-${index}`, terminal: 'completed' });
+    for (;;) {
+      const envelope = await input.peer.next();
+      if (!envelope) { await new Promise(resolve => setTimeout(resolve, 20)); continue; }
+      const turnId = `peer-${index}`;
+      await input.onEvent({ kind: 'turn_started', turn_id: turnId,
+        native_session_id: `session-${index}` });
+      await input.peer.delivered(envelope.idempotency_key, turnId, `session-${index}`);
+      await input.onEvent({ kind: 'turn_settled', turn_id: turnId,
+        native_session_id: `session-${index}`, terminal: 'completed' });
+      await input.peer.observed(envelope.idempotency_key, turnId, `session-${index}`);
+    }
+  } }));
+  const runtimeStore = new TaskStore(binding.storeRoot);
+  const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
+    mode: 'development', node_version: process.version, node_executable: process.execPath,
+  pid: process.pid, started_at: new Date().toISOString() }, {
+    enableObservedCaseExtensionForTest: true,
+    beforeObservedCaseDeliverySettlementForTest: attempt => {
+      process.send?.({ stage, temp: fixture.temp, state_root: binding.storeRoot,
+        case_id: attempt.case_id, recipient_work_id: attempt.recipient_work_id });
+      // The receipt is durable, while the synchronous stop prevents metadata write.
+      process.kill(process.pid, 'SIGSTOP');
+    },
+    store: () => runtimeStore,
+    profile: async () => ({ schema_version: 3, execution: {
+      stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
+      max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
+      implementation: { enabled: true, worktree_root: join(fixture.temp, 'managed-worktrees') },
+    }, agents: workers.map((_, index) => ({ agent_id: `peer${index}`, adapter_id: `peer${index}`,
+      description: '', enabled: true, options: {} })) }),
+    definitions: Object.fromEntries(workers.map((worker, index) => [`peer${index}`, {
+      configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {}, worker }),
+    }])),
+  });
+  await runtime.coordinate({ schema_version: 1, kind: 'initialize', limits: fixture.limits },
+    actors[0], fixture.root);
+  const submit = index => runtime.submitCoordinated({ schema_version: 2, kind: 'inline',
+    assignment: { schema_version: 3, agent_id: `peer${index}`, request_key: randomUUID(),
+      mode: 'implement', objective: `Change source.ts for peer ${index}`, context: '',
+      acceptance_criteria: ['Edit source.ts'], allowed_paths: ['source.ts'],
+      base_commit: fixture.base, target_ref: 'refs/heads/main' },
+  }, actors[index], fixture.root, new AbortController().signal);
+  const ids = (await Promise.all([submit(0), submit(1)])).map(item => item.task_id);
+  let selectedPair;
+  while (!selectedPair) {
+    for (let index = 0; index < ids.length; index++) {
+      try { await runtime.structuralRefresh(ids[index], actors[index]); }
+      catch (error) {
+        if (!['STRUCTURAL_SOURCE_FORBIDDEN', 'COORDINATION_NOT_FOUND'].includes(error.code)) throw error;
+      }
+    }
+    const snapshot = JSON.parse(await readFile(
+      join(binding.storeRoot, 'coordination', 'control.json'), 'utf8'));
+    selectedPair = snapshot.cases.find(item => item.observed_origin === 'selected' && item.inputs.length === 2);
+    if (!selectedPair) await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  ids.push((await submit(2)).task_id);
+  for (;;) {
+    for (let index = 0; index < ids.length; index++) {
+      try { await runtime.structuralRefresh(ids[index], actors[index]); }
+      catch (error) {
+        if (!['STRUCTURAL_SOURCE_FORBIDDEN', 'COORDINATION_NOT_FOUND'].includes(error.code)) throw error;
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+}
 const project = join(root, 'project'), stateRoot = join(root, 'state');
 await mkdir(project, { recursive: true });
 const git = (...args) => exec('git', ['-C', project, ...args]);

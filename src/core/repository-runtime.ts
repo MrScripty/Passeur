@@ -51,6 +51,11 @@ const coordinationResourceRecords = 4096;
 // PeerDeliveryEnvelopeSchema owns this content cap. Selection must leave room for
 // the complete serialized content, including identities and JSON escaping.
 const PEER_DELIVERY_CONTENT_BYTES = 16_384;
+const PEER_RECONCILIATION_ATTEMPTS = 4;
+const PEER_RECONCILIATION_DELAY_MS = 40;
+type SelectedCaseReconciliation = { requested: boolean; running: Promise<void> | undefined;
+  receiptRequested: boolean; receiptRunning: Promise<void> | undefined;
+  diagnostic: string | undefined; pendingWorkIds: string[] };
 // A dispatched obsolete turn can currently freeze its worker. The controlled extension
 // remains unavailable until native receipts and current content authority are separated.
 export function assertObservedExtensionDeliveryCapacity(retainedCounts: readonly number[], selectedCount: number): void {
@@ -226,7 +231,12 @@ export type RuntimeDependencies = {
   /** Controlled interruption before one queued revised edge; absent from production composition. */
   beforeObservedCaseDeliveryQueueForTest?: (edge: Readonly<{ case_id: string; case_revision: number;
     recipient_task_id: string; source_work_id: string }>) => void;
-  /** Exposes the existing same-runtime reconciliation call only to an injected controlled fixture. */
+  /** Controlled failure after exact native observations, before final metadata settlement. */
+  beforeObservedCaseDeliverySettlementForTest?: (attempt: Readonly<{ case_id: string;
+    recipient_work_id: string; pending_count: number }>) => void;
+  /** Holds the terminal wake's exact metadata snapshot await in a controlled shutdown fixture. */
+  onTerminalCaseWakeSnapshotForTest?: (snapshot: Promise<ControlState>) => Promise<ControlState>;
+  /** Exposes a coalesced same-runtime wake only to an injected controlled fixture. */
   onObservedCaseExtensionPublishedForTest?: (caseId: string, retry: () => Promise<void>) => void;
   /** Signals a controlled capture publication before its task/capture reservation. */
   onCapturePublicationAttemptForTest?: (workId: string, path: string) => void;
@@ -319,6 +329,7 @@ export class RepositoryRuntime {
   readonly #publishedComparisons = new Map<string, AttributedComparison>();
   readonly #pendingCorrespondenceNotices = new Map<string, PendingCorrespondenceNotice>();
   readonly #observationFailures = new Map<string, string>();
+  readonly #deliveryReconciliation = new Map<string, SelectedCaseReconciliation>();
   readonly #observationAttached = new Map<string, string>();
   readonly #observationAttaching = new Map<string, string>();
   readonly #observationAttachAbort = new Map<string, AbortController>();
@@ -338,6 +349,7 @@ export class RepositoryRuntime {
   readonly #coordinatedAdmission = new Mutex();
   readonly #terminalBindingInFlight = new Set<string>();
   readonly #terminalBindingDone = new Set<string>();
+  readonly #terminalCaseWakes = new Set<Promise<void>>();
   readonly #startupCoordinatedQueue: string[] = [];
   #startupCoordinatedFailure: ReturnType<typeof diagnosticInfo> | undefined;
 
@@ -644,6 +656,7 @@ export class RepositoryRuntime {
                 path: evicted.admitted.input.path });
             if (published.sourceChanged) await this.#coordinationSession(this.#binding!).notifyPeerObservation(published.workId, published.path);
             for (const event of published.correspondence.pairs) await this.#queuePeerOverlap(event);
+            await this.#wakeCasesForWork(published.workId);
             await this.#drainCorrespondenceNotices();
           }
         },
@@ -663,17 +676,31 @@ export class RepositoryRuntime {
     return work;
   }
   /** The task control supplies the principal; envelope text and selectors never supply authority. */
-  async #authorizePeerDelivery(envelope: PeerDeliveryEnvelope): Promise<"current" | "stale" | "revoked"> {
+  async #settlementTaskEligible(taskId: string, control: Awaited<ReturnType<TaskStore["readControl"]>>): Promise<boolean> {
+    if (control.phase === "active") return !control.cancel;
+    if (control.phase !== "terminal" || control.outcome !== "completed" || control.cancel ||
+      control.native.state !== "stopped" || control.native.coverage !== "turn_scoped" ||
+      control.native.obligations.length) return false;
+    const result = await this.#store!.readResult(taskId);
+    return result?.schema_version === 4 && result.task_id === taskId &&
+      result.execution_status === "completed" && result.worker_stop === "confirmed" &&
+      result.native_evidence.state === "stopped" && result.native_evidence.run_id === control.native.run_id &&
+      result.native_evidence.coverage === "turn_scoped" && !result.native_evidence.obligations.length;
+  }
+  async #authorizePeerDelivery(envelope: PeerDeliveryEnvelope,
+    settlementOnly = false): Promise<"current" | "stale" | "revoked"> {
     this.#assertOpen(); this.#assertAuthority();
     const binding = this.#binding, store = this.#store;
     if (!binding || !store) return "stale";
     const control = await store.readControl(envelope.recipient_task_id);
-    if (control.phase === "terminal" || control.phase === "finalizing" || control.cancel ||
-      control.control_generation !== envelope.recipient_control_generation || control.native.run_id !== envelope.recipient_run_id) return "stale";
+    if (control.control_generation !== envelope.recipient_control_generation || control.native.run_id !== envelope.recipient_run_id ||
+      (settlementOnly ? !await this.#settlementTaskEligible(envelope.recipient_task_id, control)
+        : control.phase !== "active" || control.cancel)) return "stale";
     const admission = await store.durableRequest(envelope.recipient_task_id);
     const resource = await store.readResource(envelope.recipient_task_id);
     if (admission.schema_version !== 5 || admission.project_id !== binding.repositoryId ||
-      resource?.state !== "pending" || resource.project_id !== binding.repositoryId ||
+      (resource?.state !== "pending" && (!settlementOnly || resource?.state !== "retained")) ||
+      resource.project_id !== binding.repositoryId ||
       resource.worktree_path !== envelope.recipient_workspace) return "stale";
     if (canonicalHash({ task_id: envelope.recipient_task_id, source_view: admission.source_view,
       workspace: resource.worktree_path, base_commit: resource.base_commit, branch_ref: resource.branch_ref,
@@ -705,7 +732,7 @@ export class RepositoryRuntime {
     const artifact = this.#publishedArtifactIds.get(JSON.stringify([source.id, pair.input.path]));
     if (!artifact || artifact.id !== content.source_artifact_id || artifact.owner !== source.owner || !this.#observationStore) return "stale";
     const evidence = await this.#selectedOverlapEvidence(pair, peerCase, envelope.recipient_task_id,
-      source, recipientWork, resource.worktree_path);
+      source, recipientWork, resource.worktree_path, false, settlementOnly);
     const recipientArtifact = this.#publishedArtifactIds.get(JSON.stringify([recipientWork.id, pair.input.path]));
     if (!recipientArtifact) return "stale";
     const currentCandidate = peerDeliveryCandidate(pair, peerCase, source, recipientWork,
@@ -720,7 +747,7 @@ export class RepositoryRuntime {
     try {
       const retained = await this.#observationStore.readRetainedPair(artifact.id, control.owner_id,
         (_recipient, workId, revision, generation) => this.#authorizePeerCaseSource(peerCase.id,
-          envelope.recipient_task_id, workId, revision, generation, "report"));
+          envelope.recipient_task_id, workId, revision, generation, "report", settlementOnly));
       if (retained.work_id !== source.id || retained.work_revision !== source.revision ||
         retained.path !== pair.input.path || retained.input.source.kind !== "commit" ||
         retained.input.source.commit_oid !== pair.input.commit_oid ||
@@ -733,7 +760,7 @@ export class RepositoryRuntime {
     }
     try { await this.#authorizePeerCaseSource(peerCase.id, envelope.recipient_task_id, source.id,
       source.revision, { control_generation: source.managed?.control_generation ?? null,
-        workspace_generation: source.managed?.control_generation ?? Math.max(1, source.revision) }, "report"); }
+        workspace_generation: source.managed?.control_generation ?? Math.max(1, source.revision) }, "report", settlementOnly); }
     catch (error) {
       if (errorInfo(error).code === "STRUCTURAL_SOURCE_FORBIDDEN") {
         const current = await (await metadata.observationStore()).snapshot();
@@ -788,7 +815,8 @@ export class RepositoryRuntime {
   }
   /** Internal peer read binds source bytes to selected managed tasks, never to a parent-wide source grant. */
   async #authorizePeerCaseSource(caseId: string, recipientTaskId: string, workId: string,
-    workRevision: number, generation: ObservationGeneration, scope: "report" | "detail"): Promise<void> {
+    workRevision: number, generation: ObservationGeneration, scope: "report" | "detail",
+    settlementOnly = false): Promise<void> {
     const binding = this.#binding, store = this.#store;
     if (!binding || !store) throw new BridgeError("PEER_OPERATION_UNAVAILABLE", "Peer source authority is unavailable");
     const snapshot = await (await this.#coordinationSession(binding).observationStore()).snapshot();
@@ -810,9 +838,13 @@ export class RepositoryRuntime {
       store.readResource(source.managed.task_id), store.readResource(recipientTaskId),
     ]);
     if (sourceControl.owner_id !== source.owner || sourceControl.control_generation !== source.managed.control_generation ||
-      sourceControl.phase !== "active" || sourceControl.cancel || sourceResource?.state !== "pending" ||
+      (settlementOnly ? !await this.#settlementTaskEligible(source.managed.task_id, sourceControl)
+        : sourceControl.phase !== "active" || sourceControl.cancel) ||
+      (sourceResource?.state !== "pending" && (!settlementOnly || sourceResource?.state !== "retained")) ||
       recipientControl.owner_id !== recipient.owner || recipientControl.control_generation !== recipient.managed.control_generation ||
-      recipientControl.phase !== "active" || recipientControl.cancel || recipientResource?.state !== "pending") {
+      (settlementOnly ? !await this.#settlementTaskEligible(recipientTaskId, recipientControl)
+        : recipientControl.phase !== "active" || recipientControl.cancel) ||
+      (recipientResource?.state !== "pending" && (!settlementOnly || recipientResource?.state !== "retained"))) {
       throw new BridgeError("PEER_OPERATION_STALE", "Selected task source authority changed");
     }
     const [sourceTask, recipientTask] = await Promise.all([
@@ -1006,6 +1038,7 @@ export class RepositoryRuntime {
       : await restore();
     if (!update) return false;
     for (const event of update.pairs) await this.#queuePeerOverlap(event);
+    await this.#wakeCasesForWork(work.id);
     await this.#drainCorrespondenceNotices();
     return true;
   }
@@ -1123,7 +1156,7 @@ export class RepositoryRuntime {
   }
   async #selectedOverlapEvidence(pair: CorrespondencePair, peerCase: Case,
     recipientTaskId: string, source: Work, target: Work, recipientWorkspace: string,
-    beforePublication = false): Promise<PeerOverlapEvidence> {
+    beforePublication = false, settlementOnly = false): Promise<PeerOverlapEvidence> {
     const path = pair.input.path;
     const reports = [pair.current_work_id, pair.other_work_id].map(id => this.#publishedComparisons.get(JSON.stringify([id, path])));
     const artifacts = [pair.current_work_id, pair.other_work_id].map(id => this.#publishedArtifactIds.get(JSON.stringify([id, path])));
@@ -1152,7 +1185,8 @@ export class RepositoryRuntime {
       const retained = await this.#observationStore.readRetainedPair(artifacts[index]!.id, "0".repeat(64),
         (_recipient, id, revision, generation) => beforePublication
           ? this.#authorizeObservation(id === source.id ? source.owner : target.owner, id, revision, generation, "report")
-          : this.#authorizePeerCaseSource(peerCase.id, recipientTaskId, id, revision, generation, "report"));
+          : this.#authorizePeerCaseSource(peerCase.id, recipientTaskId, id, revision, generation,
+            "report", settlementOnly));
       if (retained.work_id !== workId || retained.path !== path || retained.input.source.kind !== "commit" ||
         retained.input.source.commit_oid !== pair.input.commit_oid) {
         throw new BridgeError("PEER_DELIVERY_STALE", "Selected overlap source capture changed");
@@ -1516,17 +1550,20 @@ export class RepositoryRuntime {
     }
     // The preflight validated every current capture. Re-observing here would replace those
     // captures while their revision-specific envelopes are being dispatched.
-    this.#deps.onObservedCaseExtensionPublishedForTest?.(peerCase.id, () => this.#retrySelectedCase(peerCase.id));
-    await this.#retrySelectedCase(peerCase.id);
+    this.#deps.onObservedCaseExtensionPublishedForTest?.(peerCase.id, () => this.#wakeSelectedCase(peerCase.id));
+    this.#wakeSelectedCase(peerCase.id);
   }
   /** Observation publication owns this attempt; delivery admission and dispatch remain Coordinator owned. */
-  async #queuePeerOverlap(pair: CorrespondencePair): Promise<void> {
+  async #queuePeerOverlap(pair: CorrespondencePair, failed?: (code: string) => void,
+    selectedCaseId?: string): Promise<void> {
     const coordinator = this.#coordinator, binding = this.#binding, store = this.#store;
-    if (!coordinator || !binding || !store || coordinator.frozenReason) return;
+    if (!coordinator || !binding || !store || coordinator.frozenReason || this.#lifetime.signal.aborted ||
+      this.#admissionClosed) return;
     const workIds = [pair.current_work_id, pair.other_work_id] as const;
     let snapshot;
     try { snapshot = await (await this.#coordinationSession(binding).observationStore()).snapshot(); }
     catch (error) {
+      failed?.(errorInfo(error).code);
       const limitation = `peer_delivery_unavailable:${errorInfo(error).code}`.slice(0, 256);
       for (const id of workIds) {
         if (!this.#observationFailures.has(id) && this.#observationFailures.size >= coordinationResourceRecords)
@@ -1535,11 +1572,12 @@ export class RepositoryRuntime {
       }
       return;
     }
-    if (!snapshot.cases.some(item => item.state === "active" && workIds.every(id => item.inputs.some(input => input.work_id === id)))) {
+    if (!selectedCaseId && !snapshot.cases.some(item => item.state === "active" && workIds.every(id => item.inputs.some(input => input.work_id === id)))) {
       try {
         await this.#establishObservedCase(pair);
         snapshot = await (await this.#coordinationSession(binding).observationStore()).snapshot();
       } catch (error) {
+        failed?.(errorInfo(error).code);
         for (const id of workIds) this.#observationFailures.set(id, `case_establishment_unavailable:${errorInfo(error).code}`.slice(0, 256));
         return;
       }
@@ -1557,6 +1595,7 @@ export class RepositoryRuntime {
           continue;
         }
         const peerCases = snapshot.cases.filter(item => item.state === "active" &&
+          (!selectedCaseId || item.id === selectedCaseId) &&
           item.members.includes(control.owner_id) &&
           item.inputs.some(input => input.work_id === target.id) &&
           item.inputs.some(input => input.work_id === source.id)).sort((a, b) => a.id.localeCompare(b.id));
@@ -1589,6 +1628,7 @@ export class RepositoryRuntime {
           const candidate = peerDeliveryCandidate(pair, peerCase, source, target, taskId, artifact.id, evidence,
             { source_artifact_id: artifact.id, recipient_artifact_id: recipientArtifact.id });
           if (candidate) {
+            if (this.#lifetime.signal.aborted || this.#admissionClosed) return;
             if (peerCase.observed_origin === "selected" && peerCase.inputs.length === 3)
               this.#deps.beforeObservedCaseDeliveryQueueForTest?.({ case_id: peerCase.id,
                 case_revision: peerCase.revision, recipient_task_id: taskId, source_work_id: source.id });
@@ -1602,22 +1642,150 @@ export class RepositoryRuntime {
         }
       } catch (error) {
         const code = errorInfo(error).code;
+        failed?.(code);
         if (code === "PEER_DELIVERY_CAPACITY_PENDING") this.#observationFailures.set(targetId, code);
         await this.#recordPeerDeliveryFailure(taskId, pair.pair_id,
           code === "STRUCTURAL_SOURCE_FORBIDDEN" ? "PEER_DELIVERY_REVOKED" : code);
       }
     }
   }
-  async #retrySelectedCase(caseId: string): Promise<void> {
-    if (!this.#binding || !this.#coordinator || !this.#currentOverlapPairs.size) return;
+  #selectedCaseReconciliation(caseId: string): SelectedCaseReconciliation {
+    let entry = this.#deliveryReconciliation.get(caseId);
+    if (!entry) {
+      entry = { requested: false, running: undefined, receiptRequested: false, receiptRunning: undefined,
+        diagnostic: undefined, pendingWorkIds: [] };
+      this.#deliveryReconciliation.set(caseId, entry);
+    }
+    return entry;
+  }
+  #wakeSelectedCase(caseId: string): Promise<void> {
+    if (this.#lifetime.signal.aborted || this.#admissionClosed || this.#phase === "closing" || this.#phase === "closed")
+      return Promise.resolve();
+    const entry = this.#selectedCaseReconciliation(caseId);
+    entry.requested = true;
+    for (const workId of entry.pendingWorkIds) if (this.#observationFailures.get(workId) === entry.diagnostic)
+      this.#observationFailures.delete(workId);
+    entry.diagnostic = undefined;
+    entry.pendingWorkIds = [];
+    if (entry.running) return entry.running;
+    const state = entry;
+    const running = this.#track(async () => {
+      let attempts = 0;
+      while (!this.#lifetime.signal.aborted && !this.#admissionClosed) {
+        state.requested = false;
+        let outcome: "complete" | "native_pending" | "retry" | "unavailable" = "retry";
+        let code = "PEER_DELIVERY_RECONCILIATION_FAILED";
+        try { outcome = await this.#retrySelectedCase(caseId); }
+        catch (error) { code = errorInfo(error).code; }
+        if (outcome === "complete" || outcome === "native_pending" || outcome === "unavailable") {
+          if (!state.requested) break;
+          attempts = 0;
+          continue;
+        }
+        if (state.requested) { attempts = 0; continue; }
+        if (++attempts >= PEER_RECONCILIATION_ATTEMPTS) {
+          state.diagnostic = `peer_delivery_reconciliation_exhausted:${code}`;
+          try {
+            const snapshot = await (await this.#coordinationSession(this.#binding!).observationStore()).snapshot();
+            const pending = snapshot.cases.find(item => item.id === caseId)?.delivery_pending ?? [];
+            state.pendingWorkIds = [...pending];
+            for (const workId of pending) this.#observationFailures.set(workId, state.diagnostic);
+          } catch (error) {
+            state.diagnostic = `peer_delivery_reconciliation_exhausted:${errorInfo(error).code}`;
+          }
+          if (!state.requested) break;
+          attempts = 0;
+          continue;
+        }
+        try { await delay(PEER_RECONCILIATION_DELAY_MS, undefined, { signal: this.#lifetime.signal }); }
+        catch { break; }
+      }
+    });
+    entry.running = running;
+    void running.finally(() => {
+      if (state.running !== running) return;
+      state.running = undefined;
+      if (state.requested && !this.#lifetime.signal.aborted && !this.#admissionClosed) this.#wakeSelectedCase(caseId);
+      else if (!state.diagnostic && !state.receiptRunning) this.#deliveryReconciliation.delete(caseId);
+    }).catch(() => undefined);
+    return running;
+  }
+  #wakeObservedCaseReceipt(caseId: string): void {
+    if (this.#lifetime.signal.aborted || this.#admissionClosed) return;
+    const state = this.#selectedCaseReconciliation(caseId);
+    state.receiptRequested = true;
+    if (state.receiptRunning) return;
+    const running = this.#track(async () => {
+      while (state.receiptRequested && !this.#lifetime.signal.aborted && !this.#admissionClosed) {
+        state.receiptRequested = false;
+        try { await this.#settleObservedCaseDeliveries(caseId); }
+        catch { /* The bounded selected-case worker retries exact metadata settlement. */ }
+        this.#wakeSelectedCase(caseId);
+      }
+    });
+    state.receiptRunning = running;
+    void running.finally(() => {
+      if (state.receiptRunning !== running) return;
+      state.receiptRunning = undefined;
+      if (state.receiptRequested && !this.#lifetime.signal.aborted && !this.#admissionClosed)
+        this.#wakeObservedCaseReceipt(caseId);
+      else if (!state.running && !state.diagnostic) this.#deliveryReconciliation.delete(caseId);
+    }).catch(() => undefined);
+  }
+  async #wakeCasesForWork(workId: string): Promise<void> {
+    if (!this.#binding || !this.#coordinator || this.#lifetime.signal.aborted) return;
+    let snapshot;
+    try { snapshot = await (await this.#coordinationSession(this.#binding).observationStore()).snapshot(); }
+    catch (error) {
+      this.#observationFailures.set(workId, `peer_delivery_reconciliation_unavailable:${errorInfo(error).code}`.slice(0, 256));
+      return;
+    }
+    for (const item of snapshot.cases) if (item.state === "active" && item.delivery_pending?.length &&
+      item.inputs.some(input => input.work_id === workId)) this.#wakeSelectedCase(item.id);
+  }
+  async #wakeCasesForSettledTask(taskId: string): Promise<void> {
+    if (!this.#binding || !this.#coordinator || this.#lifetime.signal.aborted) return;
+    const pending = (await this.#coordinationSession(this.#binding).observationStore()).snapshot();
+    const snapshot = await (this.#deps.onTerminalCaseWakeSnapshotForTest?.(pending) ?? pending);
+    if (this.#lifetime.signal.aborted || this.#admissionClosed) return;
+    const works = new Set(snapshot.works.filter(work => work.managed?.task_id === taskId).map(work => work.id));
+    for (const item of snapshot.cases) if (item.state === "active" && item.delivery_pending?.length &&
+      item.inputs.some(input => works.has(input.work_id))) this.#wakeSelectedCase(item.id);
+  }
+  async #retrySelectedCase(caseId: string): Promise<"complete" | "native_pending" | "retry" | "unavailable"> {
+    if (!this.#binding || !this.#coordinator || this.#lifetime.signal.aborted || this.#admissionClosed) return "unavailable";
     const snapshot = await (await this.#coordinationSession(this.#binding).observationStore()).snapshot();
     const peerCase = snapshot.cases.find(item => item.id === caseId && item.state === "active");
-    if (!peerCase) return;
-    const selected = new Set(peerCase.inputs.map(input => input.work_id));
-    for (const pair of this.#currentOverlapPairs.values()) {
-      if (selected.has(pair.current_work_id) && selected.has(pair.other_work_id)) await this.#queuePeerOverlap(pair);
-    }
+    if (!peerCase?.delivery_pending?.length) return "complete";
+    // Native receipts can complete a case without another source lookup or queue pass.
     await this.#settleObservedCaseDeliveries(caseId);
+    const afterReceipts = await (await this.#coordinationSession(this.#binding).observationStore()).snapshot();
+    if (!afterReceipts.cases.find(item => item.id === caseId && item.state === "active")?.delivery_pending?.length)
+      return "complete";
+    const selected = new Set(peerCase.inputs.map(input => input.work_id));
+    let attempted = false, failure: string | undefined;
+    for (const pair of this.#currentOverlapPairs.values()) {
+      if (selected.has(pair.current_work_id) && selected.has(pair.other_work_id)) {
+        attempted = true;
+        await this.#queuePeerOverlap(pair, code => { failure ??= code; }, caseId);
+      }
+    }
+    if (!attempted || failure === "PEER_DELIVERY_STALE" || failure === "PEER_OPERATION_STALE" ||
+      failure === "PEER_DELIVERY_RESERVATION_STALE" || failure === "PEER_DELIVERY_CAPACITY_PENDING" ||
+      failure === "PEER_DELIVERY_UNAVAILABLE" || failure === "STRUCTURAL_SOURCE_FORBIDDEN") return "unavailable";
+    for (const input of peerCase.inputs) {
+      const recipient = snapshot.works.find(work => work.id === input.work_id);
+      if (!recipient?.managed || !peerCase.delivery_pending.includes(input.work_id)) continue;
+      const control = await this.#store!.readControl(recipient.managed.task_id);
+      if (control.schema_version !== 3) return "unavailable";
+      if (control.owner_id !== recipient.owner || control.control_generation !== recipient.managed.control_generation ||
+        control.phase !== "active" || control.cancel || !this.#coordinator.isActive(recipient.managed.task_id))
+        return "unavailable";
+      const slots = control.peer_delivery_reservations.filter(slot => slot.case_id === caseId &&
+        slot.case_revision === peerCase.revision && slot.case_generation === peerCase.generation);
+      if (slots.some(slot => slot.state === "reserved")) return "retry";
+    }
+    return failure ? "retry" : "native_pending";
   }
   /** Adapter observation, never queue admission, discharges each recipient's revision-specific obligation. */
   async #settleObservedCaseDeliveries(caseId: string): Promise<void> {
@@ -1648,12 +1816,13 @@ export class RepositoryRuntime {
         if (!recipient?.managed || recipient.state !== "active") continue;
         const control = await store.readControl(recipient.managed.task_id);
         if (control.owner_id !== recipient.owner || control.control_generation !== recipient.managed.control_generation ||
-          control.phase !== "active" || control.cancel) continue;
+          !await this.#settlementTaskEligible(recipient.managed.task_id, control)) continue;
         const attempt: Attempt = { case_id: caseId, recipient_work_id: recipientWorkId,
           observed_delivery_ids: [], outcome: "rejected" };
         attempts.push(attempt);
         const peers = item.inputs.filter(input => input.work_id !== recipientWorkId);
         const observations = [];
+        const validated: PeerDeliveryEnvelope[] = [];
         for (const peer of peers) {
           const source = snapshot.works.find(work => work.id === peer.work_id);
           if (!source?.managed || source.state !== "active") break;
@@ -1667,15 +1836,18 @@ export class RepositoryRuntime {
           let current;
           for (const record of exact) {
             attempt.observed_delivery_ids.push(record.envelope.delivery_id);
-            try { if (await this.#authorizePeerDelivery(record.envelope) === "current") { current = record; break; } }
+            try { if (await this.#authorizePeerDelivery(record.envelope, true) === "current") { current = record; break; } }
             catch { /* A failed current evidence check cannot settle the durable obligation. */ }
           }
           if (!current) break;
+          validated.push(current.envelope);
           observations.push({ source_work_id: source.id, delivery_id: current.envelope.delivery_id,
             native_turn_id: current.native_turn_id, native_session_id: current.native_session_id });
         }
         if (observations.length !== peers.length) continue;
         try {
+          this.#deps.beforeObservedCaseDeliverySettlementForTest?.({ case_id: item.id,
+            recipient_work_id: recipientWorkId, pending_count: item.delivery_pending.length });
           await metadata.observeCaseDelivery({ owner_id: item.lead, source_view: binding.project }, {
             operation_key: `passeur-internal:observed-delivery:${canonicalHash([item.id, item.revision, recipientWorkId])}`,
             case_id: item.id, case_revision: item.revision, generation: item.generation,
@@ -1684,6 +1856,23 @@ export class RepositoryRuntime {
           attempt.outcome = "completed";
         } catch (error) {
           if (errorInfo(error).code !== "PEER_DELIVERY_STALE") throw error;
+          // Metadata may advance for another recipient between the exact check and
+          // publication. Retry only while the same case and every native receipt
+          // still carry current task, source, capture and workspace authority.
+          const fresh = await observationMetadata.snapshot();
+          const current = fresh.cases.find(candidate => candidate.id === item.id && candidate.state === "active");
+          if (!current || current.revision !== item.revision || current.generation !== item.generation ||
+            current.observed_origin !== "selected" || current.inputs.length !== item.inputs.length ||
+            current.inputs.some((input, index) => input.work_id !== item.inputs[index]!.work_id ||
+              fresh.works.find(work => work.id === input.work_id)?.managed?.task_id !== taskIds[index]) ||
+            !current.delivery_pending?.includes(recipientWorkId)) continue;
+          let exact = true;
+          for (const envelope of validated) {
+            try { if (await this.#authorizePeerDelivery(envelope, true) !== "current") { exact = false; break; } }
+            catch { exact = false; break; }
+          }
+          if (exact) throw new BridgeError("PEER_DELIVERY_METADATA_CONFLICT",
+            "Current exact native receipt remains pending after an optimistic metadata conflict");
         }
       }
     })); }
@@ -2035,13 +2224,21 @@ export class RepositoryRuntime {
         this.#assertOpen(); this.#assertAuthority();
         this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority(), this.#controls);
         this.#coordinator.onAuthorizePeerDelivery = envelope => this.#authorizePeerDelivery(envelope);
-        this.#coordinator.onPeerDeliveryObserved = caseId =>
-          this.#track(async () => { await this.#settleObservedCaseDeliveries(caseId); await this.#retrySelectedCase(caseId); }, false);
-        this.#coordinator.onPeerDeliveryQueuedStale = caseId =>
-          this.#track(() => this.#retrySelectedCase(caseId), false);
+        this.#coordinator.onPeerDeliveryObserved = caseId => { this.#wakeObservedCaseReceipt(caseId); return Promise.resolve(); };
+        this.#coordinator.onPeerDeliveryQueuedStale = caseId => { this.#wakeSelectedCase(caseId); return Promise.resolve(); };
         this.#coordinator.onWorkerPeerOperation = (taskId, request, signal) => this.#workerPeerOperation(taskId, request, signal);
         this.#coordinator.onSettled = () => this.onSettled?.();
-        this.#coordinator.onTaskSettled = taskId => this.#scheduleTerminalBinding(taskId);
+        this.#coordinator.onTaskSettled = taskId => {
+          if (this.#lifetime.signal.aborted) return;
+          this.#scheduleTerminalBinding(taskId);
+          if (this.#admissionClosed) return;
+          const wake = this.#track(() => this.#wakeCasesForSettledTask(taskId));
+          this.#terminalCaseWakes.add(wake);
+          void wake.then(() => this.#terminalCaseWakes.delete(wake), error => {
+            this.#terminalCaseWakes.delete(wake);
+            this.#failure ??= diagnosticInfo(error);
+          });
+        };
         this.#coordinator.onCoordinatedWorkspacePrepared = async (record, workspace) => {
           if (workspace.kind !== "task_worktree" || record.request.mode !== "implement") {
             throw new BridgeError("COORDINATION_WORKSPACE_INVALID", "Coordinated admission requires its prepared implementation worktree");
@@ -2345,8 +2542,7 @@ export class RepositoryRuntime {
       this.#assertOpen();
       const reply = await this.#coordinationSession(binding).handle(connection, request);
       if (reply.kind === "receipt" && reply.receipt.action === "select_inputs") {
-        try { await this.#retrySelectedCase(reply.receipt.item_id); }
-        catch (error) { this.#failure ??= diagnosticInfo(error); }
+        this.#wakeSelectedCase(reply.receipt.item_id);
       }
       if (reply.kind === "receipt" && (reply.receipt.action === "grant_source" ||
         reply.receipt.action === "watch_source" || reply.receipt.action === "share_work")) {
@@ -2954,7 +3150,8 @@ export class RepositoryRuntime {
     for (const record of await this.#store.list()) if ("schema_version" in record) await this.#controls.releaseClient(record.task_id, clientId);
   }
   async hasObligations(): Promise<boolean> {
-    if (this.#preparation || this.#composition && !this.#coordinator || this.#obligationPending.size || this.#coordinator?.outstandingCount || this.#coordination?.pendingCount) return true;
+    if (this.#preparation || this.#composition && !this.#coordinator || this.#obligationPending.size ||
+      this.#terminalCaseWakes.size || this.#coordinator?.outstandingCount || this.#coordination?.pendingCount) return true;
     if (!this.#store) return false;
     for (const record of await this.#store.list()) if ((await this.#store.readState(record.task_id)).phase !== "terminal") return true;
     return false;
@@ -3070,6 +3267,9 @@ export class RepositoryRuntime {
       if (this.#preparation) startup.push(this.#preparation);
       if (this.#composition) startup.push(this.#composition);
       await Promise.allSettled(startup);
+      await Promise.allSettled([...this.#terminalCaseWakes]);
+      await Promise.allSettled([...this.#deliveryReconciliation.values()].flatMap(item =>
+        [item.receiptRunning, item.running].filter((running): running is Promise<void> => !!running)));
       const outcomes = await Promise.allSettled([
         ...(this.#coordinator ? [this.#coordinator.shutdown()] : []),
         ...(this.#observationMonitor ? [this.#observationMonitor.close()] : []),

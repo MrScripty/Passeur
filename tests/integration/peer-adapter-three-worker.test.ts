@@ -10,6 +10,7 @@ import { MuseSdkAdapter } from "../../src/muse/adapter.js";
 import { decodePeerResolutionText } from "../../src/coordination/peer-resolution.js";
 import type { MuseOptions } from "../../src/muse/config.js";
 import type { WorkerInput } from "../../src/agents/types.js";
+import { BridgeError } from "../../src/core/errors.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const response = (fields: Record<string, unknown>) =>
@@ -86,10 +87,35 @@ test("three controlled Muse SDK sessions consume a late observed case through re
     .map(owner_id => ({ owner_id, client_id: randomUUID() }));
   const store = new TaskStore(binding.storeRoot);
   const peers = [0, 1, 2].map(scriptedMuse);
+  const admittedDirected = new Set<string>();
+  let queueInterruptions = 0;
+  let finalSettlementConflicts = 0;
+  let revisedPublished = false;
+  const settlements: Array<{ outcome: string; observed_delivery_ids: readonly string[]; at: number }> = [];
+  let wakeSelectedCase: (() => Promise<void>) | undefined;
   const runtime = new RepositoryRuntime(intent,
     { package_version: "fixture", build_id: "fixture", mode: "development", node_version: process.version,
       node_executable: process.execPath, pid: process.pid, started_at: new Date().toISOString() }, {
       enableObservedCaseExtensionForTest: true,
+      onObservedCaseSettlement: (attempt: { outcome: string; observed_delivery_ids: readonly string[] }) => {
+        settlements.push({ ...attempt, at: Date.now() });
+      },
+      beforeObservedCaseDeliverySettlementForTest: (attempt: { pending_count: number }) => {
+        if (revisedPublished && attempt.pending_count === 1 && finalSettlementConflicts++ < 2)
+          throw new BridgeError("PEER_DELIVERY_STALE", "Controlled optimistic metadata conflict");
+      },
+      onObservedCaseExtensionPublishedForTest: (_caseId: string, wake: () => Promise<void>) => {
+        wakeSelectedCase = wake;
+        revisedPublished = true;
+      },
+      beforeObservedCaseDeliveryQueueForTest: (edge: { recipient_task_id: string; source_work_id: string }) => {
+        const key = `${edge.recipient_task_id}:${edge.source_work_id}`;
+        if (!admittedDirected.has(key) && admittedDirected.size === 2 && queueInterruptions < 4) {
+          queueInterruptions++;
+          throw Error("controlled postpublication queue interruption");
+        }
+        admittedDirected.add(key);
+      },
       store: () => store,
       profile: async () => ({ schema_version: 3, execution: { stop_grace_ms: 1000, max_workers: 3,
         max_queued_tasks: 3, max_clients: 32, max_waiters: 128, max_pending_inputs: 16,
@@ -106,7 +132,7 @@ test("three controlled Muse SDK sessions consume a late observed case through re
     for (const peer of peers) peer.release();
     await runtime.shutdown();
   } });
-  const state = async (): Promise<{ cases: CaseState[] }> =>
+  const state = async (): Promise<{ cases: CaseState[]; works: Array<{ id: string; owner: string }> }> =>
     JSON.parse(await readFile(join(binding.storeRoot, "coordination/control.json"), "utf8"));
   const waitFor = async <T>(label: string, read: () => Promise<T>, ready: (value: T) => boolean, attempts = 500): Promise<T> => {
     for (let attempt = 0; attempt < attempts; attempt++) {
@@ -142,6 +168,12 @@ test("three controlled Muse SDK sessions consume a late observed case through re
         record.envelope.case_revision === joined.revision && record.state === "queued").length === 2));
   assert.equal(queued.flat().filter((record: any) => record.envelope.case_id === joined.id &&
     record.envelope.case_revision === joined.revision).length, 6);
+  assert.equal(queueInterruptions, 4, "same-live retry must finish a two-of-six interrupted publication");
+  assert.ok(wakeSelectedCase);
+  await Promise.all([wakeSelectedCase(), wakeSelectedCase(), wakeSelectedCase()]);
+  assert.equal((await Promise.all(ids.map(id => store.readPeerDeliveries(id)))).flat().filter((record: any) =>
+    record.envelope.case_id === joined.id && record.envelope.case_revision === joined.revision).length, 6,
+  "concurrent wakes retain one exact envelope per directed obligation");
   const queuedCase = (await state()).cases.find(item => item.id === joined.id);
   assert.ok(queuedCase);
   assert.equal(queuedCase.delivery_pending.length, 3);
@@ -153,18 +185,29 @@ test("three controlled Muse SDK sessions consume a late observed case through re
     return current?.delivery_pending.length === 0 && snapshot.records.every((items: any[]) =>
       items.filter(record => record.envelope.case_id === joined.id &&
         record.envelope.case_revision === joined.revision && record.state === "observed").length === 2);
-  }, 1000).catch(async error => {
-    const [metadata, controls] = await Promise.all([state(), Promise.all(ids.map(id => store.readControl(id)))]);
+  }, 1500).catch(async error => {
+    const [metadata, controls, results] = await Promise.all([state(), Promise.all(ids.map(id => store.readControl(id))),
+      Promise.all(ids.map(id => store.readResult(id)))]);
     const selected = metadata.cases.find(item => item.id === joined.id);
+    const pendingWork = metadata.works.find(work => work.id === selected?.delivery_pending[0]);
+    const pendingActor = actors.find(actor => actor.owner_id === pendingWork?.owner);
+    const observation = pendingWork && pendingActor
+      ? await runtime.structuralObservationStatus(pendingWork.id, pendingActor) : undefined;
     error.message += `; delivery frontier=${JSON.stringify({
       case: selected && { revision: selected.revision, pending: selected.delivery_pending,
         observed: selected.delivery_observed.length }, runtime: runtime.status().coordination,
       tasks: controls.map((control, index) => ({ id: ids[index], phase: control.phase,
+        outcome: control.outcome, result: results[index] && { execution_status: results[index]!.execution_status,
+          worker_stop: results[index]!.worker_stop,
+          native_state: results[index]!.schema_version === 4 ? results[index]!.native_evidence.state : undefined },
         native: { state: control.native.state, coverage: control.native.coverage, run_id: control.native.run_id },
         deliveries: control.peer_deliveries.map((record: any) => ({ state: record.state,
           revision: record.envelope.case_revision, source_work_id: record.envelope.source_work_id })) })),
       seen: peers.map(peer => peer.seen.map(item => ({ revision: item.revision, sourceWorkId: item.sourceWorkId }))),
-      errors: peers.map(peer => peer.errors),
+      errors: peers.map(peer => peer.errors), settlementConflicts: finalSettlementConflicts,
+      limitations: observation?.limitations,
+      settlements: settlements.map(item => ({ outcome: item.outcome, count: item.observed_delivery_ids.length,
+        at: item.at })),
     })}`;
     throw error;
   });
@@ -172,6 +215,11 @@ test("three controlled Muse SDK sessions consume a late observed case through re
   assert.ok(selected);
   assert.deepEqual(selected.delivery_pending, []);
   assert.equal(selected.delivery_observed.length, 3);
+  assert.equal(finalSettlementConflicts, 3, "two quiet final metadata conflicts must be retried");
+  assert.equal(settlements.filter(attempt => attempt.outcome === "failed" &&
+    attempt.observed_delivery_ids.length === 2).length, 2);
+  assert.equal(settlements.filter(attempt => attempt.outcome === "completed" &&
+    attempt.observed_delivery_ids.length === 2).length, 3);
   const controls = await Promise.all(ids.map(id => store.readControl(id)));
   for (const [index, control] of controls.entries()) {
     const current = settled.records[index]!.filter((record: any) => record.envelope.case_id === joined.id &&

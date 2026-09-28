@@ -9,11 +9,12 @@ import { MAX_PEER_DELIVERY_ENVELOPE_BYTES, parsePeerDeliverySource, peerDelivery
   peerDeliverySizingEnvelope } from '../../.passeur-core/src/contracts/peer-delivery.js';
 import { MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES, peerDeliveryPromptBytes } from '../../.passeur-core/src/agents/report-format.js';
 import { selectPeerOverlapEvidence } from '../../.passeur-core/src/observation/overlap.js';
-import { serviceFixture, command } from '../fixtures/structural/service-fixture.mjs';
+import { serviceFixture, command, hold } from '../fixtures/structural/service-fixture.mjs';
 import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
 import { operatorToken } from '../../.passeur-core/src/service/operator-token.js';
 import { CoordinationStore } from '../../.passeur-core/src/store/coordination-store.js';
 import { CoordinationControl } from '../../.passeur-core/src/coordination/control.js';
+import { BridgeError } from '../../.passeur-core/src/core/errors.js';
 
 const task = randomUUID();
 const source = { id: randomUUID(), owner: 'a'.repeat(64), workspace_id: 'first',
@@ -487,7 +488,7 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
       configure: () => ({ modes: ['implement'], contract: 'controlled-peer/1', configuration: {},
         worker: { run: input => worker.run(input) } }),
     }])),
-  });
+  }, artifactEviction ? { ...process.env, PASSEUR_OBSERVATION_MONITOR: 'off' } : process.env);
   fixture.sessions.push({ close: async () => { stop = true; obsoleteTurn.release(); continuePeer.release();
     helperWrite.release(); helperWritten.release(); restoreRelease.release();
     settlementRelease?.release(); nativeHolds.forEach(hold => hold.release()); await runtime.shutdown(); } });
@@ -519,6 +520,7 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
     if (!pairCase) await new Promise(resolve => setTimeout(resolve, 30));
   }
   assert.ok(pairCase, 'two real captures must establish an observed case');
+  if (artifactEviction) { await refresh(1); await refresh(0); }
   await waitFor('original pair observed before revising its case', () => store.readPeerDeliveries(ids[0]),
     records => records.some(record => record.state === 'observed' &&
       record.envelope.case_id === pairCase.id && record.envelope.case_revision === pairCase.revision), 400);
@@ -623,7 +625,7 @@ async function pendingObservedCaseScenario(t, captureRace = false, removalRace =
     continuePeer.release();
     const replacement = await waitFor('post-pair-eviction native receipt', async () =>
       received.find(envelope => envelope.case_revision === joined.revision &&
-        envelope.source_work_id === obsoleteRevised.source_work_id && envelope.delivery_id !== obsoleteRevised.delivery_id), Boolean, 400);
+        envelope.source_work_id === obsoleteRevised.source_work_id && envelope.delivery_id !== obsoleteRevised.delivery_id), Boolean, 600);
     const deliveries = await store.readPeerDeliveries(ids[0]);
     const evictedReceipt = deliveries.find(record => {
       if (record.state !== 'observed' || record.envelope.case_id !== joined.id ||
@@ -924,7 +926,8 @@ test('exact settlement precedes unrelated genuine artifact eviction', t =>
 test('exact settlement precedes unrelated genuine pair eviction', t =>
   pendingObservedCaseScenario(t, false, false, false, false, false, true));
 
-async function observedExtensionScenario(t, enable, replaceRun = false, partialQueue = false) {
+async function observedExtensionScenario(t, enable, replaceRun = false, partialQueue = false,
+  permanentQueueFailure = false, blockTerminalWake = false) {
   const fixture = await serviceFixture(t);
   await fixture.service.close();
   const intent = { project: fixture.root, stateRoot: fixture.state,
@@ -943,18 +946,37 @@ async function observedExtensionScenario(t, enable, replaceRun = false, partialQ
     await input.onEvent({ kind: 'turn_settled', turn_id: `initial-${index}`,
       native_session_id: `session-${index}`, terminal: 'completed' });
     await stop.promise;
+    if (blockTerminalWake) {
+      let sequence = 0;
+      for (;;) {
+        const envelope = await input.peer.next();
+        if (!envelope) break;
+        const turnId = `peer-${index}-${++sequence}`;
+        await input.onEvent({ kind: 'turn_started', turn_id: turnId, native_session_id: `session-${index}` });
+        await input.peer.delivered(envelope.idempotency_key, turnId, `session-${index}`);
+        await input.onEvent({ kind: 'turn_settled', turn_id: turnId,
+          native_session_id: `session-${index}`, terminal: 'completed' });
+        await input.peer.observed(envelope.idempotency_key, turnId, `session-${index}`);
+      }
+    }
     return { status: 'completed', worker_stop: 'confirmed', worker_assessment: 'met',
       summary: 'Controlled peer stopped', blockers: [], questions: [], checks: [] };
   } }));
   let replacedTask;
+  const terminalWakeEntered = hold(), terminalWakeRelease = hold();
   let interruptRevisedQueue = partialQueue;
-  let retrySelectedCase;
+  let interruptionCount = 0;
   const allowedDirected = new Set();
   const store = new TaskStore(binding.storeRoot);
   const runtime = new RepositoryRuntime(intent, { package_version: 'fixture', build_id: 'fixture',
     mode: 'development', node_version: process.version, node_executable: process.execPath,
     pid: process.pid, started_at: new Date().toISOString() }, {
     ...(enable ? { enableObservedCaseExtensionForTest: true } : {}),
+    ...(blockTerminalWake ? { onTerminalCaseWakeSnapshotForTest: async snapshot => {
+      terminalWakeEntered.release();
+      await terminalWakeRelease.promise;
+      return snapshot;
+    } } : {}),
     ...(replaceRun ? { onObservedCaseSlotsReservedForTest: async (taskIds, controls) => {
       if (replacedTask) return;
       replacedTask = taskIds[2];
@@ -963,10 +985,13 @@ async function observedExtensionScenario(t, enable, replaceRun = false, partialQ
     ...(partialQueue ? { beforeObservedCaseDeliveryQueueForTest: edge => {
       if (!interruptRevisedQueue) return;
       const key = `${edge.recipient_task_id}:${edge.source_work_id}`;
-      if (!allowedDirected.has(key) && allowedDirected.size === 2)
+      if (!allowedDirected.has(key) && allowedDirected.size === 2) {
+        interruptionCount++;
+        if (!permanentQueueFailure && interruptionCount === 4) interruptRevisedQueue = false;
         throw new Error('controlled postcommit queue interruption');
+      }
       allowedDirected.add(key);
-    }, onObservedCaseExtensionPublishedForTest: (_caseId, retry) => { retrySelectedCase = retry; } } : {}),
+    } } : {}),
     store: () => store,
     profile: async () => ({ schema_version: 3, execution: {
       stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
@@ -1023,6 +1048,24 @@ async function observedExtensionScenario(t, enable, replaceRun = false, partialQ
     assert.equal(current.inputs.length, 2, 'production-default Runtime keeps automatic extension disabled');
     assert.ok((await Promise.all(ids.map(id => store.readControl(id)))).every(control =>
       control.schema_version === 2), 'disabled extension creates no delivery reservations');
+    if (blockTerminalWake) {
+      stops.forEach(stop => stop.release());
+      let shutdown;
+      try {
+        let timer;
+        try { await Promise.race([terminalWakeEntered.promise, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Error('terminal case wake did not reach its metadata snapshot')), 10_000);
+        })]); }
+        finally { clearTimeout(timer); }
+        assert.equal(await runtime.hasObligations(), true,
+          'the owned terminal wake participates in idle accounting');
+        shutdown = runtime.shutdown();
+        const early = await Promise.race([shutdown.then(() => 'closed'),
+          new Promise(resolve => setTimeout(() => resolve('waiting'), 100))]);
+        assert.equal(early, 'waiting', 'shutdown must drain the terminal metadata wake before closing stores');
+      } finally { terminalWakeRelease.release(); }
+      await shutdown;
+    }
     return;
   }
   let joined;
@@ -1034,6 +1077,12 @@ async function observedExtensionScenario(t, enable, replaceRun = false, partialQ
   assert.ok(joined, 'a single late capture must publish the controlled revised case');
   assert.equal(joined.revision, pair.revision + 1);
   if (partialQueue) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (interruptionCount >= 4) break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    if (permanentQueueFailure) assert.ok(interruptionCount >= 4);
+    else assert.equal(interruptionCount, 4);
     const partialMetadata = await state();
     const partialCase = partialMetadata.cases.find(item => item.id === joined.id);
     assert.equal(partialCase.revision, pair.revision + 1);
@@ -1050,9 +1099,26 @@ async function observedExtensionScenario(t, enable, replaceRun = false, partialQ
         record.envelope.case_revision === joined.revision).length, 2);
     assert.ok(reopenedPartial.every(control => (control.peer_deliveries?.length ?? 0) +
       control.peer_delivery_reservations.filter(slot => slot.state === 'reserved').length <= 64));
-    assert.ok(retrySelectedCase, 'committed case must expose the existing same-live retry path');
-    interruptRevisedQueue = false;
-    await retrySelectedCase();
+    if (permanentQueueFailure) {
+      const ownedWork = (await state()).works.find(work => work.managed?.task_id === ids[0]);
+      assert.ok(ownedWork);
+      let status;
+      for (let attempt = 0; attempt < 300; attempt++) {
+        status = await runtime.structuralObservationStatus(ownedWork.id, actors[0]);
+        if (status.limitations.some(item => item.startsWith('peer_delivery_reconciliation_exhausted:'))) break;
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      assert.ok(status.limitations.some(item => item.startsWith('peer_delivery_reconciliation_exhausted:')),
+        `permanent queue failure retains a bounded reconciliation diagnostic: ${JSON.stringify({
+          limitations: status.limitations, interruptionCount })}`);
+      const exhaustedInterruptions = interruptionCount;
+      await new Promise(resolve => setTimeout(resolve, 150));
+      assert.equal(interruptionCount, exhaustedInterruptions, 'quiet exhausted case must not retry indefinitely');
+      assert.equal((await state()).cases.find(item => item.id === joined.id).delivery_pending.length, 3);
+      stops.forEach(stop => stop.release());
+      await runtime.shutdown();
+      return;
+    }
   }
   for (let attempt = 0; attempt < 200; attempt++) {
     const controls = await Promise.all(ids.map(id => store.readControl(id)));
@@ -1087,12 +1153,16 @@ async function observedExtensionScenario(t, enable, replaceRun = false, partialQ
 
 test('production-default Runtime leaves automatic observed extension disabled', t =>
   observedExtensionScenario(t, false));
+test('terminal case wake remains owned until shutdown drains its metadata snapshot', t =>
+  observedExtensionScenario(t, false, false, false, false, true));
 test('controlled extension reserves and consumes six durable directed slots through the real Runtime', t =>
   observedExtensionScenario(t, true));
 test('prepublication native run replacement prevents controlled extension and releases exact slots', t =>
   observedExtensionScenario(t, true, true));
-test('committed case retains partial directed enqueue across reopen and same-live retry', t =>
+test('committed case automatically completes partial directed enqueue in the same live service', t =>
   observedExtensionScenario(t, true, false, true));
+test('permanent directed queue failure exhausts a bounded burst and drains on shutdown', t =>
+  observedExtensionScenario(t, true, false, true, true));
 
 test('late third managed worker joins one observed case and each controlled worker consumes revised peer evidence', async t => {
   let stage = 'fixture', polls = 0;
@@ -1112,6 +1182,9 @@ test('late third managed worker joins one observed case and each controlled work
   const actors = [createHash('sha256').update(token).digest('hex'), 'b'.repeat(64), 'c'.repeat(64)]
     .map(owner_id => ({ owner_id, client_id: randomUUID() }));
   const consumed = [[], [], []];
+  const settlementAttempts = [];
+  let finalSettlementInterruptions = 0;
+  let revisedCasePublished = false;
   const workerStage = ['not started', 'not started', 'not started'];
   const workers = [0, 1, 2].map(index => {
     let stopped = false;
@@ -1147,6 +1220,12 @@ test('late third managed worker joins one observed case and each controlled work
     mode: 'development', node_version: process.version, node_executable: process.execPath,
     pid: process.pid, started_at: new Date().toISOString() }, {
     enableObservedCaseExtensionForTest: true,
+    onObservedCaseExtensionPublishedForTest: () => { revisedCasePublished = true; },
+    onObservedCaseSettlement: attempt => settlementAttempts.push(attempt),
+    beforeObservedCaseDeliverySettlementForTest: attempt => {
+      if (revisedCasePublished && attempt.pending_count === 1 && finalSettlementInterruptions++ < 2)
+        throw new BridgeError('PEER_DELIVERY_STALE', 'Controlled optimistic metadata conflict');
+    },
     store: () => store,
     profile: async () => ({ schema_version: 3, execution: {
       stop_grace_ms: 1000, max_workers: 3, max_queued_tasks: 3, max_clients: 32,
@@ -1227,14 +1306,30 @@ test('late third managed worker joins one observed case and each controlled work
     await new Promise(resolve => setTimeout(resolve, 30));
   }
   assert.ok(joined, 'late worker must extend the original observed case');
-  for (let attempt = 0; attempt < 160; attempt++) {
+  for (let attempt = 0; attempt < 500; attempt++) {
     joined = (await caseState()).cases.find(item => item.id === pairCase.id && item.inputs.length === 3);
     if (joined.delivery_pending.length === 0 && consumed.every(records =>
       records.filter(envelope => envelope.case_id === joined.id && envelope.case_revision === joined.revision).length >= 2)) break;
     polls++; await new Promise(resolve => setTimeout(resolve, 30));
   }
   assert.equal(joined.revision, pairCase.revision + 1);
-  assert.deepEqual(joined.delivery_pending, [], 'only exact adapter observations discharge every recipient');
+  assert.equal(finalSettlementInterruptions, 3, 'final native receipt must survive two quiet metadata conflicts');
+  const finalControls = await Promise.all(ids.map(id => store.readControl(id)));
+  assert.deepEqual(joined.delivery_pending, [], `only exact adapter observations discharge every recipient: ${JSON.stringify({
+    workerStage, consumed: consumed.map(records => records.filter(envelope =>
+      envelope.case_id === joined.id && envelope.case_revision === joined.revision).length),
+    settlementAttempts,
+    deliveries: finalControls.map(control => control.peer_deliveries.filter(record =>
+      record.envelope.case_id === joined.id && record.envelope.case_revision === joined.revision)
+      .map(record => ({ state: record.state, source: record.envelope.source_work_id }))),
+  })}`);
+  for (let attempt = 0; attempt < 100 && settlementAttempts.filter(item => item.outcome === 'completed' &&
+    item.observed_delivery_ids.length === 2).length < 3; attempt++)
+    await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(settlementAttempts.filter(attempt => attempt.outcome === 'failed' &&
+    attempt.observed_delivery_ids.length === 2).length, 2);
+  assert.equal(settlementAttempts.filter(attempt => attempt.outcome === 'completed' &&
+    attempt.observed_delivery_ids.length === 2).length, 3);
   for (const [index, records] of consumed.entries()) {
     const current = records.filter(envelope => envelope.case_id === joined.id && envelope.case_revision === joined.revision);
     assert.equal(new Set(current.map(envelope => envelope.source_work_id)).size, 2,

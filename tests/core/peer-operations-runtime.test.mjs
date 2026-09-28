@@ -330,7 +330,9 @@ test('RepositoryRuntime replays concurrent inspections after settlement conflict
     if (!outcome) await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.ok(outcome, 'mutating peer operation did not complete');
-  assert.equal(outcome.execution_status, 'completed');
+  assert.equal(outcome.execution_status, 'interrupted',
+    'unobserved peer deliveries block successful task completion');
+  assert.equal(outcome.error?.code, 'PEER_DELIVERY_RECOVERY_REQUIRED');
   assert.equal(operationResult.kind, 'receipt');
   assert.equal(operationResult.operation, 'propose');
   assert.equal(advancedBeforeSettlement, true);

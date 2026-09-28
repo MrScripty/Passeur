@@ -25,7 +25,8 @@ async function stoppedChild(t, stage) {
         child.on('error', reject);
         child.on('exit', (code, signal) => reject(Error(`child exited before ${stage}: ${code}/${signal}: ${stderr}`)));
       }),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(Error(`child ${stage} marker timed out: ${stderr}`)), 15_000); }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(Error(`child ${stage} marker timed out: ${stderr}`)),
+        stage === 'runtime_receipt' ? 45_000 : 15_000); }),
     ]);
     assert.equal(marker.stage, stage);
   } finally {
@@ -33,7 +34,8 @@ async function stoppedChild(t, stage) {
     child.kill('SIGKILL');
     if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
   }
-  return { root, marker, store: new TaskStore(join(root, 'state')) };
+  if (marker.temp) t.after(() => rm(marker.temp, { recursive: true, force: true }));
+  return { root, marker, store: new TaskStore(marker.state_root ?? join(root, 'state')) };
 }
 
 for (const stage of ['reserved', 'partial', 'result']) {
@@ -83,6 +85,47 @@ test('child death after exact observed control retains successful completed evid
   await reconcileStoredTasks(store);
   assert.equal((await store.readResult(marker.task_id)).execution_status, 'completed');
   assert.equal((await store.readControl(marker.task_id)).peer_deliveries[0].state, 'observed');
+});
+
+test('Runtime child death after exact native receipt retains pending metadata without inferred delivery', async t => {
+  const { store, marker } = await stoppedChild(t, 'runtime_receipt');
+  const metadataPath = join(marker.state_root, 'coordination', 'control.json');
+  const before = JSON.parse(await readFile(metadataPath, 'utf8'));
+  const peerCase = before.cases.find(item => item.id === marker.case_id);
+  assert.equal(peerCase?.observed_origin, 'selected');
+  assert.ok(peerCase.delivery_pending.includes(marker.recipient_work_id));
+  assert.ok(!peerCase.delivery_observed.includes(marker.recipient_work_id));
+  const recipient = before.works.find(work => work.id === marker.recipient_work_id);
+  assert.ok(recipient?.managed?.task_id);
+  const taskIds = peerCase.inputs.map(input => before.works.find(work => work.id === input.work_id)?.managed?.task_id);
+  assert.ok(taskIds.every(Boolean));
+  const controls = await Promise.all(taskIds.map(id => store.readControl(id)));
+  const recipientControl = controls[taskIds.indexOf(recipient.managed.task_id)];
+  const receipt = recipientControl.peer_deliveries.find(record =>
+    record.envelope.case_id === peerCase.id && record.envelope.case_revision === peerCase.revision &&
+    record.state === 'observed');
+  assert.ok(receipt, 'native observation must be durable before process death');
+  assert.equal(receipt.envelope.recipient_task_id, recipient.managed.task_id);
+  const envelopesBefore = controls.map(control => control.peer_deliveries);
+  const slotsBefore = controls.map(control => control.peer_delivery_reservations);
+  const eventsBefore = await Promise.all(taskIds.map(id =>
+    readFile(join(store.taskDir(id), 'events.ndjson'), 'utf8')));
+  await reconcileStoredTasks(store);
+  const reopened = JSON.parse(await readFile(metadataPath, 'utf8'));
+  assert.deepEqual(reopened.cases.find(item => item.id === peerCase.id).delivery_pending,
+    peerCase.delivery_pending, 'reopen cannot infer metadata settlement from a native receipt');
+  assert.deepEqual(reopened.cases.find(item => item.id === peerCase.id).delivery_observed,
+    peerCase.delivery_observed);
+  const after = await Promise.all(taskIds.map(id => store.readControl(id)));
+  assert.deepEqual(after.map(control => control.peer_deliveries), envelopesBefore,
+    'reopen cannot append or dispatch a second exact envelope');
+  assert.deepEqual(after.map(control => control.peer_delivery_reservations), slotsBefore,
+    'reopen cannot release or consume delivery slots by inference');
+  assert.deepEqual(await Promise.all(taskIds.map(id =>
+    readFile(join(store.taskDir(id), 'events.ndjson'), 'utf8'))), eventsBefore,
+  'reopen cannot infer worker continuation');
+  assert.ok((await Promise.all(taskIds.map(id => store.readPrivatePublication(id))))
+    .every(publication => publication === undefined));
 });
 
 test('post-terminal adoption preserves valid earlier observed peer history on reopen', async t => {
