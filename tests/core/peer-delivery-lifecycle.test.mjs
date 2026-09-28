@@ -13,6 +13,7 @@ import { canonicalHash } from '../../.passeur-core/src/core/async.js';
 import { reconcileStoredTasks } from '../../.passeur-core/src/core/recovery.js';
 import { NativeEvidenceSchema } from '../../.passeur-core/src/contracts/tasks.js';
 import { TaskControls } from '../../.passeur-core/src/core/task-control.js';
+import { unresolvedPeerCompletion } from '../../.passeur-core/src/core/task-control.js';
 import { PeerDeliveryRecordSchema } from '../../.passeur-core/src/contracts/peer-delivery.js';
 import { decodeState } from '../../.passeur-core/src/store/record-codecs.js';
 
@@ -92,6 +93,242 @@ async function fixture(t, run) {
   };
   return { coordinator, store, actor, taskId: token.task_id, authorizationChecks };
 }
+
+async function recipientBinding(f) {
+  const state = await f.store.readControl(f.taskId), resource = await f.store.readResource(f.taskId);
+  const record = await f.store.durableRequest(f.taskId);
+  return { recipient_task_id: f.taskId, recipient_run_id: state.native.run_id,
+    recipient_control_generation: state.control_generation, recipient_workspace: resource.worktree_path,
+    recipient_workspace_fingerprint: canonicalHash({ task_id: f.taskId, source_view: record.source_view,
+      workspace: resource.worktree_path, base_commit: resource.base_commit, branch_ref: resource.branch_ref,
+      target_ref: resource.target_ref }) };
+}
+
+test('completion fence retains an empty-queue extension reservation and refuses later admission', async t => {
+  const ready = hold(), finish = hold();
+  t.after(() => finish.resolve());
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    ready.resolve(); await finish.promise; return done();
+  });
+  await ready.promise;
+  const bundle = slotBundle(await recipientBinding(f), [randomUUID()]);
+  await f.coordinator.reservePeerDeliverySlots(bundle);
+  finish.resolve(); await f.coordinator.waitForIdle();
+  const result = await f.store.readResult(f.taskId), control = await f.store.readControl(f.taskId);
+  assert.equal(result.execution_status, 'interrupted');
+  assert.equal(result.error.code, 'PEER_DELIVERY_RECOVERY_REQUIRED');
+  assert.equal(control.phase, 'needs_attention');
+  assert.equal(control.peer_delivery_reservations[0].state, 'reserved');
+  await assert.rejects(f.coordinator.controls.withTaskPublication([f.taskId],
+    () => f.coordinator.controls.releasePeerDeliverySlotsInPublication(bundle)), { code: 'PEER_DELIVERY_STALE' });
+  await assert.rejects(f.coordinator.reservePeerDeliverySlots({ ...bundle, operation_key: `observed-extension:${randomUUID()}` }),
+    { code: 'PROJECT_NEEDS_RECONCILIATION' });
+  await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 0, 'after-completion'), bundle.operation_key),
+    { code: 'PROJECT_NEEDS_RECONCILIATION' });
+});
+
+test('completion classifier requires current newest native observation for consumed and ordinary evidence', async t => {
+  const ready = hold(), finish = hold();
+  t.after(() => finish.resolve());
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    ready.resolve(); await finish.promise; return done();
+  });
+  await ready.promise;
+  const bundle = slotBundle(await recipientBinding(f), [randomUUID(), randomUUID()]);
+  await f.coordinator.reservePeerDeliverySlots(bundle);
+  const first = await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 0, 'partial'), bundle.operation_key);
+  assert.match(unresolvedPeerCompletion(await f.store.readControl(f.taskId)), /delivery|slot/);
+  for (const stateName of ['dispatch_intent', 'delivered', 'unknown']) {
+    await f.coordinator.controls.change(f.taskId, state => {
+      const record = state.peer_deliveries.find(item => item.envelope.delivery_id === first.delivery_id);
+      Object.assign(record, { state: stateName, dispatch_intent_at: new Date().toISOString(),
+        ...(stateName === 'delivered' ? { native_turn_id: 'initial', native_session_id: 'session-a',
+          delivered_at: new Date().toISOString() } : {}),
+        ...(stateName === 'unknown' ? { disposition_at: new Date().toISOString() } : {}) });
+    });
+    assert.match(unresolvedPeerCompletion(await f.store.readControl(f.taskId)), /delivery/);
+  }
+  await f.coordinator.controls.change(f.taskId, state => {
+    Object.assign(state.peer_deliveries.find(record => record.envelope.delivery_id === first.delivery_id),
+      { state: 'observed', native_turn_id: 'initial', native_session_id: 'session-a',
+        dispatch_intent_at: new Date().toISOString(), delivered_at: new Date().toISOString(), observed_at: new Date().toISOString() });
+  });
+  assert.match(unresolvedPeerCompletion(await f.store.readControl(f.taskId)), /reserved/);
+  const second = await f.coordinator.queuePeerDelivery(f.taskId, reservedSource(bundle, 1, 'second'), bundle.operation_key);
+  await f.coordinator.controls.change(f.taskId, state => {
+    Object.assign(state.peer_deliveries.find(record => record.envelope.delivery_id === second.delivery_id),
+      { state: 'observed', native_turn_id: 'initial', native_session_id: 'session-a',
+        dispatch_intent_at: new Date().toISOString(), delivered_at: new Date().toISOString(), observed_at: new Date().toISOString() });
+  });
+  assert.equal(unresolvedPeerCompletion(await f.store.readControl(f.taskId)), undefined);
+  const refresh = { ...reservedSource(bundle, 0, 'refresh-current'), source_work_revision: 4 };
+  const refreshed = await f.coordinator.queuePeerDelivery(f.taskId, refresh, bundle.operation_key);
+  assert.match(unresolvedPeerCompletion(await f.store.readControl(f.taskId)), /delivery/);
+  await f.coordinator.controls.change(f.taskId, state => {
+    Object.assign(state.peer_deliveries.find(record => record.envelope.delivery_id === refreshed.delivery_id),
+      { state: 'observed', native_turn_id: 'initial', native_session_id: 'session-a',
+        dispatch_intent_at: new Date().toISOString(), delivered_at: new Date().toISOString(), observed_at: new Date().toISOString() });
+  });
+  assert.equal(unresolvedPeerCompletion(await f.store.readControl(f.taskId)), undefined);
+  await f.coordinator.controls.change(f.taskId, state => {
+    Object.assign(state.peer_deliveries.find(record => record.envelope.delivery_id === first.delivery_id),
+      { state: 'unknown', disposition_at: new Date().toISOString() });
+  });
+  assert.match(unresolvedPeerCompletion(await f.store.readControl(f.taskId)), /delivery/,
+    'a refreshed observation cannot settle an earlier ambiguous dispatch');
+  await f.coordinator.controls.change(f.taskId, state => {
+    state.peer_deliveries.find(record => record.envelope.delivery_id === first.delivery_id).state = 'observed';
+  });
+  assert.equal(unresolvedPeerCompletion(await f.store.readControl(f.taskId)), undefined);
+  finish.resolve(); await f.coordinator.waitForIdle();
+  assert.equal((await f.store.readResult(f.taskId)).execution_status, 'completed');
+});
+
+test('exact prepublication release removes a reserved completion obligation', async t => {
+  const ready = hold(), finish = hold(); t.after(() => finish.resolve());
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    ready.resolve(); await finish.promise; return done();
+  });
+  await ready.promise;
+  const bundle = slotBundle(await recipientBinding(f), [randomUUID()]);
+  await f.coordinator.reservePeerDeliverySlots(bundle);
+  await f.coordinator.controls.withTaskPublication([f.taskId],
+    () => f.coordinator.controls.releasePeerDeliverySlotsInPublication(bundle));
+  assert.equal((await f.store.readControl(f.taskId)).peer_delivery_reservations[0].state, 'released');
+  finish.resolve(); await f.coordinator.waitForIdle();
+  assert.equal((await f.store.readResult(f.taskId)).execution_status, 'completed');
+});
+
+test('completion admission is atomic with cancellation and adoption identity', async t => {
+  const ready = hold(), finish = hold(); t.after(() => finish.resolve());
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    ready.resolve(); await finish.promise; return done();
+  });
+  await ready.promise;
+  const before = await f.store.readControl(f.taskId);
+  await f.coordinator.controls.adopt(f.taskId, { owner_id: hash('adopter'), client_id: randomUUID() }, 'adopt-before-completion');
+  const raced = await f.coordinator.controls.admitCompletion(f.taskId, before.native.run_id, before.control_generation,
+    'completed', await recipientBinding(f).then(value => ({ workspace: value.recipient_workspace,
+      fingerprint: value.recipient_workspace_fingerprint })));
+  assert.equal(raced.outcome, 'interrupted');
+  assert.equal(raced.identityChanged, true);
+  await assert.rejects(f.coordinator.reservePeerDeliverySlots(slotBundle(await recipientBinding(f), [randomUUID()])),
+    { code: 'PEER_DELIVERY_STALE' });
+  await f.coordinator.controls.cancel(f.taskId, { owner_id: hash('adopter'), client_id: randomUUID() }, 2,
+    'cancel-after-completion', 'late control');
+  assert.equal((await f.store.readControl(f.taskId)).cancel, undefined);
+  finish.resolve(); await f.coordinator.waitForIdle();
+});
+
+test('accepted cancellation keeps its outcome while reserved obligations remain retained', async t => {
+  const ready = hold(), finish = hold(); t.after(() => finish.resolve());
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    ready.resolve(); await finish.promise; return done();
+  });
+  await ready.promise;
+  const bundle = slotBundle(await recipientBinding(f), [randomUUID()]);
+  await f.coordinator.reservePeerDeliverySlots(bundle);
+  await f.coordinator.controls.cancel(f.taskId, f.actor, 1, 'cancel-before-completion', 'explicit controlled cancellation');
+  finish.resolve(); await f.coordinator.waitForIdle();
+  assert.equal((await f.store.readResult(f.taskId)).execution_status, 'cancelled');
+  assert.equal((await f.store.readControl(f.taskId)).peer_delivery_reservations[0].state, 'reserved');
+  await reconcileStoredTasks(f.store);
+  assert.equal((await f.store.readResult(f.taskId)).execution_status, 'cancelled');
+  assert.equal((await f.store.readControl(f.taskId)).outcome, 'cancelled');
+  assert.equal((await f.store.readControl(f.taskId)).peer_delivery_reservations[0].state, 'reserved');
+});
+
+test('late native turn after completion admission cannot reopen extension reservation', async t => {
+  let worker; const ready = hold(), finish = hold(); t.after(() => finish.resolve());
+  const f = await fixture(t, async input => {
+    worker = input;
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    ready.resolve(); await finish.promise;
+    return done();
+  });
+  await ready.promise;
+  const admit = f.coordinator.controls.admitCompletion.bind(f.coordinator.controls);
+  f.coordinator.controls.admitCompletion = async (...args) => {
+    const result = await admit(...args);
+    assert.equal(result.outcome, 'completed');
+    await assert.rejects(worker.onEvent({ kind: 'turn_started', turn_id: 'late', native_session_id: 'session-a' }),
+      { code: 'NATIVE_EVENT_AFTER_COMPLETION' });
+    const bundle = slotBundle(await recipientBinding(f), [randomUUID()]);
+    await assert.rejects(f.coordinator.reservePeerDeliverySlots(bundle), { code: 'PEER_DELIVERY_STALE' });
+    return result;
+  };
+  finish.resolve();
+  await f.coordinator.waitForIdle();
+  const result = await f.store.readResult(f.taskId), state = await f.store.readControl(f.taskId);
+  assert.equal(result.execution_status, 'interrupted');
+  assert.equal(result.error.code, 'NATIVE_EVENT_AFTER_COMPLETION');
+  assert.equal(state.peer_delivery_reservations?.length ?? 0, 0);
+  assert.equal(state.native.state, 'unknown');
+  await reconcileStoredTasks(new TaskStore(f.store.root));
+  assert.equal((await f.store.readControl(f.taskId)).phase, 'needs_attention');
+  assert.equal((await f.store.readResult(f.taskId)).error.code, 'NATIVE_EVENT_AFTER_COMPLETION');
+});
+
+test('native-only completion race keeps the native diagnostic and does not report peer recovery', async t => {
+  const ready = hold(), finish = hold(); t.after(() => finish.resolve());
+  const f = await fixture(t, async input => {
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    ready.resolve(); await finish.promise; return done();
+  });
+  await ready.promise;
+  const admit = f.coordinator.controls.admitCompletion.bind(f.coordinator.controls);
+  f.coordinator.controls.admitCompletion = async (...args) => {
+    await f.coordinator.controls.change(f.taskId, state => { state.native.coverage = 'unknown'; });
+    return admit(...args);
+  };
+  finish.resolve(); await f.coordinator.waitForIdle();
+  const result = await f.store.readResult(f.taskId);
+  assert.equal(result.execution_status, 'failed');
+  assert.equal(result.error.code, 'COMPLETION_EVIDENCE_MISSING');
+  assert.equal(await f.store.frozenReason(), undefined);
+});
+
+test('late native event after immutable result write preserves access and freezes on reopen', async t => {
+  let worker; const ready = hold(), finish = hold(); t.after(() => finish.resolve());
+  const f = await fixture(t, async input => {
+    worker = input;
+    await input.onEvent({ kind: 'turn_started', turn_id: 'initial', native_session_id: 'session-a' });
+    await input.onEvent({ kind: 'turn_settled', turn_id: 'initial', native_session_id: 'session-a', terminal: 'completed' });
+    ready.resolve(); await finish.promise; return done();
+  });
+  await ready.promise;
+  const writeResult = f.store.writeResult.bind(f.store);
+  f.store.writeResult = async (...args) => {
+    await writeResult(...args);
+    await assert.rejects(worker.onEvent({ kind: 'turn_started', turn_id: 'after-write', native_session_id: 'session-a' }),
+      { code: 'NATIVE_EVENT_AFTER_COMPLETION' });
+  };
+  finish.resolve(); await f.coordinator.waitForIdle();
+  const saved = await f.store.readResult(f.taskId), control = await f.store.readControl(f.taskId);
+  assert.equal(saved.execution_status, 'completed', 'immutable result is preserved after the later conflict');
+  assert.equal(control.phase, 'needs_attention');
+  assert.equal(control.settled_outcome, 'completed');
+  assert.equal(control.native.state, 'unknown');
+  assert.match(control.attention, /Native event arrived during immutable result publication/);
+  assert.match(await f.store.frozenReason(), /immutable result publication conflict/);
+  const reopened = new TaskStore(f.store.root);
+  await reconcileStoredTasks(reopened);
+  assert.deepEqual(await reopened.readResult(f.taskId), saved);
+  assert.equal((await reopened.readControl(f.taskId)).phase, 'needs_attention');
+  assert.equal((await reopened.readControl(f.taskId)).native.state, 'unknown');
+});
 
 test('authenticated delivery is durable through queue, intent, native delivery and exact observation', async t => {
   const settled = hold(), proceed = hold(); let worker;
@@ -546,7 +783,7 @@ test('a peer receipt without a session is rejected even when native events omit 
   await f.coordinator.queuePeerDelivery(f.taskId, source('missing-native-session'));
   proceed.resolve(); await f.coordinator.waitForIdle();
   const [delivery] = await f.store.readPeerDeliveries(f.taskId);
-  assert.equal(delivery.state, 'unknown');
+  assert.equal(delivery.state, 'dispatch_intent');
   assert.equal(delivery.native_session_id, undefined);
 });
 
@@ -781,6 +1018,7 @@ test('bounded capacity refuses a new delivery before mutation and finalization c
   await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, source('capacity-64')), { code: 'PEER_DELIVERY_CAPACITY' });
   assert.equal((await f.store.readPeerDeliveries(f.taskId)).length, 64);
   finish.resolve(); await f.coordinator.waitForIdle();
-  assert.equal((await f.store.readPeerDeliveries(f.taskId)).every(record => record.state === 'stale'), true);
-  await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, source('after-terminal')), { code: 'PEER_DELIVERY_STALE' });
+  assert.equal((await f.store.readPeerDeliveries(f.taskId)).every(record => record.state === 'queued'), true);
+  assert.equal((await f.store.readResult(f.taskId)).execution_status, 'interrupted');
+  await assert.rejects(f.coordinator.queuePeerDelivery(f.taskId, source('after-terminal')), { code: 'PROJECT_NEEDS_RECONCILIATION' });
 });

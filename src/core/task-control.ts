@@ -24,6 +24,68 @@ export function owns(state: TaskControl, actor: Pick<ClientActor, "owner_id">, g
   if (state.owner_id !== actor.owner_id) throw new BridgeError("TASK_CONTROL_CONFLICT", "This connection does not control the task; use human-confirmed attach");
   if (generation !== undefined && generation !== state.control_generation) throw new BridgeError("STALE_CONTROL", "Task control changed; read a fresh observation");
 }
+/** A retained peer obligation is complete only when its newest exact evidence has a native observation. */
+export type PeerCompletionBinding = { workspace: string; fingerprint: string };
+export function unresolvedPeerCompletion(state: TaskControl, binding?: PeerCompletionBinding,
+  completedRunId?: string): string | undefined {
+  const deliveries = state.peer_deliveries ?? [];
+  const current = (record: typeof deliveries[number]) => {
+    const e = record.envelope;
+    const steps = state.control_generation - e.recipient_control_generation;
+    const laterAdoptions = completedRunId && steps > 0 && steps <= state.receipts.length && record.observed_at &&
+      Array.from({ length: steps }, (_, index) =>
+        e.recipient_control_generation + index + 1).every(generation => state.receipts.some(receipt =>
+          receipt.kind === "attach" && receipt.outcome === "adopted" && receipt.generation === generation &&
+          receipt.at >= record.observed_at!));
+    return e.recipient_task_id === state.task_id && e.recipient_run_id === (completedRunId ?? state.native.run_id) &&
+      (e.recipient_control_generation === state.control_generation || Boolean(laterAdoptions)) &&
+      (!binding || e.recipient_workspace === binding.workspace &&
+        e.recipient_workspace_fingerprint === binding.fingerprint);
+  };
+  const group = (record: typeof deliveries[number]) => {
+    const e = record.envelope;
+    return canonicalHash({ case_id: e.case_id, case_revision: e.case_revision, case_generation: e.case_generation,
+      source_work_id: e.source_work_id, recipient_task_id: e.recipient_task_id,
+      recipient_run_id: e.recipient_run_id, recipient_control_generation: e.recipient_control_generation,
+      recipient_workspace: e.recipient_workspace, recipient_workspace_fingerprint: e.recipient_workspace_fingerprint });
+  };
+  const latest = new Map<string, typeof deliveries[number]>();
+  for (const record of deliveries) latest.set(group(record), record);
+  for (const record of deliveries) if (["queued", "dispatch_intent", "delivered", "unknown"].includes(record.state)) {
+    const newer = latest.get(group(record));
+    // Only an undispatched queue entry can be superseded by a newer observation.
+    // Once dispatch intent exists, the earlier native effect remains an independent obligation.
+    const advanced = record.state === "queued" && newer && newer !== record && newer.state === "observed" &&
+      (newer.envelope.source_work_revision > record.envelope.source_work_revision ||
+        newer.envelope.source_work_revision === record.envelope.source_work_revision &&
+        newer.envelope.evidence_revision > record.envelope.evidence_revision);
+    if (!advanced) return `Peer delivery ${record.envelope.delivery_id} has no settled native observation`;
+  }
+  for (const record of latest.values()) {
+    if (record.state === "observed" && !current(record))
+      return `Peer delivery ${record.envelope.delivery_id} belongs to another task run or control generation`;
+  }
+  if (state.schema_version === 3) for (const slot of state.peer_delivery_reservations) {
+    if (slot.state === "released") continue;
+    if (slot.state === "reserved") return `Extension slot ${slot.operation_key}/${slot.source_work_id} remains reserved`;
+    const receipt = deliveries.find(record => record.envelope.delivery_id === slot.delivery_id);
+    if (!receipt || receipt.envelope.case_id !== slot.case_id ||
+      receipt.envelope.case_revision !== slot.case_revision || receipt.envelope.case_generation !== slot.case_generation ||
+      receipt.envelope.source_work_id !== slot.source_work_id ||
+      receipt.envelope.source_work_revision !== slot.source_work_revision ||
+      receipt.envelope.recipient_task_id !== slot.recipient_task_id ||
+      receipt.envelope.recipient_run_id !== slot.recipient_run_id ||
+      receipt.envelope.recipient_control_generation !== slot.recipient_control_generation ||
+      receipt.envelope.recipient_workspace !== slot.recipient_workspace ||
+      receipt.envelope.recipient_workspace_fingerprint !== slot.recipient_workspace_fingerprint)
+      return `Extension slot ${slot.operation_key}/${slot.source_work_id} lost its exact delivery receipt`;
+    const newest = latest.get(group(receipt));
+    if (!newest || newest.state !== "observed" || !current(newest) ||
+      newest.envelope.source_work_revision < slot.source_work_revision)
+      return `Extension slot ${slot.operation_key}/${slot.source_work_id} lacks a current native observation`;
+  }
+  return undefined;
+}
 function observation(record: CurrentDurableRequest, state: TaskControl): TaskObservation {
   return { schema_version: 1, task_id: record.task_id, request_key: record.request.request_key,
     agent_id: record.request.agent_id, source_view: record.source_view, revision: state.revision,
@@ -92,6 +154,8 @@ export class TaskControls {
         throw new BridgeError("PEER_DELIVERY_RESERVATION_SCOPE", "Recipient publication fence expired");
       const old = await this.store.readControl(id);
       if (old.schema_version !== 3) return;
+      if (old.phase === "finalizing" || old.phase === "terminal" || old.settled_outcome)
+        throw new BridgeError("PEER_DELIVERY_STALE", "Completion already fenced extension slot release");
       const draft = structuredClone(old);
       const operationSlots = draft.peer_delivery_reservations.filter(item => item.operation_key === bundle.operation_key);
       if (!operationSlots.length) return;
@@ -145,6 +209,28 @@ export class TaskControls {
     for (const waiter of this.#waiters.get(id) ?? []) waiter.resolve();
       return outcome.value;
     }
+  }
+  /** The durable completion fence shares the task mutex with reservation, queue, cancel and adoption. */
+  async admitCompletion(id: string, runId: string, generation: number,
+    requested: TaskControl["settled_outcome"], binding?: PeerCompletionBinding): Promise<{ outcome: NonNullable<TaskControl["settled_outcome"]>; peerIssue?: string; nativeIssue?: string; identityChanged: boolean }> {
+    return this.change(id, state => {
+      if (state.settled_outcome) return { outcome: state.settled_outcome,
+        identityChanged: state.native.run_id !== runId || state.control_generation !== generation };
+      const identityChanged = state.native.run_id !== runId || state.control_generation !== generation;
+      const peerIssue = requested === "completed" && !binding &&
+        ((state.peer_deliveries?.length ?? 0) > 0 || state.schema_version === 3 &&
+          state.peer_delivery_reservations.some(slot => slot.state !== "released"))
+        ? "Peer completion lacks the current owned workspace binding" : requested === "completed"
+          ? unresolvedPeerCompletion(state, binding) : undefined;
+      const nativeIncomplete = requested === "completed" && (state.native.coverage !== "turn_scoped" ||
+        state.native.obligations.length > 0 || state.inputs.some(input =>
+          input.state === "pending" || input.state === "answer_intent" || input.state === "delivery_unknown"));
+      const outcome = state.cancel ? "cancelled" : nativeIncomplete ? "failed" :
+        requested === "completed" && (identityChanged || peerIssue) ? "interrupted" : requested ?? "interrupted";
+      state.phase = "finalizing"; state.settled_outcome = outcome;
+      return { outcome, ...(peerIssue ? { peerIssue } : {}),
+        ...(nativeIncomplete ? { nativeIssue: "Native or input obligation lacks a settled observation" } : {}), identityChanged };
+    });
   }
   receipt(state: TaskControl, key: string, kind: ControlReceipt["kind"], contents: unknown): ControlReceipt | undefined {
     const existing = state.receipts.find((r) => r.operation_key === key);

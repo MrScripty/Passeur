@@ -4,7 +4,8 @@ import { join, relative } from "node:path";
 import type { Assignment } from "../contracts/agents.js";
 import { CoordinatedSubmissionIdentitySchema, CoordinatedLinkSchema, coordinatedMaterialIdentity, TaskIdSchema } from "../contracts/tasks.js";
 import type { LifecyclePolicy, LifecycleResult, SubmissionIdentity, CoordinatedSubmissionIdentity, CurrentDurableRequest, CoordinatedDurableRequest, CoordinatedLink, TaskObservation, TaskControl } from "../contracts/tasks.js";
-import { TaskControls, initialControl, owns, type ClientActor } from "./task-control.js";
+import { TaskControls, initialControl, owns, unresolvedPeerCompletion, type ClientActor,
+  type PeerCompletionBinding } from "./task-control.js";
 import { InputBroker } from "./input-broker.js";
 import type { AgentRegistry, SelectedAgent } from "../agents/registry.js";
 import type { WorkerEvent } from "../agents/types.js";
@@ -91,6 +92,8 @@ export class Coordinator {
   readonly inputs: InputBroker;
   readonly #admission = new Mutex();
   readonly #entries = new Map<string, Entry>();
+  readonly #resultWrites = new Set<string>();
+  readonly #lateResultEvents = new Map<string, WorkerEvent["kind"]>();
   readonly #reservations = new Map<string, PendingReservation>();
   #queue: Entry[] = [];
   #active = 0;
@@ -166,7 +169,7 @@ export class Coordinator {
     await this.controls.change(bundle.recipient_task_id, async state => {
       const entry = this.#entries.get(bundle.recipient_task_id);
       const resource = await this.store.readResource(bundle.recipient_task_id);
-      if (!entry?.workspace || entry.record.schema_version !== 5 || state.phase !== "active" || state.cancel ||
+      if (!entry?.workspace || entry.record.schema_version !== 5 || state.phase !== "active" || state.cancel || state.settled_outcome ||
         state.native.state !== "observed_live" || state.native.run_id !== bundle.recipient_run_id ||
         state.control_generation !== bundle.recipient_control_generation ||
         resource?.state !== "pending" || resource.worktree_path !== bundle.recipient_workspace ||
@@ -660,8 +663,21 @@ export class Coordinator {
   async #event(id: string, event: WorkerEvent): Promise<void> {
     if (event.kind === "input_withdrawn") { await this.inputs.withdraw(id, event.native_id); return; }
     if (["turn_started", "turn_correlated", "turn_settled", "operation_started", "operation_finished", "process_observed", "runtime_unknown"].includes(event.kind)) {
-      await this.controls.change(id, (state) => {
+      if (this.#resultWrites.has(id)) {
+        this.#lateResultEvents.set(id, event.kind);
+        throw new BridgeError("NATIVE_EVENT_AFTER_COMPLETION", "Native event arrived during immutable result publication");
+      }
+      let late = false, persisted = false;
+      await this.controls.change(id, async (state) => {
         if (state.phase === "terminal") throw new BridgeError("STALE_NATIVE_EVENT", "Native event arrived after terminal publication");
+        if (state.settled_outcome) {
+          if (await this.store.readResult(id)) { persisted = true; return; }
+          state.native.state = "unknown"; state.native.coverage = "unknown";
+          state.native.limitation = "Native event arrived after durable completion admission";
+          state.phase = "needs_attention"; state.settled_outcome = "interrupted";
+          state.attention = "Late native evidence conflicts with completion; preserve exact resources for reconciliation";
+          late = true; return;
+        }
         state.native.last_observed_at = now();
         if (event.kind === "turn_started") {
           if (!event.turn_id || Buffer.byteLength(event.turn_id, "utf8") > 256 || event.turn_id.includes("\0") ||
@@ -692,6 +708,9 @@ export class Coordinator {
           if (!state.cancel) state.phase = "needs_attention";
         }
       });
+      if (persisted) await this.#freeze(`Task ${id} received a native event after immutable result publication`);
+      if (late) throw new BridgeError("NATIVE_EVENT_AFTER_COMPLETION", "Native event arrived after durable completion admission");
+      if (persisted) throw new BridgeError("NATIVE_EVENT_AFTER_COMPLETION", "Native event arrived after immutable result publication");
     }
     if (event.kind === "turn_settled") await this.inputs.settleTurn(id, event.turn_id);
     if (await this.store.appendEvent(id, event) === false) await this.controls.change(id, (s) => { s.telemetry_omitted = true; });
@@ -701,7 +720,11 @@ export class Coordinator {
     let workspace: Workspace | undefined;
     let privateView: PrivateGitView | undefined;
     let result = baseResult(id, request, record.execution), workerSettled = false;
-    const phase = async (next: "starting" | "active" | "finalizing") => this.controls.change(id, (s) => { if (!s.cancel) s.phase = next; });
+    let peerCompletionIssue: string | undefined, nativeCompletionIssue: string | undefined;
+    let completionBinding: PeerCompletionBinding | undefined;
+    const phase = async (next: "starting" | "active" | "finalizing") => this.controls.change(id, (s) => {
+      if (!s.cancel && !s.settled_outcome) s.phase = next;
+    });
     try {
       controller.signal.throwIfAborted(); this.assertAuthority(); await phase("starting");
       if ((await this.store.readControl(id)).cancel) throw new BridgeError("TASK_CANCELLED", "Task was cancelled before preparation");
@@ -777,6 +800,24 @@ export class Coordinator {
       if (run.status === "completed" && !state.cancel && (state.native.coverage !== "turn_scoped" || state.native.obligations.length || state.inputs.some((i) => i.state === "pending" || i.state === "answer_intent" || i.state === "delivery_unknown"))) {
         result.execution_status = "failed"; result.error = { code: "COMPLETION_EVIDENCE_MISSING", message: "Native completion did not account for required obligations" };
       }
+      // This durable fence decides completion under the same task lock as reservation and queue publication.
+      // It must precede every private publication intent and successful result write.
+      const completionResource = await this.store.readResource(id);
+      completionBinding = completionResource?.worktree_path && completionResource.branch_ref && completionResource.base_commit &&
+        completionResource.target_ref ? { workspace: completionResource.worktree_path,
+          fingerprint: canonicalHash({ task_id: id, source_view: record.source_view,
+            workspace: completionResource.worktree_path, base_commit: completionResource.base_commit,
+            branch_ref: completionResource.branch_ref, target_ref: completionResource.target_ref }) } : undefined;
+      const admitted = await this.controls.admitCompletion(id, state.native.run_id, state.control_generation,
+        result.execution_status, completionBinding);
+      if (admitted.outcome !== result.execution_status) {
+        result.execution_status = admitted.outcome;
+        if (admitted.nativeIssue) result.error = { code: "COMPLETION_EVIDENCE_MISSING", message: admitted.nativeIssue };
+        else {
+          peerCompletionIssue = admitted.peerIssue ?? (admitted.identityChanged ? "Recipient run or control generation changed before completion" : undefined);
+          if (peerCompletionIssue) result.error = { code: "PEER_DELIVERY_RECOVERY_REQUIRED", message: peerCompletionIssue };
+        }
+      }
       const privatePublicationEligible = run.status === "completed" && result.execution_status === "completed";
       if (run.worker_stop === "unconfirmed") {
         if (result.execution_status === "completed") result.execution_status = "interrupted";
@@ -797,7 +838,8 @@ export class Coordinator {
           });
           if (privatePublicationEligible) await this.administration.run(() => this.controls.withTaskPublication([id], async () => {
             const current = await this.store.readControl(id), owned = await this.store.readResource(id);
-            if (current.cancel || current.native.run_id !== state.native.run_id ||
+            if (current.cancel || current.settled_outcome !== "completed" || current.phase !== "finalizing" ||
+                unresolvedPeerCompletion(current, completionBinding) || current.native.run_id !== state.native.run_id ||
                 current.control_generation !== state.control_generation || current.native.state !== "stopped" ||
                 current.native.coverage !== "turn_scoped" || current.native.obligations.length ||
                 current.inputs.some(input => input.state === "pending" || input.state === "answer_intent" || input.state === "delivery_unknown") ||
@@ -878,13 +920,37 @@ export class Coordinator {
       result.blockers.push("Private Git resource and publication evidence are retained for exact reconciliation");
     }
     if (result.worker_stop === "unconfirmed" && result.execution_status === "completed") result.execution_status = "interrupted";
-    // Serialize cancellation versus successful settlement at the same state owner. No provider callback runs here.
+    const recheckCompletion = (s: TaskControl) => {
+      if (s.native.limitation === "Native event arrived after durable completion admission") {
+        nativeCompletionIssue = s.attention ?? "Native evidence changed after durable completion admission";
+        if (result.execution_status === "completed") {
+          result.execution_status = "interrupted";
+          result.error = { code: "NATIVE_EVENT_AFTER_COMPLETION", message: nativeCompletionIssue };
+        }
+        return;
+      }
+      if (result.execution_status !== "completed") return;
+      if (s.native.coverage !== "turn_scoped" || s.native.obligations.length || s.native.state === "unknown") {
+        result.execution_status = "interrupted";
+        nativeCompletionIssue = s.attention ?? "Native evidence changed after durable completion admission";
+        result.error = { code: "NATIVE_EVENT_AFTER_COMPLETION", message: nativeCompletionIssue };
+      } else {
+        const peerIssue = unresolvedPeerCompletion(s, completionBinding);
+        if (s.settled_outcome !== "completed" || peerIssue) {
+          result.execution_status = "interrupted";
+          peerCompletionIssue = peerIssue ?? "Peer completion changed after durable admission";
+          result.error = { code: "PEER_DELIVERY_RECOVERY_REQUIRED", message: peerCompletionIssue };
+        }
+      }
+    };
+    // A second check covers native changes between admission and result publication.
     await this.controls.change(id, (s) => {
+      recheckCompletion(s);
       if (s.cancel) result.execution_status = "cancelled";
       for (const delivery of s.peer_deliveries ?? []) {
-        if (delivery.state === "queued") { delivery.state = s.cancel ? "cancelled" : "stale"; delivery.disposition_at = now(); }
+        if (delivery.state === "queued" && !peerCompletionIssue && !nativeCompletionIssue) { delivery.state = s.cancel ? "cancelled" : "stale"; delivery.disposition_at = now(); }
         else if (delivery.state === "dispatch_intent" || delivery.state === "delivered") {
-          delivery.state = "unknown"; delivery.disposition_at = now();
+          if (!peerCompletionIssue && !nativeCompletionIssue) { delivery.state = "unknown"; delivery.disposition_at = now(); }
           if (result.execution_status === "completed") {
             result.execution_status = "interrupted";
             result.error = { code: "PEER_DELIVERY_UNKNOWN", message: "Peer dispatch or worker observation lacks a settled receipt" };
@@ -893,27 +959,63 @@ export class Coordinator {
       }
       s.phase = "finalizing"; s.settled_outcome = result.execution_status;
     });
-    let state = await this.store.readControl(id);
-    result.native_evidence = structuredClone(state.native);
-    result.native_evidence.state = privateResource?.schema_version === 2
-      ? state.native.state === "stopped" && result.worker_stop === "confirmed" ? "stopped"
-        : state.native.state === "not_started" && result.worker_stop === "not_started" ? "not_started" : "unknown"
-      : result.worker_stop === "confirmed" ? "stopped" : result.worker_stop === "not_started" ? "not_started" : "unknown";
-    await this.store.writeResult(id, result);
-    await this.controls.change(id, (s) => {
-      s.native = result.native_evidence;
-      for (const input of s.inputs) {
-        delete input.claim;
-        if (input.state === "pending") input.state = "withdrawn";
-        if (input.state === "answer_intent") input.state = "delivery_unknown";
+    let postWriteConflict: string | undefined;
+    await this.controls.withTaskMutation(id, async () => {
+      let state = await this.store.readControl(id);
+      recheckCompletion(state);
+      if (state.settled_outcome !== result.execution_status || state.phase !== "finalizing") {
+        const draft = structuredClone(state);
+        draft.phase = "finalizing"; draft.settled_outcome = result.execution_status;
+        draft.revision++; draft.updated_at = now(); await this.store.writeControl(id, draft);
+        state = draft;
       }
-      if (privateUnresolved || result.worker_stop === "unconfirmed" || s.inputs.some((i) => i.state === "delivery_unknown")) { s.phase = "needs_attention"; s.attention = privateUnresolved
-        ? "Private Git preparation or publication remains unresolved; retain all task resources"
-        : "Native shutdown or input delivery remains unconfirmed; explicit reconciliation is required"; }
-      else { s.phase = "terminal"; s.outcome = result.execution_status; }
+      result.native_evidence = structuredClone(state.native);
+      const lateNativeConflict = state.native.limitation === "Native event arrived after durable completion admission";
+      result.native_evidence.state = privateResource?.schema_version === 2
+        ? state.native.state === "stopped" && result.worker_stop === "confirmed" ? "stopped"
+          : state.native.state === "not_started" && result.worker_stop === "not_started" ? "not_started" : "unknown"
+        : lateNativeConflict ? "unknown" : result.worker_stop === "confirmed" ? "stopped"
+          : result.worker_stop === "not_started" ? "not_started" : "unknown";
+      this.#resultWrites.add(id);
+      let writeError: unknown;
+      try { await this.store.writeResult(id, result); }
+      catch (error) { writeError = error; }
+      finally { this.#resultWrites.delete(id); }
+      const lateKind = this.#lateResultEvents.get(id);
+      this.#lateResultEvents.delete(id);
+      if (writeError && !await this.store.readResult(id)) throw writeError;
+      const draft = structuredClone(await this.store.readControl(id));
+      if (lateKind || writeError) {
+        postWriteConflict = lateKind ? `Native event arrived during immutable result publication (${lateKind})`
+          : "Immutable result write completed but its caller failed";
+        draft.native.state = "unknown"; draft.native.coverage = "unknown";
+        draft.native.limitation = postWriteConflict;
+        draft.phase = "needs_attention"; delete draft.outcome;
+        draft.attention = `${postWriteConflict}; retained result requires reconciliation`;
+      } else {
+        draft.native = result.native_evidence;
+        for (const input of draft.inputs) {
+          delete input.claim;
+          if (input.state === "pending") input.state = "withdrawn";
+          if (input.state === "answer_intent") input.state = "delivery_unknown";
+        }
+        if (privateUnresolved || peerCompletionIssue || nativeCompletionIssue || result.worker_stop === "unconfirmed" ||
+            draft.inputs.some((input) => input.state === "delivery_unknown")) {
+          draft.phase = "needs_attention";
+          draft.attention = privateUnresolved ? "Private Git preparation or publication remains unresolved; retain all task resources"
+            : peerCompletionIssue ? `Peer completion requires exact reconciliation: ${peerCompletionIssue}`.slice(0, 2048)
+              : nativeCompletionIssue ? `Native completion requires exact reconciliation: ${nativeCompletionIssue}`.slice(0, 2048)
+                : "Native shutdown or input delivery remains unconfirmed; explicit reconciliation is required";
+        } else { draft.phase = "terminal"; draft.outcome = result.execution_status; }
+      }
+      draft.revision++; draft.updated_at = now(); await this.store.writeControl(id, draft);
     });
-    if (privateUnresolved || result.worker_stop === "unconfirmed" || (await this.store.readControl(id)).inputs.some((i) => i.state === "delivery_unknown"))
-      await this.#freeze(privateUnresolved ? `Task ${id} has unresolved private Git publication` : `Task ${id} has unconfirmed shutdown or input delivery`);
+    if (postWriteConflict || privateUnresolved || peerCompletionIssue || nativeCompletionIssue ||
+        result.worker_stop === "unconfirmed" || (await this.store.readControl(id)).inputs.some((i) => i.state === "delivery_unknown"))
+      await this.#freeze(postWriteConflict ? `Task ${id} has an immutable result publication conflict: ${postWriteConflict}`
+        : privateUnresolved ? `Task ${id} has unresolved private Git publication` : peerCompletionIssue
+          ? `Task ${id} has unresolved peer completion` : nativeCompletionIssue
+            ? `Task ${id} has unresolved native completion` : `Task ${id} has unconfirmed shutdown or input delivery`);
   }
   async #artifacts(id: string, workspace: Workspace, result: LifecycleResult, changes: Awaited<ReturnType<typeof collectChanges>>): Promise<void> {
     const dir = join(this.store.taskDir(id), "artifacts"); this.assertAuthority?.(); await mkdir(dir, { recursive: true, mode: 0o700 });

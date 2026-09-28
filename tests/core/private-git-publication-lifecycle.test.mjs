@@ -12,6 +12,7 @@ import { Coordinator } from '../../.passeur-core/src/core/coordinator.js';
 import { reconcileStoredTasks, acknowledgeStoppedTask } from '../../.passeur-core/src/core/recovery.js';
 import { DispositionManager } from '../../.passeur-core/src/core/disposition.js';
 import { TaskStore } from '../../.passeur-core/src/store/task-store.js';
+import { canonicalHash } from '../../.passeur-core/src/core/async.js';
 
 const exec = promisify(execFile);
 const capability = { schema_version: 1, mount_kind: 'canonical_common_dir' };
@@ -87,6 +88,84 @@ test('Coordinator downgrade of a completed private worker cannot publish its com
   await c.waitForIdle();
   await assertPrivatePublicationRefused(f, result, indexBefore, 'PEER_OPERATION_RECOVERY_REQUIRED', 'interrupted');
   assert.equal(result.native_evidence.state, 'stopped');
+});
+
+test('reserved peer completion withholds an ordinary hook commit before private publication intent', async t => {
+  const f = await fixture(t), indexBefore = await sharedIndexDigest(f);
+  const hook = join(f.root, '.git', 'hooks', 'pre-commit'), marker = join(f.temp, 'peer-hook-ran');
+  await writeFile(hook, `#!/bin/sh\nprintf hook > '${marker}'\n`); await chmod(hook, 0o755);
+  const c = controlled(f, async input => {
+    await privateCommit(input);
+    const state = await f.store.readControl(input.task_id), resource = await f.store.readResource(input.task_id);
+    const record = await f.store.durableRequest(input.task_id);
+    await c.controls.change(input.task_id, draft => Object.assign(draft, { schema_version: 3,
+      peer_delivery_reservations: [{ schema_version: 1, operation_key: `extension:${crypto.randomUUID()}`,
+        request_digest: createHash('sha256').update('peer commit').digest('hex'), case_id: crypto.randomUUID(),
+        expected_case_revision: 1, case_revision: 2, case_generation: 1,
+        recipient_task_id: input.task_id, recipient_run_id: state.native.run_id,
+        recipient_control_generation: state.control_generation, recipient_workspace: resource.worktree_path,
+        recipient_workspace_fingerprint: canonicalHash({ task_id: input.task_id, source_view: record.source_view,
+          workspace: resource.worktree_path, base_commit: resource.base_commit, branch_ref: resource.branch_ref,
+          target_ref: resource.target_ref }), source_work_id: crypto.randomUUID(), source_work_revision: 1,
+        state: 'reserved' }] }));
+    return done();
+  });
+  const result = await c.execute(f.implementation('reserved-private-commit'));
+  await c.waitForIdle();
+  assert.equal(result.error?.code, 'PEER_DELIVERY_RECOVERY_REQUIRED');
+  await assertPrivatePublicationRefused(f, result, indexBefore, 'PEER_DELIVERY_RECOVERY_REQUIRED', 'interrupted');
+  assert.equal(existsSync(marker), true);
+  const control = await f.store.readControl(result.task_id);
+  assert.equal(control.peer_delivery_reservations[0].state, 'reserved');
+});
+
+test('late native event after completion fence cannot publish an ordinary private commit', async t => {
+  const f = await fixture(t), indexBefore = await sharedIndexDigest(f);
+  let worker;
+  const c = controlled(f, async input => { worker = input; await privateCommit(input); return done(); });
+  const admit = c.controls.admitCompletion.bind(c.controls);
+  c.controls.admitCompletion = async (...args) => {
+    const admission = await admit(...args);
+    assert.equal(admission.outcome, 'completed');
+    await assert.rejects(worker.onEvent({ kind: 'turn_started', turn_id: 'late' }),
+      { code: 'NATIVE_EVENT_AFTER_COMPLETION' });
+    return admission;
+  };
+  const result = await c.execute(f.implementation('late-private-native-event'));
+  await c.waitForIdle();
+  assert.notEqual(result.execution_status, 'completed');
+  assert.equal(result.worker_stop, 'confirmed');
+  assert.equal(result.delivery.status, 'incomplete');
+  assert.equal((await f.store.readResource(result.task_id)).private_git.state, 'prepared');
+  assert.equal(await f.store.readPrivatePublication(result.task_id), undefined);
+  assert.equal(await sharedIndexDigest(f), indexBefore);
+  assert.equal((await git(f.root, 'rev-parse', (await f.store.readResource(result.task_id)).branch_ref)).trim(), f.base);
+});
+
+test('late native event after published private result retains immutable commit and freezes reconciliation', async t => {
+  const f = await fixture(t);
+  let worker;
+  const c = controlled(f, async input => { worker = input; await privateCommit(input); return done(); });
+  const writeResult = f.store.writeResult.bind(f.store);
+  f.store.writeResult = async (...args) => {
+    await writeResult(...args);
+    await assert.rejects(worker.onEvent({ kind: 'turn_started', turn_id: 'after-private-write' }),
+      { code: 'NATIVE_EVENT_AFTER_COMPLETION' });
+  };
+  const saved = await c.execute(f.implementation('late-after-private-result'));
+  await c.waitForIdle();
+  assert.equal(saved.execution_status, 'completed');
+  assert.equal(saved.delivery.status, 'committed');
+  assert.equal((await f.store.readControl(saved.task_id)).phase, 'needs_attention');
+  assert.equal((await f.store.readControl(saved.task_id)).native.state, 'unknown');
+  assert.equal((await f.store.readResource(saved.task_id)).private_git.state, 'published');
+  assert.equal((await f.store.readPrivatePublication(saved.task_id)).state, 'published');
+  assert.equal((await git(f.root, 'rev-parse', saved.delivery.branch_ref)).trim(), saved.delivery.head_commit);
+  assert.match(await f.store.frozenReason(), /immutable result publication conflict/);
+  const reopened = new TaskStore(f.state);
+  await reconcileStoredTasks(reopened);
+  assert.deepEqual(await reopened.readResult(saved.task_id), saved);
+  assert.equal((await reopened.readControl(saved.task_id)).phase, 'needs_attention');
 });
 
 test('pending candidate validation obligation prevents private publication', async t => {
@@ -401,7 +480,8 @@ test('reopen freezes after exact result write but before terminal control public
   await c.waitForIdle();
   assert.equal((await f.store.readPrivatePublication(receipt.task_id)).state, 'published');
   assert.equal((await f.store.readResult(receipt.task_id)).delivery.status, 'committed');
-  assert.equal((await f.store.readControl(receipt.task_id)).phase, 'finalizing');
+  assert.equal((await f.store.readControl(receipt.task_id)).phase, 'needs_attention');
+  assert.match(await f.store.frozenReason(), /immutable result publication conflict/);
   const reopened = new TaskStore(f.state);
   await reconcileStoredTasks(reopened);
   assert.equal((await reopened.readControl(receipt.task_id)).phase, 'needs_attention');

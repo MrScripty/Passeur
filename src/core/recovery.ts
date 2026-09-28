@@ -3,6 +3,8 @@ import type { AgentResult } from "../contracts/agents.js";
 import type { ResourceRecord, StoredResult } from "../contracts/types.js";
 import { BridgeError } from "./errors.js";
 import { TaskStore } from "../store/task-store.js";
+import { unresolvedPeerCompletion } from "./task-control.js";
+import { canonicalHash } from "./async.js";
 const now = () => new Date().toISOString();
 /** Must run under the repository-owner lease, before admission. Never replays inference. */
 export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
@@ -13,6 +15,51 @@ export async function reconcileStoredTasks(store: TaskStore): Promise<void> {
     if ("schema_version" in record && (record.schema_version === 4 || record.schema_version === 5)) {
       const control = await store.readControl(record.task_id);
       const resource = await store.readResource(record.task_id);
+      if (control.attention?.startsWith("Native event arrived during immutable result publication") ||
+          control.attention?.startsWith("Immutable result write completed but its caller failed") ||
+          control.attention?.startsWith("Native completion requires exact reconciliation")) {
+        await store.freeze(`Task ${record.task_id} has a conflict after immutable result publication`);
+        continue;
+      }
+      const peerBinding = resource?.worktree_path && resource.branch_ref && resource.base_commit && resource.target_ref
+        ? { workspace: resource.worktree_path, fingerprint: canonicalHash({ task_id: record.task_id,
+          source_view: record.source_view, workspace: resource.worktree_path, base_commit: resource.base_commit,
+          branch_ref: resource.branch_ref, target_ref: resource.target_ref }) } : undefined;
+      const completedRunId = saved?.schema_version === 4 && saved.execution_status === "completed" &&
+        control.phase === "terminal" && control.outcome === "completed" ? saved.native_evidence?.run_id : undefined;
+      const peerIssue = !peerBinding && ((control.peer_deliveries?.length ?? 0) > 0 ||
+        control.schema_version === 3 && control.peer_delivery_reservations.some(slot => slot.state !== "released"))
+        ? "Peer completion lacks the retained owned workspace binding" : unresolvedPeerCompletion(control, peerBinding, completedRunId);
+      if (saved?.execution_status === "completed" && peerIssue) {
+        await store.freeze(`Task ${record.task_id} retains contradictory success with unresolved peer completion: ${peerIssue}`);
+        continue;
+      }
+      if (saved?.schema_version === 4 && saved.execution_status === "cancelled" &&
+        resource?.schema_version !== 2 && (saved.worker_stop !== "unconfirmed" || resource?.stop_reconciled) &&
+        !control.inputs.some(input => input.state === "delivery_unknown" || input.state === "answer_intent")) {
+        if (control.phase !== "terminal" || control.outcome !== "cancelled") {
+          control.phase = "terminal"; control.outcome = "cancelled";
+          for (const input of control.inputs) { delete input.claim; if (input.state !== "settled") input.state = "withdrawn"; }
+          control.revision++; control.updated_at = now(); await store.writeControl(record.task_id, control);
+        }
+        continue;
+      }
+      if (peerIssue) {
+        if (control.phase !== "needs_attention" || !control.attention?.startsWith("Peer completion requires") ||
+          !saved && control.native.state !== "unknown" && control.native.state !== "not_started") {
+          control.phase = "needs_attention"; delete control.outcome;
+          control.attention = `Peer completion requires exact reconciliation: ${peerIssue}`.slice(0, 2048);
+          if (!saved && control.native.state !== "not_started") control.native.state = "unknown";
+          for (const input of control.inputs) {
+            delete input.claim;
+            if (input.state === "answer_intent") input.state = "delivery_unknown";
+            else if (input.state === "pending") input.state = "withdrawn";
+          }
+          control.revision++; control.updated_at = now(); await store.writeControl(record.task_id, control);
+        }
+        await store.freeze(`Task ${record.task_id} has unresolved peer completion: ${peerIssue}`);
+        continue;
+      }
       if (resource?.schema_version === 2) {
         const publication = await store.readPrivatePublication(record.task_id);
         let resultBound = false;
