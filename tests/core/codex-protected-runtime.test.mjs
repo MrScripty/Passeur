@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, symlink, readdir } from 'node:fs/promises';
+import { closeSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { assertProtectedHomePolicy, protectedLaunch, settleProtectedStop } from '../../dist/src/agents/codex/protected-runtime.js';
-import { credentialHoldback, nativeAuthPresent, runProtectedHost } from '../../dist/src/agents/codex/protected-host.js';
+import { assertProtectedHomePolicy, captureProtectedStartup, protectedLaunch,
+  protectedSeedAdmissionRefused, settleProtectedStop } from '../../dist/src/agents/codex/protected-runtime.js';
+import { credentialHoldback, nativeAuthPresent, runProtectedHost, snapshotCheckedSeed, syntheticAccessTokenFresh } from '../../dist/src/agents/codex/protected-host.js';
 import { captureProtectedNamespace, verifyProtectedNamespaceStop } from '../../dist/src/core/protected-namespace.js';
 
 async function fixture() {
@@ -90,6 +92,8 @@ test('seeded launch copies a host-opened descriptor into a private guest home', 
         ['--perms', '0600', '--file', '4', '/mounts/home/auth.json']);
       assert.ok(spec.args.includes('--tmpfs'));
       assert.equal(spec.args.includes(seed), false);
+      assert.equal(spec.args.some((value, index) => value === '--ro-bind' &&
+        spec.args[index + 1]?.endsWith('/protected-egress.js')), false);
       assert.equal(JSON.stringify(launch).includes('secret'), false);
       await writeFile(join(f.home, 'config.toml'), (await readFile(join(f.home, 'config.toml'), 'utf8'))
         .replace('chatgpt_base_url = "http://127.0.0.1:39173"', 'chatgpt_base_url = "https://example.invalid"'));
@@ -106,6 +110,87 @@ test('seeded launch copies a host-opened descriptor into a private guest home', 
       await assert.rejects(runProtectedHost(spec), /CODEX_PROTECTED_SEED_INVALID/);
     } finally { await new Promise(resolve => server.close(resolve)); }
   } finally { await f.close(); }
+});
+
+test('TLS seeded launch mounts only public CA and sets exact guest proxy environment', async () => {
+  const f = await fixture();
+  const seed = join(f.root, 'seed-auth.json'), ca = join(f.root, 'ca.pem');
+  const relayDir = join(f.root, 'relay'); await mkdir(relayDir, { mode: 0o700 });
+  const socket = join(relayDir, 'broker.sock');
+  const { createServer } = await import('node:net');
+  const server = createServer(); await new Promise(resolve => server.listen(socket, resolve));
+  try {
+    await writeFile(seed, '{"synthetic":"secret"}', { mode: 0o600 });
+    await writeFile(ca, '-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n', { mode: 0o600 });
+    await writeFile(join(f.home, 'config.toml'),
+      `chatgpt_base_url = "https://accounts.fixture.invalid"\n${f.config}` +
+      `[model_providers.passeur_fixture_tls]\nname = "Passeur fixture"\n` +
+      `base_url = "https://inference.fixture.invalid/v1"\nwire_api = "responses"\nrequires_openai_auth = true\n` +
+      `[analytics]\nenabled = false\n`);
+    const relay = { socketPath: socket, port: 39173,
+      tlsProxy: { caFile: ca, accountHost: 'accounts.fixture.invalid', inferenceHost: 'inference.fixture.invalid' } };
+    const launch = protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'], relay, seed);
+    const spec = JSON.parse(Buffer.from(launch.args[1], 'base64url').toString('utf8'));
+    assert.equal(spec.tlsSeedAdmission, true);
+    const args = JSON.parse(Buffer.from(launch.args[1], 'base64url').toString('utf8')).args;
+    assert.ok(args.includes('--unshare-net'));
+    assert.ok(args.some((value, index) => value === '--ro-bind' &&
+      args[index + 1]?.endsWith('/protected-egress.js')));
+    assert.ok(args.some((value, index) => value === '--ro-bind' && args[index + 1] === ca &&
+      args[index + 2] === '/mounts/ca.pem'));
+    assert.ok(args.some((value, index) => value === '--setenv' && args[index + 1] === 'HTTPS_PROXY' &&
+      args[index + 2] === 'http://127.0.0.1:39173'));
+    assert.ok(args.some((value, index) => value === '--setenv' && args[index + 1] === 'CODEX_CA_CERTIFICATE' &&
+      args[index + 2] === '/mounts/ca.pem'));
+    for (const forbidden of ['NO_PROXY', 'ALL_PROXY', 'SSL_CERT_FILE', 'OPENAI_API_KEY']) assert.equal(args.includes(forbidden), false);
+    assert.equal(args.includes('PRIVATE KEY'), false);
+    assert.equal(args.includes(seed), false);
+    const direct = protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'],
+      { ...relay, tlsProxy: { ...relay.tlsProxy, directNoProxy: true } }, seed);
+    const directArgs = JSON.parse(Buffer.from(direct.args[1], 'base64url').toString('utf8')).args;
+    assert.equal(directArgs.includes('HTTPS_PROXY'), false);
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url');
+    const payload = exp => Buffer.from(JSON.stringify({ email: 'passeur-synthetic@example.invalid', exp,
+      'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-account' } })).toString('base64url');
+    assert.equal(syntheticAccessTokenFresh(`${header}.${payload(now + 300)}.synthetic`, now), false);
+    assert.equal(syntheticAccessTokenFresh(`${header}.${payload(now + 301)}.synthetic`, now), true);
+    assert.equal(syntheticAccessTokenFresh(`${header}.${payload(now - 1)}.synthetic`, now), false);
+    assert.equal(syntheticAccessTokenFresh(`${header}.${Buffer.from('{"email":"passeur-synthetic@example.invalid"}').toString('base64url')}.synthetic`, now), false);
+    assert.equal(syntheticAccessTokenFresh(`${header}.invalid.synthetic`, now), false);
+    const staleJwt = `${header}.${payload(now + 45)}.synthetic`;
+    const staleBytes = JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null,
+      tokens: { id_token: staleJwt, access_token: staleJwt, refresh_token: 'synthetic-refresh',
+        account_id: 'synthetic-account' } });
+    await writeFile(seed, staleBytes);
+    await assert.rejects(runProtectedHost(spec), /CODEX_PROTECTED_AUTH_STALE/);
+    assert.equal(protectedSeedAdmissionRefused(spec.statusFile), true);
+    assert.equal(await readFile(seed, 'utf8'), staleBytes);
+    const policyPath = join(f.home, 'config.toml');
+    const policy = await readFile(policyPath, 'utf8');
+    for (const altered of [policy.replace('[analytics]\nenabled = false\n', '[analytics]\nenabled = true\n'),
+      policy.replace('[analytics]\nenabled = false\n', '')]) {
+      await writeFile(policyPath, altered);
+      assert.throws(() => protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'], relay, seed),
+        { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
+    }
+  } finally { await new Promise(resolve => server.close(resolve)); await f.close(); }
+});
+
+test('checked seed snapshot stays byte exact after its named source changes', async () => {
+  const f = await fixture();
+  const seed = join(f.root, 'seed-auth.json');
+  let fd;
+  try {
+    await writeFile(seed, 'checked-seed', { mode: 0o600 });
+    fd = snapshotCheckedSeed(await readFile(seed), f.root);
+    await writeFile(seed, 'changed-source');
+    const inheritedRead = Buffer.alloc(Buffer.byteLength('checked-seed'));
+    assert.equal(readSync(fd, inheritedRead, 0, inheritedRead.length, null), inheritedRead.length);
+    assert.equal(inheritedRead.toString('utf8'), 'checked-seed');
+    assert.equal(readFileSync(`/proc/self/fd/${fd}`, 'utf8'), 'checked-seed');
+    assert.equal((await readdir(f.root)).some(name => name.startsWith('.seed-snapshot-')), false);
+  } finally { if (fd !== undefined) closeSync(fd); await f.close(); }
 });
 
 test('same-name permissive profile is rejected before protected launch', async () => {
@@ -220,6 +305,38 @@ test('shared observer requires exact native identity and whole-namespace retirem
   next.state.stopped = true;
   next.state.status.push({ 'exit-code': 0 }, { kind: 'wrapper-exit', code: 0, signal: null });
   assert.equal(await verifyProtectedNamespaceStop(captured2, 'status', next.io), true);
+});
+
+test('startup capture waits for native association before initialize and retains one handle through normal stop', async () => {
+  const f = observer();
+  const members = f.io.members;
+  let scans = 0, closes = 0;
+  f.io.members = async namespace => ++scans === 1 ? [] : members(namespace);
+  f.io.openNamespace = async () => ({ fd: 7, close: async () => { closes++; } });
+  const captured = await captureProtectedStartup('status', '/bin/codex', f.io);
+  assert.equal(scans, 2);
+  assert.equal(closes, 1, 'failed association releases its attempted descriptor');
+  assert.equal(captured.nativePid, 42);
+  // Native initialize is permitted only after capture has returned its owned descriptor.
+  const initialized = captured.namespaceFd.fd === 7;
+  assert.equal(initialized, true);
+  f.state.stopped = true;
+  f.state.status.push({ 'exit-code': 0 }, { kind: 'wrapper-exit', code: 0, signal: null });
+  assert.equal(await settleProtectedStop(captured, 'status', true, f.io), 'confirmed');
+  assert.equal(closes, 2);
+});
+
+test('pre-initialize terminal abort retains capture for a confirmed stop audit', async () => {
+  const f = observer();
+  const terminal = new AbortController();
+  const captured = await captureProtectedStartup('status', '/bin/codex', f.io);
+  terminal.abort(new Error('fixture TLS refusal'));
+  assert.equal(terminal.signal.aborted, true);
+  assert.equal(f.state.closed, false, 'abort does not release the sole namespace handle');
+  f.state.stopped = true;
+  f.state.status.push({ 'exit-code': 0 }, { kind: 'wrapper-exit', code: 0, signal: null });
+  assert.equal(await settleProtectedStop(captured, 'status', true, f.io), 'confirmed');
+  assert.equal(f.state.closed, true);
 });
 
 test('failed transport close still audits and releases the captured namespace once', async () => {

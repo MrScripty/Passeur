@@ -68,7 +68,7 @@ export function assertConfiguration(value: unknown): void {
 /** The installed experimental named profile is required before any protected turn. */
 export function assertProtectedConfiguration(value: unknown, profile = "passeur-boundary", synthetic = false,
   policy?: Readonly<{ workspace: string; canonical: string; admin: string; native: string;
-    seededPort?: number; provider?: string }>): void {
+    seededPort?: number; provider?: string; tls?: Readonly<{ accountHost: string; inferenceHost: string }> }>): void {
   const response = object(value, "config/read");
   const config = object(response.config, "config");
   const features = object(config.features, "config.features");
@@ -95,9 +95,15 @@ export function assertProtectedConfiguration(value: unknown, profile = "passeur-
     filesystem: { ":root": "deny", ":minimal": "read", ":slash_tmp": "deny", ":tmpdir": "deny",
       [policy.native]: "read", [policy.admin]: "write", ":workspace_roots": { ".": "write" } }, network: { enabled: false } } };
   let user = 0, session = 0, emptySystem = 0;
-  if (policy.seededPort !== undefined &&
-      (config.chatgpt_base_url !== `http://127.0.0.1:${policy.seededPort}` ||
-      object(object(config.model_providers, "config.model_providers")[policy.provider!], "seeded provider").requires_openai_auth !== true)) {
+  const bootstrap = policy.tls ? `https://${policy.tls.accountHost}` :
+    policy.seededPort !== undefined ? `http://127.0.0.1:${policy.seededPort}` : undefined;
+  const inference = policy.tls ? `https://${policy.tls.inferenceHost}/v1` :
+    policy.seededPort !== undefined ? `http://127.0.0.1:${policy.seededPort}/v1` : undefined;
+  if (bootstrap !== undefined &&
+      (config.chatgpt_base_url !== bootstrap ||
+      object(object(config.model_providers, "config.model_providers")[policy.provider!], "seeded provider").requires_openai_auth !== true ||
+      object(object(config.model_providers, "config.model_providers")[policy.provider!], "seeded provider").base_url !== inference ||
+      policy.tls && object(config.analytics, "config.analytics").enabled !== false)) {
     throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Effective synthetic account bootstrap differs from sealed policy");
   }
   for (const raw of response.layers) {
@@ -106,9 +112,11 @@ export function assertProtectedConfiguration(value: unknown, profile = "passeur-
     if (name.type === "user" && name.file === "/mounts/home/config.toml" && name.profile == null) {
       user++;
       const userConfig = object(layer.config, "user layer");
-      if (!isDeepStrictEqual(userConfig.permissions, expected) || policy.seededPort !== undefined &&
-          (userConfig.chatgpt_base_url !== `http://127.0.0.1:${policy.seededPort}` ||
-          object(object(userConfig.model_providers, "user model_providers")[policy.provider!], "user provider").requires_openai_auth !== true)) {
+      if (!isDeepStrictEqual(userConfig.permissions, expected) || bootstrap !== undefined &&
+          (userConfig.chatgpt_base_url !== bootstrap ||
+          object(object(userConfig.model_providers, "user model_providers")[policy.provider!], "user provider").requires_openai_auth !== true ||
+          object(object(userConfig.model_providers, "user model_providers")[policy.provider!], "user provider").base_url !== inference ||
+          policy.tls && object(userConfig.analytics, "user analytics").enabled !== false)) {
         throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "The loaded user permission policy differs from the sealed artifact");
       }
     } else if (name.type === "sessionFlags") {

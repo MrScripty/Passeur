@@ -1,15 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync, writeSync } from "node:fs";
 import { TextDecoder } from "node:util";
+import { performance } from "node:perf_hooks";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "smol-toml";
 import { BridgeError } from "../../core/errors.js";
 import type { WorkerInput } from "../types.js";
-import { verifyProtectedNamespaceStop, type Captured, type ProtectedObserverIO } from "../../core/protected-namespace.js";
+import { captureProtectedNamespace, verifyProtectedNamespaceStop, type Captured,
+  type ProtectedObserverIO } from "../../core/protected-namespace.js";
 
 export { captureProtectedNamespace as captureProtectedHost,
   verifyProtectedNamespaceStop as verifyProtectedStop } from "../../core/protected-namespace.js";
+
+/** Native may join the sandbox just after the host reports its child PID. */
+export async function captureProtectedStartup(statusFile: string, nativePath: string,
+  io?: ProtectedObserverIO): Promise<Captured> {
+  const deadline = performance.now() + 2_000;
+  for (;;) {
+    try { return await captureProtectedNamespace(statusFile, nativePath, nativePath, io); }
+    catch (error) {
+      if (!(error instanceof BridgeError) || error.code !== "PROTECTED_NAMESPACE_INVALID" ||
+          error.message !== "native process association is unknown" || performance.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+}
 
 export async function settleProtectedStop(captured: Captured | undefined, statusFile: string,
   transportClosed: boolean, io?: ProtectedObserverIO): Promise<"confirmed" | "unconfirmed"> {
@@ -24,6 +40,12 @@ export async function settleProtectedStop(captured: Captured | undefined, status
 export function protectedCredentialExposure(statusFile: string): boolean {
   try { readFileSync(`${statusFile}.exposure`); return true; }
   catch (error) { return !((error as NodeJS.ErrnoException).code === "ENOENT"); }
+}
+
+/** Only the out-of-guest host writes this exact marker before any Bubblewrap spawn. */
+export function protectedSeedAdmissionRefused(statusFile: string): boolean {
+  try { return readFileSync(statusFile, "utf8") === '{"kind":"admission","code":"CODEX_PROTECTED_AUTH_STALE"}\n'; }
+  catch { return false; }
 }
 
 function invalid(): never { throw new BridgeError("CODEX_PROTECTED_LAUNCH_INVALID", "Protected Codex launch identity or mount is invalid"); }
@@ -44,13 +66,21 @@ function exactKeys(value: unknown, keys: readonly string[]): value is Record<str
 }
 /** The guest sees this exact policy artifact, mounted read-only over its writable home. */
 export function assertProtectedHomePolicy(home: string, workspace: string, canonical: string,
-  admin: string, native: string, seededPort?: number): Buffer {
+  admin: string, native: string, seededPort?: number,
+  tls?: Readonly<{ accountHost: string; inferenceHost: string }>): Buffer {
   const configPath = file(join(home, "config.toml"));
   try {
     if (readdirSync(home).join("\0") !== "config.toml") invalid();
     const bytes = readFileSync(configPath);
     const parsed = parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
-    if (seededPort === undefined ? parsed.chatgpt_base_url !== undefined :
+    if (tls ? parsed.chatgpt_base_url !== `https://${tls.accountHost}` ||
+        !exactKeys(parsed.model_providers, ["passeur_fixture_tls"]) ||
+        !exactKeys(parsed.model_providers.passeur_fixture_tls,
+          ["name", "base_url", "wire_api", "requires_openai_auth"]) ||
+        parsed.model_providers.passeur_fixture_tls.base_url !== `https://${tls.inferenceHost}/v1` ||
+        parsed.model_providers.passeur_fixture_tls.requires_openai_auth !== true ||
+        !exactKeys(parsed.analytics, ["enabled"]) || parsed.analytics.enabled !== false :
+        seededPort === undefined ? parsed.chatgpt_base_url !== undefined :
         parsed.chatgpt_base_url !== `http://127.0.0.1:${seededPort}` ||
         !exactKeys(parsed.model_providers, ["passeur_fixture_loopback"]) ||
         !exactKeys(parsed.model_providers.passeur_fixture_loopback,
@@ -92,7 +122,9 @@ function parents(path: string): string[] {
 
 /** The only mounted repository metadata is the private common dir at its canonical original path. */
 export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome: string,
-  hostScript: string, nativeArgs: readonly string[], relay?: Readonly<{ socketPath: string; port: number }>,
+  hostScript: string, nativeArgs: readonly string[], relay?: Readonly<{ socketPath: string; port: number;
+    tlsProxy?: Readonly<{ caFile: string; accountHost: string; inferenceHost: string;
+      directNoProxy?: true }> }>,
   seedFile?: string, lateExposure = false): { command: string; args: string[]; env: NodeJS.ProcessEnv;
     statusFile: string; nativePath: string } {
   const view = input.private_git?.view;
@@ -101,6 +133,7 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   const workspace = directory(input.workspace), home = directory(codexHome);
   const privateDir = directory(view.private_common_dir), canonical = directory(view.canonical_common_dir);
   const native = file(codexBin), host = file(hostScript), node = file(process.execPath);
+  const egressModule = relay?.tlsProxy ? file(fileURLToPath(new URL("./protected-egress.js", import.meta.url))) : undefined;
   const packageJson = relay ? file(fileURLToPath(new URL("../../../../package.json", import.meta.url))) : undefined;
   const control = dirname(privateDir);
   if (lateExposure && !seedFile) invalid();
@@ -108,6 +141,14 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
       [workspace, home, privateDir, canonical, control].some(path => overlaps(path, seedFile)) ||
       !relay)) invalid();
   const relayDir = relay ? directory(dirname(relay.socketPath)) : undefined;
+  const ca = relay?.tlsProxy ? file(relay.tlsProxy.caFile) : undefined;
+  if (relay?.tlsProxy && (!seedFile || !ca?.startsWith("/tmp/") ||
+      !/^[a-z0-9][a-z0-9.-]{0,252}$/.test(relay.tlsProxy.accountHost) ||
+      !/^[a-z0-9][a-z0-9.-]{0,252}$/.test(relay.tlsProxy.inferenceHost) ||
+      relay.tlsProxy.accountHost === relay.tlsProxy.inferenceHost ||
+      [relay.tlsProxy.accountHost, relay.tlsProxy.inferenceHost].includes("auth.openai.com") ||
+      readFileSync(ca!).length > 65_536 || !readFileSync(ca!, "utf8").includes("-----BEGIN CERTIFICATE-----") ||
+      readFileSync(ca!, "utf8").includes("PRIVATE KEY"))) invalid();
   if (relay && (!Number.isSafeInteger(relay.port) || relay.port < 1 || relay.port > 65535 ||
       !relayDir?.startsWith("/tmp/") || !lstatSync(relay.socketPath).isSocket() ||
       realpathSync(relay.socketPath) !== relay.socketPath ||
@@ -126,7 +167,8 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
       readFileSync(dotGit, "utf8").trim() !== `gitdir: ${canonical}/${view.admin_relative}` ||
       readFileSync(join(privateAdmin, "commondir"), "utf8").trim() !== "../..") invalid();
   const configSnapshot = snapshotPolicy(control, assertProtectedHomePolicy(home, workspace, canonical,
-    join(canonical, view.admin_relative), native, seedFile ? relay?.port : undefined));
+    join(canonical, view.admin_relative), native, seedFile && !relay?.tlsProxy ? relay?.port : undefined,
+    relay?.tlsProxy));
   // Codex's named profile starts a nested user namespace for each tool. Keep that
   // capability inside this outer task-owned PID and network namespace.
   const args = ["--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net",
@@ -137,7 +179,7 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   else args.push("--bind", home, "/mounts/home");
   args.push("--dir", "/dev/shm", "--tmpfs", "/dev/shm");
   for (const parent of [...new Set([...parents(workspace), ...parents(canonical), ...parents(native),
-    ...(relay ? [...parents(node), ...parents(host)] : [])])]) {
+    ...(relay ? [...parents(node), ...parents(host)] : []), ...(egressModule ? parents(egressModule) : [])])]) {
     if (parent !== "/tmp" && parent !== "/dev" && parent !== "/mounts" &&
         !["/usr", "/bin", "/lib", "/lib64"].some(root => parent === root || parent.startsWith(`${root}/`))) args.push("--dir", parent);
   }
@@ -146,15 +188,24 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
     "--setenv", "HOME", "/mounts/home", "--setenv", "CODEX_HOME", "/mounts/home",
     "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "LANG", "C.UTF-8",
     "--chdir", workspace);
+  if (relay?.tlsProxy) {
+    args.push("--ro-bind", ca!, "/mounts/ca.pem",
+      "--setenv", "CODEX_CA_CERTIFICATE", "/mounts/ca.pem");
+    if (!relay.tlsProxy.directNoProxy) args.push("--setenv", "HTTP_PROXY", `http://127.0.0.1:${relay.port}`,
+      "--setenv", "HTTPS_PROXY", `http://127.0.0.1:${relay.port}`);
+  }
   if (relay) {
     args.push("--ro-bind", node, node, "--ro-bind", host, host,
+      ...(egressModule ? ["--ro-bind", egressModule, egressModule] : []),
       "--ro-bind", packageJson!, packageJson!,
       "--dir", "/mounts/relay", "--ro-bind", relayDir!, "/mounts/relay",
       "--", node, host, "guest", Buffer.from(JSON.stringify({ native, nativeArgs,
         socketPath: `/mounts/relay/${relay.socketPath.slice(relayDir!.length + 1)}`, port: relay.port,
+        ...(relay.tlsProxy ? { tlsProxy: true } : {}),
         ...(seedFile ? { seededProbe: true } : {}), ...(lateExposure ? { lateExposure: true } : {}) })).toString("base64url"));
   } else args.push("--", native, ...nativeArgs);
   const statusFile = join(control, `codex-protected-status-${randomUUID()}.jsonl`);
-  const spec = Buffer.from(JSON.stringify({ args, statusFile, ...(seedFile ? { seedFile } : {}) })).toString("base64url");
+  const spec = Buffer.from(JSON.stringify({ args, statusFile, ...(seedFile ? { seedFile } : {}),
+    ...(relay?.tlsProxy ? { tlsSeedAdmission: true } : {}) })).toString("base64url");
   return { command: node, args: [host, spec], env: {}, statusFile, nativePath: native };
 }

@@ -27,6 +27,31 @@ refused, with stop unconfirmed and its private resource retained. The final
 installed negative suite passed 26/26 for these exact classifications. No real
 subscription credential, provider inference, registered private capability or
 autonomous peer outcome is accepted by this result.
+One later installed custom-provider **synthetic local-TLS** Codex task passed
+account/settings/catalog and two model requests, protected model-tool probes,
+ordinary hooked private commit, exact publication after worker and broker
+retirement, and intact canaries. Six preceding TLS attempts remained unpublished
+while exact native auxiliary routes were identified. The first near-expiry
+negative failed its intended pre-inference refusal: native Codex made model/tool
+effects while the broker denied OAuth refresh attempts, although Coordinator
+published nothing. Host expiry admission and a broker authentication-failure
+latch are under review. This proves only the local custom HTTP transport;
+first-party WebSocket routing, real subscription credentials and refresh/401
+fail-closed behavior remain open.
+The repaired synthetic near-expiry host check and account-401 OAuth latch now
+pass separate installed cases, each with no tool effect or publication. A first
+model-401 case remained nonpassing: the custom provider retried inference seven
+times without an OAuth attempt. A fixture-owned terminal unauthorized response
+boundary is under review; it cannot establish first-party model-401 behavior.
+The later fixture-owned model-401 terminal case passed, as did a bounded
+redirect refusal and cancellation while a local TLS inference request was held.
+Fresh wrong-host and untrusted-CA cases passed a fixture-owned terminal
+TLS/request-boundary refusal after bounded startup concurrency. All five had
+confirmed worker stop, retired brokers and no private publication. The earlier
+wrong-host timeout and early-refusal reports remain historically incomplete.
+Direct-no-proxy refusal remains only observed because whole-worker stop was
+unconfirmed. Native certificate-error provenance and the real subscription
+route remain unqualified.
 Earlier Codex 0.157.1 samples established the narrower boundaries below. The
 installed build passed four sampled standalone command read probes under a named
 profile. A

@@ -13,8 +13,9 @@ import { PeerDeliveryNativeSessionIdSchema, type PeerDeliveryEnvelope } from "..
 import type { CodexOptions } from "./config.js";
 import { CodexStdio, type NativeMessage } from "./transport.js";
 import { approval, assertAccount, assertSyntheticSeedAccount, assertConfiguration, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
-import { protectedCredentialExposure, protectedLaunch, settleProtectedStop } from "./protected-runtime.js";
-import { captureProtectedNamespace, type Captured } from "../../core/protected-namespace.js";
+import { captureProtectedStartup, protectedCredentialExposure, protectedLaunch,
+  protectedSeedAdmissionRefused, settleProtectedStop } from "./protected-runtime.js";
+import { type Captured } from "../../core/protected-namespace.js";
 
 type Terminal = "completed" | "failed" | "interrupted";
 const empty = () => ({ worker_assessment: "unknown" as const, blockers: [] as string[], questions: [] as string[], checks: [] as WorkerRun["checks"] });
@@ -71,16 +72,43 @@ export function failOnProtectedCredentialExposure(result: WorkerRun, statusFile:
     error: { code: "CODEX_PROTECTED_SECRET_EXPOSED", message: "Protected synthetic credential appeared in native output" },
     worker_stop: result.worker_stop };
 }
+export function failOnProtectedTerminalAuth(result: WorkerRun, denied?: AbortSignal): WorkerRun {
+  if (!denied?.aborted || result.error?.code === "CODEX_PROTECTED_SECRET_EXPOSED") return result;
+  const reason = denied.reason instanceof Error ? denied.reason.message : "";
+  const upstream = reason === "CODEX_PROTECTED_UPSTREAM_UNAUTHORIZED";
+  const tls = reason === "CODEX_PROTECTED_TLS_REFUSED";
+  const code = tls ? "CODEX_PROTECTED_TLS_REFUSED" : upstream ?
+    "CODEX_PROTECTED_UPSTREAM_UNAUTHORIZED" : "CODEX_PROTECTED_REFRESH_DENIED";
+  const message = tls ? "Protected synthetic TLS session was refused" : upstream ?
+    "Protected synthetic inference was unauthorized" : "Protected synthetic token refresh was denied";
+  return { ...empty(), status: "failed", summary: message,
+    error: { code, message },
+    worker_stop: result.worker_stop };
+}
+/** Retain the namespace handle before an early terminal signal can skip initialize. */
+export async function initializeAfterProtectedCapture(launch: Readonly<{ statusFile: string; nativePath: string }> | undefined,
+  retain: (captured: Captured) => void, initialize: () => Promise<unknown>, signal: AbortSignal,
+  afterCapture?: () => void, capture = captureProtectedStartup): Promise<unknown> {
+  if (launch) {
+    retain(await capture(launch.statusFile, launch.nativePath));
+    afterCapture?.();
+    signal.throwIfAborted();
+  }
+  return initialize();
+}
 /** One assignment owns a native thread across explicitly requested user turns. */
 export class CodexAdapter implements WorkerAdapter {
   /** The optional provider is only for a disposable, fixed-response installed qualification task. */
   constructor(private readonly options: CodexOptions,
     private readonly qualification?: Readonly<{ syntheticProvider: string; allowAnonymous: true;
-      relay: Readonly<{ socketPath: string; port: number }>; seedFile?: string; failAfterCapture?: true;
-      lateExposure?: true }>) {}
+      relay: Readonly<{ socketPath: string; port: number; tlsProxy?: Readonly<{
+        caFile: string; accountHost: string; inferenceHost: string; directNoProxy?: true }> }>;
+      seedFile?: string; failAfterCapture?: true;
+      lateExposure?: true; terminalAuthSignal?: AbortSignal }>) {}
   async run(input: WorkerInput): Promise<WorkerRun> {
     if (input.signal.aborted) return { ...empty(), status: "cancelled", summary: "Task cancelled before startup", worker_stop: "not_started" };
-    const lifetime = new AbortController(), signal = AbortSignal.any([input.signal, lifetime.signal]);
+    const lifetime = new AbortController(), signal = AbortSignal.any([input.signal, lifetime.signal,
+      ...(this.qualification?.terminalAuthSignal ? [this.qualification.terminalAuthSignal] : [])]);
     let transport: CodexStdio | undefined, threadId: string | undefined, current: NativeTurn | undefined, reportedModel: string | undefined;
     let protectedHost: { statusFile: string; nativePath: string } | undefined, protectedCapture: Captured | undefined;
     const protectedRun = input.private_git !== undefined;
@@ -252,13 +280,13 @@ export class CodexAdapter implements WorkerAdapter {
       });
       result.worker_stop = "unconfirmed";
       protectedStage = "initialize";
-      const initialize = object(await transport.request("initialize", { clientInfo: { name: "passeur_codex_worker", title: "Passeur worker", version: "0.1.0" }, capabilities: { experimentalApi: !!launch } }, signal), "initialize");
+      const initialize = object(await initializeAfterProtectedCapture(launch,
+        captured => { protectedCapture = captured; },
+        () => transport!.request("initialize", { clientInfo: { name: "passeur_codex_worker", title: "Passeur worker", version: "0.1.0" }, capabilities: { experimentalApi: !!launch } }, signal),
+        signal, () => {
+          if (this.qualification?.failAfterCapture) throw new BridgeError("CODEX_FIXTURE_STARTUP_FAILURE", "Synthetic fixture stopped after native namespace capture");
+        }), "initialize");
       text(initialize.userAgent, "initialize.userAgent", 1024);
-      if (launch) {
-        protectedCapture = await captureProtectedNamespace(launch.statusFile, launch.nativePath, launch.nativePath);
-        if (this.qualification?.failAfterCapture) throw new BridgeError("CODEX_FIXTURE_STARTUP_FAILURE", "Synthetic fixture stopped after native namespace capture");
-        signal.throwIfAborted();
-      }
       const observedPid = protectedCapture?.nativePid ?? transport.pid;
       if (observedPid !== undefined) {
         const birth = await processIdentity(observedPid);
@@ -279,7 +307,9 @@ export class CodexAdapter implements WorkerAdapter {
           { workspace: input.workspace, canonical: input.private_git!.view.canonical_common_dir,
             admin: join(input.private_git!.view.canonical_common_dir, input.private_git!.view.admin_relative),
             native: launch.nativePath,
-            ...(this.qualification?.seedFile ? { seededPort: this.qualification.relay!.port, provider } : {}) });
+            ...(this.qualification?.seedFile ? this.qualification.relay.tlsProxy ?
+              { tls: this.qualification.relay.tlsProxy, provider } :
+              { seededPort: this.qualification.relay.port, provider } : {}) });
         if (object(object(config, "config/read").config, "config").model_provider !== provider) throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected provider changed before the turn");
         protectedStage = "permissionProfile/list";
         assertProtectedProfile(await transport.request("permissionProfile/list", { cwd: input.workspace }, signal));
@@ -423,6 +453,13 @@ export class CodexAdapter implements WorkerAdapter {
       if (protectedHost && this.qualification?.seedFile) {
         result = failOnProtectedCredentialExposure(result, protectedHost.statusFile);
       }
+      if (protectedHost && this.qualification?.relay.tlsProxy &&
+          protectedSeedAdmissionRefused(protectedHost.statusFile)) {
+        result = { ...empty(), status: "failed", summary: "Protected synthetic access token is stale",
+          error: { code: "CODEX_PROTECTED_AUTH_STALE", message: "Protected synthetic access token is stale" },
+          worker_stop: transport?.exitEvidence && !protectedCapture ? "not_started" : "unconfirmed" };
+      }
+      result = failOnProtectedTerminalAuth(result, this.qualification?.terminalAuthSignal);
     }
     return result;
   }

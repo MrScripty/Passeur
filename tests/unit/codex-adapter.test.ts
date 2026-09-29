@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CodexAdapter, failOnProtectedCredentialExposure, protectedNativeRejection } from "../../src/agents/codex/adapter.js";
+import { CodexAdapter, failOnProtectedCredentialExposure, failOnProtectedTerminalAuth,
+  initializeAfterProtectedCapture, protectedNativeRejection } from "../../src/agents/codex/adapter.js";
 import { assertProtectedConfiguration, assertProtectedProfile, assertSyntheticSeedAccount, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
 import type { CodexOptions } from "../../src/agents/codex/config.js";
 import type { WorkerInput } from "../../src/agents/types.js";
@@ -21,6 +22,27 @@ const options: CodexOptions = { codex_bin: "/missing/codex", codex_home: "/unuse
 cancellationConformance("Codex", () => new CodexAdapter(options), input);
 
 describe("protected native profile correlation", () => {
+  it("retains capture before a pre-initialize terminal abort and sends no initialize", async () => {
+    const events: string[] = [];
+    const terminal = new AbortController();
+    const captured = { nativePid: 42 } as Parameters<Parameters<typeof initializeAfterProtectedCapture>[1]>[0];
+    await expect(initializeAfterProtectedCapture({ statusFile: "status", nativePath: "/bin/codex" },
+      value => { expect(value).toBe(captured); events.push("retain"); },
+      async () => { events.push("initialize"); return { userAgent: "fixture" }; }, terminal.signal,
+      () => events.push("after-capture"), async () => {
+        events.push("capture"); terminal.abort(new Error("fixture TLS refusal")); return captured;
+      })).rejects.toThrow("fixture TLS refusal");
+    expect(events).toEqual(["capture", "retain", "after-capture"]);
+  });
+  it("initializes normally after retaining the protected namespace", async () => {
+    const events: string[] = [];
+    const captured = { nativePid: 42 } as Parameters<Parameters<typeof initializeAfterProtectedCapture>[1]>[0];
+    await expect(initializeAfterProtectedCapture({ statusFile: "status", nativePath: "/bin/codex" },
+      () => events.push("retain"), async () => { events.push("initialize"); return "ready"; },
+      new AbortController().signal, undefined, async () => { events.push("capture"); return captured; }
+    )).resolves.toBe("ready");
+    expect(events).toEqual(["capture", "retain", "initialize"]);
+  });
   it("attributes seeded native rejection to a finite preflight stage", () => {
     const diagnostic = { code: "CODEX_NATIVE_REJECTED", message: "generic" };
     expect(protectedNativeRejection(diagnostic, "thread/start", true)).toEqual({ ...diagnostic,
@@ -40,6 +62,26 @@ describe("protected native profile correlation", () => {
         worker_stop: "confirmed", error: { code: "CODEX_PROTECTED_SECRET_EXPOSED" } });
       expect(failOnProtectedCredentialExposure({ ...completed, status: "cancelled" }, status).status).toBe("failed");
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("keeps a denied synthetic refresh terminal even after native completion", () => {
+    const completed = { status: "completed" as const, summary: "done", worker_stop: "confirmed" as const,
+      worker_assessment: "met" as const, blockers: [], questions: [], checks: [] };
+    const latch = new AbortController();
+    expect(failOnProtectedTerminalAuth(completed, latch.signal)).toEqual(completed);
+    latch.abort(new Error("synthetic refresh denied"));
+    expect(failOnProtectedTerminalAuth(completed, latch.signal)).toMatchObject({ status: "failed",
+      worker_stop: "confirmed", error: { code: "CODEX_PROTECTED_REFRESH_DENIED" } });
+    const upstream = new AbortController();
+    upstream.abort(new Error("CODEX_PROTECTED_UPSTREAM_UNAUTHORIZED"));
+    expect(failOnProtectedTerminalAuth(completed, upstream.signal)).toMatchObject({ status: "failed",
+      worker_stop: "confirmed", error: { code: "CODEX_PROTECTED_UPSTREAM_UNAUTHORIZED" } });
+    const tls = new AbortController();
+    tls.abort(new Error("CODEX_PROTECTED_TLS_REFUSED"));
+    expect(failOnProtectedTerminalAuth(completed, tls.signal)).toMatchObject({ status: "failed",
+      worker_stop: "confirmed", error: { code: "CODEX_PROTECTED_TLS_REFUSED" } });
+    expect(failOnProtectedTerminalAuth({ ...completed, status: "failed",
+      error: { code: "CODEX_PROTECTED_SECRET_EXPOSED", message: "exposure" } }, upstream.signal)
+    ).toMatchObject({ error: { code: "CODEX_PROTECTED_SECRET_EXPOSED" } });
   });
   it("accepts only the synthetic seeded persona during direct qualification", () => {
     const account = { requiresOpenaiAuth: true, account: { type: "chatgpt", email: "passeur-synthetic@example.invalid" } };
@@ -78,11 +120,29 @@ describe("protected native profile correlation", () => {
         features: { image_generation: true } } } : layer) }, "passeur-boundary", true, scope)).toThrow();
     const seeded = { ...scope, seededPort: 39173, provider: "passeur_fixture_loopback" };
     const accountConfig = { chatgpt_base_url: "http://127.0.0.1:39173", model_providers: {
-      passeur_fixture_loopback: { requires_openai_auth: true } } };
+      passeur_fixture_loopback: { requires_openai_auth: true, base_url: "http://127.0.0.1:39173/v1" } } };
     const seededResponse = { ...response, config: { ...response.config, ...accountConfig },
       layers: response.layers.map(layer => layer.name.type === "user" ?
         { ...layer, config: { ...layer.config, ...accountConfig } } : layer) };
     expect(() => assertProtectedConfiguration(seededResponse, "passeur-boundary", true, seeded)).not.toThrow();
+    const tlsPolicy = { ...scope, provider: "passeur_fixture_tls",
+      tls: { accountHost: "accounts.fixture.invalid", inferenceHost: "inference.fixture.invalid" } };
+    const tlsConfig = { chatgpt_base_url: "https://accounts.fixture.invalid", analytics: { enabled: false }, model_providers: {
+      passeur_fixture_tls: { requires_openai_auth: true, base_url: "https://inference.fixture.invalid/v1" } } };
+    const tlsResponse = { ...response, config: { ...response.config, ...tlsConfig },
+      layers: response.layers.map(layer => layer.name.type === "user" ?
+        { ...layer, config: { ...layer.config, ...tlsConfig } } : layer) };
+    expect(() => assertProtectedConfiguration(tlsResponse, "passeur-boundary", true, tlsPolicy)).not.toThrow();
+    expect(() => assertProtectedConfiguration({ ...tlsResponse,
+      config: { ...tlsResponse.config, analytics: { enabled: true } } },
+    "passeur-boundary", true, tlsPolicy)).toThrow();
+    expect(() => assertProtectedConfiguration({ ...tlsResponse,
+      layers: tlsResponse.layers.map(layer => layer.name.type === "user" ?
+        { ...layer, config: { ...layer.config, analytics: { enabled: true } } } : layer) },
+    "passeur-boundary", true, tlsPolicy)).toThrow();
+    expect(() => assertProtectedConfiguration({ ...tlsResponse,
+      config: { ...tlsResponse.config, chatgpt_base_url: "https://wrong.fixture.invalid" } },
+    "passeur-boundary", true, tlsPolicy)).toThrow();
     expect(() => assertProtectedConfiguration({ ...seededResponse,
       config: { ...seededResponse.config, chatgpt_base_url: "https://example.invalid" } },
     "passeur-boundary", true, seeded)).toThrow();

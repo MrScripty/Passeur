@@ -346,7 +346,7 @@ export function provider(socketPath, workspace, protectedPath, siblingPath, stat
   }), close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }) };
 }
 
-export async function run(mode = 'commit') {
+export async function run(mode = 'commit', transport = null) {
   if (!['commit', 'cancel', 'home-canary', 'seeded-home', 'seeded-cancel', 'seeded-startup-failure',
     'seeded-late-exposure'].includes(mode)) throw Error('unsupported qualification mode');
   const root = await mkdtemp(join(tmpdir(), 'passeur-codex-protected-worker-'));
@@ -354,8 +354,8 @@ export async function run(mode = 'commit') {
   const home = join(root, 'home'), relayDir = join(root, 'relay');
   const protectedDir = join(root, 'protected'), siblingDir = join(root, 'sibling');
   const report = { fixture: 'codex-protected-coordinator/1', mode, root, status: 'not_started',
-    nativeSha256: null, nativeVersion: null, model: MODEL, provider: PROVIDER,
-    credential: 'anonymous_fixed_synthetic', taskId: null, providerRequests: 0, accountChecks: 0,
+    nativeSha256: null, nativeVersion: null, model: MODEL, provider: transport?.providerLabel ?? PROVIDER,
+    credential: transport?.credentialLabel ?? 'anonymous_fixed_synthetic', taskId: null, providerRequests: 0, accountChecks: 0,
     hostCanariesIntact: false, workerStop: 'unconfirmed', privateBefore: null,
     privateAfter: null, canonicalAfter: null, hookRan: false, bytesExact: false,
     rootDisposition: 'retained_for_review' };
@@ -370,7 +370,7 @@ export async function run(mode = 'commit') {
   const seedToken = randomBytes(24).toString('hex');
   const syntheticJwt = `${Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url')}.` +
     `${Buffer.from(JSON.stringify({ sub: `synthetic-${seedToken}`, email: 'passeur-synthetic@example.invalid',
-      exp: 4102444800, 'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-account',
+      exp: transport?.accessExpiry ?? 4102444800, 'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-account',
         chatgpt_plan_type: 'plus' } })).toString('base64url')}.synthetic`;
   const refreshToken = `synthetic-${seedToken}`;
   const seedBytes = Buffer.from(JSON.stringify({ auth_mode: 'chatgpt', OPENAI_API_KEY: null,
@@ -417,49 +417,63 @@ export async function run(mode = 'commit') {
         if (mode.startsWith('seeded-')) { state.homeCanaryGuestPath = '/mounts/home/auth.json'; state.homeCanaryReady = true; }
         activeProviderState = state;
         const relayPort = 39173;
-        const p = provider(socketPath, input.workspace, protectedPath, siblingPath, state, mode);
+        const custom = transport ? await transport.prepare({ root, home, relayDir, socketPath,
+          workspace: input.workspace, canonical, admin: join(canonical, input.private_git.view.admin_relative),
+          protectedPath, siblingPath, seedPath, seedBytes, secretValues, state, relayPort }) : null;
+        const p = custom?.provider ?? provider(socketPath, input.workspace, protectedPath, siblingPath, state, mode);
         let result;
         try {
           if (!['cancel', 'seeded-cancel', 'seeded-startup-failure'].includes(mode)) await symlink(protectedPath, join(input.workspace, 'protected-link'));
           if (['home-canary', 'seeded-home', 'seeded-late-exposure'].includes(mode)) await symlink(state.homeCanaryGuestPath, join(input.workspace, 'home-link'));
           await p.listen();
-          const config = protectedProfileToml(input.workspace, canonical,
+          const config = custom?.config ?? protectedProfileToml(input.workspace, canonical,
             join(canonical, input.private_git.view.admin_relative), relayPort, mode.startsWith('seeded-'));
           await writeFile(join(home, 'config.toml'), config, { mode: 0o600 });
           report.privateBefore = git(project, '--git-dir', input.private_git.view.private_common_dir,
             'rev-parse', `refs/heads/muse-bridge/${input.task_id}`);
           report.canonicalBefore = git(project, 'rev-parse', `refs/heads/muse-bridge/${input.task_id}`);
           report.privateResourceBefore = (await store.readResource(input.task_id))?.private_git?.state ?? null;
+          const adapterInput = custom?.observeProcess ? { ...input, onEvent: async event => {
+            if (event.kind === 'process_observed') await custom.observeProcess(event.pid);
+            return input.onEvent(event);
+          } } : input;
           result = await new CodexAdapter({ codex_bin: ELF, codex_home: home, model: MODEL,
             network_access: false, allow_command_escalation: false, subscription_confirmed: true,
-            experimental_opt_in: true }, { syntheticProvider: PROVIDER, allowAnonymous: true,
-            relay: { socketPath, port: relayPort }, ...(mode.startsWith('seeded-') ? { seedFile: seedPath } : {}),
+            experimental_opt_in: true }, { syntheticProvider: custom?.syntheticProvider ?? PROVIDER, allowAnonymous: true,
+            relay: custom?.relay ?? { socketPath, port: relayPort }, ...(mode.startsWith('seeded-') ? { seedFile: seedPath } : {}),
+            ...(custom?.terminalAuthSignal ? { terminalAuthSignal: custom.terminalAuthSignal } : {}),
             ...(mode === 'seeded-startup-failure' ? { failAfterCapture: true } : {}),
-            ...(mode === 'seeded-late-exposure' ? { lateExposure: true } : {}) }).run(input);
+            ...(mode === 'seeded-late-exposure' ? { lateExposure: true } : {}) }).run(adapterInput);
         } finally { await p.close(); }
         report.providerRequests = state.requests;
+        report.nativeResultCode = result?.error?.code ?? null;
         report.accountChecks = state.accountChecks;
+        report.catalogChecks = state.catalogChecks ?? 0;
         report.nativeOutputClean = !containsSeedValue(result, secretValues);
         report.nativePreflightStage = nativePreflightStage(result);
         report.providerRequestDigests = state.requestDigests;
         report.providerFailure = state.failure;
+        report.providerIdentityDiagnostic = state.identityDiagnostic ?? null;
         report.providerSchemaDiagnostic = state.schemaDiagnostic ?? null;
         report.homeCanaryCreatedAfterFirstPost = mode === 'home-canary' ? state.homeCanaryReady : null;
         report.homeProbeMarkersValid = ['home-canary', 'seeded-home', 'seeded-late-exposure'].includes(mode) ? state.homeProbeMarkersValid === true : null;
         report.homeCanaryIntactBeforePublication = mode === 'home-canary' && state.homeCanaryReady ?
-          await homeCanaryHostIntact(homeCanaryHostPath, homeCanary) : ['seeded-home', 'seeded-late-exposure'].includes(mode) ?
+          await homeCanaryHostIntact(homeCanaryHostPath, homeCanary) : ['seeded-home', 'seeded-cancel', 'seeded-late-exposure'].includes(mode) ?
           (await readFile(seedPath).catch(() => null))?.equals(seedBytes) === true : null;
         report.providerOutputDiagnostic = state.outputDiagnostic ?? null;
         report.providerOutput = state.second ? { sha256: state.toolOutputSha256, bytes: state.toolOutputBytes } : null;
         report.workerStop = result?.worker_stop ?? 'unconfirmed';
         report.nativeCheckDiagnostic = nativeCheckDiagnostic(result,
-          nativePresentedFixedCommand(fixedCommand(input.workspace, protectedPath, siblingPath,
+          nativePresentedFixedCommand(state.fixedCommand ?? fixedCommand(input.workspace, protectedPath, siblingPath,
             ['home-canary', 'seeded-home', 'seeded-late-exposure'].includes(mode) ? state.homeCanaryGuestPath : null,
             mode.startsWith('seeded-'))), input.workspace);
         report.nativeCommandCorrelated = report.nativeCheckDiagnostic.matches;
         report.providerSequenceComplete = providerSequenceComplete(state, mode,
           report.nativeCommandCorrelated, report.homeCanaryIntactBeforePublication);
-        return providerSequenceResult(result, report.providerSequenceComplete && report.nativeOutputClean, mode);
+        report.transportPrepublicationValid = custom?.beforeReturn ? await custom.beforeReturn({ report, state,
+          result, root, seedPath, secretValues }) : null;
+        return providerSequenceResult(result, report.providerSequenceComplete && report.nativeOutputClean &&
+          report.transportPrepublicationValid !== false, mode);
       } };
     coordinator = new Coordinator(project, 'codex-protected-fixture', policy, store,
       new AgentRegistry(profile, { codex: { configure: () => ({ worker, modes: ['implement'],
@@ -523,7 +537,7 @@ export async function run(mode = 'commit') {
     report.hostCanariesIntact = (await readFile(protectedPath, 'utf8')) === protectedCanary &&
       (await readFile(siblingPath, 'utf8')) === siblingCanary;
     report.homeCanaryIntact = mode === 'home-canary' && report.homeCanaryCreatedAfterFirstPost ?
-      await homeCanaryHostIntact(homeCanaryHostPath, homeCanary) : ['seeded-home', 'seeded-late-exposure'].includes(mode) ?
+      await homeCanaryHostIntact(homeCanaryHostPath, homeCanary) : ['seeded-home', 'seeded-cancel', 'seeded-late-exposure'].includes(mode) ?
       (await readFile(seedPath).catch(() => null))?.equals(seedBytes) === true : null;
     report.retainedArtifactsClean = await retainedArtifactsClean(root,
       mode.startsWith('seeded-') ? seedPath : '', secretValues);
