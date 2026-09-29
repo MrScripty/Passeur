@@ -7,12 +7,18 @@ it("requires a named boolean caller-home opt-in and defaults to a dedicated home
   const raw = { codex_bin: "/bin/codex", codex_home: "/caller/.codex", model: "fixture-model",
     subscription_confirmed: true, experimental_opt_in: true };
   expect(CodexOptionsSchema.parse(raw).use_caller_codex_home).toBe(false);
+  expect(CodexOptionsSchema.parse(raw).experimental_real_protected).toBe(false);
   expect(CodexOptionsSchema.parse({ ...raw, use_caller_codex_home: true }).use_caller_codex_home).toBe(true);
   expect(() => CodexOptionsSchema.parse({ ...raw, use_caller_codex_home: "true" })).toThrow();
+  expect(() => CodexOptionsSchema.parse({ ...raw, experimental_real_protected: "true" })).toThrow();
   if (process.platform === "linux") {
     expect(codexDefinition.configure(raw).configuration).toMatchObject({ use_caller_codex_home: false });
     expect(codexDefinition.configure({ ...raw, use_caller_codex_home: true }).configuration)
       .toMatchObject({ use_caller_codex_home: true });
+    expect(() => codexDefinition.configure({ ...raw, experimental_real_protected: true }))
+      .toThrowError(expect.objectContaining({ code: "CODEX_CONFIGURATION_MISMATCH" }));
+    expect(codexDefinition.configure({ ...raw, use_caller_codex_home: true, experimental_real_protected: true }).configuration)
+      .toMatchObject({ use_caller_codex_home: true, experimental_real_protected: true });
   }
 });
 function registration(name = "passeur_pumas"): CodexMcpRegistration {

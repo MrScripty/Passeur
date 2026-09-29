@@ -15,10 +15,10 @@ export { captureProtectedNamespace as captureProtectedHost,
 
 /** Native may join the sandbox just after the host reports its child PID. */
 export async function captureProtectedStartup(statusFile: string, nativePath: string,
-  io?: ProtectedObserverIO): Promise<Captured> {
+  io?: ProtectedObserverIO, networkRelation: "isolated" | "inherited" = "isolated"): Promise<Captured> {
   const deadline = performance.now() + 2_000;
   for (;;) {
-    try { return await captureProtectedNamespace(statusFile, nativePath, nativePath, io); }
+    try { return await captureProtectedNamespace(statusFile, nativePath, nativePath, io, networkRelation); }
     catch (error) {
       if (!(error instanceof BridgeError) || error.code !== "PROTECTED_NAMESPACE_INVALID" ||
           error.message !== "native process association is unknown" || performance.now() >= deadline) throw error;
@@ -59,10 +59,43 @@ function file(path: string): string {
   catch { invalid(); }
   return path;
 }
+function publicHostFile(path: string): string {
+  try {
+    const resolved = realpathSync(path), info = lstatSync(resolved);
+    if (!isAbsolute(resolved) || !info.isFile() || (info.mode & 0o004) === 0 ||
+        (info.mode & 0o022) !== 0) invalid();
+    return resolved;
+  } catch { invalid(); }
+}
+function callerAuthFile(home: string, excluded: readonly string[]): string {
+  const path = join(home, "auth.json");
+  try {
+    const info = lstatSync(path);
+    if (realpathSync(path) !== path || !info.isFile() || info.nlink !== 1 ||
+        info.uid !== process.getuid?.() || (info.mode & 0o700) !== 0o600 ||
+        (info.mode & 0o077) !== 0 || excluded.some(root => overlaps(path, root))) invalid();
+    return path;
+  } catch { invalid(); }
+}
 function overlaps(a: string, b: string): boolean { return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`); }
 function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) &&
     Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
+}
+/** A generated task policy contains no caller settings or credential material. */
+export function realProtectedPolicy(workspace: string, canonical: string, admin: string, native: string): Buffer {
+  const paths = [workspace, canonical, admin, native];
+  if (paths.some(path => !isAbsolute(path) || path.includes("\n") || path.includes("\r") || path.includes("\0")) ||
+      new Set(paths).size !== paths.length) invalid();
+  const quote = (value: string) => JSON.stringify(value);
+  return Buffer.from(`cli_auth_credentials_store = "file"\n` +
+    `[skills]\ninclude_instructions = false\n[skills.bundled]\nenabled = false\n` +
+    `[memories]\nuse_memories = false\ngenerate_memories = false\n` +
+    `[permissions."passeur-boundary".workspace_roots]\n${quote(workspace)} = true\n${quote(canonical)} = true\n` +
+    `[permissions."passeur-boundary".filesystem]\n":root" = "deny"\n":minimal" = "read"\n` +
+    `":slash_tmp" = "deny"\n":tmpdir" = "deny"\n${quote(native)} = "read"\n${quote(admin)} = "write"\n` +
+    `[permissions."passeur-boundary".filesystem.":workspace_roots"]\n"." = "write"\n` +
+    `[permissions."passeur-boundary".network]\nenabled = true\n`);
 }
 /** The guest sees this exact policy artifact, mounted read-only over its writable home. */
 export function assertProtectedHomePolicy(home: string, workspace: string, canonical: string,
@@ -129,7 +162,7 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   hostScript: string, nativeArgs: readonly string[], relay?: Readonly<{ socketPath: string; port: number;
     tlsProxy?: Readonly<{ caFile: string; accountHost: string; inferenceHost: string; firstParty?: true;
       directNoProxy?: true }> }>,
-  seedFile?: string, lateExposure = false): { command: string; args: string[]; env: NodeJS.ProcessEnv;
+  seedFile?: string, lateExposure = false, realCallerHome = false): { command: string; args: string[]; env: NodeJS.ProcessEnv;
     statusFile: string; nativePath: string; guestStartPermit: boolean } {
   const view = input.private_git?.view;
   if (input.private_git?.schema_version !== 1 || input.private_git.mount_kind !== "canonical_common_dir" ||
@@ -137,10 +170,12 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   const workspace = directory(input.workspace), home = directory(codexHome);
   const privateDir = directory(view.private_common_dir), canonical = directory(view.canonical_common_dir);
   const native = file(codexBin), host = file(hostScript), node = file(process.execPath);
+  const dns = realCallerHome ? publicHostFile("/etc/resolv.conf") : undefined;
+  const publicCa = realCallerHome ? publicHostFile("/etc/ssl/certs/ca-certificates.crt") : undefined;
   const egressModule = relay?.tlsProxy ? file(fileURLToPath(new URL("./protected-egress.js", import.meta.url))) : undefined;
   const packageJson = relay ? file(fileURLToPath(new URL("../../../../package.json", import.meta.url))) : undefined;
   const control = dirname(privateDir);
-  if (lateExposure && !seedFile) invalid();
+  if (lateExposure && !seedFile || realCallerHome && (seedFile || relay || lateExposure)) invalid();
   if (seedFile && (!isAbsolute(seedFile) || !seedFile.startsWith("/tmp/") ||
       [workspace, home, privateDir, canonical, control].some(path => overlaps(path, seedFile)) ||
       !relay)) invalid();
@@ -172,16 +207,22 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
       realpathSync(join(privateAdmin, "commondir")) !== join(privateAdmin, "commondir") ||
       readFileSync(dotGit, "utf8").trim() !== `gitdir: ${canonical}/${view.admin_relative}` ||
       readFileSync(join(privateAdmin, "commondir"), "utf8").trim() !== "../..") invalid();
-  const configSnapshot = snapshotPolicy(control, assertProtectedHomePolicy(home, workspace, canonical,
-    join(canonical, view.admin_relative), native, seedFile && !relay?.tlsProxy ? relay?.port : undefined,
-    relay?.tlsProxy));
-  // Codex's named profile starts a nested user namespace for each tool. Keep that
-  // capability inside this outer task-owned PID and network namespace.
-  const args = ["--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net",
-    "--die-with-parent", "--new-session", "--clearenv"];
+  const callerAuth = realCallerHome ? callerAuthFile(home, [workspace, control, privateDir, canonical]) : undefined;
+  const configSnapshot = snapshotPolicy(control, realCallerHome
+    ? realProtectedPolicy(workspace, canonical, join(canonical, view.admin_relative), native)
+    : assertProtectedHomePolicy(home, workspace, canonical,
+      join(canonical, view.admin_relative), native, seedFile && !relay?.tlsProxy ? relay?.port : undefined,
+      relay?.tlsProxy));
+  // Codex's named profile starts a nested user namespace for each tool. The
+  // real host inherits network; the real named profile permits ordinary network.
+  const args = ["--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+    ...(realCallerHome ? [] : ["--unshare-net"]), "--die-with-parent", "--new-session", "--clearenv"];
   for (const root of ["/usr", "/bin", "/lib", "/lib64"]) if (existsSync(root)) args.push("--ro-bind", root, root);
   args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/mounts", "--dir", "/mounts/home");
+  if (realCallerHome) args.push("--dir", "/etc", "--dir", "/etc/ssl", "--dir", "/etc/ssl/certs",
+    "--ro-bind", dns!, "/etc/resolv.conf", "--ro-bind", publicCa!, "/etc/ssl/certs/ca-certificates.crt");
   if (seedFile) args.push("--perms", "0700", "--tmpfs", "/mounts/home", "--perms", "0600", "--file", "4", "/mounts/home/auth.json");
+  else if (callerAuth) args.push("--perms", "0700", "--tmpfs", "/mounts/home", "--bind-fd", "4", "/mounts/home/auth.json");
   else args.push("--bind", home, "/mounts/home");
   args.push("--dir", "/dev/shm", "--tmpfs", "/dev/shm");
   for (const parent of [...new Set([...parents(workspace), ...parents(canonical), ...parents(native),
@@ -212,6 +253,7 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   } else args.push("--", native, ...nativeArgs);
   const statusFile = join(control, `codex-protected-status-${randomUUID()}.jsonl`);
   const spec = Buffer.from(JSON.stringify({ args, statusFile, ...(seedFile ? { seedFile } : {}),
+    ...(callerAuth ? { callerAuthFile: callerAuth } : {}),
     ...(relay?.tlsProxy ? { tlsSeedAdmission: true } : {}) })).toString("base64url");
   return { command: node, args: [host, spec], env: {}, statusFile, nativePath: native,
     guestStartPermit: !!relay };

@@ -91,7 +91,6 @@ export function assertProtectedConfiguration(value: unknown, profile = "passeur-
       config.sandbox_workspace_write != null || config.permission_profile != null || config.permissionProfile != null) {
     throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "The protected named profile is not the sole effective permission selector");
   }
-  if (!synthetic) return; // The real-account profile has a separate, unqualified gate.
   if (!policy || !Array.isArray(response.layers) || !response.layers.length) {
     throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected configuration layers are unavailable");
   }
@@ -102,7 +101,50 @@ export function assertProtectedConfiguration(value: unknown, profile = "passeur-
   }
   const expected = { [profile]: { workspace_roots: { [policy.workspace]: true, [policy.canonical]: true },
     filesystem: { ":root": "deny", ":minimal": "read", ":slash_tmp": "deny", ":tmpdir": "deny",
-      [policy.native]: "read", [policy.admin]: "write", ":workspace_roots": { ".": "write" } }, network: { enabled: false } } };
+      [policy.native]: "read", [policy.admin]: "write", ":workspace_roots": { ".": "write" } },
+    network: { enabled: !synthetic } } };
+  if (!synthetic) {
+    const realSettings = { cli_auth_credentials_store: "file",
+      skills: { include_instructions: false, bundled: { enabled: false } },
+      memories: { use_memories: false, generate_memories: false } };
+    if (config.model_provider !== "openai" || !isDeepStrictEqual(config.permissions, expected) ||
+        config.chatgpt_base_url != null && config.chatgpt_base_url !== "https://chatgpt.com/backend-api/codex" ||
+        config.cli_auth_credentials_store !== "file" ||
+        !isDeepStrictEqual(config.skills, realSettings.skills) ||
+        !isDeepStrictEqual(config.memories, realSettings.memories) ||
+        config.instructions != null || config.developer_instructions != null ||
+        config.model_instructions_file != null) {
+      throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Real protected effective provider or profile differs from generated policy");
+    }
+    let user = 0, session = 0, emptySystem = 0;
+    for (const raw of response.layers) {
+      const layer = object(raw, "config/read.layer"), name = object(layer.name, "config/read.layer.name");
+      if (layer.disabledReason != null) continue;
+      if (name.type === "user" && name.file === "/mounts/home/config.toml" && name.profile == null) {
+        user++;
+        if (!isDeepStrictEqual(object(layer.config, "generated user policy"),
+          { ...realSettings, permissions: expected })) {
+          throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Loaded real protected policy differs from generated snapshot");
+        }
+      } else if (name.type === "sessionFlags") {
+        session++;
+        const flags = object(layer.config, "protected session flags");
+        if (flags.default_permissions !== profile || flags.model_provider !== "openai" ||
+            flags.forced_login_method !== "chatgpt" || !isDeepStrictEqual(flags.mcp_servers, {}) ||
+            !isDeepStrictEqual(flags.features, { multi_agent: false, apps: false, plugins: false, image_generation: false }) ||
+            flags.web_search !== "disabled" || flags.permissions != null || flags.sandbox_mode != null) {
+          throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Real protected session flags changed generated policy");
+        }
+      } else if (name.type === "system" && name.file === "/etc/codex/config.toml" &&
+          Object.keys(object(layer.config, "system layer")).length === 0) emptySystem++;
+      else if (name.type === "packagedDefaults" && object(layer.config, "packaged defaults").permissions == null) continue;
+      else throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "An unqualified real protected config layer is active");
+    }
+    if (user !== 1 || session !== 1 || emptySystem > 1) {
+      throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Real protected policy has incomplete native layer evidence");
+    }
+    return;
+  }
   let user = 0, session = 0, emptySystem = 0;
   const bootstrap = policy.tls?.firstParty ? undefined : policy.tls ? `https://${policy.tls.accountHost}` :
     policy.seededPort !== undefined ? `http://127.0.0.1:${policy.seededPort}` : undefined;
@@ -156,6 +198,18 @@ export function assertProtectedConfiguration(value: unknown, profile = "passeur-
   }
   if (user !== 1 || session !== 1 || emptySystem > 1) {
     throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected policy has incomplete native layer evidence");
+  }
+}
+/** Exact empty model-visible skill inventory for a single task view. */
+export function assertEmptySkills(value: unknown, workspace: string): void {
+  const response = object(value, "skills/list");
+  if (!Array.isArray(response.data) || response.data.length !== 1) {
+    throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Native skill inventory is incomplete or nonempty");
+  }
+  const entry = object(response.data[0], "skills/list entry");
+  if (entry.cwd !== workspace || !Array.isArray(entry.skills) || entry.skills.length !== 0 ||
+      !Array.isArray(entry.errors) || entry.errors.length !== 0) {
+    throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Native skill inventory is incomplete or nonempty");
   }
 }
 export function assertProtectedProfile(value: unknown, profile = "passeur-boundary"): void {

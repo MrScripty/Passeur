@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexAdapter, codexEnvironment, resolveCodexHome, failOnProtectedCredentialExposure, failOnProtectedTerminalAuth,
   initializeAfterProtectedCapture, protectedNativeRejection } from "../../src/agents/codex/adapter.js";
-import { assertConfiguration, assertProtectedConfiguration, assertProtectedProfile, assertSyntheticSeedAccount, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
+import { assertConfiguration, assertEmptySkills, assertProtectedConfiguration, assertProtectedProfile, assertSyntheticSeedAccount, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
 import type { CodexOptions } from "../../src/agents/codex/config.js";
 import type { WorkerInput } from "../../src/agents/types.js";
 import { cancellationConformance } from "../fixtures/adapter-conformance.js";
@@ -215,7 +215,7 @@ describe("protected native profile correlation", () => {
     mcp_servers: {}, features: { multi_agent: false, apps: false, plugins: false, image_generation: false }, web_search: "disabled",
     model_provider: "openai" } };
   it("requires one exact effective selector and complete allowed profile inventory", () => {
-    expect(() => assertProtectedConfiguration(config)).not.toThrow();
+    expect(() => assertProtectedConfiguration(config)).toThrowError(expect.objectContaining({ code: "CODEX_CONFIGURATION_MISMATCH" }));
     expect(() => assertProtectedConfiguration({ config: { ...config.config, sandbox_mode: "workspace-write" } })).toThrow();
     expect(() => assertProtectedConfiguration({ config: { ...config.config, default_permissions: "other" } })).toThrow();
     expect(() => assertProtectedProfile({ data: [{ id: "passeur-boundary", allowed: true }], nextCursor: null })).not.toThrow();
@@ -234,6 +234,33 @@ describe("protected native profile correlation", () => {
         { name: { type: "user", file: "/mounts/home/config.toml", profile: null }, version: "1", config: { permissions } }] };
     const scope = { workspace, canonical, admin, native };
     expect(() => assertProtectedConfiguration(response, "passeur-boundary", true, scope)).not.toThrow();
+    const realPermissions = { "passeur-boundary": { ...permissions["passeur-boundary"], network: { enabled: true } } };
+    const realSettings = { cli_auth_credentials_store: "file",
+      skills: { include_instructions: false, bundled: { enabled: false } },
+      memories: { use_memories: false, generate_memories: false } };
+    const real = { ...response, config: { ...response.config, permissions: realPermissions, ...realSettings },
+      layers: response.layers.map(layer => layer.name.type === "sessionFlags" ? {
+        ...layer, config: { default_permissions: "passeur-boundary", model_provider: "openai",
+          forced_login_method: "chatgpt", mcp_servers: {},
+          features: { multi_agent: false, apps: false, plugins: false, image_generation: false },
+          web_search: "disabled" } } : layer.name.type === "user" ?
+        { ...layer, config: { permissions: realPermissions, ...realSettings } } : layer) };
+    expect(() => assertProtectedConfiguration(real, "passeur-boundary", false, scope)).not.toThrow();
+    for (const changed of [
+      { cli_auth_credentials_store: "auto" },
+      { skills: { include_instructions: true, bundled: { enabled: false } } },
+      { memories: { use_memories: true, generate_memories: false } },
+      { instructions: "private instruction" },
+      { developer_instructions: "private instruction" },
+      { model_instructions_file: "/home/private" },
+    ]) expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, ...changed } },
+      "passeur-boundary", false, scope)).toThrowError(expect.objectContaining({ code: "CODEX_CONFIGURATION_MISMATCH" }));
+    expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, permissions: {
+      "passeur-boundary": { ...realPermissions["passeur-boundary"], network: { enabled: false } } } } },
+    "passeur-boundary", false, scope)).toThrow();
+    expect(() => assertProtectedConfiguration({ ...real, layers: [...real.layers,
+      { name: { type: "project", dotCodexFolder: `${workspace}/.codex` }, config: {} }] },
+    "passeur-boundary", false, scope)).toThrow();
     expect(() => assertProtectedConfiguration({ ...response,
       config: { ...response.config, features: { ...response.config.features, image_generation: true } } },
     "passeur-boundary", true, scope)).toThrow();
@@ -286,6 +313,16 @@ describe("protected native profile correlation", () => {
     expect(() => protectedThreadStarted({ ...response, activePermissionProfile: { id: "other" } }, "/tmp/work", "candidate")).toThrow();
     expect(() => protectedThreadStarted({ ...response, modelProvider: "fallback" }, "/tmp/work", "candidate")).toThrow();
   });
+  it("requires an empty exact native skill inventory for the task cwd", () => {
+    const accepted = { data: [{ cwd: "/tmp/work", skills: [], errors: [] }] };
+    expect(() => assertEmptySkills(accepted, "/tmp/work")).not.toThrow();
+    for (const bad of [{ data: [] }, { data: [accepted.data[0], accepted.data[0]] },
+      { data: [{ ...accepted.data[0], cwd: "/tmp/other" }] },
+      { data: [{ ...accepted.data[0], skills: [{ name: "private-skill" }] }] },
+      { data: [{ ...accepted.data[0], errors: [{ path: "/home/private", message: "secret" }] }] }]) {
+      expect(() => assertEmptySkills(bad, "/tmp/work")).toThrowError(expect.objectContaining({ code: "CODEX_ISOLATION_UNAVAILABLE" }));
+    }
+  });
   it("retains only a version-matched item type name for rejected native items", () => {
     expect(protectedItemType("userMessage")).toBe("userMessage");
     expect(protectedItemType("mcpToolCall")).toBe("mcpToolCall");
@@ -334,6 +371,22 @@ describe.runIf(process.platform === "linux")("Codex adapter through an actual co
       } finally {
         if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
       }
+    });
+  });
+  it("does not start a real protected worker with a different executable hash", async () => {
+    await scenario("success", async (_adapter, run, home) => {
+      const previous = process.env.CODEX_HOME;
+      try {
+        process.env.CODEX_HOME = home;
+        const result = await new CodexAdapter({ ...options, codex_bin: join(home, "fixture-scenario"),
+          codex_home: home, use_caller_codex_home: true, experimental_real_protected: true }).run({
+          ...run, private_git: { schema_version: 1, mount_kind: "canonical_common_dir",
+            view: { private_common_dir: "/tmp/unused-private", canonical_common_dir: "/tmp/unused-canonical",
+              admin_relative: "worktrees/task", baseline_index_sha256: "0".repeat(64) } },
+        });
+        expect(result).toMatchObject({ status: "failed", worker_stop: "not_started",
+          error: { code: "CODEX_NATIVE_UNSUPPORTED" } });
+      } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
     });
   });
   for (const [name, expected, code] of [

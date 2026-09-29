@@ -12,7 +12,7 @@ import type { WorkerAdapter, WorkerInput, WorkerRun } from "../types.js";
 import { PeerDeliveryNativeSessionIdSchema, type PeerDeliveryEnvelope } from "../../contracts/peer-delivery.js";
 import type { CodexOptions } from "./config.js";
 import { CodexStdio, StartupStderrDiagnostic, type NativeMessage, type StartupStderrEvidence } from "./transport.js";
-import { approval, assertAccount, assertSyntheticSeedAccount, assertConfiguration, assertMcpItemStatus, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
+import { approval, assertAccount, assertSyntheticSeedAccount, assertConfiguration, assertEmptySkills, assertMcpItemStatus, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
 import { captureProtectedStartup, protectedCredentialExposure, protectedLaunch,
   protectedSeedAdmissionRefused, settleProtectedStop } from "./protected-runtime.js";
 import { type Captured } from "../../core/protected-namespace.js";
@@ -63,7 +63,7 @@ function peerPrompt(envelope: PeerDeliveryEnvelope): string {
   if (Buffer.byteLength(prompt, "utf8") > MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES) throw new BridgeError("PEER_DELIVERY_UNSUPPORTED", "Peer continuation exceeds the bounded native prompt");
   return prompt;
 }
-const protectedStages = ["initialize", "account/read", "config/read", "permissionProfile/list",
+const protectedStages = ["initialize", "account/read", "config/read", "permissionProfile/list", "skills/list",
   "thread/start", "mcpServerStatus/list", "turn/start"] as const;
 type ProtectedStage = typeof protectedStages[number];
 export function protectedNativeRejection(diagnostic: { code: string; message: string }, stage: string,
@@ -125,6 +125,7 @@ export class CodexAdapter implements WorkerAdapter {
     let transport: CodexStdio | undefined, threadId: string | undefined, current: NativeTurn | undefined, reportedModel: string | undefined;
     let protectedHost: { statusFile: string; nativePath: string } | undefined, protectedCapture: Captured | undefined;
     const protectedRun = input.private_git !== undefined;
+    const realProtected = protectedRun && !!this.options.experimental_real_protected;
     let protectedStage = "unknown";
     let protectedCommands = 0;
     const startupStderr = this.qualification?.relay.tlsProxy?.firstParty && this.qualification.relay.startupDiagnostic
@@ -215,9 +216,12 @@ export class CodexAdapter implements WorkerAdapter {
     };
     try {
       const home = await resolveCodexHome(this.options.codex_home, input.workspace,
-        !protectedRun && this.options.use_caller_codex_home);
+        !!this.options.use_caller_codex_home && (!protectedRun || realProtected));
       signal.throwIfAborted();
-      if (protectedRun && !this.qualification) {
+      if (realProtected && (!this.options.use_caller_codex_home || this.qualification)) {
+        throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Real protected mode requires caller home without a synthetic qualification provider");
+      }
+      if (protectedRun && !this.qualification && !realProtected) {
         throw new BridgeError("CODEX_NATIVE_UNSUPPORTED", "Protected real-account Codex has not completed its qualification gate");
       }
       if (protectedRun) {
@@ -237,7 +241,8 @@ export class CodexAdapter implements WorkerAdapter {
           "-c", "features.multi_agent=false", "-c", "features.apps=false", "-c", "features.plugins=false",
           "-c", "features.image_generation=false",
           "-c", 'web_search="disabled"', "app-server"],
-        this.qualification?.relay, this.qualification?.seedFile, this.qualification?.lateExposure) : undefined;
+        this.qualification?.relay, this.qualification?.seedFile, this.qualification?.lateExposure,
+        realProtected) : undefined;
       if (launch) protectedHost = { statusFile: launch.statusFile, nativePath: launch.nativePath };
       transport = new CodexStdio({ command: launch?.command ?? this.options.codex_bin,
         args: launch?.args ?? argumentsFor(this.options), cwd: input.workspace, env: launch?.env ?? codexEnvironment(home),
@@ -304,7 +309,8 @@ export class CodexAdapter implements WorkerAdapter {
         () => transport!.request("initialize", { clientInfo: { name: "passeur_codex_worker", title: "Passeur worker", version: "0.1.0" }, capabilities: { experimentalApi: !!launch } }, signal),
         signal, () => {
           if (this.qualification?.failAfterCapture) throw new BridgeError("CODEX_FIXTURE_STARTUP_FAILURE", "Synthetic fixture stopped after native namespace capture");
-        }, captureProtectedStartup, () => transport!.startProtectedGuest(signal)), "initialize");
+        }, (statusFile, nativePath) => captureProtectedStartup(statusFile, nativePath, undefined,
+          realProtected ? "inherited" : "isolated"), () => transport!.startProtectedGuest(signal)), "initialize");
       text(initialize.userAgent, "initialize.userAgent", 1024);
       startupStderr?.finish();
       const observedPid = protectedCapture?.nativePid ?? transport.pid;
@@ -333,6 +339,10 @@ export class CodexAdapter implements WorkerAdapter {
         if (object(object(config, "config/read").config, "config").model_provider !== provider) throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected provider changed before the turn");
         protectedStage = "permissionProfile/list";
         assertProtectedProfile(await transport.request("permissionProfile/list", { cwd: input.workspace }, signal));
+        if (realProtected) {
+          protectedStage = "skills/list";
+          assertEmptySkills(await transport.request("skills/list", { cwds: [input.workspace], forceReload: true }, signal), input.workspace);
+        }
       } else assertConfiguration(config, !!this.options.use_caller_codex_home);
       protectedStage = "thread/start";
       const threadResponse = await transport.request("thread/start", launch
@@ -346,6 +356,10 @@ export class CodexAdapter implements WorkerAdapter {
       protectedStage = "mcpServerStatus/list";
       if (protectedRun || !this.options.use_caller_codex_home) {
         assertNoMcp(await transport.request("mcpServerStatus/list", { threadId, limit: 1 }, signal));
+      }
+      if (realProtected) {
+        protectedStage = "skills/list";
+        assertEmptySkills(await transport.request("skills/list", { cwds: [input.workspace], forceReload: true }, signal), input.workspace);
       }
       let prompt = input.prompt;
       let peerTurn: PeerDeliveryEnvelope | undefined;

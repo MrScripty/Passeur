@@ -6,7 +6,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { dirname, join } from "node:path";
 import { Transform } from "node:stream";
 
-type Spec = Readonly<{ args: string[]; statusFile: string; seedFile?: string; tlsSeedAdmission?: true }>;
+type Spec = Readonly<{ args: string[]; statusFile: string; seedFile?: string; callerAuthFile?: string; tlsSeedAdmission?: true }>;
 type GuestSpec = Readonly<{ native: string; nativeArgs: string[]; socketPath: string; port: number;
   seededProbe?: true; lateExposure?: true; tlsProxy?: true }>;
 /** The outer launcher validated and mounted this policy snapshot read-only. Reject ambiguous variants here. */
@@ -124,6 +124,7 @@ export async function runProtectedHost(spec: Spec): Promise<number> {
       !spec.args.some((value, index) => value === "--setenv" && spec.args[index + 1] === "CODEX_CA_CERTIFICATE"))) {
     throw new Error("CODEX_PROTECTED_HOST_CONFIG_INVALID");
   }
+  if (spec.seedFile !== undefined && spec.callerAuthFile !== undefined) throw new Error("CODEX_PROTECTED_HOST_CONFIG_INVALID");
   if (spec.seedFile !== undefined) {
     if (typeof spec.seedFile !== "string" || !/^\/tmp\/[A-Za-z0-9._-]+\/seed-auth\.json$/.test(spec.seedFile) ||
         !spec.args.some((value, index) => value === "--file" && spec.args[index + 1] === "4" &&
@@ -166,6 +167,26 @@ export async function runProtectedHost(spec: Spec): Promise<number> {
         throw new Error("CODEX_PROTECTED_AUTH_STALE");
       }
       throw new Error("CODEX_PROTECTED_SEED_INVALID");
+    }
+  } else if (spec.callerAuthFile !== undefined) {
+    const bindFd = spec.args.flatMap((value, index) => value === "--bind-fd" ? [index] : []);
+    const authDestination = spec.args.flatMap((value, index) => value === "/mounts/home/auth.json" ? [index] : []);
+    if (typeof spec.callerAuthFile !== "string" || !spec.callerAuthFile.startsWith("/") ||
+        bindFd.length !== 1 || authDestination.length !== 1 ||
+        spec.args[bindFd[0]! + 1] !== "4" || spec.args[bindFd[0]! + 2] !== "/mounts/home/auth.json" ||
+        spec.args.includes(spec.callerAuthFile) || spec.args.includes(dirname(spec.callerAuthFile)) ||
+        spec.args.includes("--file")) throw new Error("CODEX_PROTECTED_HOST_CONFIG_INVALID");
+    try {
+      // Linux O_PATH holds the named inode without reading credential bytes.
+      launchFd = openSync(spec.callerAuthFile, 0o10000000 | constants.O_NOFOLLOW);
+      const opened = fstatSync(launchFd), named = lstatSync(spec.callerAuthFile);
+      if (!opened.isFile() || !named.isFile() || opened.uid !== process.getuid?.() ||
+          (opened.mode & 0o700) !== 0o600 || (opened.mode & 0o077) !== 0 || opened.nlink !== 1 ||
+          opened.dev !== named.dev || opened.ino !== named.ino ||
+          realpathSync(spec.callerAuthFile) !== spec.callerAuthFile) throw new Error("CODEX_PROTECTED_AUTH_INVALID");
+    } catch {
+      if (launchFd !== undefined) closeSync(launchFd);
+      throw new Error("CODEX_PROTECTED_AUTH_INVALID");
     }
   } else if (spec.args.includes("/mounts/home/auth.json")) throw new Error("CODEX_PROTECTED_HOST_CONFIG_INVALID");
   let child: ReturnType<typeof spawn>;

@@ -81,7 +81,8 @@ const systemObserver: ProtectedObserverIO = {
 };
 
 export async function captureProtectedNamespace(statusFile: string, guestNativePath: string,
-  hostNativePath: string, io: ProtectedObserverIO = systemObserver): Promise<Captured> {
+  hostNativePath: string, io: ProtectedObserverIO = systemObserver,
+  networkRelation: "isolated" | "inherited" = "isolated"): Promise<Captured> {
   const deadline = Date.now() + 2_000;
   let status: Status;
   do {
@@ -117,8 +118,11 @@ export async function captureProtectedNamespace(statusFile: string, guestNativeP
       }
       return current.pid === ancestor.pid;
     };
+    const networkMatches = networkRelation === "isolated" ? child.netns !== wrapper.netns :
+      networkRelation === "inherited" && child.netns === wrapper.netns;
     if (init.length !== 1 || init[0]!.parent !== wrapper.pid ||
-        child.netns === wrapper.netns || child.pidns === wrapper.pidns ||
+        !networkMatches ||
+        child.pidns === wrapper.pidns ||
         !descendsFrom(child, init[0]!) || native.length !== 1 ||
         !descendsFrom(native[0]!, child) || native[0]!.netns !== child.netns) {
       observerInvalid("native process association is unknown");

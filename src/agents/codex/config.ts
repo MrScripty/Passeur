@@ -7,19 +7,26 @@ export const CodexOptionsSchema = z.object({
   model: z.string().min(1).max(256), network_access: z.boolean().default(false),
   allow_command_escalation: z.boolean().default(false),
   use_caller_codex_home: z.boolean().default(false),
+  experimental_real_protected: z.boolean().default(false),
   subscription_confirmed: z.literal(true), experimental_opt_in: z.literal(true),
 }).strict();
-export type CodexOptions = Omit<z.output<typeof CodexOptionsSchema>, "use_caller_codex_home"> & {
+export type CodexOptions = Omit<z.output<typeof CodexOptionsSchema>, "use_caller_codex_home" | "experimental_real_protected"> & {
   use_caller_codex_home?: boolean;
+  experimental_real_protected?: boolean;
 };
 export const codexDefinition: AdapterDefinition = {
   configure(raw) {
     const options = CodexOptionsSchema.parse(raw);
+    if (options.experimental_real_protected && !options.use_caller_codex_home) {
+      throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Real protected mode requires explicit caller-home opt-in");
+    }
     if (process.platform !== "linux") throw new BridgeError("AGENT_UNAVAILABLE", "Codex process supervision is implemented for Linux");
     return { contract: "codex-app-server-v2-projection/1", modes: ["implement"], requested_model: options.model,
       configuration: { executable: options.codex_bin, codex_home: options.codex_home, model: options.model,
         network_access: options.network_access, allow_command_escalation: options.allow_command_escalation,
-        use_caller_codex_home: options.use_caller_codex_home, authentication: "chatgpt", experimental_opt_in: true },
+        use_caller_codex_home: options.use_caller_codex_home,
+        experimental_real_protected: options.experimental_real_protected,
+        authentication: "chatgpt", experimental_opt_in: true },
       worker: { async run(input) {
         let create: typeof import("./adapter.js");
         try { create = await import("./adapter.js"); }

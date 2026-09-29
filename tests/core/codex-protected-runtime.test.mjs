@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, symlink, readdir } from 'node:fs/promises';
-import { closeSync, readFileSync, readSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, symlink, readdir, stat, link, rename } from 'node:fs/promises';
+import { closeSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createServer, connect } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { assertProtectedHomePolicy, captureProtectedStartup, protectedLaunch,
+import { assertProtectedHomePolicy, captureProtectedStartup, protectedLaunch, realProtectedPolicy,
   protectedSeedAdmissionRefused, settleProtectedStop } from '../../dist/src/agents/codex/protected-runtime.js';
 import { initializeAfterProtectedCapture } from '../../dist/src/agents/codex/adapter.js';
 import { credentialHoldback, nativeAuthPresent, PROTECTED_START_PERMIT, protectedProxyControlAuthority, runProtectedHost, snapshotCheckedSeed, startAfterProtectedProxyControl, syntheticAccessTokenFresh } from '../../dist/src/agents/codex/protected-host.js';
@@ -42,11 +42,14 @@ test('protected launch places only the private Git common dir at the canonical g
   const f = await fixture();
   try {
     const launch = protectedLaunch(f.input, f.native, f.home, f.host, ['app-server']);
+    assert.ok(f.config.includes('[permissions."passeur-boundary".network]\nenabled = false\n'));
     assert.equal(launch.guestStartPermit, false);
     const spec = JSON.parse(Buffer.from(launch.args[1], 'base64url').toString('utf8'));
     const args = spec.args;
     const at = args.indexOf('--bind', args.indexOf(f.workspace));
     assert.ok(args.includes('--unshare-pid') && args.includes('--unshare-net') && args.includes('--die-with-parent'));
+    assert.equal(args.includes('/etc/resolv.conf'), false);
+    assert.equal(args.includes('/etc/ssl/certs/ca-certificates.crt'), false);
     assert.equal(args.includes('--disable-userns'), false);
     assert.deepEqual(args.slice(at, at + 5), ['--bind', f.privateDir, f.canonical, '--ro-bind', f.native]);
     assert.ok(args.some((value, index) => value === '--ro-bind' &&
@@ -72,6 +75,89 @@ test('validated profile snapshot stays exact after the home source is replaced',
     await writeFile(join(f.home, 'config.toml'), f.config.replace('enabled = false', 'enabled = true'));
     assert.equal(await readFile(snapshot, 'utf8'), f.config);
     assert.notEqual(await readFile(join(f.home, 'config.toml'), 'utf8'), await readFile(snapshot, 'utf8'));
+  } finally { await f.close(); }
+});
+
+test('real caller home uses a generated task policy and inherited host network', async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.home, 'config.toml'), 'model_provider = "untrusted"\n');
+    const auth = join(f.home, 'auth.json');
+    await writeFile(auth, 'dummy-login-before', { mode: 0o600 });
+    await mkdir(join(f.home, 'skills'));
+    await writeFile(join(f.home, 'AGENTS.md'), 'caller instructions');
+    await writeFile(join(f.home, 'history.jsonl'), 'caller history');
+    const launch = protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'],
+      undefined, undefined, false, true);
+    const spec = JSON.parse(Buffer.from(launch.args[1], 'base64url').toString('utf8'));
+    const args = spec.args;
+    assert.equal(args.includes('--unshare-net'), false);
+    const dns = args.lastIndexOf('/etc/resolv.conf'), ca = args.lastIndexOf('/etc/ssl/certs/ca-certificates.crt');
+    assert.deepEqual(args.slice(dns - 2, dns + 1), ['--ro-bind', realpathSync('/etc/resolv.conf'), '/etc/resolv.conf']);
+    assert.deepEqual(args.slice(ca - 2, ca + 1), ['--ro-bind', realpathSync('/etc/ssl/certs/ca-certificates.crt'), '/etc/ssl/certs/ca-certificates.crt']);
+    assert.ok(args.includes('/etc') && args.includes('/etc/ssl') && args.includes('/etc/ssl/certs'));
+    assert.equal(args.some((value, index) => value === '--ro-bind' && args[index + 1] === '/etc'), false);
+    assert.equal(args.some((value, index) => value === '--bind' && args[index + 1] === f.home), false);
+    assert.ok(args.some((value, index) => value === '--bind-fd' && args[index + 1] === '4' &&
+      args[index + 2] === '/mounts/home/auth.json'));
+    assert.equal(args.includes(auth), false);
+    assert.equal(spec.callerAuthFile, auth);
+    assert.ok(args.some((value, index) => value === '--tmpfs' && args[index + 1] === '/mounts/home'));
+    const index = args.findIndex((value, position) => value === '--ro-bind' && args[position + 2] === '/mounts/home/config.toml');
+    assert.ok(index >= 0);
+    const generated = realProtectedPolicy(f.workspace, f.canonical,
+      join(f.canonical, 'worktrees', 'task'), f.native).toString();
+    assert.ok(generated.includes('[permissions."passeur-boundary".network]\nenabled = true\n'));
+    assert.equal(await readFile(args[index + 1], 'utf8'), generated);
+    assert.equal((await readFile(args[index + 1], 'utf8')).includes('untrusted'), false);
+    assert.equal(spec.seedFile, undefined);
+    const inode = (await stat(auth)).ino;
+    const authFd = openSync(auth, 0o10000000 | 0o400000);
+    let mounted;
+    try {
+      mounted = spawnSync('bwrap', [...args.slice(0, args.indexOf('--')), '--', '/bin/sh', '-c',
+        'test -f /mounts/home/auth.json && test -f /mounts/home/config.toml && ' +
+        'test ! -e /proc/self/fd/4 && ' +
+        'test ! -e /mounts/home/skills && test ! -e /mounts/home/AGENTS.md && ' +
+        'test ! -e /mounts/home/history.jsonl && printf dummy-login-after > /mounts/home/auth.json'],
+      { stdio: ['ignore', 'pipe', 'pipe', 'ignore', authFd] });
+    } finally { closeSync(authFd); }
+    assert.equal(mounted.status, 0, mounted.stderr?.toString());
+    assert.equal((await stat(auth)).ino, inode);
+    assert.equal(await readFile(auth, 'utf8'), 'dummy-login-after');
+    assert.equal(await readFile(join(f.home, 'AGENTS.md'), 'utf8'), 'caller instructions');
+    await rename(auth, join(f.home, 'moved-auth'));
+    await symlink(join(f.home, 'moved-auth'), auth);
+    await assert.rejects(runProtectedHost(spec), /CODEX_PROTECTED_AUTH_INVALID/);
+    for (const changed of [
+      { ...spec, args: [...spec.args.slice(0, args.indexOf('--')), '--bind-fd', '4', '/mounts/other-auth', ...spec.args.slice(args.indexOf('--'))] },
+      { ...spec, args: args.map(value => value === '/mounts/home/auth.json' ? '/mounts/other-auth' : value) },
+      { ...spec, seedFile: join(f.root, 'seed-auth.json') },
+    ]) await assert.rejects(runProtectedHost(changed), /CODEX_PROTECTED_HOST_CONFIG_INVALID/);
+    assert.throws(() => protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'],
+      { socketPath: '/tmp/nonexistent', port: 1 }, undefined, false, true),
+      { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
+  } finally { await f.close(); }
+});
+
+test('real caller auth admission rejects absent, public, linked and symlinked files', async () => {
+  const f = await fixture();
+  const auth = join(f.home, 'auth.json');
+  const launch = () => protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'],
+    undefined, undefined, false, true);
+  try {
+    assert.throws(launch, { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
+    await writeFile(auth, 'dummy', { mode: 0o644 });
+    assert.throws(launch, { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
+    await chmod(auth, 0o600);
+    const sibling = join(f.root, 'same-inode');
+    await link(auth, sibling);
+    assert.throws(launch, { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
+    await rm(sibling);
+    await rm(auth);
+    await symlink(join(f.root, 'other-auth'), auth);
+    await writeFile(join(f.root, 'other-auth'), 'dummy', { mode: 0o600 });
+    assert.throws(launch, { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
   } finally { await f.close(); }
 });
 
