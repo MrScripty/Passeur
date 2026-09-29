@@ -2,10 +2,34 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ELF, MODEL, PROVIDER, HOME_DENIAL_MARKERS, createHomeCanaryAfterFirstPost, exactOneFileTree, fixedCommand, fixedOutputDiagnostic, finalSse, homeProbeOutputValid, nativeCheckDiagnostic, nativePresentedFixedCommand, protectedProfileToml, providerSequenceComplete, providerSequenceResult, run } from '../../scripts/qualify-codex-protected-worker.mjs';
+import { ELF, MODEL, PROVIDER, ACCOUNT_CHECK_PATH, ACCOUNT_CHECK_RESPONSE, HOME_DENIAL_MARKERS, SEED_DENIAL_MARKERS, containsSeedValue, retainedArtifactsClean, seededAbortAccepted, lateExposureRefusalStatus, qualificationExitCode, createHomeCanaryAfterFirstPost, exactOneFileTree, fixedCommand, fixedOutputDiagnostic, finalSse, homeProbeOutputValid, nativeCheckDiagnostic, nativePreflightStage, nativePresentedFixedCommand, protectedProfileToml, provider, providerToolDiagnostic, providerSequenceComplete, providerSequenceResult, run } from '../../scripts/qualify-codex-protected-worker.mjs';
+
+test('seeded provider accepts one synthetic account check before model traffic', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-codex-account-check-'));
+  const socket = join(root, 'provider.sock');
+  const state = { accountChecks: 0, requests: 0, failure: null };
+  const fixture = provider(socket, '/tmp/task/workspace', '/tmp/protected', '/tmp/sibling', state, 'seeded-cancel');
+  const get = (path, headers = {}) => new Promise((resolve, reject) => {
+    const request = httpRequest({ socketPath: socket, method: 'GET', path,
+      headers: { 'x-passeur-native-auth-present': '1', ...headers } }, response => {
+      const chunks = []; response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    request.on('error', reject); request.end();
+  });
+  try {
+    await fixture.listen();
+    assert.deepEqual(await get(ACCOUNT_CHECK_PATH), { status: 200, body: JSON.stringify(ACCOUNT_CHECK_RESPONSE) });
+    assert.equal(state.accountChecks, 1);
+    assert.equal(state.requests, 0);
+    assert.equal((await get(ACCOUNT_CHECK_PATH)).status, 400);
+    assert.equal(state.failure, 'account_check_invalid');
+  } finally { await fixture.close(); await rm(root, { recursive: true, force: true }); }
+});
 
 test('fixed provider command checks inaccessible host roots before one ordinary commit', () => {
   const command = fixedCommand('/tmp/task/workspace', '/tmp/fixture/protected/auth', '/tmp/fixture/sibling/canary');
@@ -53,6 +77,120 @@ test('home denial marker projection rejects missing, altered and duplicate outpu
   assert.equal(homeProbeOutputValid(null), false);
 });
 
+test('startup seed probe requires direct, symlink, proc, parent proc and inherited FD denials', () => {
+  const command = fixedCommand('/tmp/task/workspace', '/tmp/fixture/protected/auth',
+    '/tmp/fixture/sibling/canary', '/mounts/home/auth.json', true);
+  assert.match(command, /HOME_PARENT_PROC_DENIED/);
+  assert.match(command, /HOME_FD_DENIED/);
+  assert.match(command, /\/usr\/bin\/head -c 65536/);
+  const body = `Chunk ID: a1\nProcess exited with code 0\nOutput:\n${SEED_DENIAL_MARKERS.join('\n')}\ncommit output`;
+  assert.equal(homeProbeOutputValid(body, true), true);
+  assert.equal(homeProbeOutputValid(body.replace(SEED_DENIAL_MARKERS[3], 'HOME_PARENT_PROC_VISIBLE'), true), false);
+  assert.equal(homeProbeOutputValid(body.replace(SEED_DENIAL_MARKERS[4], 'HOME_FD_VISIBLE'), true), false);
+});
+
+test('JWT and refresh secret both block native/provider acceptance and retained artifacts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-codex-secret-scan-'));
+  const source = join(root, 'seed-auth.json'), retained = join(root, 'retained.json');
+  const secrets = ['jwt.synthetic', 'synthetic-refresh'];
+  try {
+    await writeFile(source, secrets.join('\n'));
+    assert.equal(containsSeedValue({ checks: [{ command: secrets[0] }] }, secrets), true);
+    assert.equal(containsSeedValue({ summary: secrets[1] }, secrets), true);
+    assert.equal(containsSeedValue({ summary: 'safe' }, secrets), false);
+    assert.equal(await retainedArtifactsClean(root, source, secrets), true);
+    await writeFile(retained, secrets[1]);
+    assert.equal(await retainedArtifactsClean(root, source, secrets), false);
+    await writeFile(retained, secrets[0]);
+    assert.equal(await retainedArtifactsClean(root, source, secrets), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('seeded cancellation and startup failure require finite provider sequences', () => {
+  const state = { first: true, requests: 1, accountChecks: 1, failure: null };
+  assert.equal(providerSequenceComplete(state, 'seeded-cancel', false, false), true);
+  assert.equal(providerSequenceComplete({ ...state, requests: 2 }, 'seeded-cancel', false, false), false);
+  assert.equal(providerSequenceComplete({ ...state, first: false, requests: 0, accountChecks: 0 }, 'seeded-startup-failure', false, false), true);
+  assert.equal(providerSequenceComplete({ ...state, first: false, requests: 0 }, 'seeded-startup-failure', false, false), true);
+  assert.equal(providerSequenceComplete({ ...state, first: false, requests: 0, accountChecks: 2 }, 'seeded-startup-failure', false, false), false);
+  assert.equal(providerSequenceComplete(state, 'seeded-startup-failure', false, false), false);
+  assert.equal(providerSequenceComplete({ ...state, accountChecks: 0 }, 'seeded-cancel', false, false), false);
+  assert.equal(providerSequenceResult({ status: 'completed' }, true, 'seeded-cancel').status, 'failed');
+  const report = { privateAfter: 'base', canonicalAfter: 'base', mainAfter: 'base',
+    hostCanariesIntact: true, nativeOutputClean: true, deliveryStatus: 'none',
+    providerRequests: 1, accountChecks: 1, cancelAfterProviderRequest: true,
+    explicitCancel: { accepted: true }, providerFailure: null, providerSequenceComplete: true };
+  const resource = { private_git: { state: 'prepared' } };
+  const cancelled = { execution_status: 'cancelled', worker_stop: 'confirmed' };
+  assert.equal(seededAbortAccepted('seeded-cancel', cancelled, resource, report, 'base', true), true);
+  assert.equal(seededAbortAccepted('seeded-cancel', { ...cancelled, worker_stop: 'unconfirmed' }, resource, report, 'base', true), false);
+  assert.equal(seededAbortAccepted('seeded-cancel', cancelled, resource, { ...report, deliveryStatus: 'committed' }, 'base', true), false);
+  assert.equal(seededAbortAccepted('seeded-cancel', cancelled, resource, report, 'base', false), false);
+  const failed = { execution_status: 'failed', worker_stop: 'confirmed' };
+  assert.equal(seededAbortAccepted('seeded-startup-failure', failed, resource,
+    { ...report, providerRequests: 0, accountChecks: 0 }, 'base', true), true);
+  assert.equal(seededAbortAccepted('seeded-startup-failure', failed, resource,
+    { ...report, providerRequests: 0 }, 'base', true), true);
+  assert.equal(seededAbortAccepted('seeded-startup-failure', failed, resource,
+    { ...report, providerRequests: 0, providerFailure: 'account_check_invalid', providerSequenceComplete: false },
+  'base', true), false);
+  assert.equal(seededAbortAccepted('seeded-startup-failure', failed, resource,
+    { ...report, providerRequests: 0, providerFailure: 'unexpected_provider_request', providerSequenceComplete: false },
+  'base', true), false);
+  assert.equal(seededAbortAccepted('seeded-startup-failure', failed, resource, report, 'base', true), false);
+});
+
+test('late exposure refusal distinguishes unconfirmed stop and rejects publication or contamination', () => {
+  const base = 'base', taskId = 'task';
+  const result = { execution_status: 'failed', worker_stop: 'unconfirmed',
+    error: { code: 'CODEX_PROTECTED_SECRET_EXPOSED' } };
+  const resource = { private_git: { state: 'prepared' } };
+  const report = { taskId, branchRef: `refs/heads/muse-bridge/${taskId}`,
+    privateResourceBefore: 'prepared', privateBefore: base, canonicalBefore: base,
+    privateAfter: 'private-commit', canonicalAfter: base, mainAfter: base,
+    providerRequests: 2, accountChecks: 1, providerFailure: null,
+    providerOutputDiagnostic: { category: 'exit_zero' }, providerOutput: { sha256: 'digest', bytes: 1 },
+    homeProbeMarkersValid: true, homeCanaryIntact: true, hostCanariesIntact: true,
+    nativeOutputClean: true, retainedArtifactsClean: true, deliveryStatus: 'incomplete' };
+  assert.equal(lateExposureRefusalStatus(result, resource, report, base, true),
+    'observed_synthetic_late_exposure_refusal_unconfirmed_stop');
+  assert.equal(lateExposureRefusalStatus({ ...result, worker_stop: 'confirmed' }, resource, report, base, true),
+    'accepted_synthetic_late_exposure_refusal_confirmed_stop');
+  for (const invalid of [{ deliveryStatus: 'committed' }, { canonicalAfter: 'published' },
+    { providerFailure: 'unexpected_provider_request' }, { nativeOutputClean: false },
+    { retainedArtifactsClean: false }, { accountChecks: 0 }, { providerRequests: 1 },
+    { homeCanaryIntact: false }, { hostCanariesIntact: false }]) {
+    assert.equal(lateExposureRefusalStatus(result, resource, { ...report, ...invalid }, base, true), 'incomplete');
+  }
+  assert.equal(lateExposureRefusalStatus(result, resource, report, base, false), 'incomplete');
+  assert.equal(lateExposureRefusalStatus({ ...result, error: { code: 'OTHER' } }, resource, report, base, true), 'incomplete');
+});
+
+test('CLI passes only confirmed late exposure refusal', () => {
+  assert.equal(qualificationExitCode('accepted_synthetic_late_exposure_refusal_confirmed_stop'), 0);
+  assert.equal(qualificationExitCode('observed_synthetic_late_exposure_refusal_unconfirmed_stop'), 1);
+  assert.equal(qualificationExitCode('accepted_synthetic_late_exposure_refusal'), 1);
+});
+
+for (const [mode, expected] of [
+  ['seeded-cancel', 'accepted_synthetic_seeded_cancellation'],
+  ['seeded-startup-failure', 'accepted_synthetic_seeded_startup_failure'],
+  ['seeded-late-exposure', 'observed_synthetic_late_exposure_refusal_unconfirmed_stop'],
+]) test(`installed controlled Coordinator ${mode} lifecycle`,
+  { skip: process.env.PASSEUR_CODEX_INSTALLED_SEEDED_GATE !== '1' }, async () => {
+    const report = await run(mode);
+    if (mode === 'seeded-late-exposure') {
+      assert.equal(report.status, report.workerStop === 'confirmed' ?
+        'accepted_synthetic_late_exposure_refusal_confirmed_stop' : expected);
+      assert.ok(['confirmed', 'unconfirmed'].includes(report.workerStop));
+    } else {
+      assert.equal(report.status, expected);
+      assert.equal(report.workerStop, 'confirmed');
+    }
+    assert.notEqual(report.deliveryStatus, 'committed');
+    assert.equal(report.retainedArtifactsClean, true);
+  });
+
 test('named profile grants only the task workspace and exact canonical private Git path', () => {
   const config = protectedProfileToml('/tmp/task/workspace', '/tmp/project/.git',
     '/tmp/project/.git/worktrees/task', 39173);
@@ -63,6 +201,39 @@ test('named profile grants only the task workspace and exact canonical private G
   assert.equal(config.includes('sandbox_mode'), false);
   assert.throws(() => protectedProfileToml('/tmp/task/workspace', '/tmp/project/.git',
     '/tmp/other/worktrees/task', 39173));
+});
+
+test('seeded profile requires native account auth while anonymous profile stays anonymous', () => {
+  const args = ['/tmp/task/workspace', '/tmp/project/.git', '/tmp/project/.git/worktrees/task', 39173];
+  assert.match(protectedProfileToml(...args), /requires_openai_auth = false/);
+  assert.equal(protectedProfileToml(...args).includes('chatgpt_base_url'), false);
+  const seeded = protectedProfileToml(...args, true);
+  assert.match(seeded, /^chatgpt_base_url = "http:\/\/127\.0\.0\.1:39173"\n/);
+  assert.match(seeded, /requires_openai_auth = true/);
+  assert.equal(ACCOUNT_CHECK_PATH, '/api/codex/accounts/check');
+  assert.deepEqual(ACCOUNT_CHECK_RESPONSE, { accounts: [{ id: 'synthetic-account',
+    workspace_backend_origin: 'https://fixture.invalid', account_routing_override: 'NO_CONSTRAINT' }] });
+});
+
+test('provider tool diagnosis retains only finite schema facts', () => {
+  const diagnostic = providerToolDiagnostic({ model: MODEL,
+    tools: [{ name: 'exec_command' }, { name: 'secret-injected-tool' }] });
+  assert.deepEqual(diagnostic, { schema: 'inventory_mismatch', modelMatches: true,
+    toolCount: 2, recognizedPresent: ['exec_command'], extraCandidate: 'unknown', extraType: 'unknown' });
+  assert.equal(JSON.stringify(diagnostic).includes('secret-injected-tool'), false);
+  assert.equal(providerToolDiagnostic({ model: MODEL,
+    tools: [{ name: 'apply_patch', type: 'custom' }] }).extraCandidate, 'apply_patch');
+  const imageGen = providerToolDiagnostic({ model: MODEL, tools: [{ name: 'image_gen', type: 'namespace' }] });
+  assert.equal(imageGen.extraCandidate, 'image_gen');
+  assert.equal(imageGen.extraType, 'namespace');
+});
+
+test('native preflight stage projection is finite and value-free', () => {
+  assert.equal(nativePreflightStage({ error: { code: 'CODEX_NATIVE_REJECTED',
+    message: 'Native operation rejected during thread/start' } }), 'thread/start');
+  assert.equal(nativePreflightStage({ error: { code: 'CODEX_NATIVE_REJECTED',
+    message: 'Native operation rejected during credential-value' } }), 'unknown');
+  assert.equal(nativePreflightStage({ error: { code: 'OTHER', message: 'secret' } }), null);
 });
 
 test('fixed final response is one bounded SSE message carrying a valid worker report', () => {
@@ -93,7 +264,7 @@ test('provider sequence diagnostics preserve the primary native failure', () => 
 });
 
 test('home canary failure prevents Coordinator publication before the wrapper returns', () => {
-  const state = { first: true, second: true, failure: null, requests: 2, homeProbeMarkersValid: true };
+  const state = { first: true, second: true, failure: null, requests: 2, accountChecks: 0, homeProbeMarkersValid: true };
   assert.equal(providerSequenceComplete(state, 'home-canary', true, true), true);
   assert.equal(providerSequenceComplete(state, 'home-canary', true, false), false);
   assert.equal(providerSequenceComplete({ ...state, homeProbeMarkersValid: false }, 'home-canary', true, true), false);

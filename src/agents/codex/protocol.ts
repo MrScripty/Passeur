@@ -47,6 +47,15 @@ export function assertAccount(value: unknown): void {
     throw new BridgeError("CODEX_AUTH_UNAVAILABLE", "The configured runtime must use its existing ChatGPT login; API-key fallback is not allowed");
   }
 }
+/** A seeded no-account fixture must identify only the disposable synthetic persona. */
+export function assertSyntheticSeedAccount(value: unknown): void {
+  const response = object(value, "account/read");
+  const account = object(response.account, "account/read.account");
+  if (response.requiresOpenaiAuth !== true || account.type !== "chatgpt" ||
+      account.email !== "passeur-synthetic@example.invalid") {
+    throw new BridgeError("CODEX_AUTH_UNAVAILABLE", "Seeded qualification did not identify the synthetic persona");
+  }
+}
 export function assertConfiguration(value: unknown): void {
   const config = object(object(value, "config/read").config, "config");
   const features = object(config.features, "config.features");
@@ -58,13 +67,14 @@ export function assertConfiguration(value: unknown): void {
 }
 /** The installed experimental named profile is required before any protected turn. */
 export function assertProtectedConfiguration(value: unknown, profile = "passeur-boundary", synthetic = false,
-  policy?: Readonly<{ workspace: string; canonical: string; admin: string; native: string }>): void {
+  policy?: Readonly<{ workspace: string; canonical: string; admin: string; native: string;
+    seededPort?: number; provider?: string }>): void {
   const response = object(value, "config/read");
   const config = object(response.config, "config");
   const features = object(config.features, "config.features");
   const servers = object(config.mcp_servers, "config.mcp_servers");
   if (Object.keys(servers).length || features.multi_agent !== false || features.apps !== false ||
-      features.plugins !== false || config.web_search !== "disabled" ||
+      features.plugins !== false || features.image_generation !== false || config.web_search !== "disabled" ||
       (!synthetic && config.forced_login_method !== "chatgpt")) {
     throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Protected effective configuration did not establish tool and credential isolation");
   }
@@ -85,18 +95,27 @@ export function assertProtectedConfiguration(value: unknown, profile = "passeur-
     filesystem: { ":root": "deny", ":minimal": "read", ":slash_tmp": "deny", ":tmpdir": "deny",
       [policy.native]: "read", [policy.admin]: "write", ":workspace_roots": { ".": "write" } }, network: { enabled: false } } };
   let user = 0, session = 0, emptySystem = 0;
+  if (policy.seededPort !== undefined &&
+      (config.chatgpt_base_url !== `http://127.0.0.1:${policy.seededPort}` ||
+      object(object(config.model_providers, "config.model_providers")[policy.provider!], "seeded provider").requires_openai_auth !== true)) {
+    throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Effective synthetic account bootstrap differs from sealed policy");
+  }
   for (const raw of response.layers) {
     const layer = object(raw, "config/read.layer"), name = object(layer.name, "config/read.layer.name");
     if (layer.disabledReason != null) continue;
     if (name.type === "user" && name.file === "/mounts/home/config.toml" && name.profile == null) {
       user++;
-      if (!isDeepStrictEqual(object(layer.config, "user layer").permissions, expected)) {
+      const userConfig = object(layer.config, "user layer");
+      if (!isDeepStrictEqual(userConfig.permissions, expected) || policy.seededPort !== undefined &&
+          (userConfig.chatgpt_base_url !== `http://127.0.0.1:${policy.seededPort}` ||
+          object(object(userConfig.model_providers, "user model_providers")[policy.provider!], "user provider").requires_openai_auth !== true)) {
         throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "The loaded user permission policy differs from the sealed artifact");
       }
     } else if (name.type === "sessionFlags") {
       session++;
-      if (object(layer.config, "session flags").default_permissions !== profile ||
-          object(layer.config, "session flags").permissions != null) {
+      const flags = object(layer.config, "session flags");
+      if (flags.default_permissions !== profile || flags.permissions != null ||
+          object(flags.features, "session feature flags").image_generation !== false) {
         throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Session flags changed the protected policy");
       }
     } else if (name.type === "system" && name.file === "/etc/codex/config.toml" &&

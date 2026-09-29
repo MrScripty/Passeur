@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CodexAdapter } from "../../src/agents/codex/adapter.js";
-import { assertProtectedConfiguration, assertProtectedProfile, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
+import { CodexAdapter, failOnProtectedCredentialExposure, protectedNativeRejection } from "../../src/agents/codex/adapter.js";
+import { assertProtectedConfiguration, assertProtectedProfile, assertSyntheticSeedAccount, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
 import type { CodexOptions } from "../../src/agents/codex/config.js";
 import type { WorkerInput } from "../../src/agents/types.js";
 import { cancellationConformance } from "../fixtures/adapter-conformance.js";
@@ -21,8 +21,34 @@ const options: CodexOptions = { codex_bin: "/missing/codex", codex_home: "/unuse
 cancellationConformance("Codex", () => new CodexAdapter(options), input);
 
 describe("protected native profile correlation", () => {
+  it("attributes seeded native rejection to a finite preflight stage", () => {
+    const diagnostic = { code: "CODEX_NATIVE_REJECTED", message: "generic" };
+    expect(protectedNativeRejection(diagnostic, "thread/start", true)).toEqual({ ...diagnostic,
+      message: "Native operation rejected during thread/start" });
+    expect(protectedNativeRejection(diagnostic, "secret-value", true).message).toBe("Native operation rejected during unknown");
+    expect(protectedNativeRejection(diagnostic, "thread/start", false)).toEqual(diagnostic);
+  });
+  it("downgrades a completed protected result for a late out-of-guest exposure marker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "passeur-codex-late-exposure-"));
+    try {
+      const status = join(root, "status.jsonl");
+      const completed = { status: "completed" as const, summary: "done", worker_stop: "confirmed" as const,
+        worker_assessment: "met" as const, blockers: [], questions: [], checks: [] };
+      expect(failOnProtectedCredentialExposure(completed, status)).toEqual(completed);
+      await writeFile(`${status}.exposure`, "seed-output-exposure\n", { mode: 0o600 });
+      expect(failOnProtectedCredentialExposure(completed, status)).toMatchObject({ status: "failed",
+        worker_stop: "confirmed", error: { code: "CODEX_PROTECTED_SECRET_EXPOSED" } });
+      expect(failOnProtectedCredentialExposure({ ...completed, status: "cancelled" }, status).status).toBe("failed");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("accepts only the synthetic seeded persona during direct qualification", () => {
+    const account = { requiresOpenaiAuth: true, account: { type: "chatgpt", email: "passeur-synthetic@example.invalid" } };
+    expect(() => assertSyntheticSeedAccount(account)).not.toThrow();
+    expect(() => assertSyntheticSeedAccount({ ...account, account: { ...account.account, email: "personal@example.com" } })).toThrow();
+    expect(() => assertSyntheticSeedAccount({ ...account, account: { ...account.account, type: "apiKey" } })).toThrow();
+  });
   const config = { config: { default_permissions: "passeur-boundary", forced_login_method: "chatgpt",
-    mcp_servers: {}, features: { multi_agent: false, apps: false, plugins: false }, web_search: "disabled",
+    mcp_servers: {}, features: { multi_agent: false, apps: false, plugins: false, image_generation: false }, web_search: "disabled",
     model_provider: "openai" } };
   it("requires one exact effective selector and complete allowed profile inventory", () => {
     expect(() => assertProtectedConfiguration(config)).not.toThrow();
@@ -38,11 +64,28 @@ describe("protected native profile correlation", () => {
       filesystem: { ":root": "deny", ":minimal": "read", ":slash_tmp": "deny", ":tmpdir": "deny",
         [native]: "read", [admin]: "write", ":workspace_roots": { ".": "write" } }, network: { enabled: false } } };
     const response = { config: config.config, origins: { default_permissions: { name: { type: "sessionFlags" }, version: "1" } },
-      layers: [{ name: { type: "sessionFlags" }, version: "1", config: { default_permissions: "passeur-boundary" } },
+      layers: [{ name: { type: "sessionFlags" }, version: "1", config: { default_permissions: "passeur-boundary",
+        features: { image_generation: false } } },
         { name: { type: "system", file: "/etc/codex/config.toml" }, version: "1", config: {} },
         { name: { type: "user", file: "/mounts/home/config.toml", profile: null }, version: "1", config: { permissions } }] };
     const scope = { workspace, canonical, admin, native };
     expect(() => assertProtectedConfiguration(response, "passeur-boundary", true, scope)).not.toThrow();
+    expect(() => assertProtectedConfiguration({ ...response,
+      config: { ...response.config, features: { ...response.config.features, image_generation: true } } },
+    "passeur-boundary", true, scope)).toThrow();
+    expect(() => assertProtectedConfiguration({ ...response, layers: response.layers.map(layer =>
+      layer.name.type === "sessionFlags" ? { ...layer, config: { ...layer.config,
+        features: { image_generation: true } } } : layer) }, "passeur-boundary", true, scope)).toThrow();
+    const seeded = { ...scope, seededPort: 39173, provider: "passeur_fixture_loopback" };
+    const accountConfig = { chatgpt_base_url: "http://127.0.0.1:39173", model_providers: {
+      passeur_fixture_loopback: { requires_openai_auth: true } } };
+    const seededResponse = { ...response, config: { ...response.config, ...accountConfig },
+      layers: response.layers.map(layer => layer.name.type === "user" ?
+        { ...layer, config: { ...layer.config, ...accountConfig } } : layer) };
+    expect(() => assertProtectedConfiguration(seededResponse, "passeur-boundary", true, seeded)).not.toThrow();
+    expect(() => assertProtectedConfiguration({ ...seededResponse,
+      config: { ...seededResponse.config, chatgpt_base_url: "https://example.invalid" } },
+    "passeur-boundary", true, seeded)).toThrow();
     expect(() => assertProtectedConfiguration({ ...response, layers: response.layers.map(layer =>
       layer.name.type === "system" ? { ...layer, config: { permissions: { "passeur-boundary": { network: { enabled: true } } } } } : layer) },
     "passeur-boundary", true, scope)).toThrow();

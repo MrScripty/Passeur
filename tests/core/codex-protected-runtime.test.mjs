@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { assertProtectedHomePolicy, protectedLaunch, settleProtectedStop } from '../../dist/src/agents/codex/protected-runtime.js';
-import { nativeAuthPresent, runProtectedHost } from '../../dist/src/agents/codex/protected-host.js';
+import { credentialHoldback, nativeAuthPresent, runProtectedHost } from '../../dist/src/agents/codex/protected-host.js';
 import { captureProtectedNamespace, verifyProtectedNamespaceStop } from '../../dist/src/core/protected-namespace.js';
 
 async function fixture() {
@@ -64,6 +65,46 @@ test('validated profile snapshot stays exact after the home source is replaced',
     await writeFile(join(f.home, 'config.toml'), f.config.replace('enabled = false', 'enabled = true'));
     assert.equal(await readFile(snapshot, 'utf8'), f.config);
     assert.notEqual(await readFile(join(f.home, 'config.toml'), 'utf8'), await readFile(snapshot, 'utf8'));
+  } finally { await f.close(); }
+});
+
+test('seeded launch copies a host-opened descriptor into a private guest home', async () => {
+  const f = await fixture();
+  try {
+    const seed = join(f.root, 'seed-auth.json');
+    await writeFile(seed, '{"synthetic":"secret"}', { mode: 0o600 });
+    await writeFile(join(f.home, 'config.toml'), `chatgpt_base_url = "http://127.0.0.1:39173"\n${f.config}` +
+      `[model_providers.passeur_fixture_loopback]\nname = "Passeur fixture"\n` +
+      `base_url = "http://127.0.0.1:39173/v1"\nwire_api = "responses"\nrequires_openai_auth = true\n`);
+    const relayDir = join(f.root, 'relay'); await mkdir(relayDir, { mode: 0o700 });
+    const socket = join(relayDir, 'provider.sock');
+    const { createServer } = await import('node:net');
+    const server = createServer();
+    await new Promise(resolve => server.listen(socket, resolve));
+    try {
+      const launch = protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'],
+        { socketPath: socket, port: 39173 }, seed);
+      const spec = JSON.parse(Buffer.from(launch.args[1], 'base64url').toString('utf8'));
+      assert.equal(spec.seedFile, seed);
+      assert.deepEqual(spec.args.slice(spec.args.indexOf('--file') - 2, spec.args.indexOf('--file') + 3),
+        ['--perms', '0600', '--file', '4', '/mounts/home/auth.json']);
+      assert.ok(spec.args.includes('--tmpfs'));
+      assert.equal(spec.args.includes(seed), false);
+      assert.equal(JSON.stringify(launch).includes('secret'), false);
+      await writeFile(join(f.home, 'config.toml'), (await readFile(join(f.home, 'config.toml'), 'utf8'))
+        .replace('chatgpt_base_url = "http://127.0.0.1:39173"', 'chatgpt_base_url = "https://example.invalid"'));
+      assert.throws(() => protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'],
+        { socketPath: socket, port: 39173 }, seed), { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
+      await chmod(seed, 0o644);
+      await assert.rejects(runProtectedHost(spec), /CODEX_PROTECTED_SEED_INVALID/);
+      await rm(seed);
+      await symlink(f.native, seed);
+      await assert.rejects(runProtectedHost(spec), /CODEX_PROTECTED_SEED_INVALID/);
+      await rm(seed);
+      execFileSync('/usr/bin/mkfifo', [seed]);
+      await chmod(seed, 0o600);
+      await assert.rejects(runProtectedHost(spec), /CODEX_PROTECTED_SEED_INVALID/);
+    } finally { await new Promise(resolve => server.close(resolve)); }
   } finally { await f.close(); }
 });
 
@@ -133,6 +174,24 @@ test('guest relay projects native auth presence without forwarding values', () =
   assert.equal(nativeAuthPresent({ authorization: 'Bearer forbidden' }), true);
   assert.equal(nativeAuthPresent({ 'proxy-authorization': 'forbidden' }), true);
   assert.equal(nativeAuthPresent({ 'x-api-key': 'forbidden' }), true);
+});
+
+test('credential holdback blocks split stderr token and ignored stdout notification', async () => {
+  const secrets = [Buffer.from('jwt.synthetic'), Buffer.from('synthetic-refresh')];
+  for (const chunks of [
+    ['benign stderr\nsynthetic-', 'refresh\n'],
+    ['{"method":"ignored","value":"jwt.', 'synthetic"}\n'],
+  ]) {
+    let exposed = 0; const forwarded = [];
+    const guard = credentialHoldback(secrets, () => { exposed++; });
+    guard.on('data', chunk => forwarded.push(chunk));
+    for (const chunk of chunks) guard.write(Buffer.from(chunk));
+    guard.end();
+    await new Promise(resolve => guard.once('finish', resolve));
+    assert.equal(exposed, 1);
+    assert.equal(containsAny(Buffer.concat(forwarded), secrets), false);
+  }
+  function containsAny(bytes, values) { return values.some(value => bytes.includes(value)); }
 });
 
 function observer() {

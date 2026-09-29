@@ -20,6 +20,12 @@ export async function settleProtectedStop(captured: Captured | undefined, status
   return transportClosed && stopped ? "confirmed" : "unconfirmed";
 }
 
+/** Marker is produced by the out-of-guest byte scanner after any stream exposure. */
+export function protectedCredentialExposure(statusFile: string): boolean {
+  try { readFileSync(`${statusFile}.exposure`); return true; }
+  catch (error) { return !((error as NodeJS.ErrnoException).code === "ENOENT"); }
+}
+
 function invalid(): never { throw new BridgeError("CODEX_PROTECTED_LAUNCH_INVALID", "Protected Codex launch identity or mount is invalid"); }
 function directory(path: string): string {
   try { if (!isAbsolute(path) || realpathSync(path) !== path || !lstatSync(path).isDirectory()) invalid(); }
@@ -38,12 +44,19 @@ function exactKeys(value: unknown, keys: readonly string[]): value is Record<str
 }
 /** The guest sees this exact policy artifact, mounted read-only over its writable home. */
 export function assertProtectedHomePolicy(home: string, workspace: string, canonical: string,
-  admin: string, native: string): Buffer {
+  admin: string, native: string, seededPort?: number): Buffer {
   const configPath = file(join(home, "config.toml"));
   try {
     if (readdirSync(home).join("\0") !== "config.toml") invalid();
     const bytes = readFileSync(configPath);
     const parsed = parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
+    if (seededPort === undefined ? parsed.chatgpt_base_url !== undefined :
+        parsed.chatgpt_base_url !== `http://127.0.0.1:${seededPort}` ||
+        !exactKeys(parsed.model_providers, ["passeur_fixture_loopback"]) ||
+        !exactKeys(parsed.model_providers.passeur_fixture_loopback,
+          ["name", "base_url", "wire_api", "requires_openai_auth"]) ||
+        parsed.model_providers.passeur_fixture_loopback.base_url !== `http://127.0.0.1:${seededPort}/v1` ||
+        parsed.model_providers.passeur_fixture_loopback.requires_openai_auth !== true) invalid();
     if (parsed.default_permissions !== "passeur-boundary" ||
         !exactKeys(parsed.permissions, ["passeur-boundary"])) invalid();
     const profile = parsed.permissions["passeur-boundary"];
@@ -79,7 +92,8 @@ function parents(path: string): string[] {
 
 /** The only mounted repository metadata is the private common dir at its canonical original path. */
 export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome: string,
-  hostScript: string, nativeArgs: readonly string[], relay?: Readonly<{ socketPath: string; port: number }>): { command: string; args: string[]; env: NodeJS.ProcessEnv;
+  hostScript: string, nativeArgs: readonly string[], relay?: Readonly<{ socketPath: string; port: number }>,
+  seedFile?: string, lateExposure = false): { command: string; args: string[]; env: NodeJS.ProcessEnv;
     statusFile: string; nativePath: string } {
   const view = input.private_git?.view;
   if (input.private_git?.schema_version !== 1 || input.private_git.mount_kind !== "canonical_common_dir" ||
@@ -89,6 +103,10 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   const native = file(codexBin), host = file(hostScript), node = file(process.execPath);
   const packageJson = relay ? file(fileURLToPath(new URL("../../../../package.json", import.meta.url))) : undefined;
   const control = dirname(privateDir);
+  if (lateExposure && !seedFile) invalid();
+  if (seedFile && (!isAbsolute(seedFile) || !seedFile.startsWith("/tmp/") ||
+      [workspace, home, privateDir, canonical, control].some(path => overlaps(path, seedFile)) ||
+      !relay)) invalid();
   const relayDir = relay ? directory(dirname(relay.socketPath)) : undefined;
   if (relay && (!Number.isSafeInteger(relay.port) || relay.port < 1 || relay.port > 65535 ||
       !relayDir?.startsWith("/tmp/") || !lstatSync(relay.socketPath).isSocket() ||
@@ -108,14 +126,16 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
       readFileSync(dotGit, "utf8").trim() !== `gitdir: ${canonical}/${view.admin_relative}` ||
       readFileSync(join(privateAdmin, "commondir"), "utf8").trim() !== "../..") invalid();
   const configSnapshot = snapshotPolicy(control, assertProtectedHomePolicy(home, workspace, canonical,
-    join(canonical, view.admin_relative), native));
+    join(canonical, view.admin_relative), native, seedFile ? relay?.port : undefined));
   // Codex's named profile starts a nested user namespace for each tool. Keep that
   // capability inside this outer task-owned PID and network namespace.
   const args = ["--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-net",
     "--die-with-parent", "--new-session", "--clearenv"];
   for (const root of ["/usr", "/bin", "/lib", "/lib64"]) if (existsSync(root)) args.push("--ro-bind", root, root);
-  args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/mounts", "--dir", "/mounts/home",
-    "--bind", home, "/mounts/home", "--dir", "/dev/shm", "--tmpfs", "/dev/shm");
+  args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/mounts", "--dir", "/mounts/home");
+  if (seedFile) args.push("--perms", "0700", "--tmpfs", "/mounts/home", "--perms", "0600", "--file", "4", "/mounts/home/auth.json");
+  else args.push("--bind", home, "/mounts/home");
+  args.push("--dir", "/dev/shm", "--tmpfs", "/dev/shm");
   for (const parent of [...new Set([...parents(workspace), ...parents(canonical), ...parents(native),
     ...(relay ? [...parents(node), ...parents(host)] : [])])]) {
     if (parent !== "/tmp" && parent !== "/dev" && parent !== "/mounts" &&
@@ -131,9 +151,10 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
       "--ro-bind", packageJson!, packageJson!,
       "--dir", "/mounts/relay", "--ro-bind", relayDir!, "/mounts/relay",
       "--", node, host, "guest", Buffer.from(JSON.stringify({ native, nativeArgs,
-        socketPath: `/mounts/relay/${relay.socketPath.slice(relayDir!.length + 1)}`, port: relay.port })).toString("base64url"));
+        socketPath: `/mounts/relay/${relay.socketPath.slice(relayDir!.length + 1)}`, port: relay.port,
+        ...(seedFile ? { seededProbe: true } : {}), ...(lateExposure ? { lateExposure: true } : {}) })).toString("base64url"));
   } else args.push("--", native, ...nativeArgs);
   const statusFile = join(control, `codex-protected-status-${randomUUID()}.jsonl`);
-  const spec = Buffer.from(JSON.stringify({ args, statusFile })).toString("base64url");
+  const spec = Buffer.from(JSON.stringify({ args, statusFile, ...(seedFile ? { seedFile } : {}) })).toString("base64url");
   return { command: node, args: [host, spec], env: {}, statusFile, nativePath: native };
 }

@@ -12,8 +12,8 @@ import type { WorkerAdapter, WorkerInput, WorkerRun } from "../types.js";
 import { PeerDeliveryNativeSessionIdSchema, type PeerDeliveryEnvelope } from "../../contracts/peer-delivery.js";
 import type { CodexOptions } from "./config.js";
 import { CodexStdio, type NativeMessage } from "./transport.js";
-import { approval, assertAccount, assertConfiguration, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
-import { protectedLaunch, settleProtectedStop } from "./protected-runtime.js";
+import { approval, assertAccount, assertSyntheticSeedAccount, assertConfiguration, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
+import { protectedCredentialExposure, protectedLaunch, settleProtectedStop } from "./protected-runtime.js";
 import { captureProtectedNamespace, type Captured } from "../../core/protected-namespace.js";
 
 type Terminal = "completed" | "failed" | "interrupted";
@@ -56,18 +56,35 @@ function peerPrompt(envelope: PeerDeliveryEnvelope): string {
   if (Buffer.byteLength(prompt, "utf8") > MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES) throw new BridgeError("PEER_DELIVERY_UNSUPPORTED", "Peer continuation exceeds the bounded native prompt");
   return prompt;
 }
+const protectedStages = ["initialize", "account/read", "config/read", "permissionProfile/list",
+  "thread/start", "mcpServerStatus/list", "turn/start"] as const;
+type ProtectedStage = typeof protectedStages[number];
+export function protectedNativeRejection(diagnostic: { code: string; message: string }, stage: string,
+  seeded: boolean): { code: string; message: string } {
+  if (!seeded || diagnostic.code !== "CODEX_NATIVE_REJECTED") return diagnostic;
+  const finite = protectedStages.includes(stage as ProtectedStage) ? stage : "unknown";
+  return { code: diagnostic.code, message: `Native operation rejected during ${finite}` };
+}
+export function failOnProtectedCredentialExposure(result: WorkerRun, statusFile: string): WorkerRun {
+  if (!protectedCredentialExposure(statusFile)) return result;
+  return { ...empty(), status: "failed", summary: "Protected synthetic credential appeared in native output",
+    error: { code: "CODEX_PROTECTED_SECRET_EXPOSED", message: "Protected synthetic credential appeared in native output" },
+    worker_stop: result.worker_stop };
+}
 /** One assignment owns a native thread across explicitly requested user turns. */
 export class CodexAdapter implements WorkerAdapter {
   /** The optional provider is only for a disposable, fixed-response installed qualification task. */
   constructor(private readonly options: CodexOptions,
     private readonly qualification?: Readonly<{ syntheticProvider: string; allowAnonymous: true;
-      relay: Readonly<{ socketPath: string; port: number }> }>) {}
+      relay: Readonly<{ socketPath: string; port: number }>; seedFile?: string; failAfterCapture?: true;
+      lateExposure?: true }>) {}
   async run(input: WorkerInput): Promise<WorkerRun> {
     if (input.signal.aborted) return { ...empty(), status: "cancelled", summary: "Task cancelled before startup", worker_stop: "not_started" };
     const lifetime = new AbortController(), signal = AbortSignal.any([input.signal, lifetime.signal]);
     let transport: CodexStdio | undefined, threadId: string | undefined, current: NativeTurn | undefined, reportedModel: string | undefined;
     let protectedHost: { statusFile: string; nativePath: string } | undefined, protectedCapture: Captured | undefined;
     const protectedRun = input.private_git !== undefined;
+    let protectedStage = "unknown";
     let protectedCommands = 0;
     const checks: WorkerRun["checks"] = [];
     let events = Promise.resolve();
@@ -172,7 +189,9 @@ export class CodexAdapter implements WorkerAdapter {
         [...(this.qualification ? [] : ["-c", 'forced_login_method="chatgpt"']), "-c", 'default_permissions="passeur-boundary"',
           "-c", `model_provider=${JSON.stringify(provider)}`, "-c", "mcp_servers={}",
           "-c", "features.multi_agent=false", "-c", "features.apps=false", "-c", "features.plugins=false",
-          "-c", 'web_search="disabled"', "app-server"], this.qualification?.relay) : undefined;
+          "-c", "features.image_generation=false",
+          "-c", 'web_search="disabled"', "app-server"],
+        this.qualification?.relay, this.qualification?.seedFile, this.qualification?.lateExposure) : undefined;
       if (launch) protectedHost = { statusFile: launch.statusFile, nativePath: launch.nativePath };
       transport = new CodexStdio({ command: launch?.command ?? this.options.codex_bin,
         args: launch?.args ?? argumentsFor(this.options), cwd: input.workspace, env: launch?.env ?? environment(home),
@@ -232,10 +251,12 @@ export class CodexAdapter implements WorkerAdapter {
         },
       });
       result.worker_stop = "unconfirmed";
+      protectedStage = "initialize";
       const initialize = object(await transport.request("initialize", { clientInfo: { name: "passeur_codex_worker", title: "Passeur worker", version: "0.1.0" }, capabilities: { experimentalApi: !!launch } }, signal), "initialize");
       text(initialize.userAgent, "initialize.userAgent", 1024);
       if (launch) {
         protectedCapture = await captureProtectedNamespace(launch.statusFile, launch.nativePath, launch.nativePath);
+        if (this.qualification?.failAfterCapture) throw new BridgeError("CODEX_FIXTURE_STARTUP_FAILURE", "Synthetic fixture stopped after native namespace capture");
         signal.throwIfAborted();
       }
       const observedPid = protectedCapture?.nativePid ?? transport.pid;
@@ -244,19 +265,26 @@ export class CodexAdapter implements WorkerAdapter {
         await input.onEvent({ kind: "process_observed", ...birth });
       }
       await transport.notify("initialized", undefined, signal);
+      protectedStage = "account/read";
       const account = await transport.request("account/read", { refreshToken: false }, signal);
       if (this.qualification) {
         const observed = object(account, "account/read");
-        if (observed.account !== null || observed.requiresOpenaiAuth !== false) throw new BridgeError("CODEX_AUTH_UNAVAILABLE", "Synthetic qualification must remain anonymous");
+        if (this.qualification.seedFile) assertSyntheticSeedAccount(account);
+        else if (observed.account !== null || observed.requiresOpenaiAuth !== false) throw new BridgeError("CODEX_AUTH_UNAVAILABLE", "Synthetic qualification must remain anonymous");
       } else assertAccount(account);
+      protectedStage = "config/read";
       const config = await transport.request("config/read", { includeLayers: !!launch, cwd: input.workspace }, signal);
       if (launch) {
         assertProtectedConfiguration(config, "passeur-boundary", !!this.qualification,
           { workspace: input.workspace, canonical: input.private_git!.view.canonical_common_dir,
-            admin: join(input.private_git!.view.canonical_common_dir, input.private_git!.view.admin_relative), native: launch.nativePath });
+            admin: join(input.private_git!.view.canonical_common_dir, input.private_git!.view.admin_relative),
+            native: launch.nativePath,
+            ...(this.qualification?.seedFile ? { seededPort: this.qualification.relay!.port, provider } : {}) });
         if (object(object(config, "config/read").config, "config").model_provider !== provider) throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected provider changed before the turn");
+        protectedStage = "permissionProfile/list";
         assertProtectedProfile(await transport.request("permissionProfile/list", { cwd: input.workspace }, signal));
       } else assertConfiguration(config);
+      protectedStage = "thread/start";
       const threadResponse = await transport.request("thread/start", launch
         ? { model: this.options.model, modelProvider: provider, cwd: input.workspace, permissions: "passeur-boundary",
           ephemeral: true, allowProviderModelFallback: false }
@@ -265,6 +293,7 @@ export class CodexAdapter implements WorkerAdapter {
       const opened = launch ? protectedThreadStarted(threadResponse, input.workspace, this.options.model, provider)
         : threadStarted(threadResponse, input.workspace, this.options.model, this.options.network_access);
       threadId = opened.threadId; reportedModel = opened.reportedModel;
+      protectedStage = "mcpServerStatus/list";
       assertNoMcp(await transport.request("mcpServerStatus/list", { threadId, limit: 1 }, signal));
       let prompt = input.prompt;
       let peerTurn: PeerDeliveryEnvelope | undefined;
@@ -278,6 +307,7 @@ export class CodexAdapter implements WorkerAdapter {
           throw new BridgeError("PEER_DELIVERY_SESSION_ID_UNKNOWN", "Codex did not establish a bounded native thread identity for peer delivery");
         }
         const turn = newTurn(); current = turn;
+        protectedStage = "turn/start";
         const id = turnStarted(await transport.request("turn/start", launch
           ? { threadId, permissions: "passeur-boundary", input: [{ type: "text", text: prompt }] }
           : { threadId, input: [{ type: "text", text: prompt }], model: this.options.model, cwd: input.workspace,
@@ -365,7 +395,8 @@ export class CodexAdapter implements WorkerAdapter {
         result = { ...report, checks: [...checks, ...report.checks], status: "completed", worker_stop: "unconfirmed", reported_model: reportedModel }; break;
       }
     } catch (error) {
-      const diagnostic = error instanceof BridgeError ? errorInfo(error) : { code: "CODEX_RUNTIME_ERROR", message: "Native operation failed; raw diagnostics were not retained" };
+      const baseDiagnostic = error instanceof BridgeError ? errorInfo(error) : { code: "CODEX_RUNTIME_ERROR", message: "Native operation failed; raw diagnostics were not retained" };
+      const diagnostic = protectedNativeRejection(baseDiagnostic, protectedStage, !!this.qualification?.seedFile);
       if (transport?.started && !transport.exitEvidence) await input.onEvent({ kind: "runtime_unknown", reason: "Native protocol access failed while process termination is unconfirmed" });
       result = { ...empty(), checks, status: input.signal.aborted ? "cancelled" : ["CODEX_AUTH_UNAVAILABLE", "CODEX_ISOLATION_UNAVAILABLE", "CODEX_CONFIGURATION_MISMATCH", "CODEX_HOME_NOT_ISOLATED"].includes(diagnostic.code) ? "blocked" : "failed",
         summary: diagnostic.message, error: diagnostic, worker_stop: transport?.started ? "unconfirmed" : "not_started", ...(reportedModel ? { reported_model: reportedModel } : {}) };
@@ -388,6 +419,9 @@ export class CodexAdapter implements WorkerAdapter {
         result.worker_stop = transport.started ? (protectedHost
           ? await settleProtectedStop(protectedCapture, protectedHost.statusFile, closed)
           : closed ? "confirmed" : "unconfirmed") : "not_started";
+      }
+      if (protectedHost && this.qualification?.seedFile) {
+        result = failOnProtectedCredentialExposure(result, protectedHost.statusFile);
       }
     }
     return result;
