@@ -182,6 +182,31 @@ test('TLS seeded launch mounts only public CA and sets exact guest proxy environ
   } finally { await new Promise(resolve => server.close(resolve)); await f.close(); }
 });
 
+test('first-party sealed home admits built-in openai and rejects origin or provider overrides', async () => {
+  const f = await fixture();
+  const seed = join(f.root, 'seed-auth.json'), ca = join(f.root, 'ca.pem');
+  const relayDir = join(f.root, 'relay'); await mkdir(relayDir, { mode: 0o700 });
+  const socket = join(relayDir, 'broker.sock');
+  const server = createServer(); await new Promise(resolve => server.listen(socket, resolve));
+  const firstParty = { socketPath: socket, port: 39173,
+    tlsProxy: { caFile: ca, accountHost: 'chatgpt.com', inferenceHost: 'chatgpt.com', firstParty: true } };
+  const profile = `model_provider = "openai"\n${f.config}[analytics]\nenabled = false\n`;
+  try {
+    await writeFile(seed, '{"synthetic":"secret"}', { mode: 0o600 });
+    await writeFile(ca, '-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n', { mode: 0o600 });
+    await writeFile(join(f.home, 'config.toml'), profile, { mode: 0o600 });
+    assert.equal(assertProtectedHomePolicy(f.home, f.workspace, f.canonical,
+      join(f.canonical, 'worktrees', 'task'), f.native, undefined, firstParty.tlsProxy).toString(), profile);
+    assert.equal(protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'], firstParty, seed).guestStartPermit, true);
+    for (const altered of [`chatgpt_base_url = "https://fixture.invalid"\n${profile}`,
+      `${profile}[model_providers.openai]\nbase_url = "https://fixture.invalid"\n`]) {
+      await writeFile(join(f.home, 'config.toml'), altered);
+      assert.throws(() => protectedLaunch(f.input, f.native, f.home, f.host,
+        ['app-server'], firstParty, seed), { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
+    }
+  } finally { await new Promise(resolve => server.close(resolve)); await f.close(); }
+});
+
 test('checked seed snapshot stays byte exact after its named source changes', async () => {
   const f = await fixture();
   const seed = join(f.root, 'seed-auth.json');

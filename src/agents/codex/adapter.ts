@@ -108,7 +108,7 @@ export class CodexAdapter implements WorkerAdapter {
   constructor(private readonly options: CodexOptions,
     private readonly qualification?: Readonly<{ syntheticProvider: string; allowAnonymous: true;
       relay: Readonly<{ socketPath: string; port: number; tlsProxy?: Readonly<{
-        caFile: string; accountHost: string; inferenceHost: string; directNoProxy?: true }> }>;
+        caFile: string; accountHost: string; inferenceHost: string; firstParty?: true; directNoProxy?: true }> }>;
       seedFile?: string; failAfterCapture?: true;
       lateExposure?: true; terminalAuthSignal?: AbortSignal }>) {}
   async run(input: WorkerInput): Promise<WorkerRun> {

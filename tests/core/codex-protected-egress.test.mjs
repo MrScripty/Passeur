@@ -31,6 +31,35 @@ test('exact authority classification refuses OAuth, malformed and unknown destin
   }
 });
 
+test('first-party broker admits only exact chatgpt.com CONNECT on disposable loopback', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-codex-first-party-egress-'));
+  const socketPath = join(root, 'broker.sock');
+  const upstream = createNetServer(socket => socket.pipe(socket));
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  const port = upstream.address().port;
+  const deniedCategories = [];
+  const broker = await startProtectedEgress({ socketPath, accountHost: 'chatgpt.com',
+    inferenceHost: 'chatgpt.com', accountPort: port, inferencePort: port, firstParty: true,
+    onDeniedAuthority: category => deniedCategories.push(category) });
+  try {
+    const admitted = await connect({ socketPath }, 'chatgpt.com:443');
+    assert.equal(admitted.status, 200);
+    admitted.socket.destroy();
+    for (const authority of ['chatgpt.com:444', 'other.invalid:443', 'api.openai.com:443']) {
+      const denied = await connect({ socketPath }, authority).catch(() => null);
+      if (denied) { assert.equal(denied.status, 403); denied.socket.destroy(); }
+    }
+    assert.equal(broker.counts.first_party, 1);
+    assert.equal(broker.counts.account, 0);
+    assert.equal(broker.counts.inference, 0);
+    assert.deepEqual(deniedCategories, ['malformed', 'other_valid', 'api_openai']);
+  } finally {
+    await broker.close(); upstream.closeAllConnections?.();
+    await new Promise(resolve => upstream.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('guest CONNECT and direct Unix clients share host authority policy; close retires live tunnel', async () => {
   const root = await mkdtemp(join(tmpdir(), 'passeur-codex-egress-'));
   const socketPath = join(root, 'broker.sock');
@@ -61,7 +90,7 @@ test('guest CONNECT and direct Unix clients share host authority policy; close r
     assert.equal(broker.active(), 0);
     assert.equal(broker.accepted(), 3);
     assert.equal(admitted.socket.destroyed, true);
-    assert.deepEqual(broker.counts, { account: 1, inference: 0, oauth_denied: 1,
+    assert.deepEqual(broker.counts, { account: 1, inference: 0, first_party: 0, oauth_denied: 1,
       unknown_denied: 1, latched_denied: 0 });
     await assert.rejects(stat(socketPath));
   } finally {

@@ -210,7 +210,7 @@ export function tlsProfile(workspace, canonical, admin, native) {
     '\n[analytics]\nenabled = false\n';
 }
 
-function generateCertificate(root) {
+export function generateCertificate(root, commonName = ACCOUNT) {
   const caKey = join(root, 'ca.key'), ca = join(root, 'ca.pem');
   const key = join(root, 'peer.key'), csr = join(root, 'peer.csr'), cert = join(root, 'peer.pem');
   const ext = join(root, 'peer.ext');
@@ -218,7 +218,7 @@ function generateCertificate(root) {
     env: { PATH: '/usr/bin:/bin', HOME: root, LANG: 'C' } });
   openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=Passeur Fixture CA',
     '-keyout', caKey, '-out', ca);
-  openssl('req', '-newkey', 'rsa:2048', '-nodes', '-subj', `/CN=${ACCOUNT}`, '-keyout', key, '-out', csr);
+  openssl('req', '-newkey', 'rsa:2048', '-nodes', '-subj', `/CN=${commonName}`, '-keyout', key, '-out', csr);
   return { ca, key, cert, csr, ext, caKey, openssl };
 }
 

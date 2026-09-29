@@ -67,13 +67,17 @@ function exactKeys(value: unknown, keys: readonly string[]): value is Record<str
 /** The guest sees this exact policy artifact, mounted read-only over its writable home. */
 export function assertProtectedHomePolicy(home: string, workspace: string, canonical: string,
   admin: string, native: string, seededPort?: number,
-  tls?: Readonly<{ accountHost: string; inferenceHost: string }>): Buffer {
+  tls?: Readonly<{ accountHost: string; inferenceHost: string; firstParty?: true }>): Buffer {
   const configPath = file(join(home, "config.toml"));
   try {
     if (readdirSync(home).join("\0") !== "config.toml") invalid();
     const bytes = readFileSync(configPath);
     const parsed = parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
-    if (tls ? parsed.chatgpt_base_url !== `https://${tls.accountHost}` ||
+    if (tls?.firstParty ?
+        parsed.model_provider !== "openai" || parsed.chatgpt_base_url !== undefined ||
+        parsed.model_providers !== undefined ||
+        !exactKeys(parsed.analytics, ["enabled"]) || parsed.analytics.enabled !== false :
+        tls ? parsed.chatgpt_base_url !== `https://${tls.accountHost}` ||
         !exactKeys(parsed.model_providers, ["passeur_fixture_tls"]) ||
         !exactKeys(parsed.model_providers.passeur_fixture_tls,
           ["name", "base_url", "wire_api", "requires_openai_auth"]) ||
@@ -123,7 +127,7 @@ function parents(path: string): string[] {
 /** The only mounted repository metadata is the private common dir at its canonical original path. */
 export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome: string,
   hostScript: string, nativeArgs: readonly string[], relay?: Readonly<{ socketPath: string; port: number;
-    tlsProxy?: Readonly<{ caFile: string; accountHost: string; inferenceHost: string;
+    tlsProxy?: Readonly<{ caFile: string; accountHost: string; inferenceHost: string; firstParty?: true;
       directNoProxy?: true }> }>,
   seedFile?: string, lateExposure = false): { command: string; args: string[]; env: NodeJS.ProcessEnv;
     statusFile: string; nativePath: string; guestStartPermit: boolean } {
@@ -145,7 +149,9 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   if (relay?.tlsProxy && (!seedFile || !ca?.startsWith("/tmp/") ||
       !/^[a-z0-9][a-z0-9.-]{0,252}$/.test(relay.tlsProxy.accountHost) ||
       !/^[a-z0-9][a-z0-9.-]{0,252}$/.test(relay.tlsProxy.inferenceHost) ||
-      relay.tlsProxy.accountHost === relay.tlsProxy.inferenceHost ||
+      (relay.tlsProxy.firstParty ?
+        relay.tlsProxy.accountHost !== "chatgpt.com" || relay.tlsProxy.inferenceHost !== "chatgpt.com" :
+        relay.tlsProxy.accountHost === relay.tlsProxy.inferenceHost) ||
       [relay.tlsProxy.accountHost, relay.tlsProxy.inferenceHost].includes("auth.openai.com") ||
       readFileSync(ca!).length > 65_536 || !readFileSync(ca!, "utf8").includes("-----BEGIN CERTIFICATE-----") ||
       readFileSync(ca!, "utf8").includes("PRIVATE KEY"))) invalid();

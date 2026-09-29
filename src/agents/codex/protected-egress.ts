@@ -4,9 +4,16 @@ import { createConnection, isIP } from "node:net";
 import type { Duplex } from "node:stream";
 import { chmodSync, lstatSync, unlinkSync } from "node:fs";
 
-export type EgressRoute = "account" | "inference" | "oauth_denied" | "unknown_denied" | "latched_denied";
+export type EgressRoute = "account" | "inference" | "first_party" | "oauth_denied" | "unknown_denied" | "latched_denied";
 export type EgressLatchReason = "refresh_denied" | "upstream_unauthorized" | "tls_refused";
+export type DeniedAuthorityCategory = "oauth" | "api_openai" | "chatgpt_invalid_connect" | "other_valid" | "malformed";
 const AUTHORITY = /^[a-z0-9][a-z0-9.-]{0,252}:443$/;
+function deniedAuthorityCategory(authority: string): DeniedAuthorityCategory {
+  if (authority === "auth.openai.com:443") return "oauth";
+  if (authority === "api.openai.com:443") return "api_openai";
+  if (authority === "chatgpt.com:443") return "chatgpt_invalid_connect";
+  return AUTHORITY.test(authority) && !authority.includes("..") ? "other_valid" : "malformed";
+}
 export function classifyAuthority(authority: string, accountHost: string, inferenceHost: string): EgressRoute {
   if (!AUTHORITY.test(authority) || authority.includes("..")) return "unknown_denied";
   if (authority === "auth.openai.com:443") return "oauth_denied";
@@ -23,14 +30,18 @@ export type EgressBroker = Readonly<{ socketPath: string; counts: Readonly<Recor
 
 export async function startProtectedEgress(spec: Readonly<{ socketPath: string; accountHost: string;
   inferenceHost: string; accountPort: number; inferencePort: number; signal?: AbortSignal;
+  firstParty?: true;
+  onDeniedAuthority?: (category: DeniedAuthorityCategory) => void;
   onTerminalDenial?: (reason: EgressLatchReason) => void }>): Promise<EgressBroker> {
-  if (!spec.socketPath.startsWith("/tmp/") || spec.accountHost !== "accounts.fixture.invalid" ||
-      spec.inferenceHost !== "inference.fixture.invalid" ||
+  if (!spec.socketPath.startsWith("/tmp/") ||
+      (spec.firstParty ? spec.accountHost !== "chatgpt.com" || spec.inferenceHost !== "chatgpt.com" ||
+        spec.accountPort !== spec.inferencePort :
+        spec.accountHost !== "accounts.fixture.invalid" || spec.inferenceHost !== "inference.fixture.invalid") ||
       [spec.accountHost, spec.inferenceHost].some(host => isIP(host) !== 0) ||
       ![spec.accountPort, spec.inferencePort].every(port => Number.isSafeInteger(port) && port > 0 && port < 65536)) {
     throw new Error("CODEX_EGRESS_CONFIG_INVALID");
   }
-  const counts: Record<EgressRoute, number> = { account: 0, inference: 0, oauth_denied: 0,
+  const counts: Record<EgressRoute, number> = { account: 0, inference: 0, first_party: 0, oauth_denied: 0,
     unknown_denied: 0, latched_denied: 0 };
   const sockets = new Set<Duplex>();
   const clients = new Set<Duplex>(), routed = new Set<Duplex>(), earlyDenied = new Set<Duplex>();
@@ -56,14 +67,18 @@ export async function startProtectedEgress(spec: Readonly<{ socketPath: string; 
     if (latchedReason) { routed.add(guest); if (!earlyDenied.has(guest)) counts.latched_denied++;
       guest.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
     routed.add(guest);
-    const route = classifyAuthority(request.url ?? "", spec.accountHost, spec.inferenceHost);
+    const route = spec.firstParty && request.url === "chatgpt.com:443" ? "first_party" :
+      classifyAuthority(request.url ?? "", spec.accountHost, spec.inferenceHost);
     if (route === "oauth_denied") {
       counts.oauth_denied++; latch("refresh_denied", guest);
+      try { spec.onDeniedAuthority?.("oauth"); } catch { /* Diagnostics cannot alter denial. */ }
       guest.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return;
     }
     if (head.length || route === "unknown_denied" ||
         request.headers.host !== request.url) {
-      counts[route === "account" || route === "inference" ? "unknown_denied" : route]++;
+      counts[route === "account" || route === "inference" || route === "first_party" ? "unknown_denied" : route]++;
+      try { spec.onDeniedAuthority?.(deniedAuthorityCategory(request.url ?? "")); }
+      catch { /* Diagnostics cannot alter denial. */ }
       guest.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return;
     }
     counts[route]++;
