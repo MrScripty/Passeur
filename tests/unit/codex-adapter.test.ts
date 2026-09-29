@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexAdapter, codexEnvironment, resolveCodexHome, failOnProtectedCredentialExposure, failOnProtectedTerminalAuth,
   initializeAfterProtectedCapture, protectedNativeRejection } from "../../src/agents/codex/adapter.js";
-import { assertProtectedConfiguration, assertProtectedProfile, assertSyntheticSeedAccount, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
+import { assertConfiguration, assertProtectedConfiguration, assertProtectedProfile, assertSyntheticSeedAccount, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
 import type { CodexOptions } from "../../src/agents/codex/config.js";
 import type { WorkerInput } from "../../src/agents/types.js";
 import { cancellationConformance } from "../fixtures/adapter-conformance.js";
@@ -20,6 +20,50 @@ const input: Omit<WorkerInput, "signal"> = {
 const options: CodexOptions = { codex_bin: "/missing/codex", codex_home: "/unused/pre-cancelled-home", model: "fixture-model",
   network_access: false, allow_command_escalation: false, subscription_confirmed: true, experimental_opt_in: true };
 cancellationConformance("Codex", () => new CodexAdapter(options), input);
+
+describe("ordinary Codex effective configuration", () => {
+  const allowed = { config: { mcp_servers: {}, features: { multi_agent: false, apps: false, plugins: false },
+    web_search: "disabled", forced_login_method: "chatgpt" } };
+  const message = "Effective configuration did not establish child-tool and credential isolation";
+  it("accepts empty MCP inventory and disabled native features", () => {
+    expect(() => assertConfiguration(allowed)).not.toThrow();
+  });
+  it.each([
+    [{ mcp_servers: { server: {} } }, "mcp_servers"],
+    [{ features: { ...allowed.config.features, multi_agent: true } }, "features.multi_agent"],
+    [{ features: { ...allowed.config.features, apps: true } }, "features.apps"],
+    [{ features: { ...allowed.config.features, plugins: true } }, "features.plugins"],
+    [{ web_search: "live" }, "web_search"],
+    [{ forced_login_method: "api_key" }, "forced_login_method"],
+  ] as const)("reports only the fixed category for isolated mismatch %j", (change, category) => {
+    expect(() => assertConfiguration({ config: { ...allowed.config, ...change } })).toThrowError(
+      expect.objectContaining({ code: "CODEX_ISOLATION_UNAVAILABLE", message: `${message} (${category})` }));
+  });
+  it("reports all categories once in stable order without native values", () => {
+    const secret = "fixture-secret-token@example.invalid";
+    const value = { config: { mcp_servers: { [secret]: { url: `https://${secret}` } },
+      features: { multi_agent: secret, apps: secret, plugins: secret }, web_search: secret,
+      forced_login_method: secret } };
+    let error: unknown;
+    try { assertConfiguration(value); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: "CODEX_ISOLATION_UNAVAILABLE", message: `${message} (` +
+      "mcp_servers, features.multi_agent, features.apps, features.plugins, web_search, forced_login_method)" });
+    expect(JSON.stringify(error)).not.toContain(secret);
+  });
+  it("keeps malformed containers on the protocol error path and hides native strings", () => {
+    const secret = "fixture-secret-token@example.invalid";
+    for (const value of [
+      { config: { ...allowed.config, features: secret } },
+      { config: { ...allowed.config, mcp_servers: [secret] } },
+      { config: secret },
+    ]) {
+      let error: unknown;
+      try { assertConfiguration(value); } catch (caught) { error = caught; }
+      expect(error).toMatchObject({ code: "CODEX_PROTOCOL_INVALID" });
+      expect(JSON.stringify(error)).not.toContain(secret);
+    }
+  });
+});
 
 describe("ordinary Codex caller-home policy", () => {
   it("uses HOME/.codex when CODEX_HOME is unset without reading auth", async () => {

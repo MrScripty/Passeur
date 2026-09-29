@@ -60,9 +60,18 @@ export function assertConfiguration(value: unknown): void {
   const config = object(object(value, "config/read").config, "config");
   const features = object(config.features, "config.features");
   const servers = object(config.mcp_servers, "config.mcp_servers");
-  if (Object.keys(servers).length || features.multi_agent !== false || features.apps !== false ||
-      features.plugins !== false || config.web_search !== "disabled" || config.forced_login_method !== "chatgpt") {
-    throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Effective configuration did not establish child-tool and credential isolation");
+  // Labels are fixed policy categories; never include native values or server names in this diagnostic.
+  const mismatches = [
+    Object.keys(servers).length > 0 && "mcp_servers",
+    features.multi_agent !== false && "features.multi_agent",
+    features.apps !== false && "features.apps",
+    features.plugins !== false && "features.plugins",
+    config.web_search !== "disabled" && "web_search",
+    config.forced_login_method !== "chatgpt" && "forced_login_method",
+  ].filter((label): label is string => typeof label === "string");
+  if (mismatches.length) {
+    throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE",
+      `Effective configuration did not establish child-tool and credential isolation (${mismatches.join(", ")})`);
   }
 }
 /** The installed experimental named profile is required before any protected turn. */
