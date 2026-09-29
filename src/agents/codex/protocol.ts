@@ -99,19 +99,33 @@ export function assertProtectedConfiguration(value: unknown, profile = "passeur-
   if (object(selectorOrigin.name, "default_permissions source").type !== "sessionFlags") {
     throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected permission selector has another source");
   }
-  const expected = { [profile]: { workspace_roots: { [policy.workspace]: true, [policy.canonical]: true },
+  const expectedProfile = { workspace_roots: { [policy.workspace]: true, [policy.canonical]: true },
     filesystem: { ":root": "deny", ":minimal": "read", ":slash_tmp": "deny", ":tmpdir": "deny",
       [policy.native]: "read", [policy.admin]: "write", ":workspace_roots": { ".": "write" } },
-    network: { enabled: !synthetic } } };
+    network: { enabled: !synthetic } };
+  const expected = { [profile]: expectedProfile };
   if (!synthetic) {
+    // config/read serializes the pinned 0.157.1 ConfigToml, including absent Option fields as null.
+    // User and session layers below retain their sparse source representation.
+    const effectivePermissions = { [profile]: { ...expectedProfile, description: null, extends: null,
+      filesystem: { ...expectedProfile.filesystem, glob_scan_max_depth: null },
+      network: { enabled: true, proxy_url: null, enable_socks5: null, socks_url: null,
+        enable_socks5_udp: null, allow_upstream_proxy: null,
+        dangerously_allow_non_loopback_proxy: null, dangerously_allow_all_unix_sockets: null,
+        mode: null, domains: null, unix_sockets: null, allow_local_binding: null, mitm: null } } };
     const realSettings = { cli_auth_credentials_store: "file",
       skills: { include_instructions: false, bundled: { enabled: false } },
       memories: { use_memories: false, generate_memories: false } };
-    if (config.model_provider !== "openai" || !isDeepStrictEqual(config.permissions, expected) ||
-        config.chatgpt_base_url != null && config.chatgpt_base_url !== "https://chatgpt.com/backend-api/codex" ||
+    const effectiveMemories = { ...realSettings.memories, version: null, dual_write: null,
+      disable_on_external_context: null, dedicated_tools: null,
+      max_raw_memories_for_consolidation: null, max_unused_days: null, max_rollout_age_days: null,
+      max_rollouts_per_startup: null, min_rollout_idle_hours: null,
+      min_rate_limit_remaining_percent: null, extract_model: null, consolidation_model: null };
+    if (config.model_provider !== "openai" || !isDeepStrictEqual(config.permissions, effectivePermissions) ||
+        config.chatgpt_base_url !== "https://chatgpt.com/backend-api/" ||
         config.cli_auth_credentials_store !== "file" ||
         !isDeepStrictEqual(config.skills, realSettings.skills) ||
-        !isDeepStrictEqual(config.memories, realSettings.memories) ||
+        !isDeepStrictEqual(config.memories, effectiveMemories) ||
         config.instructions != null || config.developer_instructions != null ||
         config.model_instructions_file != null) {
       throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Real protected effective provider or profile differs from generated policy");

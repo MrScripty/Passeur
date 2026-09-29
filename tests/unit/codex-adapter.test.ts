@@ -238,7 +238,20 @@ describe("protected native profile correlation", () => {
     const realSettings = { cli_auth_credentials_store: "file",
       skills: { include_instructions: false, bundled: { enabled: false } },
       memories: { use_memories: false, generate_memories: false } };
-    const real = { ...response, config: { ...response.config, permissions: realPermissions, ...realSettings },
+    const effectivePermissions = { "passeur-boundary": { ...realPermissions["passeur-boundary"],
+      description: null, extends: null,
+      filesystem: { ...realPermissions["passeur-boundary"].filesystem, glob_scan_max_depth: null },
+      network: { enabled: true, proxy_url: null, enable_socks5: null, socks_url: null,
+        enable_socks5_udp: null, allow_upstream_proxy: null,
+        dangerously_allow_non_loopback_proxy: null, dangerously_allow_all_unix_sockets: null,
+        mode: null, domains: null, unix_sockets: null, allow_local_binding: null, mitm: null } } };
+    const effectiveMemories = { ...realSettings.memories, version: null, dual_write: null,
+      disable_on_external_context: null, dedicated_tools: null,
+      max_raw_memories_for_consolidation: null, max_unused_days: null, max_rollout_age_days: null,
+      max_rollouts_per_startup: null, min_rollout_idle_hours: null,
+      min_rate_limit_remaining_percent: null, extract_model: null, consolidation_model: null };
+    const real = { ...response, config: { ...response.config, permissions: effectivePermissions,
+      ...realSettings, memories: effectiveMemories, chatgpt_base_url: "https://chatgpt.com/backend-api/" },
       layers: response.layers.map(layer => layer.name.type === "sessionFlags" ? {
         ...layer, config: { default_permissions: "passeur-boundary", model_provider: "openai",
           forced_login_method: "chatgpt", mcp_servers: {},
@@ -246,18 +259,39 @@ describe("protected native profile correlation", () => {
           web_search: "disabled" } } : layer.name.type === "user" ?
         { ...layer, config: { permissions: realPermissions, ...realSettings } } : layer) };
     expect(() => assertProtectedConfiguration(real, "passeur-boundary", false, scope)).not.toThrow();
+    expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, permissions: realPermissions } },
+      "passeur-boundary", false, scope)).toThrow();
+    expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, memories: realSettings.memories } },
+      "passeur-boundary", false, scope)).toThrow();
     for (const changed of [
       { cli_auth_credentials_store: "auto" },
       { skills: { include_instructions: true, bundled: { enabled: false } } },
-      { memories: { use_memories: true, generate_memories: false } },
+      { memories: { ...effectiveMemories, use_memories: true } },
       { instructions: "private instruction" },
       { developer_instructions: "private instruction" },
       { model_instructions_file: "/home/private" },
     ]) expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, ...changed } },
       "passeur-boundary", false, scope)).toThrowError(expect.objectContaining({ code: "CODEX_CONFIGURATION_MISMATCH" }));
     expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, permissions: {
-      "passeur-boundary": { ...realPermissions["passeur-boundary"], network: { enabled: false } } } } },
+      "passeur-boundary": { ...effectivePermissions["passeur-boundary"], network: {
+        ...effectivePermissions["passeur-boundary"].network, enabled: false } } } } },
     "passeur-boundary", false, scope)).toThrow();
+    for (const changed of [
+      { description: "unsafe" }, { extends: "permissive" }, { extra: "unknown" },
+      { filesystem: { ...effectivePermissions["passeur-boundary"].filesystem, glob_scan_max_depth: 3 } },
+      { network: { ...effectivePermissions["passeur-boundary"].network, proxy_url: "http://proxy.invalid" } },
+      { network: { ...effectivePermissions["passeur-boundary"].network, unexpected: true } },
+    ]) expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, permissions: {
+      "passeur-boundary": { ...effectivePermissions["passeur-boundary"], ...changed } } } },
+    "passeur-boundary", false, scope)).toThrow();
+    for (const changed of [{ dual_write: true }, { unrecognized: null }]) {
+      expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config,
+        memories: { ...effectiveMemories, ...changed } } }, "passeur-boundary", false, scope)).toThrow();
+    }
+    for (const url of [null, "https://chatgpt.com/backend-api/codex", "https://other.invalid/"]) {
+      expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config,
+        chatgpt_base_url: url } }, "passeur-boundary", false, scope)).toThrow();
+    }
     expect(() => assertProtectedConfiguration({ ...real, layers: [...real.layers,
       { name: { type: "project", dotCodexFolder: `${workspace}/.codex` }, config: {} }] },
     "passeur-boundary", false, scope)).toThrow();
