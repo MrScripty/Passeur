@@ -19,8 +19,9 @@ denial. A separate reviewed installed turn passed one valid workspace PNG and
 12 protected direct/symlink/proc image-read denials through model-invoked
 `view_image`. A later no-account `write_stdin` TTY probe passed its workspace
 control but returned exit 0/native completed for a protected dummy-auth write
-while its host canary stayed intact; TTY denial and guest-side effects remain
-unqualified. The current adapter still requests full read access, advertises no
+while its host canary stayed intact. A later reviewed TTY read probe passed
+workspace read and dummy-auth direct/symlink/`/proc` denials; the TTY write
+effect remains unqualified. The current adapter still requests full read access, advertises no
 private-Git capability, and has no installed protected-worker result. Muse's synthetic protected runs do
 not qualify its real login or direct provider protocol. No G3–G5 real-worker
 row changes until a separately reviewed protected native composition passes.
