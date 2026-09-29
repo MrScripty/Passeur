@@ -1,5 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -228,6 +228,13 @@ export class CodexAdapter implements WorkerAdapter {
         const digest = createHash("sha256").update(await readFile(this.options.codex_bin)).digest("hex");
         if (digest !== "3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970") {
           throw new BridgeError("CODEX_NATIVE_UNSUPPORTED", "Protected worker requires the qualified installed Codex 0.157.1 executable");
+        }
+        if (realProtected) {
+          const companion = join(dirname(this.options.codex_bin), "codex-code-mode-host");
+          const companionDigest = createHash("sha256").update(await readFile(companion)).digest("hex");
+          if (companionDigest !== "67b86142bac5cead11b8420cf32d3a2bf88c8868d71733f351ed7c5d95a953e0") {
+            throw new BridgeError("CODEX_NATIVE_UNSUPPORTED", "Protected worker requires the matching Codex code mode host");
+          }
         }
       }
       const provider = this.qualification?.syntheticProvider ?? "openai";

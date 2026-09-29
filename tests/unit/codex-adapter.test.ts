@@ -234,7 +234,9 @@ describe("protected native profile correlation", () => {
         { name: { type: "user", file: "/mounts/home/config.toml", profile: null }, version: "1", config: { permissions } }] };
     const scope = { workspace, canonical, admin, native };
     expect(() => assertProtectedConfiguration(response, "passeur-boundary", true, scope)).not.toThrow();
-    const realPermissions = { "passeur-boundary": { ...permissions["passeur-boundary"], network: { enabled: true } } };
+    const realPermissions = { "passeur-boundary": { ...permissions["passeur-boundary"],
+      filesystem: { ...permissions["passeur-boundary"].filesystem,
+        "/usr/bin/codex-code-mode-host": "read" }, network: { enabled: true } } };
     const realSettings = { cli_auth_credentials_store: "file",
       skills: { include_instructions: false, bundled: { enabled: false } },
       memories: { use_memories: false, generate_memories: false } };
@@ -259,6 +261,12 @@ describe("protected native profile correlation", () => {
           web_search: "disabled" } } : layer.name.type === "user" ?
         { ...layer, config: { permissions: realPermissions, ...realSettings } } : layer) };
     expect(() => assertProtectedConfiguration(real, "passeur-boundary", false, scope)).not.toThrow();
+    const { "/usr/bin/codex-code-mode-host": _companion, ...withoutCompanion } =
+      realPermissions["passeur-boundary"].filesystem;
+    expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config,
+      permissions: { "passeur-boundary": { ...effectivePermissions["passeur-boundary"],
+        filesystem: { ...withoutCompanion, glob_scan_max_depth: null } } } } },
+    "passeur-boundary", false, scope)).toThrow();
     expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, permissions: realPermissions } },
       "passeur-boundary", false, scope)).toThrow();
     expect(() => assertProtectedConfiguration({ ...real, config: { ...real.config, memories: realSettings.memories } },

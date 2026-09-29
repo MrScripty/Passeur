@@ -84,7 +84,8 @@ function exactKeys(value: unknown, keys: readonly string[]): value is Record<str
 }
 /** A generated task policy contains no caller settings or credential material. */
 export function realProtectedPolicy(workspace: string, canonical: string, admin: string, native: string): Buffer {
-  const paths = [workspace, canonical, admin, native];
+  const companion = join(dirname(native), "codex-code-mode-host");
+  const paths = [workspace, canonical, admin, native, companion];
   if (paths.some(path => !isAbsolute(path) || path.includes("\n") || path.includes("\r") || path.includes("\0")) ||
       new Set(paths).size !== paths.length) invalid();
   const quote = (value: string) => JSON.stringify(value);
@@ -93,7 +94,7 @@ export function realProtectedPolicy(workspace: string, canonical: string, admin:
     `[memories]\nuse_memories = false\ngenerate_memories = false\n` +
     `[permissions."passeur-boundary".workspace_roots]\n${quote(workspace)} = true\n${quote(canonical)} = true\n` +
     `[permissions."passeur-boundary".filesystem]\n":root" = "deny"\n":minimal" = "read"\n` +
-    `":slash_tmp" = "deny"\n":tmpdir" = "deny"\n${quote(native)} = "read"\n${quote(admin)} = "write"\n` +
+    `":slash_tmp" = "deny"\n":tmpdir" = "deny"\n${quote(native)} = "read"\n${quote(companion)} = "read"\n${quote(admin)} = "write"\n` +
     `[permissions."passeur-boundary".filesystem.":workspace_roots"]\n"." = "write"\n` +
     `[permissions."passeur-boundary".network]\nenabled = true\n`);
 }
@@ -170,6 +171,7 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   const workspace = directory(input.workspace), home = directory(codexHome);
   const privateDir = directory(view.private_common_dir), canonical = directory(view.canonical_common_dir);
   const native = file(codexBin), host = file(hostScript), node = file(process.execPath);
+  const companion = realCallerHome ? file(join(dirname(native), "codex-code-mode-host")) : undefined;
   const dns = realCallerHome ? publicHostFile("/etc/resolv.conf") : undefined;
   const publicCa = realCallerHome ? publicHostFile("/etc/ssl/certs/ca-certificates.crt") : undefined;
   const egressModule = relay?.tlsProxy ? file(fileURLToPath(new URL("./protected-egress.js", import.meta.url))) : undefined;
@@ -199,7 +201,7 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   const dotGit = join(workspace, ".git"), privateAdmin = join(privateDir, view.admin_relative);
   if (!workspace.startsWith("/tmp/") || !canonical.startsWith("/tmp/") || !privateDir.startsWith("/tmp/") ||
       privateDir !== join(control, "private-git") || !/^worktrees\/[A-Za-z0-9._-]+$/.test(view.admin_relative) ||
-      [workspace, home, native, node, host].some(path => overlaps(path, privateDir) || overlaps(path, canonical)) ||
+      [workspace, home, native, node, host, ...(companion ? [companion] : [])].some(path => overlaps(path, privateDir) || overlaps(path, canonical)) ||
       [home, privateDir, canonical].some(path => overlaps(path, workspace)) || overlaps(home, control) ||
       !lstatSync(dotGit).isFile() || realpathSync(dotGit) !== dotGit ||
       !lstatSync(privateAdmin).isDirectory() || realpathSync(privateAdmin) !== privateAdmin ||
@@ -231,7 +233,8 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
         !["/usr", "/bin", "/lib", "/lib64"].some(root => parent === root || parent.startsWith(`${root}/`))) args.push("--dir", parent);
   }
   args.push("--bind", workspace, workspace, "--dir", canonical, "--bind", privateDir, canonical,
-    "--ro-bind", native, native, "--ro-bind", configSnapshot, "/mounts/home/config.toml",
+    "--ro-bind", native, native, ...(companion ? ["--ro-bind", companion, companion] : []),
+    "--ro-bind", configSnapshot, "/mounts/home/config.toml",
     "--setenv", "HOME", "/mounts/home", "--setenv", "CODEX_HOME", "/mounts/home",
     "--setenv", "TMPDIR", "/tmp", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "LANG", "C.UTF-8",
     "--chdir", workspace);

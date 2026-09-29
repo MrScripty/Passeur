@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { BridgeError } from "../../core/errors.js";
 
@@ -101,7 +101,8 @@ export function assertProtectedConfiguration(value: unknown, profile = "passeur-
   }
   const expectedProfile = { workspace_roots: { [policy.workspace]: true, [policy.canonical]: true },
     filesystem: { ":root": "deny", ":minimal": "read", ":slash_tmp": "deny", ":tmpdir": "deny",
-      [policy.native]: "read", [policy.admin]: "write", ":workspace_roots": { ".": "write" } },
+      [policy.native]: "read", ...(!synthetic ? { [join(dirname(policy.native), "codex-code-mode-host")]: "read" } : {}),
+      [policy.admin]: "write", ":workspace_roots": { ".": "write" } },
     network: { enabled: !synthetic } };
   const expected = { [profile]: expectedProfile };
   if (!synthetic) {

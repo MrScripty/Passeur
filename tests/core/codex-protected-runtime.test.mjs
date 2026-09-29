@@ -23,6 +23,7 @@ async function fixture() {
   await writeFile(join(workspace, '.git'), `gitdir: ${canonical}/worktrees/task\n`);
   await writeFile(join(privateDir, 'worktrees', 'task', 'commondir'), '../..\n');
   await writeFile(native, 'fixture executable'); await writeFile(host, 'fixture host');
+  await writeFile(join(root, 'codex-code-mode-host'), 'fixture code mode host');
   const config = `default_permissions = "passeur-boundary"\n` +
     `[permissions."passeur-boundary".workspace_roots]\n${JSON.stringify(workspace)} = true\n${JSON.stringify(canonical)} = true\n` +
     `[permissions."passeur-boundary".filesystem]\n":root" = "deny"\n":minimal" = "read"\n` +
@@ -102,12 +103,16 @@ test('real caller home uses a generated task policy and inherited host network',
       args[index + 2] === '/mounts/home/auth.json'));
     assert.equal(args.includes(auth), false);
     assert.equal(spec.callerAuthFile, auth);
+    const companion = join(f.root, 'codex-code-mode-host');
+    assert.ok(args.some((value, index) => value === '--ro-bind' &&
+      args[index + 1] === companion && args[index + 2] === companion));
     assert.ok(args.some((value, index) => value === '--tmpfs' && args[index + 1] === '/mounts/home'));
     const index = args.findIndex((value, position) => value === '--ro-bind' && args[position + 2] === '/mounts/home/config.toml');
     assert.ok(index >= 0);
     const generated = realProtectedPolicy(f.workspace, f.canonical,
       join(f.canonical, 'worktrees', 'task'), f.native).toString();
     assert.ok(generated.includes('[permissions."passeur-boundary".network]\nenabled = true\n'));
+    assert.ok(generated.includes(`${JSON.stringify(companion)} = "read"\n`));
     assert.equal(await readFile(args[index + 1], 'utf8'), generated);
     assert.equal((await readFile(args[index + 1], 'utf8')).includes('untrusted'), false);
     assert.equal(spec.seedFile, undefined);
