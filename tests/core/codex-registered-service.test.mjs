@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { prepareFixture, observeBounded, classifyEvidence, readinessFailures, toolBody } from '../../scripts/qualify-codex-registered-service.mjs';
+import { prepareFixture, observeBounded, classifyEvidence, readinessFailures, needsAttentionDiagnostic, toolBody } from '../../scripts/qualify-codex-registered-service.mjs';
 
 test('disposable service fixture has clean no-remote Python base, committed canary, private profile, and hook', async () => {
   const { manifest, assignment } = await prepareFixture('/bin/codex', '/tmp/codex-home');
@@ -14,6 +14,14 @@ test('disposable service fixture has clean no-remote Python base, committed cana
   assert.equal(await git('remote'), '');
   assert.equal(await git('rev-parse', 'HEAD'), manifest.base);
   assert.equal(await git('ls-files'), 'held-canary.txt\nquote.py');
+  assert.equal(await git('config', '--local', '--get', 'commit.gpgsign'), 'false');
+  assert.equal(await git('config', '--get', 'commit.gpgsign'), 'false');
+  const ambient = join(manifest.root, 'ambient.gitconfig');
+  await writeFile(ambient, '[commit]\n\tgpgsign = true\n');
+  assert.equal((await execute('/usr/bin/git', ['config', '--get', 'commit.gpgsign'], {
+    cwd: manifest.project, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: ambient },
+  })).stdout.trim(), 'false');
+  assert.equal(await git('config', '--local', '--get', 'core.hooksPath').catch(() => ''), '');
   assert.equal((await stat(manifest.profilePath)).mode & 0o777, 0o600);
   assert.equal((await stat(join(manifest.project, '.git', 'hooks', 'commit-msg'))).mode & 0o111, 0o111);
   assert.equal(assignment.base_commit, manifest.base);
@@ -90,4 +98,33 @@ test('readiness identifies development frontend before service preparation and e
     ready, manifest), ['before.frontend.mode']);
   assert.deepEqual(readinessFailures(before, { ...ready, binding: { ...binding, profile_path: '/tmp/other.json' } },
     manifest), ['ready.binding.profile_path']);
+});
+
+test('needs-attention CLI result keeps exact identity and bounded nonsecret diagnostic', async () => {
+  const manifest = { project: '/tmp/project', profilePath: '/tmp/profile.json', stateRoot: '/tmp/state' };
+  const taskId = '99c9f330-6743-47ad-b8b8-c86442c56007';
+  let invoked;
+  const run = async (command, args, options) => {
+    invoked = { command, args, options };
+    return { stdout: JSON.stringify({ result: { task_id: taskId, schema_version: 4,
+      execution_status: 'failed', worker_stop: 'unconfirmed', worker_assessment: 'unknown',
+      error: { code: 'CODEX_NATIVE_REJECTED', message: 'secret auth bytes' },
+      native_evidence: { run_id: 'run', state: 'unknown', coverage: 'unknown', limitation: 'secret auth bytes' },
+      delivery: { status: 'incomplete' }, checks: [], blockers: ['secret auth bytes'], questions: [] },
+    resource: { task_id: taskId, state: 'pending', private_git: { state: 'prepared' },
+      branch_ref: 'refs/heads/muse-bridge/task' } }) };
+  };
+  const diagnostic = await needsAttentionDiagnostic('/tmp/installed/dist/src/cli.js', manifest, taskId, run);
+  assert.equal(invoked.command, process.execPath);
+  assert.deepEqual(invoked.args, ['/tmp/installed/dist/src/cli.js', 'result', '--project', manifest.project,
+    '--profile', manifest.profilePath, '--state-root', manifest.stateRoot, '--task', taskId]);
+  assert.equal(diagnostic.result.error_code, 'CODEX_NATIVE_REJECTED');
+  assert.equal(diagnostic.result.worker_stop, 'unconfirmed');
+  assert.equal(diagnostic.resource.state, 'pending');
+  assert.equal(JSON.stringify(diagnostic).includes('secret auth bytes'), false);
+  await assert.rejects(needsAttentionDiagnostic('/tmp/installed/dist/src/cli.js', manifest, taskId,
+    async () => ({ stdout: JSON.stringify({ result: { task_id: 'wrong' }, resource: { task_id: taskId } }) })),
+  /INSTALLED_RESULT_IDENTITY_MISMATCH/);
+  await assert.rejects(needsAttentionDiagnostic('/tmp/installed/dist/src/cli.js', manifest, taskId,
+    async () => { throw Error('secret auth bytes'); }), /INSTALLED_RESULT_UNAVAILABLE/);
 });

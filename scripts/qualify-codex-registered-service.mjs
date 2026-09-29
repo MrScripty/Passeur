@@ -29,6 +29,9 @@ export async function prepareFixture(codexBin, codexHome) {
   await writeFile(join(vault, 'held-canary.txt'), `${canaries.outside}\n`, { mode: 0o600 });
   await writeFile(join(project, 'held-canary.txt'), `${canaries.repository}\n`, { mode: 0o600 });
   await git(project, 'init', '-q', '-b', 'main');
+  // The fixture's own local policy must override ambient signing settings;
+  // private Git preparation intentionally rejects required signing.
+  await git(project, 'config', '--local', 'commit.gpgsign', 'false');
   await git(project, 'add', '--', 'quote.py', 'held-canary.txt');
   await git(project, '-c', 'user.name=Passeur Fixture', '-c', 'user.email=passeur-fixture@example.invalid',
     '-c', 'commit.gpgsign=false', 'commit', '-qm', 'test: disposable Python baseline');
@@ -141,6 +144,32 @@ async function retainedResult(call, taskId) {
   return JSON.parse(chunks.join(''));
 }
 
+/** Read-only installed CLI fallback for needs-attention records that lack an MCP result slice. */
+export async function needsAttentionDiagnostic(runtime, manifest, taskId, run = execute) {
+  let stored;
+  try {
+    const reply = await run(process.execPath, [runtime, 'result', '--project', manifest.project,
+      '--profile', manifest.profilePath, '--state-root', manifest.stateRoot, '--task', taskId],
+    { encoding: 'utf8', timeout: 30_000, maxBuffer: 2_000_000 });
+    stored = JSON.parse(reply.stdout);
+  } catch { throw Error('INSTALLED_RESULT_UNAVAILABLE'); }
+  const result = stored?.result, resource = stored?.resource;
+  if (result?.task_id !== taskId || resource?.task_id !== taskId) throw Error('INSTALLED_RESULT_IDENTITY_MISMATCH');
+  return {
+    source: 'installed_read_only_cli',
+    result: { schema_version: result.schema_version, task_id: result.task_id,
+      execution_status: result.execution_status, worker_stop: result.worker_stop,
+      worker_assessment: result.worker_assessment, error_code: result.error?.code ?? null,
+      native: { run_id: result.native_evidence?.run_id ?? null, state: result.native_evidence?.state ?? null,
+        coverage: result.native_evidence?.coverage ?? null, turn_id: result.native_evidence?.turn_id ?? null,
+        native_session_id: result.native_evidence?.native_session_id ?? null },
+      delivery_status: result.delivery?.status ?? null, checks_count: result.checks?.length ?? 0,
+      blockers_count: result.blockers?.length ?? 0, questions_count: result.questions?.length ?? 0 },
+    resource: { state: resource.state, private_git_state: resource.private_git?.state ?? null,
+      branch_ref: resource.branch_ref ?? null, head_commit: resource.head_commit ?? null },
+  };
+}
+
 export async function runLive({ runtime, codexBin, codexHome, observationMs = 600_000 }) {
   const { manifest, assignment } = await prepareFixture(codexBin, codexHome);
   const reportPath = join(manifest.root, reportName);
@@ -200,6 +229,24 @@ export async function runLive({ runtime, codexBin, codexHome, observationMs = 60
     const after = await call('passeur_status', {});
     report.same_generation = after.service?.state === 'connected' && after.service.status.generation === report.service.generation &&
       after.service.status.repository.runtime.build_id === report.service.runtime.build_id;
+    if (task.phase === 'needs_attention') {
+      try {
+        const diagnostic = await needsAttentionDiagnostic(runtime, manifest, task.task_id);
+        report.result_source = diagnostic.source;
+        report.result = diagnostic.result;
+        report.resource_state = diagnostic.resource.state;
+        report.private_publication_state = diagnostic.resource.private_git_state;
+        report.resource_branch_ref = diagnostic.resource.branch_ref;
+        report.resource_head_commit = diagnostic.resource.head_commit;
+        report.stage = 'needs_attention_retained';
+      } catch (error) {
+        report.result_read_error_code = error?.message === 'INSTALLED_RESULT_IDENTITY_MISMATCH'
+          ? 'INSTALLED_RESULT_IDENTITY_MISMATCH' : 'INSTALLED_RESULT_UNAVAILABLE';
+        report.stage = 'needs_attention_result_unavailable';
+      }
+      await save();
+      return report;
+    }
     if (['terminal', 'needs_attention'].includes(task.phase)) {
       const result = await retainedResult(call, task.task_id);
       report.result = { schema_version: result.schema_version, task_id: result.task_id, execution_status: result.execution_status,
@@ -207,7 +254,7 @@ export async function runLive({ runtime, codexBin, codexHome, observationMs = 60
         blockers: result.blockers, questions: result.questions, native_evidence: result.native_evidence, model: result.model,
         identity: result.identity, delivery: result.delivery, checks: result.checks,
         artifacts: result.artifacts?.map(artifact => ({ id: artifact.id, kind: artifact.kind, bytes: artifact.bytes })),
-        changed_files: result.changed_files, error: result.error };
+        changed_files: result.changed_files, error: result.error ? { code: result.error.code } : undefined };
       const head = result.delivery?.head_commit;
       const branch = result.delivery?.branch_ref;
       report.head = head;

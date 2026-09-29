@@ -67,8 +67,8 @@ const protectedStages = ["initialize", "account/read", "config/read", "permissio
   "thread/start", "mcpServerStatus/list", "turn/start"] as const;
 type ProtectedStage = typeof protectedStages[number];
 export function protectedNativeRejection(diagnostic: { code: string; message: string }, stage: string,
-  seeded: boolean): { code: string; message: string } {
-  if (!seeded || diagnostic.code !== "CODEX_NATIVE_REJECTED") return diagnostic;
+  protectedRun: boolean): { code: string; message: string } {
+  if (!protectedRun || diagnostic.code !== "CODEX_NATIVE_REJECTED") return diagnostic;
   const finite = protectedStages.includes(stage as ProtectedStage) ? stage : "unknown";
   return { code: diagnostic.code, message: `Native operation rejected during ${finite}` };
 }
@@ -472,7 +472,7 @@ export class CodexAdapter implements WorkerAdapter {
       }
     } catch (error) {
       const baseDiagnostic = error instanceof BridgeError ? errorInfo(error) : { code: "CODEX_RUNTIME_ERROR", message: "Native operation failed; raw diagnostics were not retained" };
-      const diagnostic = protectedNativeRejection(baseDiagnostic, protectedStage, !!this.qualification?.seedFile);
+      const diagnostic = protectedNativeRejection(baseDiagnostic, protectedStage, protectedRun);
       if (transport?.started && !transport.exitEvidence) await input.onEvent({ kind: "runtime_unknown", reason: "Native protocol access failed while process termination is unconfirmed" });
       result = { ...empty(), checks, status: input.signal.aborted ? "cancelled" : ["CODEX_AUTH_UNAVAILABLE", "CODEX_ISOLATION_UNAVAILABLE", "CODEX_CONFIGURATION_MISMATCH", "CODEX_HOME_NOT_ISOLATED"].includes(diagnostic.code) ? "blocked" : "failed",
         summary: diagnostic.message, error: diagnostic, worker_stop: transport?.started ? "unconfirmed" : "not_started", ...(reportedModel ? { reported_model: reportedModel } : {}) };

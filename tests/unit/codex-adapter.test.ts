@@ -165,12 +165,23 @@ describe("protected native profile correlation", () => {
     )).resolves.toBe("ready");
     expect(events).toEqual(["capture", "retain", "initialize"]);
   });
-  it("attributes seeded native rejection to a finite preflight stage", () => {
-    const diagnostic = { code: "CODEX_NATIVE_REJECTED", message: "generic" };
-    expect(protectedNativeRejection(diagnostic, "thread/start", true)).toEqual({ ...diagnostic,
-      message: "Native operation rejected during thread/start" });
-    expect(protectedNativeRejection(diagnostic, "secret-value", true).message).toBe("Native operation rejected during unknown");
+  it.each(["initialize", "account/read", "config/read", "permissionProfile/list", "skills/list",
+    "thread/start", "mcpServerStatus/list", "turn/start"])(
+    "attributes protected native rejection during %s without native text", stage => {
+      const diagnostic = { code: "CODEX_NATIVE_REJECTED", message: "native-secret@example.invalid" };
+      const projected = protectedNativeRejection(diagnostic, stage, true);
+      expect(projected).toEqual({ code: diagnostic.code, message: `Native operation rejected during ${stage}` });
+      expect(JSON.stringify(projected)).not.toContain(diagnostic.message);
+    });
+  it("uses an unknown stage for unrecognized protected rejection and preserves ordinary behavior", () => {
+    const diagnostic = { code: "CODEX_NATIVE_REJECTED", message: "native-secret@example.invalid" };
+    for (const stage of ["secret-value", "", "initialize/native-secret@example.invalid"]) {
+      expect(protectedNativeRejection(diagnostic, stage, true)).toEqual({ code: diagnostic.code,
+        message: "Native operation rejected during unknown" });
+    }
     expect(protectedNativeRejection(diagnostic, "thread/start", false)).toEqual(diagnostic);
+    expect(protectedNativeRejection({ code: "CODEX_AUTH_UNAVAILABLE", message: "fixed" }, "thread/start", true))
+      .toEqual({ code: "CODEX_AUTH_UNAVAILABLE", message: "fixed" });
   });
   it("downgrades a completed protected result for a late out-of-guest exposure marker", async () => {
     const root = await mkdtemp(join(tmpdir(), "passeur-codex-late-exposure-"));
