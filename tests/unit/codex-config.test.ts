@@ -19,6 +19,10 @@ it("requires a named boolean caller-home opt-in and defaults to a dedicated home
       .toThrowError(expect.objectContaining({ code: "CODEX_CONFIGURATION_MISMATCH" }));
     expect(codexDefinition.configure({ ...raw, use_caller_codex_home: true, experimental_real_protected: true }).configuration)
       .toMatchObject({ use_caller_codex_home: true, experimental_real_protected: true });
+    expect(codexDefinition.configure(raw).worker.private_git).toBeUndefined();
+    expect(codexDefinition.configure({ ...raw, use_caller_codex_home: true }).worker.private_git).toBeUndefined();
+    expect(codexDefinition.configure({ ...raw, use_caller_codex_home: true, experimental_real_protected: true }).worker.private_git)
+      .toEqual({ schema_version: 1, mount_kind: "canonical_common_dir" });
   }
 });
 function registration(name = "passeur_pumas"): CodexMcpRegistration {

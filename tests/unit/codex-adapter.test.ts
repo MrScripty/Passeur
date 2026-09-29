@@ -431,6 +431,14 @@ describe.runIf(process.platform === "linux")("Codex adapter through an actual co
       } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
     });
   });
+  it("refuses configured real protected startup without a private Git view", async () => {
+    await scenario("success", async (_adapter, run, home) => {
+      const result = await new CodexAdapter({ ...options, codex_bin: join(home, "..", "app-server.mjs"),
+        codex_home: home, use_caller_codex_home: true, experimental_real_protected: true }).run(run);
+      expect(result).toMatchObject({ status: "failed", worker_stop: "not_started",
+        error: { code: "CODEX_PRIVATE_GIT_REQUIRED" } });
+    });
+  });
   for (const [name, expected, code] of [
     ["mcp-success", "completed", undefined],
     ["mcp-invalid-status", "failed", "CODEX_PROTOCOL_INVALID"],

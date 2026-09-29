@@ -114,7 +114,7 @@ export class Coordinator {
   onWorkerPeerOperation?: (taskId: string, request: WorkerPeerOperationRequest, signal: AbortSignal) => Promise<PeerWorkerOperationResult>;
   constructor(readonly project: string, readonly projectId: string, readonly policy: LifecyclePolicy,
     readonly store: TaskStore, readonly registry: AgentRegistry, readonly assertAuthority: () => void = () => {}, controls?: TaskControls,
-    readonly privateGitMode: "disabled" | "controlled" = "disabled") {
+    readonly privateGitMode: "disabled" | "controlled" | "selected_capable" = "disabled") {
     this.policy = structuredClone(policy); Object.freeze(this.policy.implementation); Object.freeze(this.policy);
     this.controls = controls ?? new TaskControls(store, policy.max_waiters, policy.max_control_receipts);
     this.inputs = new InputBroker(this.controls, policy.max_pending_inputs);
@@ -719,6 +719,10 @@ export class Coordinator {
     const { record, controller } = entry, id = record.task_id, request = record.request;
     let workspace: Workspace | undefined;
     let privateView: PrivateGitView | undefined;
+    const capable = entry.selected.worker.private_git?.schema_version === 1 &&
+      entry.selected.worker.private_git.mount_kind === "canonical_common_dir";
+    const usePrivateGit = this.privateGitMode === "controlled" ||
+      this.privateGitMode === "selected_capable" && request.mode === "implement" && capable;
     let result = baseResult(id, request, record.execution), workerSettled = false;
     let peerCompletionIssue: string | undefined, nativeCompletionIssue: string | undefined;
     let completionBinding: PeerCompletionBinding | undefined;
@@ -728,9 +732,7 @@ export class Coordinator {
     try {
       controller.signal.throwIfAborted(); this.assertAuthority(); await phase("starting");
       if ((await this.store.readControl(id)).cancel) throw new BridgeError("TASK_CANCELLED", "Task was cancelled before preparation");
-      if (this.privateGitMode === "controlled" && (request.mode !== "implement" ||
-          entry.selected.worker.private_git?.schema_version !== 1 ||
-          entry.selected.worker.private_git.mount_kind !== "canonical_common_dir")) {
+      if (this.privateGitMode === "controlled" && (request.mode !== "implement" || !capable)) {
         throw new BridgeError("PRIVATE_GIT_ADAPTER_UNSUPPORTED", "Selected worker cannot mount the exact private Git common directory");
       }
       // Active-task ownership protects this unique workspace; hooks run outside repository administration.
@@ -747,7 +749,7 @@ export class Coordinator {
       await this.store.writeResource(id, resource ? { ...resource, state: "pending", updated_at: now() }
         : { schema_version: 1, task_id: id, project_id: this.projectId, state: "not_applicable", updated_at: now() });
       entry.workspace = workspace.path;
-      if (this.privateGitMode === "controlled") {
+      if (usePrivateGit) {
         if (workspace.kind !== "task_worktree" || !resource?.worktree_path || !resource.branch_ref || !resource.base_commit)
           throw new BridgeError("PRIVATE_GIT_UNAVAILABLE", "Private Git requires the owned task worktree");
         const control = await this.store.readControl(id);

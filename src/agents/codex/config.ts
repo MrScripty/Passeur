@@ -27,7 +27,8 @@ export const codexDefinition: AdapterDefinition = {
         use_caller_codex_home: options.use_caller_codex_home,
         experimental_real_protected: options.experimental_real_protected,
         authentication: "chatgpt", experimental_opt_in: true },
-      worker: { async run(input) {
+      worker: { ...(options.experimental_real_protected ? { private_git: {
+        schema_version: 1 as const, mount_kind: "canonical_common_dir" as const } } : {}), async run(input) {
         let create: typeof import("./adapter.js");
         try { create = await import("./adapter.js"); }
         catch { return { status: "blocked", worker_stop: "not_started", worker_assessment: "unknown", summary: "The installed adapter dependency could not be loaded",

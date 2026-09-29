@@ -215,6 +215,9 @@ export class CodexAdapter implements WorkerAdapter {
       }
     };
     try {
+      if (this.options.experimental_real_protected && !protectedRun) {
+        throw new BridgeError("CODEX_PRIVATE_GIT_REQUIRED", "Configured real protected Codex requires a prepared private Git view");
+      }
       const home = await resolveCodexHome(this.options.codex_home, input.workspace,
         !!this.options.use_caller_codex_home && (!protectedRun || realProtected));
       signal.throwIfAborted();

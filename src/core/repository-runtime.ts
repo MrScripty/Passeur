@@ -2222,7 +2222,7 @@ export class RepositoryRuntime {
         const definitions = this.#deps.definitions ?? (await import("../agents/builtins.js")).builtinAdapters;
         const registry = new AgentRegistry(profile, definitions);
         this.#assertOpen(); this.#assertAuthority();
-        this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority(), this.#controls);
+        this.#coordinator = new Coordinator(binding.project, binding.repositoryId, profile.execution, this.#store!, registry, () => this.#assertAuthority(), this.#controls, "selected_capable");
         this.#coordinator.onAuthorizePeerDelivery = envelope => this.#authorizePeerDelivery(envelope);
         this.#coordinator.onPeerDeliveryObserved = caseId => { this.#wakeObservedCaseReceipt(caseId); return Promise.resolve(); };
         this.#coordinator.onPeerDeliveryQueuedStale = caseId => { this.#wakeSelectedCase(caseId); return Promise.resolve(); };
