@@ -1,5 +1,7 @@
 # Acceptance matrix — autonomous peer overlap resolution
 
+The first real ordinary Codex service task reached a native model turn using the existing ChatGPT login but failed without an edit because its pinned `gpt-5.3-codex` model is unsupported for that account. The installed CLI completed two read-only no-tool turns with default `gpt-6-astra`. A Passeur retry using that model made a hooked private commit of the exact requested file with confirmed native stop, but the service failed completion because earlier invalid-disposition turns left two clarification deliveries unknown. The target ref stayed at base. One fresh assignment with an explicit final envelope is pending; single-worker service acceptance and blinded-pair acceptance remain open.
+
 Raw-MSP, injected SDK, production protected-host, and fixture local-TLS Muse
 private-commit runs have passed with synthetic no-account providers. The local-TLS
 run used the built protected runtime and host transport through an explicitly
