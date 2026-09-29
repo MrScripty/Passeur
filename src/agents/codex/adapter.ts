@@ -12,7 +12,7 @@ import type { WorkerAdapter, WorkerInput, WorkerRun } from "../types.js";
 import { PeerDeliveryNativeSessionIdSchema, type PeerDeliveryEnvelope } from "../../contracts/peer-delivery.js";
 import type { CodexOptions } from "./config.js";
 import { CodexStdio, StartupStderrDiagnostic, type NativeMessage, type StartupStderrEvidence } from "./transport.js";
-import { approval, assertAccount, assertSyntheticSeedAccount, assertConfiguration, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
+import { approval, assertAccount, assertSyntheticSeedAccount, assertConfiguration, assertMcpItemStatus, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
 import { captureProtectedStartup, protectedCredentialExposure, protectedLaunch,
   protectedSeedAdmissionRefused, settleProtectedStop } from "./protected-runtime.js";
 import { type Captured } from "../../core/protected-namespace.js";
@@ -167,8 +167,10 @@ export class CodexAdapter implements WorkerAdapter {
       if (turn.settled || turn.terminal && message.method === "item/started") throw new BridgeError("CODEX_PROTOCOL_INVALID", "Native item start or duplicate completion arrived after terminal evidence");
       const event = correlate(message.params, threadId, turnId);
       const item = object(event.item, "item"), kind = text(item.type, "item.type", 128), id = text(item.id, "item.id", 256);
-      if (["mcpToolCall", "collabAgentToolCall", "dynamicToolCall"].includes(kind)) throw new BridgeError("CODEX_ISOLATION_VIOLATED",
+      if ((kind === "mcpToolCall" && (protectedRun || !this.options.use_caller_codex_home)) ||
+          ["collabAgentToolCall", "dynamicToolCall"].includes(kind)) throw new BridgeError("CODEX_ISOLATION_VIOLATED",
         `An excluded native item type ${protectedItemType(kind)} was observed; retain the task for inspection`);
+      if (kind === "mcpToolCall") assertMcpItemStatus(item, message.method as "item/started" | "item/completed");
       if (protectedRun && !["userMessage", "agentMessage", "commandExecution", "fileChange", "imageView", "reasoning", "plan"].includes(kind)) {
         throw new BridgeError("CODEX_ISOLATION_VIOLATED",
           `An unqualified native item type ${protectedItemType(kind)} was observed in the protected worker`);
@@ -331,7 +333,7 @@ export class CodexAdapter implements WorkerAdapter {
         if (object(object(config, "config/read").config, "config").model_provider !== provider) throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected provider changed before the turn");
         protectedStage = "permissionProfile/list";
         assertProtectedProfile(await transport.request("permissionProfile/list", { cwd: input.workspace }, signal));
-      } else assertConfiguration(config);
+      } else assertConfiguration(config, !!this.options.use_caller_codex_home);
       protectedStage = "thread/start";
       const threadResponse = await transport.request("thread/start", launch
         ? { model: this.options.model, modelProvider: provider, cwd: input.workspace, permissions: "passeur-boundary",
@@ -342,7 +344,9 @@ export class CodexAdapter implements WorkerAdapter {
         : threadStarted(threadResponse, input.workspace, this.options.model, this.options.network_access);
       threadId = opened.threadId; reportedModel = opened.reportedModel;
       protectedStage = "mcpServerStatus/list";
-      assertNoMcp(await transport.request("mcpServerStatus/list", { threadId, limit: 1 }, signal));
+      if (protectedRun || !this.options.use_caller_codex_home) {
+        assertNoMcp(await transport.request("mcpServerStatus/list", { threadId, limit: 1 }, signal));
+      }
       let prompt = input.prompt;
       let peerTurn: PeerDeliveryEnvelope | undefined;
       let peerTurns = 0;

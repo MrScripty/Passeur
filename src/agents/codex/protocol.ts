@@ -56,13 +56,13 @@ export function assertSyntheticSeedAccount(value: unknown): void {
     throw new BridgeError("CODEX_AUTH_UNAVAILABLE", "Seeded qualification did not identify the synthetic persona");
   }
 }
-export function assertConfiguration(value: unknown): void {
+export function assertConfiguration(value: unknown, allowCallerMcp = false): void {
   const config = object(object(value, "config/read").config, "config");
   const features = object(config.features, "config.features");
   const servers = object(config.mcp_servers, "config.mcp_servers");
   // Labels are fixed policy categories; never include native values or server names in this diagnostic.
   const mismatches = [
-    Object.keys(servers).length > 0 && "mcp_servers",
+    !allowCallerMcp && Object.keys(servers).length > 0 && "mcp_servers",
     features.multi_agent !== false && "features.multi_agent",
     features.apps !== false && "features.apps",
     features.plugins !== false && "features.plugins",
@@ -181,6 +181,13 @@ export function assertNoMcp(value: unknown): void {
   const response = object(value, "mcpServerStatus/list");
   if (!Array.isArray(response.data) || response.data.length !== 0 || response.nextCursor !== null) {
     throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Child MCP availability is not empty and fully observed");
+  }
+}
+/** A caller-home MCP call may be observed, but only a native terminal item closes it. */
+export function assertMcpItemStatus(item: Record<string, unknown>, phase: "item/started" | "item/completed"): void {
+  if (phase === "item/started" ? item.status !== "inProgress" :
+      item.status !== "completed" && item.status !== "failed") {
+    throw new BridgeError("CODEX_PROTOCOL_INVALID", "MCP tool item has an invalid native phase or status");
   }
 }
 export function threadStarted(value: unknown, workspace: string, model: string, networkAccess: boolean): { threadId: string; reportedModel: string } {

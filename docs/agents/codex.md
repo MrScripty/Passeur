@@ -50,7 +50,7 @@ A registration has `adapter_id: "codex"`. Its strict options are:
 | --- | --- |
 | `codex_bin` | Approved executable path/name, never supplied by a task. |
 | `codex_home` | Absolute operator-authenticated CLI home outside the task workspace. By default it must be dedicated and distinct from the calling agent's home. |
-| `use_caller_codex_home` | Defaults false. Explicitly opt in to using only the exact canonical current caller `CODEX_HOME`, or `HOME/.codex` when unset, for ordinary native tasks. A symlink spelling or different home is refused. This option does not enable protected private-Git runs. |
+| `use_caller_codex_home` | Defaults false. Explicitly opt in to using only the exact canonical current caller `CODEX_HOME`, or `HOME/.codex` when unset, for ordinary native tasks. A symlink spelling or different home is refused. Existing MCP registrations may remain available to that ordinary worker. This option does not enable protected private-Git runs. |
 | `model` | Exact operator-selected native model ID. |
 | `network_access` | Requested native workspace-write network policy; defaults false. |
 | `allow_command_escalation` | Defaults false. Enabling permits human approval of one exact native command, potentially outside the sandbox; not a persistent rule. |
@@ -61,7 +61,7 @@ No credentials are copied from the caller or saved in task snapshots. Authentica
 
 ## Effective controls
 
-Startup requests disabled MCP registrations, multi-agent tools, apps/plugins and web search, plus user-routed approvals and the selected sandbox. Before submitting a turn, the adapter checks effective `config/read`, the actual thread model/workspace/approval/sandbox projection, and an empty complete MCP inventory. Missing/mismatched facts block the task. Unsupported policy amendments, external environment grants and persistent permissions are rejected. Command escalation is declined automatically unless explicitly enabled; it still requires the current task-correlated human decision. File changes use one-operation approval.
+Startup requests disabled MCP registrations, multi-agent tools, apps/plugins and web search, plus user-routed approvals and the selected sandbox. Before submitting a turn, the adapter checks effective `config/read` and the actual thread model/workspace/approval/sandbox projection. Dedicated-home and protected workers also require an empty complete MCP inventory. An explicit caller-home ordinary worker may use its existing MCP registrations; their native item lifecycle is observed but Passeur does not inspect or authorize the tools' own effects. Other missing/mismatched facts block the task. Unsupported policy amendments, external environment grants and persistent permissions are rejected. Command escalation is declined automatically unless explicitly enabled; it still requires the current task-correlated human decision. File changes use one-operation approval.
 
 These preflight checks do not prove that an arbitrary installed Codex build enforces every requested feature flag. In particular, plugin/tool availability must be inspected during native qualification; a reported `disabledPluginIds` list is not substituted for enforcement. Required real-runtime controls remain acceptance blockers. A worktree and isolated CLI configuration are not protection against arbitrary same-user shell activity.
 

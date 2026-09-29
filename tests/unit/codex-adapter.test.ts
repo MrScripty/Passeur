@@ -28,6 +28,13 @@ describe("ordinary Codex effective configuration", () => {
   it("accepts empty MCP inventory and disabled native features", () => {
     expect(() => assertConfiguration(allowed)).not.toThrow();
   });
+  it("permits existing MCP registrations only for an explicit caller-home ordinary worker", () => {
+    const configured = { config: { ...allowed.config, mcp_servers: { ordinary: { url: "https://example.invalid" } } } };
+    expect(() => assertConfiguration(configured)).toThrowError(expect.objectContaining({ code: "CODEX_ISOLATION_UNAVAILABLE" }));
+    expect(() => assertConfiguration(configured, true)).not.toThrow();
+    expect(() => assertConfiguration({ config: { ...configured.config, features: { ...allowed.config.features, apps: true } } }, true))
+      .toThrowError(expect.objectContaining({ code: "CODEX_ISOLATION_UNAVAILABLE" }));
+  });
   it.each([
     [{ mcp_servers: { server: {} } }, "mcp_servers"],
     [{ features: { ...allowed.config.features, multi_agent: true } }, "features.multi_agent"],
@@ -324,6 +331,26 @@ describe.runIf(process.platform === "linux")("Codex adapter through an actual co
         expect(await new CodexAdapter({ ...options, codex_bin: join(home, "..", "app-server.mjs"),
           codex_home: home, use_caller_codex_home: true }).run(run)).toMatchObject({
             status: "completed", worker_stop: "confirmed", reported_model: "fixture-model" });
+      } finally {
+        if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+      }
+    });
+  });
+  for (const [name, expected, code] of [
+    ["mcp-success", "completed", undefined],
+    ["mcp-invalid-status", "failed", "CODEX_PROTOCOL_INVALID"],
+    ["mcp-wrong-turn", "failed", "CODEX_CORRELATION_INVALID"],
+  ] as const) it(`${name} keeps native MCP lifecycle correlated through turn settlement`, async () => {
+    await scenario(name, async (_adapter, run, home) => {
+      const previous = process.env.CODEX_HOME;
+      try {
+        process.env.CODEX_HOME = home;
+        const configured = { ...options, codex_bin: join(home, "..", "app-server.mjs"), codex_home: home };
+        expect(await new CodexAdapter(configured).run(run)).toMatchObject({
+          status: "blocked", worker_stop: "not_started", error: { code: "CODEX_HOME_NOT_ISOLATED" } });
+        const result = await new CodexAdapter({ ...configured, use_caller_codex_home: true }).run(run);
+        expect(result).toMatchObject({ status: expected, worker_stop: "confirmed",
+          ...(code ? { error: { code } } : { worker_assessment: "met" }) });
       } finally {
         if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
       }
