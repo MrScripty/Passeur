@@ -86,10 +86,16 @@ export function failOnProtectedTerminalAuth(result: WorkerRun, denied?: AbortSig
     worker_stop: result.worker_stop };
 }
 /** Retain the namespace handle before an early terminal signal can skip initialize. */
-export async function initializeAfterProtectedCapture(launch: Readonly<{ statusFile: string; nativePath: string }> | undefined,
+export async function initializeAfterProtectedCapture(launch: Readonly<{ statusFile: string; nativePath: string;
+  guestStartPermit?: boolean }> | undefined,
   retain: (captured: Captured) => void, initialize: () => Promise<unknown>, signal: AbortSignal,
-  afterCapture?: () => void, capture = captureProtectedStartup): Promise<unknown> {
+  afterCapture?: () => void, capture = captureProtectedStartup,
+  startProtectedGuest?: () => Promise<void>): Promise<unknown> {
   if (launch) {
+    if (launch.guestStartPermit) {
+      if (!startProtectedGuest) throw new BridgeError("CODEX_PROTECTED_LAUNCH_INVALID", "Protected guest start permit is unavailable");
+      await startProtectedGuest();
+    }
     retain(await capture(launch.statusFile, launch.nativePath));
     afterCapture?.();
     signal.throwIfAborted();
@@ -285,7 +291,7 @@ export class CodexAdapter implements WorkerAdapter {
         () => transport!.request("initialize", { clientInfo: { name: "passeur_codex_worker", title: "Passeur worker", version: "0.1.0" }, capabilities: { experimentalApi: !!launch } }, signal),
         signal, () => {
           if (this.qualification?.failAfterCapture) throw new BridgeError("CODEX_FIXTURE_STARTUP_FAILURE", "Synthetic fixture stopped after native namespace capture");
-        }), "initialize");
+        }, captureProtectedStartup, () => transport!.startProtectedGuest(signal)), "initialize");
       text(initialize.userAgent, "initialize.userAgent", 1024);
       const observedPid = protectedCapture?.nativePid ?? transport.pid;
       if (observedPid !== undefined) {

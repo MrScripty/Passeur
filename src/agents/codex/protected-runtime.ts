@@ -126,7 +126,7 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
     tlsProxy?: Readonly<{ caFile: string; accountHost: string; inferenceHost: string;
       directNoProxy?: true }> }>,
   seedFile?: string, lateExposure = false): { command: string; args: string[]; env: NodeJS.ProcessEnv;
-    statusFile: string; nativePath: string } {
+    statusFile: string; nativePath: string; guestStartPermit: boolean } {
   const view = input.private_git?.view;
   if (input.private_git?.schema_version !== 1 || input.private_git.mount_kind !== "canonical_common_dir" ||
       !view || input.request.mode !== "implement") invalid();
@@ -207,5 +207,6 @@ export function protectedLaunch(input: WorkerInput, codexBin: string, codexHome:
   const statusFile = join(control, `codex-protected-status-${randomUUID()}.jsonl`);
   const spec = Buffer.from(JSON.stringify({ args, statusFile, ...(seedFile ? { seedFile } : {}),
     ...(relay?.tlsProxy ? { tlsSeedAdmission: true } : {}) })).toString("base64url");
-  return { command: node, args: [host, spec], env: {}, statusFile, nativePath: native };
+  return { command: node, args: [host, spec], env: {}, statusFile, nativePath: native,
+    guestStartPermit: !!relay };
 }

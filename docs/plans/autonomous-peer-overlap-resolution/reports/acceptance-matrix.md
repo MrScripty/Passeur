@@ -49,9 +49,13 @@ Fresh wrong-host and untrusted-CA cases passed a fixture-owned terminal
 TLS/request-boundary refusal after bounded startup concurrency. All five had
 confirmed worker stop, retired brokers and no private publication. The earlier
 wrong-host timeout and early-refusal reports remain historically incomplete.
-Direct-no-proxy refusal remains only observed because whole-worker stop was
-unconfirmed. Native certificate-error provenance and the real subscription
-route remain unqualified.
+The later reviewed guest EOF/permit repair passed fresh positive,
+direct-no-proxy refusal, late synthetic credential-output suppression and
+active-tunnel cancellation with genuine numeric Bubblewrap exits and confirmed
+whole-worker stop. Historical unconfirmed attempts remain unchanged. A
+stubborn native still returns unconfirmed after the outer deadline. Native
+certificate-error provenance and the real subscription route remain
+unqualified.
 Earlier Codex 0.157.1 samples established the narrower boundaries below. The
 installed build passed four sampled standalone command read probes under a named
 profile. A

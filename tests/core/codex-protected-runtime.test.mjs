@@ -3,11 +3,14 @@ import { test } from 'node:test';
 import { mkdtemp, mkdir, readFile, writeFile, rm, chmod, symlink, readdir } from 'node:fs/promises';
 import { closeSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { createServer, connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { assertProtectedHomePolicy, captureProtectedStartup, protectedLaunch,
   protectedSeedAdmissionRefused, settleProtectedStop } from '../../dist/src/agents/codex/protected-runtime.js';
-import { credentialHoldback, nativeAuthPresent, runProtectedHost, snapshotCheckedSeed, syntheticAccessTokenFresh } from '../../dist/src/agents/codex/protected-host.js';
+import { initializeAfterProtectedCapture } from '../../dist/src/agents/codex/adapter.js';
+import { credentialHoldback, nativeAuthPresent, PROTECTED_START_PERMIT, runProtectedHost, snapshotCheckedSeed, syntheticAccessTokenFresh } from '../../dist/src/agents/codex/protected-host.js';
+import { CodexStdio } from '../../dist/src/agents/codex/transport.js';
 import { captureProtectedNamespace, verifyProtectedNamespaceStop } from '../../dist/src/core/protected-namespace.js';
 
 async function fixture() {
@@ -38,6 +41,7 @@ test('protected launch places only the private Git common dir at the canonical g
   const f = await fixture();
   try {
     const launch = protectedLaunch(f.input, f.native, f.home, f.host, ['app-server']);
+    assert.equal(launch.guestStartPermit, false);
     const spec = JSON.parse(Buffer.from(launch.args[1], 'base64url').toString('utf8'));
     const args = spec.args;
     const at = args.indexOf('--bind', args.indexOf(f.workspace));
@@ -86,6 +90,7 @@ test('seeded launch copies a host-opened descriptor into a private guest home', 
     try {
       const launch = protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'],
         { socketPath: socket, port: 39173 }, seed);
+      assert.equal(launch.guestStartPermit, true);
       const spec = JSON.parse(Buffer.from(launch.args[1], 'base64url').toString('utf8'));
       assert.equal(spec.seedFile, seed);
       assert.deepEqual(spec.args.slice(spec.args.indexOf('--file') - 2, spec.args.indexOf('--file') + 3),
@@ -277,6 +282,189 @@ test('credential holdback blocks split stderr token and ignored stdout notificat
     assert.equal(containsAny(Buffer.concat(forwarded), secrets), false);
   }
   function containsAny(bytes, values) { return values.some(value => bytes.includes(value)); }
+});
+
+async function unusedPort() {
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  await new Promise(resolve => server.close(resolve));
+  return port;
+}
+
+function startGuest(port, nativeArgs, options = {}) {
+  const spec = { native: process.execPath, nativeArgs,
+    socketPath: '/mounts/relay/fixture.sock', port };
+  const child = spawn(process.execPath,
+    [...(options.preload ? ['--require', options.preload] : []),
+      join(process.cwd(), 'dist/src/agents/codex/protected-host.js'), 'guest',
+      Buffer.from(JSON.stringify(spec)).toString('base64url')],
+    { stdio: ['pipe', 'pipe', 'pipe'] });
+  const close = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+  if (options.permit !== false) child.stdin.write(PROTECTED_START_PERMIT);
+  return { child, close };
+}
+
+async function waitForFile(path) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { return await readFile(path, 'utf8'); } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
+  }
+  throw new Error(`fixture did not start: ${path}`);
+}
+
+test('guest EOF and repeated SIGTERM stop only native and retire the relay', async () => {
+  const f = await fixture();
+  const port = await unusedPort();
+  const started = join(f.root, 'started'), stopped = join(f.root, 'stopped');
+  const native = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(started)},String(process.pid));` +
+    `process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'stopped');process.exit(0)});` +
+    `process.stdin.resume();`;
+  const { child, close } = startGuest(port, ['-e', native]);
+  try {
+    await waitForFile(started);
+    const active = connect(port, '127.0.0.1');
+    await new Promise((resolve, reject) => { active.once('connect', resolve); active.once('error', reject); });
+    const activeClosed = new Promise(resolve => active.once('close', resolve));
+    child.stdin.end();
+    child.kill('SIGTERM'); child.kill('SIGTERM');
+    assert.deepEqual(await close, { code: 0, signal: null });
+    assert.equal(await readFile(stopped, 'utf8'), 'stopped');
+    await activeClosed;
+    await assert.rejects(new Promise((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => { socket.destroy(); resolve(); });
+      socket.once('error', reject);
+    }), { code: 'ECONNREFUSED' });
+  } finally { child.kill('SIGKILL'); await f.close(); }
+});
+
+test('guest leaves a stubborn native unresolved until it actually closes', async () => {
+  const f = await fixture();
+  const started = join(f.root, 'started');
+  const native = `require('node:fs').writeFileSync(${JSON.stringify(started)},'started');` +
+    `process.on('SIGTERM',()=>{});setTimeout(()=>process.exit(7),180);`;
+  const port = await unusedPort();
+  const { child, close } = startGuest(port, ['-e', native]);
+  try {
+    await waitForFile(started);
+    child.stdin.end();
+    assert.equal(await Promise.race([close.then(() => 'closed'),
+      new Promise(resolve => setTimeout(() => resolve('pending'), 40))]), 'pending');
+    await assert.rejects(new Promise((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => { socket.destroy(); resolve(); });
+      socket.once('error', reject);
+    }), { code: 'ECONNREFUSED' });
+    assert.deepEqual(await close, { code: 7, signal: null });
+  } finally { child.kill('SIGKILL'); await f.close(); }
+});
+
+test('outer stop budget reports false while a stubborn direct native remains alive', async () => {
+  const f = await fixture();
+  const started = join(f.root, 'started');
+  const port = await unusedPort();
+  const spec = { native: process.execPath,
+    nativeArgs: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(started)},String(process.pid));` +
+      `process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`],
+    socketPath: '/mounts/relay/fixture.sock', port };
+  const transport = new CodexStdio({ command: process.execPath,
+    args: [join(process.cwd(), 'dist/src/agents/codex/protected-host.js'), 'guest',
+      Buffer.from(JSON.stringify(spec)).toString('base64url')], cwd: process.cwd(), env: process.env,
+    request: async () => ({}), notification: () => {} });
+  let nativePid;
+  try {
+    await transport.startProtectedGuest(new AbortController().signal);
+    nativePid = Number(await waitForFile(started));
+    assert.equal(await transport.close(80, 20), false);
+    assert.equal(transport.exitEvidence, undefined);
+    await assert.rejects(new Promise((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => { socket.destroy(); resolve(); });
+      socket.once('error', reject);
+    }), { code: 'ECONNREFUSED' });
+  } finally {
+    if (nativePid) { try { process.kill(nativePid, 'SIGKILL'); } catch { /* Fixture may have exited. */ } }
+    if (transport.pid) { try { process.kill(transport.pid, 'SIGKILL'); } catch { /* Fixture may have exited. */ } }
+    await f.close();
+  }
+});
+
+test('guest EOF before asynchronous startup prevents native spawn', async () => {
+  const f = await fixture();
+  const count = join(f.root, 'spawn-count'), preload = join(f.root, 'preload.cjs');
+  await writeFile(preload, `const cp=require('node:child_process'),fs=require('node:fs');` +
+    `const sync=require('node:module').syncBuiltinESMExports;fs.writeFileSync(${JSON.stringify(count)},'0');` +
+    `const original=cp.spawn;cp.spawn=(...args)=>{fs.writeFileSync(${JSON.stringify(count)},'1');return original(...args)};sync();`);
+  const { child, close } = startGuest(await unusedPort(), ['-e', 'process.exit(0)'],
+    { permit: false, preload });
+  try {
+    child.stdin.end();
+    assert.deepEqual(await close, { code: 143, signal: null });
+    assert.equal(await readFile(count, 'utf8'), '0');
+  } finally { child.kill('SIGKILL'); await f.close(); }
+});
+
+test('malformed protected start permit cannot spawn native', async () => {
+  const f = await fixture();
+  const count = join(f.root, 'spawn-count'), preload = join(f.root, 'preload.cjs');
+  await writeFile(preload, `const cp=require('node:child_process'),fs=require('node:fs');` +
+    `const sync=require('node:module').syncBuiltinESMExports;fs.writeFileSync(${JSON.stringify(count)},'0');` +
+    `const original=cp.spawn;cp.spawn=(...args)=>{fs.writeFileSync(${JSON.stringify(count)},'1');return original(...args)};sync();`);
+  const { child, close } = startGuest(await unusedPort(), ['-e', 'process.exit(0)'],
+    { permit: false, preload });
+  try {
+    child.stdin.end('PASSEUR_PROTECTED_START_V2\n');
+    assert.deepEqual(await close, { code: 1, signal: null });
+    assert.equal(await readFile(count, 'utf8'), '0');
+  } finally { child.kill('SIGKILL'); await f.close(); }
+});
+
+test('protected start permit is consumed and the first native frame stays byte exact', async () => {
+  const f = await fixture();
+  const output = join(f.root, 'native-input');
+  const native = `let bytes='';process.stdin.on('data',chunk=>{bytes+=chunk.toString();` +
+    `if(bytes.includes('\\n')){require('node:fs').writeFileSync(${JSON.stringify(output)},bytes);process.exit(0)}});`;
+  const { child, close } = startGuest(await unusedPort(), ['-e', native]);
+  const frame = '{"id":"passeur:1","method":"initialize","params":{"x":1}}\n';
+  try {
+    child.stdin.write(frame);
+    assert.deepEqual(await close, { code: 0, signal: null });
+    assert.equal(await readFile(output, 'utf8'), frame);
+  } finally { child.kill('SIGKILL'); await f.close(); }
+});
+
+test('direct protected capture sends native initialize with zero permit bytes', async () => {
+  const f = await fixture();
+  const output = join(f.root, 'direct-native-input');
+  const native = `let bytes='';process.stdin.on('data',chunk=>{bytes+=chunk.toString();` +
+    `if(bytes.includes('\\n')){require('node:fs').writeFileSync(${JSON.stringify(output)},bytes);` +
+    `process.stdout.write(JSON.stringify({id:'passeur:1',result:{userAgent:'fixture'}})+'\\n')}});`;
+  const transport = new CodexStdio({ command: process.execPath, args: ['-e', native],
+    cwd: process.cwd(), env: process.env, request: async () => ({}), notification: () => {} });
+  try {
+    let retained = false;
+    const result = await initializeAfterProtectedCapture(
+      { statusFile: 'fixture', nativePath: process.execPath, guestStartPermit: false },
+      () => { retained = true; },
+      () => transport.request('initialize', { x: 1 }, new AbortController().signal),
+      new AbortController().signal, undefined, async () => ({ nativePid: transport.pid }),
+      async () => { throw new Error('direct native received a guest permit'); });
+    assert.equal(retained, true);
+    assert.deepEqual(result, { userAgent: 'fixture' });
+    assert.equal(await readFile(output, 'utf8'), '{"id":"passeur:1","method":"initialize","params":{"x":1}}\n');
+  } finally { await transport.close(200); await f.close(); }
+});
+
+test('guest SIGTERM during native work waits for direct child close', async () => {
+  const f = await fixture();
+  const started = join(f.root, 'started'), stopped = join(f.root, 'stopped');
+  const native = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(started)},'started');` +
+    `process.on('SIGTERM',()=>setTimeout(()=>{fs.writeFileSync(${JSON.stringify(stopped)},'closed');process.exit(0)},30));` +
+    `process.stdin.resume();`;
+  const { child, close } = startGuest(await unusedPort(), ['-e', native]);
+  try {
+    await waitForFile(started);
+    child.kill('SIGTERM');
+    assert.deepEqual(await close, { code: 0, signal: null });
+    assert.equal(await readFile(stopped, 'utf8'), 'closed');
+  } finally { child.kill('SIGKILL'); await f.close(); }
 });
 
 function observer() {

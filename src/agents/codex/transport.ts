@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { TextDecoder } from "node:util";
 import { BridgeError } from "../../core/errors.js";
 import { settlesWithin, withAbort } from "../../core/async.js";
+import { PROTECTED_START_PERMIT } from "./protected-host.js";
 
 const MAX_FRAME_BYTES = 1_048_576;
 const MAX_PENDING_REQUESTS = 32;
@@ -198,6 +199,19 @@ export class CodexStdio {
     await withAbort(this.#ready, signal);
     const writing = this.#write({ method, ...(params === undefined ? {} : { params }) });
     void writing.catch((error) => this.#failAll(error));
+    return withAbort(writing, signal);
+  }
+  /** Sends the one guest control line before namespace capture and native RPC. */
+  async startProtectedGuest(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    await withAbort(this.#ready, signal);
+    if (!this.#accepting || this.#fault || this.#closed) throw this.#fault ?? new BridgeError("CODEX_TRANSPORT_CLOSED", "Native transport is closing");
+    const writing = new Promise<void>((resolve, reject) => {
+      this.#child.stdin.write(PROTECTED_START_PERMIT, error =>
+        error ? reject(new BridgeError("CODEX_WRITE_FAILED", "Protected guest start permit failed")) : resolve());
+    });
+    this.#writes.add(writing);
+    void writing.then(() => this.#writes.delete(writing), () => this.#writes.delete(writing));
     return withAbort(writing, signal);
   }
   #groupGone(): boolean {

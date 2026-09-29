@@ -26,20 +26,31 @@ describe("protected native profile correlation", () => {
     const events: string[] = [];
     const terminal = new AbortController();
     const captured = { nativePid: 42 } as Parameters<Parameters<typeof initializeAfterProtectedCapture>[1]>[0];
-    await expect(initializeAfterProtectedCapture({ statusFile: "status", nativePath: "/bin/codex" },
+    await expect(initializeAfterProtectedCapture({ statusFile: "status", nativePath: "/bin/codex", guestStartPermit: true },
       value => { expect(value).toBe(captured); events.push("retain"); },
       async () => { events.push("initialize"); return { userAgent: "fixture" }; }, terminal.signal,
       () => events.push("after-capture"), async () => {
         events.push("capture"); terminal.abort(new Error("fixture TLS refusal")); return captured;
-      })).rejects.toThrow("fixture TLS refusal");
-    expect(events).toEqual(["capture", "retain", "after-capture"]);
+      }, async () => { events.push("permit"); })).rejects.toThrow("fixture TLS refusal");
+    expect(events).toEqual(["permit", "capture", "retain", "after-capture"]);
   });
   it("initializes normally after retaining the protected namespace", async () => {
     const events: string[] = [];
     const captured = { nativePid: 42 } as Parameters<Parameters<typeof initializeAfterProtectedCapture>[1]>[0];
-    await expect(initializeAfterProtectedCapture({ statusFile: "status", nativePath: "/bin/codex" },
+    await expect(initializeAfterProtectedCapture({ statusFile: "status", nativePath: "/bin/codex", guestStartPermit: true },
       () => events.push("retain"), async () => { events.push("initialize"); return "ready"; },
-      new AbortController().signal, undefined, async () => { events.push("capture"); return captured; }
+      new AbortController().signal, undefined, async () => { events.push("capture"); return captured; },
+      async () => { events.push("permit"); }
+    )).resolves.toBe("ready");
+    expect(events).toEqual(["permit", "capture", "retain", "initialize"]);
+  });
+  it("captures and initializes a direct protected launch without writing a guest permit", async () => {
+    const events: string[] = [];
+    const captured = { nativePid: 42 } as Parameters<Parameters<typeof initializeAfterProtectedCapture>[1]>[0];
+    await expect(initializeAfterProtectedCapture({ statusFile: "status", nativePath: "/bin/codex", guestStartPermit: false },
+      () => events.push("retain"), async () => { events.push("initialize"); return "ready"; },
+      new AbortController().signal, undefined, async () => { events.push("capture"); return captured; },
+      async () => { events.push("unexpected-permit"); }
     )).resolves.toBe("ready");
     expect(events).toEqual(["capture", "retain", "initialize"]);
   });
