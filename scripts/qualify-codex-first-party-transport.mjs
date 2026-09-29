@@ -63,7 +63,7 @@ export function trackFirstPartyTlsServer(server) {
 export async function runFirstPartyDiscovery() {
   const evidence = { routes: [], upgrades: [], firstPartyTunnels: 0,
     oauthDenied: 0, unknownDenied: 0, latchedDenied: 0, deniedAuthorityCategories: [],
-    brokerRetired: false, discoveryComplete: false };
+    startupStderr: null, brokerRetired: false, discoveryComplete: false };
   const transport = { ...FIRST_PARTY_LABELS,
     async prepare(context) {
       const certificate = generateCertificate(context.root, HOST);
@@ -113,8 +113,8 @@ export async function runFirstPartyDiscovery() {
           await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
           broker = await startProtectedEgress({ socketPath: context.socketPath, accountHost: HOST,
             inferenceHost: HOST, accountPort: server.address().port, inferencePort: server.address().port,
-            firstParty: true, onDeniedAuthority: category => {
-              if (evidence.deniedAuthorityCategories.length < 4) evidence.deniedAuthorityCategories.push(category);
+            firstParty: true, onDeniedAuthority: denied => {
+              if (evidence.deniedAuthorityCategories.length < 4) evidence.deniedAuthorityCategories.push(denied);
             } });
         },
         async close() {
@@ -129,7 +129,8 @@ export async function runFirstPartyDiscovery() {
         },
       }, syntheticProvider: 'openai', terminalAuthSignal: terminal.signal,
       relay: { socketPath: context.socketPath, port: context.relayPort,
-        tlsProxy: { caFile: certificate.ca, accountHost: HOST, inferenceHost: HOST, firstParty: true } },
+        tlsProxy: { caFile: certificate.ca, accountHost: HOST, inferenceHost: HOST, firstParty: true },
+        startupDiagnostic: diagnostic => { evidence.startupStderr = diagnostic; } },
       config: firstPartyProfile(context.workspace, context.canonical, context.admin, ELF),
       beforeReturn: async () => false };
     },

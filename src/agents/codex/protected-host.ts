@@ -9,6 +9,38 @@ import { Transform } from "node:stream";
 type Spec = Readonly<{ args: string[]; statusFile: string; seedFile?: string; tlsSeedAdmission?: true }>;
 type GuestSpec = Readonly<{ native: string; nativeArgs: string[]; socketPath: string; port: number;
   seededProbe?: true; lateExposure?: true; tlsProxy?: true }>;
+/** The outer launcher validated and mounted this policy snapshot read-only. Reject ambiguous variants here. */
+export function protectedProxyControlAuthority(profile: Buffer): "chatgpt.com:443" | "accounts.fixture.invalid:443" {
+  if (profile.length < 1 || profile.length > 65_536) throw new Error("CODEX_PROTECTED_GUEST_PROXY_CONTROL_INVALID");
+  const text = profile.toString("utf8");
+  const providerLines = text.match(/^model_provider\s*=/gm) ?? [];
+  const firstParty = providerLines.length === 1 && /^model_provider = "openai"$/m.test(text) &&
+    !/^chatgpt_base_url\s*=/m.test(text) && !/^\[model_providers(?:\.|\])/m.test(text) &&
+    /^\[analytics\]\nenabled = false$/m.test(text);
+  if (firstParty) return "chatgpt.com:443";
+  if (/^chatgpt_base_url = "https:\/\/accounts\.fixture\.invalid"$/m.test(text) &&
+      /^\[model_providers\.passeur_fixture_tls\]$/m.test(text) &&
+      !/^model_provider = "openai"$/m.test(text)) return "accounts.fixture.invalid:443";
+  throw new Error("CODEX_PROTECTED_GUEST_PROXY_CONTROL_INVALID");
+}
+/** A native child can start only after the guest relay returned HTTP 200 for its sealed control authority. */
+export async function startAfterProtectedProxyControl<T>(port: number,
+  authority: "chatgpt.com:443" | "accounts.fixture.invalid:443",
+  onControl: (control: ReturnType<typeof httpRequest>) => void, start: () => T): Promise<T> {
+  await new Promise<void>((resolve, reject) => {
+    const control = httpRequest({ hostname: "127.0.0.1", port, method: "CONNECT",
+      path: authority, headers: { host: authority }, agent: false });
+    onControl(control);
+    control.once("connect", (response, socket) => {
+      socket.destroy();
+      if (response.statusCode === 200) resolve();
+      else reject(new Error("CODEX_PROTECTED_GUEST_PROXY_CONTROL_FAILED"));
+    });
+    control.once("error", reject);
+    control.end();
+  });
+  return start();
+}
 /** Guest-only line consumed before native JSON-lines are forwarded unchanged. */
 export const PROTECTED_START_PERMIT = "PASSEUR_PROTECTED_START_V1\n";
 export function nativeAuthPresent(headers: Readonly<Record<string, unknown>>): boolean {
@@ -314,21 +346,14 @@ export async function runProtectedGuest(spec: GuestSpec): Promise<number> {
       });
       if (stopRequested) return 143;
       if (spec.tlsProxy) {
-        const authority = "accounts.fixture.invalid:443";
-        await new Promise<void>((resolve, reject) => {
-          const control = startupControl = httpRequest({ hostname: "127.0.0.1", port: spec.port, method: "CONNECT",
-            path: authority, headers: { host: authority }, agent: false });
-          control.once("connect", (response, socket) => {
-            socket.destroy();
-            if (response.statusCode === 200) resolve();
-            else reject(new Error("CODEX_PROTECTED_GUEST_PROXY_CONTROL_FAILED"));
-          });
-          control.once("error", reject);
-          control.end();
-        });
+        const authority = protectedProxyControlAuthority(readFileSync("/mounts/home/config.toml"));
+        native = await startAfterProtectedProxyControl(spec.port, authority,
+          control => { startupControl = control; }, () => stopRequested ? undefined :
+            spawn(spec.native, spec.nativeArgs, { cwd: process.cwd(), env: process.env,
+              stdio: ["pipe", "pipe", "pipe"] }));
       }
       if (stopRequested) return 143;
-      native = spawn(spec.native, spec.nativeArgs, { cwd: process.cwd(), env: process.env,
+      native ??= spawn(spec.native, spec.nativeArgs, { cwd: process.cwd(), env: process.env,
         stdio: ["pipe", "pipe", "pipe"] });
       nativeClose = new Promise((resolve, reject) => {
         native!.once("error", reject);

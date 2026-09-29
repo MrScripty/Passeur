@@ -61,6 +61,11 @@ or WebSocket request. The second identified one denied `other_valid` CONNECT;
 both had no publication and unconfirmed worker stop because native association
 was never captured. These are incomplete route evidence, not first-party
 transport acceptance. Exact roots and report hashes are in the ledger.
+A subsequent reviewed repair identified those refused CONNECTs as Passeur's
+hardcoded pre-native proxy self-check. A fresh local-only installed run then
+reached an account GET and a redacted catalog GET shape, with confirmed worker
+and broker stop and no publication. The catalog path remained refused, so no
+WebSocket or model inference acceptance follows.
 Earlier Codex 0.157.1 samples established the narrower boundaries below. The
 installed build passed four sampled standalone command read probes under a named
 profile. A

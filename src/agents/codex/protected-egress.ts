@@ -3,16 +3,26 @@ import { createServer as createHttpServer, request as httpRequest, type Server a
 import { createConnection, isIP } from "node:net";
 import type { Duplex } from "node:stream";
 import { chmodSync, lstatSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 export type EgressRoute = "account" | "inference" | "first_party" | "oauth_denied" | "unknown_denied" | "latched_denied";
 export type EgressLatchReason = "refresh_denied" | "upstream_unauthorized" | "tls_refused";
-export type DeniedAuthorityCategory = "oauth" | "api_openai" | "chatgpt_invalid_connect" | "other_valid" | "malformed";
+export type DeniedAuthorityCategory = "oauth" | "api_openai" | "chatgpt_invalid_connect" | "statsig_metrics" | "other_valid" | "malformed";
+export type DeniedAuthorityEvidence = Readonly<{ category: DeniedAuthorityCategory; sha256?: string; byteLength?: number }>;
 const AUTHORITY = /^[a-z0-9][a-z0-9.-]{0,252}:443$/;
 function deniedAuthorityCategory(authority: string): DeniedAuthorityCategory {
   if (authority === "auth.openai.com:443") return "oauth";
   if (authority === "api.openai.com:443") return "api_openai";
   if (authority === "chatgpt.com:443") return "chatgpt_invalid_connect";
+  // Public endpoint in the pinned Codex 0.157.1 Statsig metrics route. It remains denied.
+  if (authority === "ab.chatgpt.com:443") return "statsig_metrics";
   return AUTHORITY.test(authority) && !authority.includes("..") ? "other_valid" : "malformed";
+}
+export function deniedAuthorityEvidence(authority: string): DeniedAuthorityEvidence {
+  const category = deniedAuthorityCategory(authority);
+  return category === "other_valid" ? { category,
+    sha256: createHash("sha256").update(authority, "utf8").digest("hex"),
+    byteLength: Buffer.byteLength(authority, "utf8") } : { category };
 }
 export function classifyAuthority(authority: string, accountHost: string, inferenceHost: string): EgressRoute {
   if (!AUTHORITY.test(authority) || authority.includes("..")) return "unknown_denied";
@@ -31,7 +41,7 @@ export type EgressBroker = Readonly<{ socketPath: string; counts: Readonly<Recor
 export async function startProtectedEgress(spec: Readonly<{ socketPath: string; accountHost: string;
   inferenceHost: string; accountPort: number; inferencePort: number; signal?: AbortSignal;
   firstParty?: true;
-  onDeniedAuthority?: (category: DeniedAuthorityCategory) => void;
+  onDeniedAuthority?: (evidence: DeniedAuthorityEvidence) => void;
   onTerminalDenial?: (reason: EgressLatchReason) => void }>): Promise<EgressBroker> {
   if (!spec.socketPath.startsWith("/tmp/") ||
       (spec.firstParty ? spec.accountHost !== "chatgpt.com" || spec.inferenceHost !== "chatgpt.com" ||
@@ -71,13 +81,13 @@ export async function startProtectedEgress(spec: Readonly<{ socketPath: string; 
       classifyAuthority(request.url ?? "", spec.accountHost, spec.inferenceHost);
     if (route === "oauth_denied") {
       counts.oauth_denied++; latch("refresh_denied", guest);
-      try { spec.onDeniedAuthority?.("oauth"); } catch { /* Diagnostics cannot alter denial. */ }
+      try { spec.onDeniedAuthority?.({ category: "oauth" }); } catch { /* Diagnostics cannot alter denial. */ }
       guest.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return;
     }
     if (head.length || route === "unknown_denied" ||
         request.headers.host !== request.url) {
       counts[route === "account" || route === "inference" || route === "first_party" ? "unknown_denied" : route]++;
-      try { spec.onDeniedAuthority?.(deniedAuthorityCategory(request.url ?? "")); }
+      try { spec.onDeniedAuthority?.(deniedAuthorityEvidence(request.url ?? "")); }
       catch { /* Diagnostics cannot alter denial. */ }
       guest.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return;
     }

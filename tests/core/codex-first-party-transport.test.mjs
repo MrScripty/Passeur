@@ -9,6 +9,37 @@ import { ELF } from '../../scripts/qualify-codex-protected-worker.mjs';
 import { generateCertificate } from '../../scripts/qualify-codex-subscription-transport.mjs';
 import { firstPartyProfile, firstPartyRequestIdentity, firstPartyRoute,
   trackFirstPartyTlsServer } from '../../scripts/qualify-codex-first-party-transport.mjs';
+import { StartupStderrDiagnostic } from '../../dist/src/agents/codex/transport.js';
+
+test('startup stderr diagnostic classifies split chunks without retaining values', () => {
+  const cases = [
+    ['con', 'figuration failed secret-token-123', 'configuration_load_fallback'],
+    ['authenti', 'cation failed secret-token-123', 'auth_bootstrap'],
+    ['authentication rejected invalid ', 'payload secret-token-123', 'auth_bootstrap'],
+    ['read-only ', 'file system secret-token-123', 'storage_environment'],
+    ['unrecognized secret-token-123', '', 'other_unknown'],
+    ['download failed secret-token-123', '', 'other_unknown'],
+  ];
+  for (const [first, second, category] of cases) {
+    const diagnostic = new StartupStderrDiagnostic();
+    diagnostic.accept(Buffer.from(first)); diagnostic.accept(Buffer.from(second));
+    const evidence = diagnostic.finish();
+    assert.equal(evidence.category, category);
+    assert.equal(evidence.byteCount, Buffer.byteLength(first + second));
+    assert.equal(evidence.overLimit, false);
+    assert.doesNotMatch(JSON.stringify(evidence), /secret-token-123|failed|unrecognized/);
+    diagnostic.accept(Buffer.from('configuration'));
+    assert.deepEqual(diagnostic.finish(), evidence);
+  }
+});
+
+test('startup stderr diagnostic caps over-limit input without retaining token-like bytes', () => {
+  const diagnostic = new StartupStderrDiagnostic();
+  diagnostic.accept(Buffer.from('x'.repeat(8190)));
+  diagnostic.accept(Buffer.from('SECRET-TOKEN-LIKE-1234567890'.repeat(1000)));
+  assert.deepEqual(diagnostic.finish(), { category: 'other_unknown', byteCount: 8192, overLimit: true });
+  assert.doesNotMatch(JSON.stringify(diagnostic.finish()), /SECRET|TOKEN/);
+});
 
 test('first-party policy retains the installed built-in provider and default origin', () => {
   const profile = firstPartyProfile('/tmp/task', '/tmp/private', '/tmp/private/worktrees/task', ELF);

@@ -5,11 +5,12 @@ import { closeSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer, connect } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { assertProtectedHomePolicy, captureProtectedStartup, protectedLaunch,
   protectedSeedAdmissionRefused, settleProtectedStop } from '../../dist/src/agents/codex/protected-runtime.js';
 import { initializeAfterProtectedCapture } from '../../dist/src/agents/codex/adapter.js';
-import { credentialHoldback, nativeAuthPresent, PROTECTED_START_PERMIT, runProtectedHost, snapshotCheckedSeed, syntheticAccessTokenFresh } from '../../dist/src/agents/codex/protected-host.js';
+import { credentialHoldback, nativeAuthPresent, PROTECTED_START_PERMIT, protectedProxyControlAuthority, runProtectedHost, snapshotCheckedSeed, startAfterProtectedProxyControl, syntheticAccessTokenFresh } from '../../dist/src/agents/codex/protected-host.js';
 import { CodexStdio } from '../../dist/src/agents/codex/transport.js';
 import { captureProtectedNamespace, verifyProtectedNamespaceStop } from '../../dist/src/core/protected-namespace.js';
 
@@ -197,6 +198,7 @@ test('first-party sealed home admits built-in openai and rejects origin or provi
     await writeFile(join(f.home, 'config.toml'), profile, { mode: 0o600 });
     assert.equal(assertProtectedHomePolicy(f.home, f.workspace, f.canonical,
       join(f.canonical, 'worktrees', 'task'), f.native, undefined, firstParty.tlsProxy).toString(), profile);
+    assert.equal(protectedProxyControlAuthority(Buffer.from(profile)), 'chatgpt.com:443');
     assert.equal(protectedLaunch(f.input, f.native, f.home, f.host, ['app-server'], firstParty, seed).guestStartPermit, true);
     for (const altered of [`chatgpt_base_url = "https://fixture.invalid"\n${profile}`,
       `${profile}[model_providers.openai]\nbase_url = "https://fixture.invalid"\n`]) {
@@ -205,6 +207,49 @@ test('first-party sealed home admits built-in openai and rejects origin or provi
         ['app-server'], firstParty, seed), { code: 'CODEX_PROTECTED_LAUNCH_INVALID' });
     }
   } finally { await new Promise(resolve => server.close(resolve)); await f.close(); }
+});
+
+test('guest proxy control selects only the two sealed local TLS variants', () => {
+  const custom = Buffer.from('chatgpt_base_url = "https://accounts.fixture.invalid"\n' +
+    'model_provider = "passeur_fixture_tls"\n[model_providers.passeur_fixture_tls]\n' +
+    '[analytics]\nenabled = false\n');
+  const firstParty = Buffer.from('model_provider = "openai"\n[analytics]\nenabled = false\n');
+  assert.equal(protectedProxyControlAuthority(custom), 'accounts.fixture.invalid:443');
+  assert.equal(protectedProxyControlAuthority(firstParty), 'chatgpt.com:443');
+  for (const altered of [
+    Buffer.from('model_provider = "openai"\nchatgpt_base_url = "https://accounts.fixture.invalid"\n' +
+      '[model_providers.passeur_fixture_tls]\n[analytics]\nenabled = false\n'),
+    Buffer.from('model_provider = "openai"\n[analytics]\nenabled = true\n'),
+    Buffer.from('model_provider = "openai"\nmodel_provider = "other"\n[analytics]\nenabled = false\n'),
+    Buffer.alloc(65_537, 120),
+  ]) assert.throws(() => protectedProxyControlAuthority(altered), /CODEX_PROTECTED_GUEST_PROXY_CONTROL_INVALID/);
+});
+
+test('guest control requires HTTP 200 before native spawn for either sealed variant', async () => {
+  const seen = [];
+  let status = 200;
+  const server = createHttpServer();
+  server.on('connect', (request, socket) => {
+    seen.push({ authority: request.url, host: request.headers.host });
+    socket.end(`HTTP/1.1 ${status} ${status === 200 ? 'Connection Established' : 'Forbidden'}\r\n\r\n`);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  let spawned = 0;
+  try {
+    for (const authority of ['accounts.fixture.invalid:443', 'chatgpt.com:443']) {
+      assert.equal(await startAfterProtectedProxyControl(port, authority, () => {}, () => ++spawned), spawned);
+      assert.deepEqual(seen.at(-1), { authority, host: authority });
+    }
+    assert.equal(spawned, 2);
+    status = 403;
+    await assert.rejects(startAfterProtectedProxyControl(port, 'chatgpt.com:443', () => {}, () => ++spawned),
+      /CODEX_PROTECTED_GUEST_PROXY_CONTROL_FAILED/);
+    assert.equal(spawned, 2);
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('checked seed snapshot stays byte exact after its named source changes', async () => {

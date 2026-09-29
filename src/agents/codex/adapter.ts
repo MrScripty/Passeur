@@ -11,7 +11,7 @@ import { peerOperationResultPrompt, peerProposalCorrectionPrompt, peerProposalRe
 import type { WorkerAdapter, WorkerInput, WorkerRun } from "../types.js";
 import { PeerDeliveryNativeSessionIdSchema, type PeerDeliveryEnvelope } from "../../contracts/peer-delivery.js";
 import type { CodexOptions } from "./config.js";
-import { CodexStdio, type NativeMessage } from "./transport.js";
+import { CodexStdio, StartupStderrDiagnostic, type NativeMessage, type StartupStderrEvidence } from "./transport.js";
 import { approval, assertAccount, assertSyntheticSeedAccount, assertConfiguration, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
 import { captureProtectedStartup, protectedCredentialExposure, protectedLaunch,
   protectedSeedAdmissionRefused, settleProtectedStop } from "./protected-runtime.js";
@@ -108,7 +108,8 @@ export class CodexAdapter implements WorkerAdapter {
   constructor(private readonly options: CodexOptions,
     private readonly qualification?: Readonly<{ syntheticProvider: string; allowAnonymous: true;
       relay: Readonly<{ socketPath: string; port: number; tlsProxy?: Readonly<{
-        caFile: string; accountHost: string; inferenceHost: string; firstParty?: true; directNoProxy?: true }> }>;
+        caFile: string; accountHost: string; inferenceHost: string; firstParty?: true; directNoProxy?: true }>;
+        startupDiagnostic?: (evidence: StartupStderrEvidence & Readonly<{ exitCode: number | null; exitSignal: NodeJS.Signals | null; exitObserved: boolean }>) => void }>;
       seedFile?: string; failAfterCapture?: true;
       lateExposure?: true; terminalAuthSignal?: AbortSignal }>) {}
   async run(input: WorkerInput): Promise<WorkerRun> {
@@ -120,6 +121,8 @@ export class CodexAdapter implements WorkerAdapter {
     const protectedRun = input.private_git !== undefined;
     let protectedStage = "unknown";
     let protectedCommands = 0;
+    const startupStderr = this.qualification?.relay.tlsProxy?.firstParty && this.qualification.relay.startupDiagnostic
+      ? new StartupStderrDiagnostic() : undefined;
     const checks: WorkerRun["checks"] = [];
     let events = Promise.resolve();
     let eventFailure: unknown;
@@ -229,6 +232,7 @@ export class CodexAdapter implements WorkerAdapter {
       if (launch) protectedHost = { statusFile: launch.statusFile, nativePath: launch.nativePath };
       transport = new CodexStdio({ command: launch?.command ?? this.options.codex_bin,
         args: launch?.args ?? argumentsFor(this.options), cwd: input.workspace, env: launch?.env ?? environment(home),
+        ...(startupStderr ? { startupStderr } : {}),
         notification: (message) => {
           const turn = current;
           if (!turn) {
@@ -293,6 +297,7 @@ export class CodexAdapter implements WorkerAdapter {
           if (this.qualification?.failAfterCapture) throw new BridgeError("CODEX_FIXTURE_STARTUP_FAILURE", "Synthetic fixture stopped after native namespace capture");
         }, captureProtectedStartup, () => transport!.startProtectedGuest(signal)), "initialize");
       text(initialize.userAgent, "initialize.userAgent", 1024);
+      startupStderr?.finish();
       const observedPid = protectedCapture?.nativePid ?? transport.pid;
       if (observedPid !== undefined) {
         const birth = await processIdentity(observedPid);
@@ -455,6 +460,12 @@ export class CodexAdapter implements WorkerAdapter {
         result.worker_stop = transport.started ? (protectedHost
           ? await settleProtectedStop(protectedCapture, protectedHost.statusFile, closed)
           : closed ? "confirmed" : "unconfirmed") : "not_started";
+      }
+      if (startupStderr && this.qualification?.relay.startupDiagnostic) {
+        const exit = transport?.exitEvidence;
+        try { this.qualification.relay.startupDiagnostic({ ...startupStderr.finish(), exitObserved: exit !== undefined,
+          exitCode: exit?.code ?? null, exitSignal: exit?.signal ?? null }); }
+        catch { /* Diagnostic reporting cannot change the native outcome. */ }
       }
       if (protectedHost && this.qualification?.seedFile) {
         result = failOnProtectedCredentialExposure(result, protectedHost.statusFile);

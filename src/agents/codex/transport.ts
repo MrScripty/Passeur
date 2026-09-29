@@ -7,6 +7,54 @@ import { PROTECTED_START_PERMIT } from "./protected-host.js";
 const MAX_FRAME_BYTES = 1_048_576;
 const MAX_PENDING_REQUESTS = 32;
 const MAX_CALLBACKS = 32;
+const MAX_STARTUP_STDERR_BYTES = 8_192;
+const STARTUP_PATTERNS = ["configuration", "config", "authentication", "authorization", "auth", "credential", "storage", "database", "permission denied", "read-only file system", "home directory"] as const;
+const STARTUP_PREFIXES = STARTUP_PATTERNS.map(pattern => {
+  const prefix = Array<number>(pattern.length).fill(0);
+  for (let offset = 1, matched = 0; offset < pattern.length; offset++) {
+    while (matched && pattern[offset] !== pattern[matched]) matched = prefix[matched - 1]!;
+    if (pattern[offset] === pattern[matched]) matched++;
+    prefix[offset] = matched;
+  }
+  return prefix;
+});
+export type StartupStderrEvidence = Readonly<{ category: "configuration_load_fallback" | "auth_bootstrap" | "storage_environment" | "other_unknown";
+  byteCount: number; overLimit: boolean }>;
+/** Streaming finite matcher: no native stderr bytes or text are retained. Input is already past host credential holdback. */
+export class StartupStderrDiagnostic {
+  #states = STARTUP_PATTERNS.map(() => 0);
+  #matched = new Set<number>();
+  #byteCount = 0;
+  #overLimit = false;
+  #finished = false;
+  accept(chunk: Buffer): void {
+    if (this.#finished) return;
+    const remaining = Math.max(0, MAX_STARTUP_STDERR_BYTES - this.#byteCount);
+    const count = Math.min(chunk.length, remaining);
+    this.#byteCount += count;
+    if (chunk.length > remaining) this.#overLimit = true;
+    for (let offset = 0; offset < count; offset++) {
+      const raw = chunk[offset]!;
+      const byte = raw >= 65 && raw <= 90 ? raw + 32 : raw;
+      for (let index = 0; index < STARTUP_PATTERNS.length; index++) {
+        const pattern = STARTUP_PATTERNS[index]!;
+        let state = this.#states[index]!;
+        while (state && byte !== pattern.charCodeAt(state)) state = STARTUP_PREFIXES[index]![state - 1]!;
+        if (byte === pattern.charCodeAt(state)) state++;
+        if (state === pattern.length) { this.#matched.add(index); state = STARTUP_PREFIXES[index]![state - 1]!; }
+        this.#states[index] = state;
+      }
+    }
+  }
+  finish(): StartupStderrEvidence {
+    this.#finished = true;
+    const has = (...terms: string[]) => terms.some(term => this.#matched.has(STARTUP_PATTERNS.indexOf(term as typeof STARTUP_PATTERNS[number])));
+    const category = has("configuration", "config") ? "configuration_load_fallback" :
+      has("authentication", "authorization", "auth", "credential") ? "auth_bootstrap" :
+      has("storage", "database", "permission denied", "read-only file system", "home directory") ? "storage_environment" : "other_unknown";
+    return { category, byteCount: this.#byteCount, overLimit: this.#overLimit };
+  }
+}
 type Id = string | number;
 export type NativeMessage = { method: string; params: unknown; id?: Id };
 type Response = { id: Id; result: unknown } | { id: Id; error: { code: number; message: string } };
@@ -15,6 +63,7 @@ export type TransportOptions = {
   command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv;
   request: (message: NativeMessage & { id: Id }) => Promise<unknown>;
   notification: (message: NativeMessage) => void | Promise<void>;
+  startupStderr?: StartupStderrDiagnostic;
 };
 const idKey = (id: Id) => `${typeof id}:${id}`;
 function id(value: unknown): value is Id {
@@ -96,7 +145,7 @@ export class CodexStdio {
     this.#child.stdout.on("error", () => this.#failAll(new BridgeError("CODEX_READ_FAILED", "Native output stream failed")));
     this.#child.stdout.on("data", (chunk: Buffer) => this.#consume(chunk));
     // Drain without retaining raw authentication, prompts, filesystem content or diagnostics.
-    this.#child.stderr.on("data", () => undefined);
+    this.#child.stderr.on("data", (chunk: Buffer) => options.startupStderr?.accept(chunk));
     this.#child.stderr.on("error", () => this.#failAll(new BridgeError("CODEX_READ_FAILED", "Native diagnostic stream failed")));
   }
   get exitEvidence() { return this.#exited; }

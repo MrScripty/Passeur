@@ -8,8 +8,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnection, createServer as createNetServer } from 'node:net';
 import { request as httpRequest } from 'node:http';
+import { createHash } from 'node:crypto';
 import { classifyAuthority, createGuestConnectProxy, retireGuestConnectProxy,
-  startProtectedEgress } from '../../dist/src/agents/codex/protected-egress.js';
+  deniedAuthorityEvidence, startProtectedEgress } from '../../dist/src/agents/codex/protected-egress.js';
 
 function connect(options, authority) {
   return new Promise((resolve, reject) => {
@@ -45,19 +46,33 @@ test('first-party broker admits only exact chatgpt.com CONNECT on disposable loo
     const admitted = await connect({ socketPath }, 'chatgpt.com:443');
     assert.equal(admitted.status, 200);
     admitted.socket.destroy();
-    for (const authority of ['chatgpt.com:444', 'other.invalid:443', 'api.openai.com:443']) {
+    for (const authority of ['chatgpt.com:444', 'other.invalid:443', 'api.openai.com:443', 'ab.chatgpt.com:443']) {
       const denied = await connect({ socketPath }, authority).catch(() => null);
       if (denied) { assert.equal(denied.status, 403); denied.socket.destroy(); }
     }
     assert.equal(broker.counts.first_party, 1);
     assert.equal(broker.counts.account, 0);
     assert.equal(broker.counts.inference, 0);
-    assert.deepEqual(deniedCategories, ['malformed', 'other_valid', 'api_openai']);
+    assert.deepEqual(deniedCategories, [{ category: 'malformed' },
+      { category: 'other_valid', sha256: createHash('sha256').update('other.invalid:443').digest('hex'), byteLength: 17 },
+      { category: 'api_openai' }, { category: 'statsig_metrics' }]);
+    assert.equal(broker.counts.unknown_denied, 4);
   } finally {
     await broker.close(); upstream.closeAllConnections?.();
     await new Promise(resolve => upstream.close(resolve));
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('denied authority evidence never includes raw authority or arbitrary malformed input', () => {
+  const tokenLike = 'tokenlikehost.invalid:443';
+  const evidence = deniedAuthorityEvidence(tokenLike);
+  assert.equal(evidence.category, 'other_valid');
+  assert.equal(evidence.byteLength, Buffer.byteLength(tokenLike));
+  assert.equal(evidence.sha256, createHash('sha256').update(tokenLike).digest('hex'));
+  assert.doesNotMatch(JSON.stringify(evidence), /tokenlikehost/);
+  assert.deepEqual(deniedAuthorityEvidence('TOKENLIKE.invalid:443'), { category: 'malformed' });
+  assert.deepEqual(deniedAuthorityEvidence('ab.chatgpt.com:443'), { category: 'statsig_metrics' });
 });
 
 test('guest CONNECT and direct Unix clients share host authority policy; close retires live tunnel', async () => {
