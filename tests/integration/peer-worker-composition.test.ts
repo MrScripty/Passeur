@@ -158,6 +158,7 @@ function controlledMuse(index: number, commitApplied = false): { adapter: MuseSd
     implementation: { sandbox_network: "restricted" }, subscription: { provenance: "user_confirmed" } };
   const adapter = new MuseSdkAdapter(options, ({ cwd }) => {
     workspace = cwd!;
+    let closed = false;
     const session = { sessionId: `controlled-peer-${index}`, opening: { result: { session: { modelId: "controlled" } } },
       fold: { current: true, items: { list: () => [], isTerminalUnknown: () => false } },
       onApproval() {}, onApprovalError() {},
@@ -176,8 +177,8 @@ function controlledMuse(index: number, commitApplied = false): { adapter: MuseSd
           return { kind: "completed", params: { terminal: "completed" } };
         })(), items: async function* () { yield { kind: "agentMessage", text: reply }; } };
       } };
-    return { ready: Promise.resolve({ startSession: async () => session, close: async () => {} } as never),
-      close: async () => {} };
+    return { ready: Promise.resolve({ startSession: async () => session, close: async () => { closed = true; } } as never),
+      close: async () => { closed = true; }, stopProof: async () => closed };
   });
   return { adapter, peer: { prompts, operations, errors, portErrors, release, edited,
     proposalNote: () => agreedProposalNoteId, observedOutcome: () => observedOutcome,

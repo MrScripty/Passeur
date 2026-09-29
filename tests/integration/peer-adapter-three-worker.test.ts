@@ -34,6 +34,7 @@ function scriptedMuse(index: number): ScriptedMuse {
     review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" },
     implementation: { sandbox_network: "restricted" }, subscription: { provenance: "user_confirmed" } };
   const adapter = new MuseSdkAdapter(options, ({ cwd }) => {
+    let closed = false;
     const session = { sessionId, opening: { result: { session: { modelId: "controlled" } } },
       fold: { current: true, items: { list: () => [], isTerminalUnknown: () => false } },
       onApproval() {}, onApprovalError() {},
@@ -66,8 +67,8 @@ function scriptedMuse(index: number): ScriptedMuse {
           return { kind: "completed", params: { terminal: "completed" } };
         })(), items: async function* () { yield { kind: "agentMessage", text }; } };
       } };
-    return { ready: Promise.resolve({ startSession: async () => session, close: async () => {} } as never),
-      close: async () => {} };
+    return { ready: Promise.resolve({ startSession: async () => session, close: async () => { closed = true; } } as never),
+      close: async () => { closed = true; }, stopProof: async () => closed };
   });
   return { adapter, release, edited, seen, sessionId, errors };
 }
@@ -360,6 +361,7 @@ function negotiatingMuse(index: number): NegotiatingMuse {
     review: { disable_write: true, disable_shell: true, sandbox_network: "restricted" },
     implementation: { sandbox_network: "restricted" }, subscription: { provenance: "user_confirmed" } };
   const adapter = new MuseSdkAdapter(options, ({ cwd }) => {
+    let closed = false;
     const session = { sessionId, opening: { result: { session: { modelId: "controlled" } } },
       fold: { current: true, items: { list: () => [], isTerminalUnknown: () => false } },
       onApproval() {}, onApprovalError() {},
@@ -379,8 +381,8 @@ function negotiatingMuse(index: number): NegotiatingMuse {
           return { kind: "completed", params: { terminal: "completed" } };
         })(), items: async function* () { yield { kind: "agentMessage", text }; } };
       } };
-    return { ready: Promise.resolve({ startSession: async () => session, close: async () => {} } as never),
-      close: async () => {} };
+    return { ready: Promise.resolve({ startSession: async () => session, close: async () => { closed = true; } } as never),
+      close: async () => { closed = true; }, stopProof: async () => closed };
   });
   return { adapter, release, edited, seen, sessionId, errors, operations,
     outcome: () => outcome, proposalNote: () => proposalNote, appliedDigest: () => appliedDigest };

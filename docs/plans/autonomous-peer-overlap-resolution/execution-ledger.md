@@ -1,5 +1,9 @@
 # Execution ledger — autonomous peer overlap resolution
 
+## 2026-09-29 — Controlled peer fixture stop evidence repaired
+
+- A fresh four-case G1 controlled composition run failed after both workers had observed the same durable `applied` application and emitted valid final envelopes. Retained task results were `interrupted`, with native stop `unknown`; the scripted Muse client returned no `stopProof`. A focused fork probe also showed the tool's default sandbox suppressed child Node helper output, so integration tests were run outside that tool sandbox. The fake clients in `peer-worker-composition.test.ts` and `peer-adapter-three-worker.test.ts` now report stop proof only after their own close. The four two-worker cases pass, including the hooked commit, and both three-worker cases pass, including late observation and three-party counterproposal/consent/application. `npm run build`, `npm run check`, 55 selected core peer tests and `git diff --check` pass. No production source changed. This restores controlled G1 evidence only; real blinded pair and multilingual installed trials remain open.
+
 ## 2026-09-29 — Real ordinary Codex worker accepted through Passeur
 
 - The failed but hooked prior task `83e12f15-34fc-49b5-92bd-2bb7f3879cfa` was reconciled only after its retained result showed confirmed stop, exact native PID/process group were absent, worktree was clean at `99d395f270e23a615f1089edc4b246886b248b75`, hook marker was `passed`, and main/target refs were unchanged. Clarification delivery remained unknown in its immutable history. The supported operator assertion reopened the same repository namespace; no stale socket or task was deleted, and the never-accepted v6 key was retried unchanged.

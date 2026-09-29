@@ -1,5 +1,7 @@
 # Acceptance matrix — autonomous peer overlap resolution
 
+Controlled G1 evidence was reverified on 2026-09-29 after correcting the scripted Muse clients' missing close/stop proof: four two-worker composition cases and two three-worker cases pass. The prior failures correctly retained interrupted tasks despite valid final replies and applied outcomes. This is a test fixture correction; no production worker or sandbox policy changed. Real blinded sibling work and installed multilingual runs remain open.
+
 The first real ordinary Codex service task reached a native model turn using the existing ChatGPT login but failed without an edit because its pinned `gpt-5.3-codex` model is unsupported for that account. The installed CLI completed two read-only no-tool turns with default `gpt-6-astra`. A Passeur retry using that model made a hooked private commit but failed completion because earlier invalid-disposition turns left two clarification deliveries unknown. After supported reconciliation, a fresh task with an explicit final envelope completed through Passeur: exact file and HEAD bytes, ordinary hook, private commit, final report and confirmed stop, with main/target unchanged and resource retained. **Ordinary single-worker real-provider integration is accepted.** Blinded sibling/oracle isolation, autonomous overlap negotiation, third worker and multilingual repeats remain open.
 
 Raw-MSP, injected SDK, production protected-host, and fixture local-TLS Muse
