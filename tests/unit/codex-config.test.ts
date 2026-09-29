@@ -1,6 +1,20 @@
 import { expect, it } from "vitest";
 import * as TOML from "smol-toml";
 import { mergeCodexMcpToml, renderCodexMcpToml, registrationFingerprint, type CodexMcpRegistration } from "../../src/codex/config.js";
+import { CodexOptionsSchema, codexDefinition } from "../../src/agents/codex/config.js";
+
+it("requires a named boolean caller-home opt-in and defaults to a dedicated home", () => {
+  const raw = { codex_bin: "/bin/codex", codex_home: "/caller/.codex", model: "fixture-model",
+    subscription_confirmed: true, experimental_opt_in: true };
+  expect(CodexOptionsSchema.parse(raw).use_caller_codex_home).toBe(false);
+  expect(CodexOptionsSchema.parse({ ...raw, use_caller_codex_home: true }).use_caller_codex_home).toBe(true);
+  expect(() => CodexOptionsSchema.parse({ ...raw, use_caller_codex_home: "true" })).toThrow();
+  if (process.platform === "linux") {
+    expect(codexDefinition.configure(raw).configuration).toMatchObject({ use_caller_codex_home: false });
+    expect(codexDefinition.configure({ ...raw, use_caller_codex_home: true }).configuration)
+      .toMatchObject({ use_caller_codex_home: true });
+  }
+});
 function registration(name = "passeur_pumas"): CodexMcpRegistration {
   return { server_name: name, command: "/node", args: ["/installed/dist/src/cli.js", "serve", "--project", "/project", "--profile", "/profile.json", "--state-root", "/state", "--expected-repository-id", "repository"],
     cwd: "/installed", env: {}, startup_timeout_sec: 10, tool_timeout_sec: 2100, enabled_tools: ["passeur_status", "passeur_prepare"],

@@ -6,16 +6,20 @@ export const CodexOptionsSchema = z.object({
   codex_bin: z.string().min(1).max(4096).refine((value) => !value.includes("\0"), "NUL is not a path character"), codex_home: z.string().min(1).max(4096).refine((value) => !value.includes("\0"), "NUL is not a path character").refine(isAbsolute, "codex_home must be absolute"),
   model: z.string().min(1).max(256), network_access: z.boolean().default(false),
   allow_command_escalation: z.boolean().default(false),
+  use_caller_codex_home: z.boolean().default(false),
   subscription_confirmed: z.literal(true), experimental_opt_in: z.literal(true),
 }).strict();
-export type CodexOptions = z.output<typeof CodexOptionsSchema>;
+export type CodexOptions = Omit<z.output<typeof CodexOptionsSchema>, "use_caller_codex_home"> & {
+  use_caller_codex_home?: boolean;
+};
 export const codexDefinition: AdapterDefinition = {
   configure(raw) {
     const options = CodexOptionsSchema.parse(raw);
     if (process.platform !== "linux") throw new BridgeError("AGENT_UNAVAILABLE", "Codex process supervision is implemented for Linux");
     return { contract: "codex-app-server-v2-projection/1", modes: ["implement"], requested_model: options.model,
       configuration: { executable: options.codex_bin, codex_home: options.codex_home, model: options.model,
-        network_access: options.network_access, allow_command_escalation: options.allow_command_escalation, authentication: "chatgpt", experimental_opt_in: true },
+        network_access: options.network_access, allow_command_escalation: options.allow_command_escalation,
+        use_caller_codex_home: options.use_caller_codex_home, authentication: "chatgpt", experimental_opt_in: true },
       worker: { async run(input) {
         let create: typeof import("./adapter.js");
         try { create = await import("./adapter.js"); }

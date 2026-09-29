@@ -1,9 +1,9 @@
-import { chmod, copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CodexAdapter, failOnProtectedCredentialExposure, failOnProtectedTerminalAuth,
+import { CodexAdapter, codexEnvironment, resolveCodexHome, failOnProtectedCredentialExposure, failOnProtectedTerminalAuth,
   initializeAfterProtectedCapture, protectedNativeRejection } from "../../src/agents/codex/adapter.js";
 import { assertProtectedConfiguration, assertProtectedProfile, assertSyntheticSeedAccount, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
 import type { CodexOptions } from "../../src/agents/codex/config.js";
@@ -20,6 +20,66 @@ const input: Omit<WorkerInput, "signal"> = {
 const options: CodexOptions = { codex_bin: "/missing/codex", codex_home: "/unused/pre-cancelled-home", model: "fixture-model",
   network_access: false, allow_command_escalation: false, subscription_confirmed: true, experimental_opt_in: true };
 cancellationConformance("Codex", () => new CodexAdapter(options), input);
+
+describe("ordinary Codex caller-home policy", () => {
+  it("uses HOME/.codex when CODEX_HOME is unset without reading auth", async () => {
+    const root = await mkdtemp(join(tmpdir(), "passeur-codex-home-fallback-"));
+    const home = join(root, ".codex"), workspace = join(root, "workspace");
+    const previous = { CODEX_HOME: process.env.CODEX_HOME, HOME: process.env.HOME };
+    try {
+      await mkdir(home); await mkdir(workspace);
+      delete process.env.CODEX_HOME;
+      process.env.HOME = root;
+      await expect(resolveCodexHome(home, workspace)).rejects.toMatchObject({ code: "CODEX_HOME_NOT_ISOLATED" });
+      await expect(resolveCodexHome(home, workspace, true)).resolves.toBe(home);
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it("requires opt-in and the exact canonical current caller home", async () => {
+    const root = await mkdtemp(join(tmpdir(), "passeur-codex-caller-home-"));
+    const home = join(root, "caller"), other = join(root, "other"), workspace = join(root, "workspace");
+    const alias = join(root, "caller-alias"), old = process.env.CODEX_HOME;
+    try {
+      await mkdir(home); await mkdir(other); await mkdir(workspace); await symlink(home, alias);
+      process.env.CODEX_HOME = alias;
+      await expect(resolveCodexHome(home, workspace)).rejects.toMatchObject({ code: "CODEX_HOME_NOT_ISOLATED" });
+      await expect(resolveCodexHome(home, workspace, true)).resolves.toBe(home);
+      await expect(resolveCodexHome(alias, workspace, true)).rejects.toMatchObject({ code: "CODEX_HOME_NOT_ISOLATED" });
+      await expect(resolveCodexHome(other, workspace, true)).rejects.toMatchObject({ code: "CODEX_HOME_NOT_ISOLATED" });
+      await expect(resolveCodexHome(other, workspace)).resolves.toBe(other);
+      await expect(resolveCodexHome(workspace, workspace, true)).rejects.toMatchObject({ code: "CODEX_HOME_INVALID" });
+      await expect(resolveCodexHome(home, root, true)).rejects.toMatchObject({ code: "CODEX_HOME_INVALID" });
+      process.env.CODEX_HOME = join(root, "missing");
+      await expect(resolveCodexHome(home, workspace, true)).rejects.toMatchObject({ code: "CODEX_HOME_NOT_ISOLATED" });
+    } finally {
+      if (old === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = old;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it("passes only the home path and approved ordinary variables to native", () => {
+    const values = { OPENAI_API_KEY: process.env.OPENAI_API_KEY, GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+      CODEX_HOME: process.env.CODEX_HOME };
+    try {
+      process.env.OPENAI_API_KEY = "fixture-api-secret";
+      process.env.GITHUB_TOKEN = "fixture-git-secret";
+      process.env.CODEX_HOME = "/fixture/caller-home";
+      const output = codexEnvironment("/fixture/caller-home");
+      expect(output.CODEX_HOME).toBe("/fixture/caller-home");
+      expect(output).not.toHaveProperty("OPENAI_API_KEY");
+      expect(output).not.toHaveProperty("GITHUB_TOKEN");
+      expect(JSON.stringify(output)).not.toContain("fixture-api-secret");
+      expect(JSON.stringify(output)).not.toContain("fixture-git-secret");
+    } finally {
+      for (const [name, value] of Object.entries(values)) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
+  });
+});
 
 describe("protected native profile correlation", () => {
   it("retains capture before a pre-initialize terminal abort and sends no initialize", async () => {
@@ -209,6 +269,22 @@ describe.runIf(process.platform === "linux")("Codex adapter through an actual co
         { ...input, workspace, signal: control.signal }, home, control);
     } finally { control.abort(); await rm(temporary, { recursive: true, force: true }); }
   }
+  it("blocks the caller home by default and runs with an exact opt-in", async () => {
+    await scenario("success", async (_adapter, run, home) => {
+      const previous = process.env.CODEX_HOME;
+      try {
+        process.env.CODEX_HOME = home;
+        const defaultRun = await new CodexAdapter({ ...options, codex_home: home }).run(run);
+        expect(defaultRun).toMatchObject({ status: "blocked", worker_stop: "not_started",
+          error: { code: "CODEX_HOME_NOT_ISOLATED" } });
+        expect(await new CodexAdapter({ ...options, codex_bin: join(home, "..", "app-server.mjs"),
+          codex_home: home, use_caller_codex_home: true }).run(run)).toMatchObject({
+            status: "completed", worker_stop: "confirmed", reported_model: "fixture-model" });
+      } finally {
+        if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+      }
+    });
+  });
   it("preserves outgoing native spelling and correlates early events through completion", async () => {
     await scenario("success", async (adapter, run) => {
       expect(await adapter.run(run)).toMatchObject({ status: "completed", worker_stop: "confirmed", reported_model: "fixture-model", worker_assessment: "met" });

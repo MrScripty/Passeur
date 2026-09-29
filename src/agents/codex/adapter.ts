@@ -19,27 +19,33 @@ import { type Captured } from "../../core/protected-namespace.js";
 
 type Terminal = "completed" | "failed" | "interrupted";
 const empty = () => ({ worker_assessment: "unknown" as const, blockers: [] as string[], questions: [] as string[], checks: [] as WorkerRun["checks"] });
-function environment(home: string): NodeJS.ProcessEnv {
+export function codexEnvironment(home: string): NodeJS.ProcessEnv {
   const output: NodeJS.ProcessEnv = { CODEX_HOME: home };
   for (const name of ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TERM", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"]) {
     if (process.env[name] !== undefined) output[name] = process.env[name];
   }
   return output;
 }
-async function isolatedHome(configured: string, workspace: string): Promise<string> {
+export async function resolveCodexHome(configured: string, workspace: string, useCallerHome = false): Promise<string> {
   const home = await realpath(configured), root = await realpath(workspace);
-  if (!(await stat(home)).isDirectory()) throw new BridgeError("CODEX_HOME_INVALID", "The dedicated Codex home is not a directory");
+  if (!(await stat(home)).isDirectory()) throw new BridgeError("CODEX_HOME_INVALID", "The Codex home is not a directory");
   const rel = relative(root, home);
   if (rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`))) {
     // relative() may be absolute across Windows drives; this adapter is Linux-only.
     throw new BridgeError("CODEX_HOME_INVALID", "Credentials and runtime state must remain outside the assignment workspace");
   }
-  const host = process.env.CODEX_HOME ?? (process.env.HOME ? join(process.env.HOME, ".codex") : undefined);
-  if (host) {
-    let canonical: string | undefined;
-    try { canonical = await realpath(host); }
+  const caller = process.env.CODEX_HOME ?? (process.env.HOME ? join(process.env.HOME, ".codex") : undefined);
+  let canonical: string | undefined;
+  if (caller) {
+    try { canonical = await realpath(caller); }
     catch (error) { if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")) throw error; }
-    if (canonical === home) throw new BridgeError("CODEX_HOME_NOT_ISOLATED", "Use a dedicated operator-authenticated Codex home, not the calling agent's home");
+  }
+  if (useCallerHome) {
+    if (!canonical || configured !== canonical || home !== canonical) {
+      throw new BridgeError("CODEX_HOME_NOT_ISOLATED", "Caller Codex home opt-in requires the exact canonical current caller home");
+    }
+  } else if (canonical === home) {
+    throw new BridgeError("CODEX_HOME_NOT_ISOLATED", "Use a dedicated operator-authenticated Codex home, not the calling agent's home");
   }
   return home;
 }
@@ -206,7 +212,8 @@ export class CodexAdapter implements WorkerAdapter {
       }
     };
     try {
-      const home = await isolatedHome(this.options.codex_home, input.workspace);
+      const home = await resolveCodexHome(this.options.codex_home, input.workspace,
+        !protectedRun && this.options.use_caller_codex_home);
       signal.throwIfAborted();
       if (protectedRun && !this.qualification) {
         throw new BridgeError("CODEX_NATIVE_UNSUPPORTED", "Protected real-account Codex has not completed its qualification gate");
@@ -231,7 +238,7 @@ export class CodexAdapter implements WorkerAdapter {
         this.qualification?.relay, this.qualification?.seedFile, this.qualification?.lateExposure) : undefined;
       if (launch) protectedHost = { statusFile: launch.statusFile, nativePath: launch.nativePath };
       transport = new CodexStdio({ command: launch?.command ?? this.options.codex_bin,
-        args: launch?.args ?? argumentsFor(this.options), cwd: input.workspace, env: launch?.env ?? environment(home),
+        args: launch?.args ?? argumentsFor(this.options), cwd: input.workspace, env: launch?.env ?? codexEnvironment(home),
         ...(startupStderr ? { startupStderr } : {}),
         notification: (message) => {
           const turn = current;

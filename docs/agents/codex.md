@@ -49,14 +49,15 @@ A registration has `adapter_id: "codex"`. Its strict options are:
 | Field | Meaning |
 | --- | --- |
 | `codex_bin` | Approved executable path/name, never supplied by a task. |
-| `codex_home` | Absolute dedicated, operator-authenticated CLI home outside the task workspace and distinct from the calling agent's home. |
+| `codex_home` | Absolute operator-authenticated CLI home outside the task workspace. By default it must be dedicated and distinct from the calling agent's home. |
+| `use_caller_codex_home` | Defaults false. Explicitly opt in to using only the exact canonical current caller `CODEX_HOME`, or `HOME/.codex` when unset, for ordinary native tasks. A symlink spelling or different home is refused. This option does not enable protected private-Git runs. |
 | `model` | Exact operator-selected native model ID. |
 | `network_access` | Requested native workspace-write network policy; defaults false. |
 | `allow_command_escalation` | Defaults false. Enabling permits human approval of one exact native command, potentially outside the sandbox; not a persistent rule. |
 | `subscription_confirmed` | Must be true; an operator assertion, not provider billing proof. |
 | `experimental_opt_in` | Must be true; authorizes use of the unqualified implementation candidate, not a relaxation of its enforced checks. |
 
-No credentials are copied from the caller or saved in task snapshots. Authentication is an explicit operator action outside Passeur. Native `account/read` must report ChatGPT rather than API-key authentication. Command environment excludes alternate API keys and hook-bypass variables. No API-key, account, model, provider or permission fallback is provided.
+No credentials are copied from the caller or saved in task snapshots. Authentication is an explicit operator action outside Passeur. With caller-home opt-in, native Codex receives that same home path and owns any token refresh; Passeur does not manage credential rotation or shield that home from ordinary native tools. Native `account/read` must report ChatGPT rather than API-key authentication. Command environment excludes alternate API keys and hook-bypass variables. No API-key, account, model, provider or permission fallback is provided.
 
 ## Effective controls
 
