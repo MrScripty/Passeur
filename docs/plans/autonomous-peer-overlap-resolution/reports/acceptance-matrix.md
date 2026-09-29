@@ -15,7 +15,9 @@ separate isolated synthetic-provider turn captured seven tool declarations,
 including `exec_command` and `view_image`, without issuing a tool call. A later
 reviewed installed synthetic turn passed 27 sampled model-invoked `exec_command`
 probes: two workspace controls, 24 protected read/write denials and one network
-denial. The current adapter still requests full read access, advertises no
+denial. A separate reviewed installed turn passed one valid workspace PNG and
+12 protected direct/symlink/proc image-read denials through model-invoked
+`view_image`. The current adapter still requests full read access, advertises no
 private-Git capability, and has no installed protected-worker result. Muse's synthetic protected runs do
 not qualify its real login or direct provider protocol. No G3–G5 real-worker
 row changes until a separately reviewed protected native composition passes.
