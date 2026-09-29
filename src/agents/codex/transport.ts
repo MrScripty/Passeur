@@ -206,13 +206,13 @@ export class CodexStdio {
     try { process.kill(-pid, 0); return false; }
     catch (error) { return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH"; }
   }
-  close(graceMs: number): Promise<boolean> {
+  close(graceMs: number, passiveMs = 250): Promise<boolean> {
     return this.#closing ??= (async () => {
       this.#accepting = false;
       this.#failAll(new BridgeError("CODEX_TRANSPORT_CLOSED", "Native transport closed"));
       const deadline = Date.now() + Math.max(1, graceMs);
       this.#child.stdin.end();
-      await settlesWithin(this.#exit, Math.min(250, Math.max(1, graceMs / 4)));
+      await settlesWithin(this.#exit, Math.min(passiveMs, Math.max(1, graceMs)));
       if (!this.#closed && this.#child.pid !== undefined) {
         try { this.#child.kill("SIGTERM"); }
         catch (error) {

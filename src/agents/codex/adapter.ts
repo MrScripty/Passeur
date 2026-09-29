@@ -1,5 +1,8 @@
 import { realpath, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { BridgeError, errorInfo, safeText } from "../../core/errors.js";
 import { withAbort } from "../../core/async.js";
 import { processIdentity } from "../../service/process.js";
@@ -9,7 +12,9 @@ import type { WorkerAdapter, WorkerInput, WorkerRun } from "../types.js";
 import { PeerDeliveryNativeSessionIdSchema, type PeerDeliveryEnvelope } from "../../contracts/peer-delivery.js";
 import type { CodexOptions } from "./config.js";
 import { CodexStdio, type NativeMessage } from "./transport.js";
-import { approval, assertAccount, assertConfiguration, assertNoMcp, correlate, object, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
+import { approval, assertAccount, assertConfiguration, assertNoMcp, assertProtectedConfiguration, assertProtectedProfile, correlate, object, protectedItemType, protectedThreadStarted, protectedUserEcho, terminalTurn, text, threadStarted, turnStarted, userQuestions } from "./protocol.js";
+import { protectedLaunch, settleProtectedStop } from "./protected-runtime.js";
+import { captureProtectedNamespace, type Captured } from "../../core/protected-namespace.js";
 
 type Terminal = "completed" | "failed" | "interrupted";
 const empty = () => ({ worker_assessment: "unknown" as const, blockers: [] as string[], questions: [] as string[], checks: [] as WorkerRun["checks"] });
@@ -53,11 +58,17 @@ function peerPrompt(envelope: PeerDeliveryEnvelope): string {
 }
 /** One assignment owns a native thread across explicitly requested user turns. */
 export class CodexAdapter implements WorkerAdapter {
-  constructor(private readonly options: CodexOptions) {}
+  /** The optional provider is only for a disposable, fixed-response installed qualification task. */
+  constructor(private readonly options: CodexOptions,
+    private readonly qualification?: Readonly<{ syntheticProvider: string; allowAnonymous: true;
+      relay: Readonly<{ socketPath: string; port: number }> }>) {}
   async run(input: WorkerInput): Promise<WorkerRun> {
     if (input.signal.aborted) return { ...empty(), status: "cancelled", summary: "Task cancelled before startup", worker_stop: "not_started" };
     const lifetime = new AbortController(), signal = AbortSignal.any([input.signal, lifetime.signal]);
     let transport: CodexStdio | undefined, threadId: string | undefined, current: NativeTurn | undefined, reportedModel: string | undefined;
+    let protectedHost: { statusFile: string; nativePath: string } | undefined, protectedCapture: Captured | undefined;
+    const protectedRun = input.private_git !== undefined;
+    let protectedCommands = 0;
     const checks: WorkerRun["checks"] = [];
     let events = Promise.resolve();
     let eventFailure: unknown;
@@ -72,6 +83,7 @@ export class CodexAdapter implements WorkerAdapter {
       if (!threadId) throw new BridgeError("CODEX_CORRELATION_INVALID", "Native event arrived without a thread");
       signal.throwIfAborted();
       if (message.method === "serverRequest/resolved") {
+        if (protectedRun) throw new BridgeError("CODEX_INPUT_UNSUPPORTED", "Protected worker received an unqualified input lifecycle event");
         const value = object(message.params, "serverRequest/resolved");
         if (text(value.threadId, "threadId", 256) !== threadId) throw new BridgeError("CODEX_CORRELATION_INVALID", "Resolved request belongs to another thread");
         const id = value.requestId;
@@ -95,7 +107,30 @@ export class CodexAdapter implements WorkerAdapter {
       if (turn.settled || turn.terminal && message.method === "item/started") throw new BridgeError("CODEX_PROTOCOL_INVALID", "Native item start or duplicate completion arrived after terminal evidence");
       const event = correlate(message.params, threadId, turnId);
       const item = object(event.item, "item"), kind = text(item.type, "item.type", 128), id = text(item.id, "item.id", 256);
-      if (["mcpToolCall", "collabAgentToolCall", "dynamicToolCall"].includes(kind)) throw new BridgeError("CODEX_ISOLATION_VIOLATED", "An excluded tool was observed; retain the task for inspection");
+      if (["mcpToolCall", "collabAgentToolCall", "dynamicToolCall"].includes(kind)) throw new BridgeError("CODEX_ISOLATION_VIOLATED",
+        `An excluded native item type ${protectedItemType(kind)} was observed; retain the task for inspection`);
+      if (protectedRun && !["userMessage", "agentMessage", "commandExecution", "fileChange", "imageView", "reasoning", "plan"].includes(kind)) {
+        throw new BridgeError("CODEX_ISOLATION_VIOLATED",
+          `An unqualified native item type ${protectedItemType(kind)} was observed in the protected worker`);
+      }
+      if (protectedRun && kind === "userMessage") {
+        // The installed protocol echoes submitted input as a lifecycle item. Its
+        // content is neither read nor retained, and it cannot satisfy a tool check.
+        if (message.method === "item/started") {
+          if (turn.items.has(id) || turn.items.size >= 256) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Duplicate or excessive native item starts");
+          protectedUserEcho(message.params, threadId, turnId, "item/started", turn.echo, !!turn.terminal);
+          turn.items.set(id, kind);
+        } else {
+          if (turn.items.get(id) !== kind) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Native input echo lacks a matching start");
+          protectedUserEcho(message.params, threadId, turnId, "item/completed", turn.echo, !!turn.terminal);
+          turn.items.delete(id);
+          if (turn.terminal === "completed" && !turn.items.size) {
+            await input.onEvent({ kind: "turn_settled", turn_id: turnId, native_session_id: threadId, terminal: "completed" });
+            turn.settled = true; turn.finish("completed");
+          }
+        }
+        return;
+      }
       if (message.method === "item/started") {
         if (turn.items.has(id) || turn.items.size >= 256) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Duplicate or excessive native item starts");
         turn.items.set(id, kind);
@@ -106,6 +141,7 @@ export class CodexAdapter implements WorkerAdapter {
       if (kind === "commandExecution") {
         const status = text(item.status, "commandExecution.status", 64);
         if (!["completed", "failed", "declined"].includes(status) || item.exitCode !== null && (typeof item.exitCode !== "number" || !Number.isSafeInteger(item.exitCode))) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Invalid command terminal evidence");
+        if (protectedRun && status === "completed" && item.exitCode === 0) protectedCommands++;
         if (status !== "declined" && item.exitCode !== null && checks.length < 100) checks.push({ command: safeText(text(item.command, "command", 8192), 4096), cwd: text(item.cwd, "cwd"), exit_code: item.exitCode, evidence: "runtime_observed" });
       }
       turn.items.delete(id);
@@ -118,15 +154,43 @@ export class CodexAdapter implements WorkerAdapter {
     try {
       const home = await isolatedHome(this.options.codex_home, input.workspace);
       signal.throwIfAborted();
-      transport = new CodexStdio({ command: this.options.codex_bin, args: argumentsFor(this.options), cwd: input.workspace, env: environment(home),
+      if (protectedRun && !this.qualification) {
+        throw new BridgeError("CODEX_NATIVE_UNSUPPORTED", "Protected real-account Codex has not completed its qualification gate");
+      }
+      if (protectedRun) {
+        const digest = createHash("sha256").update(await readFile(this.options.codex_bin)).digest("hex");
+        if (digest !== "3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970") {
+          throw new BridgeError("CODEX_NATIVE_UNSUPPORTED", "Protected worker requires the qualified installed Codex 0.157.1 executable");
+        }
+      }
+      const provider = this.qualification?.syntheticProvider ?? "openai";
+      if (this.qualification && (!protectedRun || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(provider))) {
+        throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Synthetic qualification provider is invalid");
+      }
+      const launch = protectedRun ? protectedLaunch(input, this.options.codex_bin, home,
+        fileURLToPath(new URL("./protected-host.js", import.meta.url)),
+        [...(this.qualification ? [] : ["-c", 'forced_login_method="chatgpt"']), "-c", 'default_permissions="passeur-boundary"',
+          "-c", `model_provider=${JSON.stringify(provider)}`, "-c", "mcp_servers={}",
+          "-c", "features.multi_agent=false", "-c", "features.apps=false", "-c", "features.plugins=false",
+          "-c", 'web_search="disabled"', "app-server"], this.qualification?.relay) : undefined;
+      if (launch) protectedHost = { statusFile: launch.statusFile, nativePath: launch.nativePath };
+      transport = new CodexStdio({ command: launch?.command ?? this.options.codex_bin,
+        args: launch?.args ?? argumentsFor(this.options), cwd: input.workspace, env: launch?.env ?? environment(home),
         notification: (message) => {
           const turn = current;
-          if (!turn || !["item/started", "item/completed", "turn/completed", "serverRequest/resolved"].includes(message.method)) return;
+          if (!turn) {
+            if (protectedRun && ["item/started", "item/completed", "turn/completed", "serverRequest/resolved"].includes(message.method)) {
+              throw new BridgeError("CODEX_CORRELATION_INVALID", "Protected native event arrived outside an admitted turn");
+            }
+            return;
+          }
+          if (!["item/started", "item/completed", "turn/completed", "serverRequest/resolved"].includes(message.method)) return;
           const pending = events.then(() => handleEvent(message, turn));
           events = pending.catch((error: unknown) => { eventFailure ??= error; });
           return pending;
         },
         request: async (message) => {
+          if (protectedRun) throw new BridgeError("CODEX_INPUT_UNSUPPORTED", "Protected worker received an unqualified native input or approval request");
           const turn = current;
           if (!turn || !threadId) throw new BridgeError("CODEX_REQUEST_UNSUPPORTED", "Native request arrived outside an admitted turn");
           const turnId = await withAbort(turn.ready, signal);
@@ -168,17 +232,38 @@ export class CodexAdapter implements WorkerAdapter {
         },
       });
       result.worker_stop = "unconfirmed";
-      const initialize = object(await transport.request("initialize", { clientInfo: { name: "passeur_codex_worker", title: "Passeur worker", version: "0.1.0" }, capabilities: { experimentalApi: false } }, signal), "initialize");
+      const initialize = object(await transport.request("initialize", { clientInfo: { name: "passeur_codex_worker", title: "Passeur worker", version: "0.1.0" }, capabilities: { experimentalApi: !!launch } }, signal), "initialize");
       text(initialize.userAgent, "initialize.userAgent", 1024);
-      if (transport.pid !== undefined) {
-        const birth = await processIdentity(transport.pid);
+      if (launch) {
+        protectedCapture = await captureProtectedNamespace(launch.statusFile, launch.nativePath, launch.nativePath);
+        signal.throwIfAborted();
+      }
+      const observedPid = protectedCapture?.nativePid ?? transport.pid;
+      if (observedPid !== undefined) {
+        const birth = await processIdentity(observedPid);
         await input.onEvent({ kind: "process_observed", ...birth });
       }
       await transport.notify("initialized", undefined, signal);
-      assertAccount(await transport.request("account/read", { refreshToken: false }, signal));
-      assertConfiguration(await transport.request("config/read", { includeLayers: false, cwd: input.workspace }, signal));
-      const opened = threadStarted(await transport.request("thread/start", { model: this.options.model, modelProvider: "openai", cwd: input.workspace,
-        approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write", ephemeral: true }, signal), input.workspace, this.options.model, this.options.network_access);
+      const account = await transport.request("account/read", { refreshToken: false }, signal);
+      if (this.qualification) {
+        const observed = object(account, "account/read");
+        if (observed.account !== null || observed.requiresOpenaiAuth !== false) throw new BridgeError("CODEX_AUTH_UNAVAILABLE", "Synthetic qualification must remain anonymous");
+      } else assertAccount(account);
+      const config = await transport.request("config/read", { includeLayers: !!launch, cwd: input.workspace }, signal);
+      if (launch) {
+        assertProtectedConfiguration(config, "passeur-boundary", !!this.qualification,
+          { workspace: input.workspace, canonical: input.private_git!.view.canonical_common_dir,
+            admin: join(input.private_git!.view.canonical_common_dir, input.private_git!.view.admin_relative), native: launch.nativePath });
+        if (object(object(config, "config/read").config, "config").model_provider !== provider) throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected provider changed before the turn");
+        assertProtectedProfile(await transport.request("permissionProfile/list", { cwd: input.workspace }, signal));
+      } else assertConfiguration(config);
+      const threadResponse = await transport.request("thread/start", launch
+        ? { model: this.options.model, modelProvider: provider, cwd: input.workspace, permissions: "passeur-boundary",
+          ephemeral: true, allowProviderModelFallback: false }
+        : { model: this.options.model, modelProvider: "openai", cwd: input.workspace,
+          approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write", ephemeral: true }, signal);
+      const opened = launch ? protectedThreadStarted(threadResponse, input.workspace, this.options.model, provider)
+        : threadStarted(threadResponse, input.workspace, this.options.model, this.options.network_access);
       threadId = opened.threadId; reportedModel = opened.reportedModel;
       assertNoMcp(await transport.request("mcpServerStatus/list", { threadId, limit: 1 }, signal));
       let prompt = input.prompt;
@@ -193,8 +278,10 @@ export class CodexAdapter implements WorkerAdapter {
           throw new BridgeError("PEER_DELIVERY_SESSION_ID_UNKNOWN", "Codex did not establish a bounded native thread identity for peer delivery");
         }
         const turn = newTurn(); current = turn;
-        const id = turnStarted(await transport.request("turn/start", { threadId, input: [{ type: "text", text: prompt }], model: this.options.model, cwd: input.workspace,
-          approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite", writableRoots: [input.workspace], networkAccess: this.options.network_access } }, signal));
+        const id = turnStarted(await transport.request("turn/start", launch
+          ? { threadId, permissions: "passeur-boundary", input: [{ type: "text", text: prompt }] }
+          : { threadId, input: [{ type: "text", text: prompt }], model: this.options.model, cwd: input.workspace,
+            approvalPolicy: "on-request", sandboxPolicy: { type: "workspaceWrite", writableRoots: [input.workspace], networkAccess: this.options.network_access } }, signal));
         turn.id = id;
         await input.onEvent({ kind: "turn_started", turn_id: id, native_session_id: threadId });
         // Early native notifications wait on turn.ready. Retain the delivery receipt
@@ -274,6 +361,7 @@ export class CodexAdapter implements WorkerAdapter {
           }
         }
         const report = finalReport(message);
+        if (protectedRun && protectedCommands === 0) throw new BridgeError("CODEX_PROTECTED_EFFECT_UNOBSERVED", "Protected worker did not emit a successful native command operation");
         result = { ...report, checks: [...checks, ...report.checks], status: "completed", worker_stop: "unconfirmed", reported_model: reportedModel }; break;
       }
     } catch (error) {
@@ -291,16 +379,25 @@ export class CodexAdapter implements WorkerAdapter {
         catch { /* The owned process close, not interrupt acknowledgement, supplies stop evidence. */ }
         finally { clearTimeout(timer); }
       }
-      if (transport) result.worker_stop = transport.started ? (await transport.close(Math.max(1, deadline - Date.now())) ? "confirmed" : "unconfirmed") : "not_started";
+      if (transport) {
+        let closed = false;
+        try {
+          closed = transport.started ? await transport.close(Math.max(1, deadline - Date.now()),
+            protectedHost ? Math.max(1, input.policy.stop_grace_ms / 2) : 250) : false;
+        } catch { /* The captured namespace still requires its independent stop audit. */ }
+        result.worker_stop = transport.started ? (protectedHost
+          ? await settleProtectedStop(protectedCapture, protectedHost.statusFile, closed)
+          : closed ? "confirmed" : "unconfirmed") : "not_started";
+      }
     }
     return result;
   }
 }
 type NativeTurn = { id?: string; ready: Promise<string>; open: (id: string) => void; done: Promise<Terminal>; finish: (value: Terminal) => void;
-  terminal?: Terminal; settled?: boolean; report?: string; items: Map<string, string> };
+  terminal?: Terminal; settled?: boolean; report?: string; items: Map<string, string>; echo: { id?: string; completed?: boolean } };
 function newTurn(): NativeTurn {
   let open!: NativeTurn["open"], finish!: NativeTurn["finish"];
   const ready = new Promise<string>((yes) => { open = yes; });
   const done = new Promise<Terminal>((yes) => { finish = yes; });
-  return { ready, open, done, finish, items: new Map() };
+  return { ready, open, done, finish, items: new Map(), echo: {} };
 }

@@ -8,8 +8,15 @@ joins, independently confirmed stop and guarded hooked commit publication passed
 Real-provider protocol/credential qualification, registered private capability
 and autonomous workers remain open.
 
-The current G2 admission evaluates an installed no-account Codex protected
-boundary as a possible representative first real-worker route. Codex 0.157.1
+The current G2 no-account Codex production-adapter composition passed one
+fixed synthetic private commit and one explicit cancellation. The commit ran
+through a controlled Coordinator task with exact native tool correlation,
+ordinary hook, canonical private-Git publication and independently confirmed
+whole-namespace stop; cancellation left private/shared refs at base. Reports
+and exact task identities are in the execution ledger. Registered private
+capability, real account isolation, a real provider and autonomous peer work
+remain open. Earlier Codex 0.157.1 samples established the narrower boundaries
+below. The installed build
 passed four sampled standalone command read probes under a named profile. A
 separate isolated synthetic-provider turn captured seven tool declarations,
 including `exec_command` and `view_image`, without issuing a tool call. A later
@@ -22,10 +29,10 @@ control but returned exit 0/native completed for a protected dummy-auth write
 while its host canary stayed intact. A later reviewed TTY read probe passed
 workspace read and dummy-auth direct/symlink/`/proc` denials. A separate
 direct-path TTY write/readback showed a guest-private marker effect with the
-original host canary intact; this is not strict write denial or full containment. The current adapter still requests full read access, advertises no
-private-Git capability, and has no installed protected-worker result. Muse's synthetic protected runs do
+original host canary intact; this is not strict write denial or full containment. The ordinary registered adapter still requests full read access and advertises no
+private-Git capability; the direct opt-in protected branch has only fixed-synthetic acceptance. Muse's synthetic protected runs do
 not qualify its real login or direct provider protocol. No G3–G5 real-worker
-row changes until a separately reviewed protected native composition passes.
+row changes until the real-provider/credential and autonomous-worker gates pass.
 
 This is the current claim index. A passing parser, historical coordination run,
 or parent-led reconciliation does not satisfy the required-real worker claims.

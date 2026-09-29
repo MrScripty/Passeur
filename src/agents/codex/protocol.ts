@@ -1,4 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { BridgeError } from "../../core/errors.js";
 
 // These decoders project the explicitly consumed native facts. Other documented native metadata is ignored,
@@ -17,6 +18,29 @@ export function correlate(value: unknown, threadId: string, turnId: string): Rec
   if (event.threadId !== threadId || event.turnId !== turnId) throw new BridgeError("CODEX_CORRELATION_INVALID", "Native event belongs to another thread or turn");
   return event;
 }
+/** Only tagged native v0.157.1 item names may enter retained diagnostics. */
+export function protectedItemType(value: unknown): string {
+  const types = ["userMessage", "hookPrompt", "agentMessage", "functionCallOutput", "plan", "reasoning",
+    "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "collabAgentToolCall",
+    "subAgentActivity", "webSearch", "imageView", "sleep", "imageGeneration", "enteredReviewMode",
+    "exitedReviewMode", "contextCompaction"];
+  return typeof value === "string" && types.includes(value) ? value : "unknown";
+}
+/** A userMessage is the native echo of this turn's input, never a tool effect. */
+export function protectedUserEcho(value: unknown, threadId: string, turnId: string,
+  phase: "item/started" | "item/completed", state: { id?: string; completed?: boolean }, terminal = false): string {
+  const event = correlate(value, threadId, turnId);
+  const item = object(event.item, "userMessage");
+  if (item.type !== "userMessage") throw new BridgeError("CODEX_CORRELATION_INVALID", "Native input echo changed item type");
+  const id = text(item.id, "userMessage.id", 256);
+  if (phase === "item/started") {
+    if (terminal || state.id !== undefined) throw new BridgeError("CODEX_PROTOCOL_INVALID", "Duplicate or late native input echo");
+    state.id = id;
+  } else if (state.id !== id || state.completed) {
+    throw new BridgeError("CODEX_PROTOCOL_INVALID", "Native input echo completed without its exact start");
+  } else state.completed = true;
+  return id;
+}
 export function assertAccount(value: unknown): void {
   const response = object(value, "account/read");
   if (response.requiresOpenaiAuth !== true || response.account === null || object(response.account, "account/read.account").type !== "chatgpt") {
@@ -31,6 +55,81 @@ export function assertConfiguration(value: unknown): void {
       features.plugins !== false || config.web_search !== "disabled" || config.forced_login_method !== "chatgpt") {
     throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Effective configuration did not establish child-tool and credential isolation");
   }
+}
+/** The installed experimental named profile is required before any protected turn. */
+export function assertProtectedConfiguration(value: unknown, profile = "passeur-boundary", synthetic = false,
+  policy?: Readonly<{ workspace: string; canonical: string; admin: string; native: string }>): void {
+  const response = object(value, "config/read");
+  const config = object(response.config, "config");
+  const features = object(config.features, "config.features");
+  const servers = object(config.mcp_servers, "config.mcp_servers");
+  if (Object.keys(servers).length || features.multi_agent !== false || features.apps !== false ||
+      features.plugins !== false || config.web_search !== "disabled" ||
+      (!synthetic && config.forced_login_method !== "chatgpt")) {
+    throw new BridgeError("CODEX_ISOLATION_UNAVAILABLE", "Protected effective configuration did not establish tool and credential isolation");
+  }
+  if (config.default_permissions !== profile || config.sandbox_mode != null ||
+      config.sandbox_workspace_write != null || config.permission_profile != null || config.permissionProfile != null) {
+    throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "The protected named profile is not the sole effective permission selector");
+  }
+  if (!synthetic) return; // The real-account profile has a separate, unqualified gate.
+  if (!policy || !Array.isArray(response.layers) || !response.layers.length) {
+    throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected configuration layers are unavailable");
+  }
+  const origins = object(response.origins, "config/read.origins");
+  const selectorOrigin = object(origins.default_permissions, "default_permissions origin");
+  if (object(selectorOrigin.name, "default_permissions source").type !== "sessionFlags") {
+    throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected permission selector has another source");
+  }
+  const expected = { [profile]: { workspace_roots: { [policy.workspace]: true, [policy.canonical]: true },
+    filesystem: { ":root": "deny", ":minimal": "read", ":slash_tmp": "deny", ":tmpdir": "deny",
+      [policy.native]: "read", [policy.admin]: "write", ":workspace_roots": { ".": "write" } }, network: { enabled: false } } };
+  let user = 0, session = 0, emptySystem = 0;
+  for (const raw of response.layers) {
+    const layer = object(raw, "config/read.layer"), name = object(layer.name, "config/read.layer.name");
+    if (layer.disabledReason != null) continue;
+    if (name.type === "user" && name.file === "/mounts/home/config.toml" && name.profile == null) {
+      user++;
+      if (!isDeepStrictEqual(object(layer.config, "user layer").permissions, expected)) {
+        throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "The loaded user permission policy differs from the sealed artifact");
+      }
+    } else if (name.type === "sessionFlags") {
+      session++;
+      if (object(layer.config, "session flags").default_permissions !== profile ||
+          object(layer.config, "session flags").permissions != null) {
+        throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Session flags changed the protected policy");
+      }
+    } else if (name.type === "system" && name.file === "/etc/codex/config.toml" &&
+        Object.keys(object(layer.config, "system layer")).length === 0) {
+      emptySystem++;
+    } else if (name.type !== "packagedDefaults") {
+      throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "An unqualified native config layer is active");
+    } else if (object(layer.config, "packaged defaults").permissions != null) {
+      throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Packaged defaults changed the protected policy");
+    }
+  }
+  if (user !== 1 || session !== 1 || emptySystem > 1) {
+    throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected policy has incomplete native layer evidence");
+  }
+}
+export function assertProtectedProfile(value: unknown, profile = "passeur-boundary"): void {
+  const response = object(value, "permissionProfile/list");
+  if (!Array.isArray(response.data) || response.nextCursor != null) throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected profile inventory is incomplete");
+  const matches = response.data.filter(item => record(item) && item.id === profile);
+  if (matches.length !== 1 || !record(matches[0]) || matches[0].allowed !== true) {
+    throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected named profile is unavailable");
+  }
+}
+export function protectedThreadStarted(value: unknown, workspace: string, model: string,
+  provider = "openai", profile = "passeur-boundary"): { threadId: string; reportedModel: string } {
+  const response = object(value, "thread/start");
+  const thread = object(response.thread, "thread/start.thread");
+  const cwd = text(response.cwd, "thread/start.cwd");
+  if (!isAbsolute(cwd) || resolve(cwd) !== resolve(workspace) || response.model !== model ||
+      response.modelProvider !== provider || object(response.activePermissionProfile, "activePermissionProfile").id !== profile) {
+    throw new BridgeError("CODEX_CONFIGURATION_MISMATCH", "Protected native thread did not select the exact model, provider, workspace and profile");
+  }
+  return { threadId: text(thread.id, "thread.id", 256), reportedModel: model };
 }
 export function assertNoMcp(value: unknown): void {
   const response = object(value, "mcpServerStatus/list");

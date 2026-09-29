@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexAdapter } from "../../src/agents/codex/adapter.js";
+import { assertProtectedConfiguration, assertProtectedProfile, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
 import type { CodexOptions } from "../../src/agents/codex/config.js";
 import type { WorkerInput } from "../../src/agents/types.js";
 import { cancellationConformance } from "../fixtures/adapter-conformance.js";
@@ -18,6 +19,69 @@ const input: Omit<WorkerInput, "signal"> = {
 const options: CodexOptions = { codex_bin: "/missing/codex", codex_home: "/unused/pre-cancelled-home", model: "fixture-model",
   network_access: false, allow_command_escalation: false, subscription_confirmed: true, experimental_opt_in: true };
 cancellationConformance("Codex", () => new CodexAdapter(options), input);
+
+describe("protected native profile correlation", () => {
+  const config = { config: { default_permissions: "passeur-boundary", forced_login_method: "chatgpt",
+    mcp_servers: {}, features: { multi_agent: false, apps: false, plugins: false }, web_search: "disabled",
+    model_provider: "openai" } };
+  it("requires one exact effective selector and complete allowed profile inventory", () => {
+    expect(() => assertProtectedConfiguration(config)).not.toThrow();
+    expect(() => assertProtectedConfiguration({ config: { ...config.config, sandbox_mode: "workspace-write" } })).toThrow();
+    expect(() => assertProtectedConfiguration({ config: { ...config.config, default_permissions: "other" } })).toThrow();
+    expect(() => assertProtectedProfile({ data: [{ id: "passeur-boundary", allowed: true }], nextCursor: null })).not.toThrow();
+    expect(() => assertProtectedProfile({ data: [{ id: "passeur-boundary", allowed: true },
+      { id: "passeur-boundary", allowed: true }], nextCursor: null })).toThrow();
+  });
+  it("rejects a same-name project override even when the selected profile ID matches", () => {
+    const workspace = "/tmp/fixture-work", canonical = "/tmp/fixture-private", admin = `${canonical}/worktrees/task`, native = "/usr/bin/codex";
+    const permissions = { "passeur-boundary": { workspace_roots: { [workspace]: true, [canonical]: true },
+      filesystem: { ":root": "deny", ":minimal": "read", ":slash_tmp": "deny", ":tmpdir": "deny",
+        [native]: "read", [admin]: "write", ":workspace_roots": { ".": "write" } }, network: { enabled: false } } };
+    const response = { config: config.config, origins: { default_permissions: { name: { type: "sessionFlags" }, version: "1" } },
+      layers: [{ name: { type: "sessionFlags" }, version: "1", config: { default_permissions: "passeur-boundary" } },
+        { name: { type: "system", file: "/etc/codex/config.toml" }, version: "1", config: {} },
+        { name: { type: "user", file: "/mounts/home/config.toml", profile: null }, version: "1", config: { permissions } }] };
+    const scope = { workspace, canonical, admin, native };
+    expect(() => assertProtectedConfiguration(response, "passeur-boundary", true, scope)).not.toThrow();
+    expect(() => assertProtectedConfiguration({ ...response, layers: response.layers.map(layer =>
+      layer.name.type === "system" ? { ...layer, config: { permissions: { "passeur-boundary": { network: { enabled: true } } } } } : layer) },
+    "passeur-boundary", true, scope)).toThrow();
+    expect(() => assertProtectedConfiguration({ ...response, layers: [...response.layers,
+      { name: { type: "project", dotCodexFolder: `${workspace}/.codex` }, version: "1",
+        config: { permissions: { "passeur-boundary": { network: { enabled: true } } } } }] },
+    "passeur-boundary", true, scope)).toThrow();
+    expect(() => assertProtectedConfiguration({ ...response, layers: [response.layers[0], response.layers[1],
+      { ...response.layers[2], config: { permissions: { "passeur-boundary": { ...permissions["passeur-boundary"], network: { enabled: true } } } } }] },
+    "passeur-boundary", true, scope)).toThrow();
+  });
+  it("requires the exact selected native thread profile, provider and model", () => {
+    const response = { thread: { id: "native-thread" }, cwd: "/tmp/work", model: "candidate", modelProvider: "openai",
+      activePermissionProfile: { id: "passeur-boundary" } };
+    expect(protectedThreadStarted(response, "/tmp/work", "candidate")).toMatchObject({ threadId: "native-thread" });
+    expect(() => protectedThreadStarted({ ...response, activePermissionProfile: { id: "other" } }, "/tmp/work", "candidate")).toThrow();
+    expect(() => protectedThreadStarted({ ...response, modelProvider: "fallback" }, "/tmp/work", "candidate")).toThrow();
+  });
+  it("retains only a version-matched item type name for rejected native items", () => {
+    expect(protectedItemType("userMessage")).toBe("userMessage");
+    expect(protectedItemType("mcpToolCall")).toBe("mcpToolCall");
+    expect(protectedItemType("auth-canary-secret")).toBe("unknown");
+    expect(protectedItemType({ type: "userMessage", text: "auth-canary-secret" })).toBe("unknown");
+  });
+  it("correlates one input echo start and completion without consuming its content", () => {
+    const state: { id?: string; completed?: boolean } = {};
+    const event = { threadId: "thread-1", turnId: "turn-1", item: { type: "userMessage", id: "echo-1", content: [{ text: "private canary" }] } };
+    expect(protectedUserEcho(event, "thread-1", "turn-1", "item/started", state)).toBe("echo-1");
+    expect(state).toEqual({ id: "echo-1" });
+    expect(() => protectedUserEcho(event, "thread-1", "turn-1", "item/started", state)).toThrow();
+    expect(() => protectedUserEcho({ ...event, turnId: "other" }, "thread-1", "turn-1", "item/completed", state)).toThrow();
+    expect(() => protectedUserEcho({ ...event, item: { ...event.item, id: "echo-2" } }, "thread-1", "turn-1", "item/completed", state)).toThrow();
+    expect(protectedUserEcho(event, "thread-1", "turn-1", "item/completed", state, true)).toBe("echo-1");
+    expect(state).toEqual({ id: "echo-1", completed: true });
+    expect(() => protectedUserEcho(event, "thread-1", "turn-1", "item/completed", state)).toThrow();
+    expect(() => protectedUserEcho(event, "thread-1", "turn-1", "item/started", {}, true)).toThrow();
+    expect(() => protectedUserEcho(event, "thread-1", "turn-1", "item/completed", {})).toThrow();
+  });
+});
 
 describe.runIf(process.platform === "linux")("Codex adapter through an actual controlled stdio process", () => {
   async function scenario(name: string, action: (adapter: CodexAdapter, run: WorkerInput, home: string, control: AbortController) => Promise<void>, escalate = false) {
