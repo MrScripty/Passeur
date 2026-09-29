@@ -9,6 +9,7 @@ import { deniedPathStructure, generateCertificate } from './qualify-codex-subscr
 
 const HOST = 'chatgpt.com';
 const MAX_ROUTES = 8;
+const CATALOG_PATH = '/backend-api/codex/models?client_version=0.157.1';
 export const FIRST_PARTY_LABELS = Object.freeze({ providerLabel: 'openai',
   credentialLabel: 'synthetic_chatgpt_first_party_discovery' });
 
@@ -27,12 +28,31 @@ export function firstPartyProfile(workspace, canonical, admin, native) {
 export function firstPartyRoute(method, path) {
   if (method === 'GET' && path === '/backend-api/wham/accounts/check') return 'account';
   if (method === 'GET' && path === '/backend-api/wham/settings/user') return 'settings';
+  if (method === 'GET' && path === CATALOG_PATH) return 'catalog';
   return 'unknown';
 }
 
+export function firstPartyResponseBody(route) {
+  if (route === 'account') return JSON.stringify(ACCOUNT_CHECK_RESPONSE);
+  if (route === 'settings') return '{"commit_attribution_enabled":false}';
+  if (route === 'catalog') return '{"models":[]}';
+  return null;
+}
+
 export function firstPartyRequestIdentity(request, token) {
+  const securityHeaders = new Map();
+  const raw = request.rawHeaders;
+  if (!Array.isArray(raw) || raw.length % 2 !== 0) return false;
+  for (let index = 0; index < raw.length; index += 2) {
+    const name = raw[index].toLowerCase();
+    if (['host', 'authorization', 'content-length', 'transfer-encoding'].includes(name)) {
+      securityHeaders.set(name, (securityHeaders.get(name) ?? 0) + 1);
+    }
+  }
   return request.socket?.servername === HOST && request.headers?.host === HOST &&
     request.headers?.authorization === `Bearer ${token}` &&
+    securityHeaders.get('host') === 1 && securityHeaders.get('authorization') === 1 &&
+    !securityHeaders.has('content-length') && !securityHeaders.has('transfer-encoding') &&
     request.headers?.['content-length'] == null && request.headers?.['transfer-encoding'] == null;
 }
 
@@ -62,6 +82,7 @@ export function trackFirstPartyTlsServer(server) {
 
 export async function runFirstPartyDiscovery() {
   const evidence = { routes: [], upgrades: [], firstPartyTunnels: 0,
+    catalogReceipts: 0, catalogResponses: 0,
     oauthDenied: 0, unknownDenied: 0, latchedDenied: 0, deniedAuthorityCategories: [],
     startupStderr: null, brokerRetired: false, discoveryComplete: false };
   const transport = { ...FIRST_PARTY_LABELS,
@@ -86,18 +107,21 @@ export async function runFirstPartyDiscovery() {
       };
       server.on('request', (request, response) => {
         const route = firstPartyRoute(request.method, request.url);
+        if (route === 'catalog') evidence.catalogReceipts++;
         if (!record(request.method, request.url, false) || !firstPartyRequestIdentity(request, token)) {
           context.state.failure ??= 'first_party_request_invalid';
           response.once('finish', stopDiscovery); response.writeHead(403).end(); return;
         }
         if (route === 'account') {
           context.state.accountChecks++;
-          response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ACCOUNT_CHECK_RESPONSE));
-        } else if (route === 'settings') {
-          response.writeHead(200, { 'content-type': 'application/json' }).end('{"commit_attribution_enabled":false}');
-        } else {
+        }
+        const body = firstPartyResponseBody(route);
+        if (body === null) {
           context.state.failure ??= 'first_party_route_unknown';
           response.once('finish', stopDiscovery); response.writeHead(404).end();
+        } else {
+          if (route === 'catalog') response.once('finish', () => { evidence.catalogResponses++; });
+          response.writeHead(200, { 'content-type': 'application/json' }).end(body);
         }
       });
       server.on('upgrade', (request, socket) => {

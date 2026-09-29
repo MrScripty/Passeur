@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ELF } from '../../scripts/qualify-codex-protected-worker.mjs';
 import { generateCertificate } from '../../scripts/qualify-codex-subscription-transport.mjs';
-import { firstPartyProfile, firstPartyRequestIdentity, firstPartyRoute,
+import { firstPartyProfile, firstPartyRequestIdentity, firstPartyResponseBody, firstPartyRoute,
   trackFirstPartyTlsServer } from '../../scripts/qualify-codex-first-party-transport.mjs';
 import { StartupStderrDiagnostic } from '../../dist/src/agents/codex/transport.js';
 
@@ -49,24 +49,63 @@ test('first-party policy retains the installed built-in provider and default ori
   assert.throws(() => firstPartyProfile('/tmp/task', '/tmp/private', '/tmp/private/worktrees/task', '/bin/true'));
 });
 
-test('discovery only acknowledges exact known first-party account routes', () => {
+test('discovery acknowledges only exact known account, settings and tagged catalog routes', () => {
   assert.equal(firstPartyRoute('GET', '/backend-api/wham/accounts/check'), 'account');
   assert.equal(firstPartyRoute('GET', '/backend-api/wham/settings/user'), 'settings');
+  assert.equal(firstPartyRoute('GET', '/backend-api/codex/models?client_version=0.157.1'), 'catalog');
   for (const [method, path] of [['POST', '/backend-api/wham/accounts/check'],
     ['GET', '/backend-api/wham/accounts/check?x=1'], ['GET', '/backend-api/codex/models'],
+    ['POST', '/backend-api/codex/models?client_version=0.157.1'],
+    ['GET', '/backend-api/codex/models?client_version=0.157.0'],
+    ['GET', '/backend-api/codex/models?client_version=0.157.1&x=1'],
+    ['GET', '/backend-api/codex/models?x=1&client_version=0.157.1'],
+    ['GET', '/backend-api/codex/models?client_version=0.157.1&client_version=0.157.1'],
+    ['GET', '/backend-api/codex/models?client_version=%30.157.1'],
+    ['GET', '/backend-api/codex/%6dodels?client_version=0.157.1'],
+    ['GET', '/backend-api/codex/models/?client_version=0.157.1'],
+    ['GET', 'https://chatgpt.com/backend-api/codex/models?client_version=0.157.1'],
     ['GET', '/backend-api/codex/responses'], ['GET', '/backend-api/wham/accounts/check/']]) {
     assert.equal(firstPartyRoute(method, path), 'unknown');
   }
 });
 
+test('catalog response has the tagged ModelsResponse shape in either account order', () => {
+  const catalog = ['GET', '/backend-api/codex/models?client_version=0.157.1'];
+  const account = ['GET', '/backend-api/wham/accounts/check'];
+  for (const [requests, expectedRoutes] of [
+    [[account, catalog], ['account', 'catalog']],
+    [[catalog, account], ['catalog', 'account']],
+  ]) {
+    const responses = requests.map(([method, path]) => {
+      const route = firstPartyRoute(method, path);
+      return { route, body: firstPartyResponseBody(route) };
+    });
+    assert.deepEqual(responses.map(result => result.route), expectedRoutes);
+    const catalogResponse = responses.find(result => result.route === 'catalog');
+    assert.equal(catalogResponse.body, '{"models":[]}');
+    assert.deepEqual(JSON.parse(catalogResponse.body), { models: [] });
+    assert.equal(responses.find(result => result.route === 'account').body !== null, true);
+  }
+  assert.equal(firstPartyResponseBody('unknown'), null);
+});
+
 test('first-party HTTPS and upgrade admission requires exact SNI, Host and disposable bearer', () => {
   const request = { socket: { servername: 'chatgpt.com' },
-    headers: { host: 'chatgpt.com', authorization: 'Bearer disposable-token' } };
+    headers: { host: 'chatgpt.com', authorization: 'Bearer disposable-token' },
+    rawHeaders: ['Host', 'chatgpt.com', 'Authorization', 'Bearer disposable-token'] };
   assert.equal(firstPartyRequestIdentity(request, 'disposable-token'), true);
   assert.equal(firstPartyRequestIdentity({ ...request, socket: { servername: 'other.invalid' } }, 'disposable-token'), false);
   assert.equal(firstPartyRequestIdentity({ ...request, socket: { servername: undefined } }, 'disposable-token'), false);
   assert.equal(firstPartyRequestIdentity({ ...request, headers: { ...request.headers, host: 'other.invalid' } }, 'disposable-token'), false);
   assert.equal(firstPartyRequestIdentity(request, 'another-token'), false);
+  for (const extra of [
+    ['Host', 'chatgpt.com'], ['Authorization', 'Bearer disposable-token'],
+    ['Content-Length', '0'], ['Transfer-Encoding', 'chunked'],
+  ]) {
+    assert.equal(firstPartyRequestIdentity({ ...request, rawHeaders: [...request.rawHeaders, ...extra] },
+      'disposable-token'), false);
+  }
+  assert.equal(firstPartyRequestIdentity({ ...request, rawHeaders: undefined }, 'disposable-token'), false);
 });
 
 test('TLS owner retires a stalled handshake and refuses a late connection', async () => {

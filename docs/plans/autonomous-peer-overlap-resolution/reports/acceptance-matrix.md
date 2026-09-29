@@ -66,6 +66,11 @@ hardcoded pre-native proxy self-check. A fresh local-only installed run then
 reached an account GET and a redacted catalog GET shape, with confirmed worker
 and broker stop and no publication. The catalog path remained refused, so no
 WebSocket or model inference acceptance follows.
+The next reviewed local fixture completed one exact catalog `200` response and
+observed an account GET, but protected `config/read` failed its effective-policy
+check before WebSocket or model work. Worker/broker stop confirmed and nothing
+published. Catalog response delivery and first-party configuration acceptance
+remain separate claims.
 Earlier Codex 0.157.1 samples established the narrower boundaries below. The
 installed build passed four sampled standalone command read probes under a named
 profile. A
