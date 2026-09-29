@@ -27,6 +27,20 @@ test('disposable service fixture has clean no-remote Python base, committed cana
   assert.equal(assignment.base_commit, manifest.base);
   assert.deepEqual(assignment.allowed_paths, ['registered-service.txt']);
   assert.equal(assignment.context.includes('held-canary'), false);
+  const examples = [...assignment.context.matchAll(/PASSEUR_MESSAGE (\{[^}]+\})/g)].map(match => JSON.parse(match[1]));
+  const exampleLines = assignment.context.split('\n').filter(line => line.startsWith('PASSEUR_MESSAGE '));
+  assert.equal(exampleLines.length, 3);
+  for (const line of exampleLines) assert.deepEqual(JSON.parse(line.slice('PASSEUR_MESSAGE '.length)),
+    examples[exampleLines.indexOf(line)]);
+  assert.deepEqual(examples.map(example => example.kind), ['final', 'blocked', 'input_required']);
+  assert.deepEqual(examples[0], { schema_version: 2, kind: 'final', summary: 'Created and committed registered-service.txt',
+    assessment: 'met', blockers: [], questions: [], checks: [] });
+  assert.equal(examples[1].schema_version, 2);
+  assert.equal(typeof examples[1].reason, 'string');
+  assert.equal(examples[2].schema_version, 2);
+  assert.equal(typeof examples[2].question, 'string');
+  assert.equal(assignment.context.includes("b'registered-service-ok\\n'"), true);
+  assert.equal(/peer|sibling|overlap|compromise/i.test(assignment.context), false);
   assert.equal((await readFile(join(manifest.root, 'registered-service-report.json'), 'utf8')).includes('nonpassing_retained'), true);
 });
 
@@ -119,11 +133,22 @@ test('needs-attention CLI result keeps exact identity and bounded nonsecret diag
   assert.deepEqual(invoked.args, ['/tmp/installed/dist/src/cli.js', 'result', '--project', manifest.project,
     '--profile', manifest.profilePath, '--state-root', manifest.stateRoot, '--task', taskId]);
   assert.equal(diagnostic.result.error_code, 'CODEX_NATIVE_REJECTED');
+  assert.equal(diagnostic.result_state, 'retained');
   assert.equal(diagnostic.result.worker_stop, 'unconfirmed');
   assert.equal(diagnostic.resource.state, 'pending');
   assert.equal(JSON.stringify(diagnostic).includes('secret auth bytes'), false);
   await assert.rejects(needsAttentionDiagnostic('/tmp/installed/dist/src/cli.js', manifest, taskId,
     async () => ({ stdout: JSON.stringify({ result: { task_id: 'wrong' }, resource: { task_id: taskId } }) })),
+  /INSTALLED_RESULT_IDENTITY_MISMATCH/);
+  const pending = await needsAttentionDiagnostic('/tmp/installed/dist/src/cli.js', manifest, taskId,
+    async () => ({ stdout: JSON.stringify({ result: null, resource: { task_id: taskId, state: 'pending',
+      private_git: { state: 'prepared' }, branch_ref: 'refs/heads/muse-bridge/task' } }) }));
+  assert.equal(pending.result_state, 'pending');
+  assert.equal(pending.result, null);
+  assert.equal(pending.resource.state, 'pending');
+  assert.equal(JSON.stringify(pending).includes('single_worker_passed'), false);
+  await assert.rejects(needsAttentionDiagnostic('/tmp/installed/dist/src/cli.js', manifest, taskId,
+    async () => ({ stdout: JSON.stringify({ result: null, resource: { task_id: 'wrong', state: 'pending' } }) })),
   /INSTALLED_RESULT_IDENTITY_MISMATCH/);
   await assert.rejects(needsAttentionDiagnostic('/tmp/installed/dist/src/cli.js', manifest, taskId,
     async () => { throw Error('secret auth bytes'); }), /INSTALLED_RESULT_UNAVAILABLE/);

@@ -51,7 +51,12 @@ export async function prepareFixture(codexBin, codexHome) {
   const requestKey = `registered-service-${randomUUID()}`;
   const assignment = { schema_version: 3, agent_id: 'codex', request_key: requestKey, mode: 'implement',
     objective: 'Make one ordinary Python change and commit it in the assigned disposable worktree',
-    context: `Create ${markerName} containing exactly registered-service-ok followed by one newline. Run these two checks as shell commands from the worktree: python3 -c "import ast; from pathlib import Path; ast.parse(Path('quote.py').read_text())" and python3 -c "from pathlib import Path; assert Path('registered-service.txt').read_bytes() == b'registered-service-ok\\n'". Commit the change through ordinary Git with fixed synthetic identity Passeur Worker <passeur-worker@example.invalid>, for example using git -c user.name and -c user.email on the commit. Preserve hooks. Return a schema-2 PASSEUR_MESSAGE final envelope with summary, assessment, blockers, questions, and checks.`,
+    context: `Create ${markerName} containing exactly registered-service-ok followed by one newline. Run these two checks as shell commands from the worktree: python3 -c "import ast; from pathlib import Path; ast.parse(Path('quote.py').read_text())" and python3 -c "from pathlib import Path; assert Path('registered-service.txt').read_bytes() == b'registered-service-ok\\n'". Commit the change through ordinary Git with fixed synthetic identity Passeur Worker <passeur-worker@example.invalid>, for example using git -c user.name and -c user.email on the commit. Preserve hooks. Finish with exactly one PASSEUR_MESSAGE line. If the requested change and checks are complete, use this one-line example:
+PASSEUR_MESSAGE {"schema_version":2,"kind":"final","summary":"Created and committed registered-service.txt","assessment":"met","blockers":[],"questions":[],"checks":[]}
+Report the actual outcome; do not claim unrun checks or a commit that did not occur. If work cannot proceed, use:
+PASSEUR_MESSAGE {"schema_version":2,"kind":"blocked","reason":"Describe the actual blocker"}
+If an exact factual answer is required to continue, use:
+PASSEUR_MESSAGE {"schema_version":2,"kind":"input_required","question":"Ask the exact factual question"}`,
     acceptance_criteria: ['Only registered-service.txt changes from the committed base', 'The exact marker bytes are checked',
       'quote.py passes a Python check', 'An ordinary Git commit is created with the hook intact'],
     allowed_paths: [markerName], base_commit: base, target_ref: 'refs/heads/main' };
@@ -154,9 +159,14 @@ export async function needsAttentionDiagnostic(runtime, manifest, taskId, run = 
     stored = JSON.parse(reply.stdout);
   } catch { throw Error('INSTALLED_RESULT_UNAVAILABLE'); }
   const result = stored?.result, resource = stored?.resource;
-  if (result?.task_id !== taskId || resource?.task_id !== taskId) throw Error('INSTALLED_RESULT_IDENTITY_MISMATCH');
+  if (resource?.task_id !== taskId || result != null && result.task_id !== taskId) throw Error('INSTALLED_RESULT_IDENTITY_MISMATCH');
+  const projectedResource = { state: resource.state, private_git_state: resource.private_git?.state ?? null,
+    branch_ref: resource.branch_ref ?? null, head_commit: resource.head_commit ?? null };
+  if (result == null) return { source: 'installed_read_only_cli', result_state: 'pending', result: null,
+    resource: projectedResource };
   return {
     source: 'installed_read_only_cli',
+    result_state: 'retained',
     result: { schema_version: result.schema_version, task_id: result.task_id,
       execution_status: result.execution_status, worker_stop: result.worker_stop,
       worker_assessment: result.worker_assessment, error_code: result.error?.code ?? null,
@@ -165,8 +175,7 @@ export async function needsAttentionDiagnostic(runtime, manifest, taskId, run = 
         native_session_id: result.native_evidence?.native_session_id ?? null },
       delivery_status: result.delivery?.status ?? null, checks_count: result.checks?.length ?? 0,
       blockers_count: result.blockers?.length ?? 0, questions_count: result.questions?.length ?? 0 },
-    resource: { state: resource.state, private_git_state: resource.private_git?.state ?? null,
-      branch_ref: resource.branch_ref ?? null, head_commit: resource.head_commit ?? null },
+    resource: projectedResource,
   };
 }
 
@@ -233,12 +242,13 @@ export async function runLive({ runtime, codexBin, codexHome, observationMs = 60
       try {
         const diagnostic = await needsAttentionDiagnostic(runtime, manifest, task.task_id);
         report.result_source = diagnostic.source;
+        report.result_state = diagnostic.result_state;
         report.result = diagnostic.result;
         report.resource_state = diagnostic.resource.state;
         report.private_publication_state = diagnostic.resource.private_git_state;
         report.resource_branch_ref = diagnostic.resource.branch_ref;
         report.resource_head_commit = diagnostic.resource.head_commit;
-        report.stage = 'needs_attention_retained';
+        report.stage = diagnostic.result_state === 'pending' ? 'needs_attention_pending_result' : 'needs_attention_retained';
       } catch (error) {
         report.result_read_error_code = error?.message === 'INSTALLED_RESULT_IDENTITY_MISMATCH'
           ? 'INSTALLED_RESULT_IDENTITY_MISMATCH' : 'INSTALLED_RESULT_UNAVAILABLE';
