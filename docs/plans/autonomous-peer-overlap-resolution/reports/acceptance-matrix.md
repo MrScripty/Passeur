@@ -15,9 +15,13 @@ ordinary hook, canonical private-Git publication and independently confirmed
 whole-namespace stop; cancellation left private/shared refs at base. Reports
 and exact task identities are in the execution ledger. Registered private
 capability, real account isolation, a real provider and autonomous peer work
-remain open. Earlier Codex 0.157.1 samples established the narrower boundaries
-below. The installed build
-passed four sampled standalone command read probes under a named profile. A
+remain open. A later installed run passed one fixed synthetic model-invoked
+direct/symlink/proc read-failure probe against a dummy file created in its disposable guest home after native
+preflight; that file remained intact and the private commit/stop gates passed.
+This is sampled home-file isolation, not real subscription credential use.
+Earlier Codex 0.157.1 samples established the narrower boundaries below. The
+installed build passed four sampled standalone command read probes under a named
+profile. A
 separate isolated synthetic-provider turn captured seven tool declarations,
 including `exec_command` and `view_image`, without issuing a tool call. A later
 reviewed installed synthetic turn passed 27 sampled model-invoked `exec_command`

@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ELF, MODEL, PROVIDER, exactOneFileTree, fixedCommand, fixedOutputDiagnostic, finalSse, nativeCheckDiagnostic, nativePresentedFixedCommand, protectedProfileToml, providerSequenceResult, run } from '../../scripts/qualify-codex-protected-worker.mjs';
+import { ELF, MODEL, PROVIDER, HOME_DENIAL_MARKERS, createHomeCanaryAfterFirstPost, exactOneFileTree, fixedCommand, fixedOutputDiagnostic, finalSse, homeProbeOutputValid, nativeCheckDiagnostic, nativePresentedFixedCommand, protectedProfileToml, providerSequenceComplete, providerSequenceResult, run } from '../../scripts/qualify-codex-protected-worker.mjs';
 
 test('fixed provider command checks inaccessible host roots before one ordinary commit', () => {
   const command = fixedCommand('/tmp/task/workspace', '/tmp/fixture/protected/auth', '/tmp/fixture/sibling/canary');
@@ -15,6 +15,42 @@ test('fixed provider command checks inaccessible host roots before one ordinary 
   assert.match(command, /git -C \/tmp\/task\/workspace add -- protected-change\.txt/);
   assert.match(command, /commit -m 'test: protected Codex native commit'/);
   assert.throws(() => fixedCommand('/tmp/unsafe path', '/tmp/protected', '/tmp/sibling'));
+});
+
+test('home canary command requires workspace control and three read failures before commit', () => {
+  const command = fixedCommand('/tmp/task/workspace', '/tmp/fixture/protected/auth',
+    '/tmp/fixture/sibling/canary', '/mounts/home/credential-canary');
+  assert.match(command, /cat \/tmp\/task\/workspace\/watched\.txt >\/dev\/null/);
+  assert.match(command, /! cat \/mounts\/home\/credential-canary >\/dev\/null 2>&1/);
+  assert.match(command, /! cat \/tmp\/task\/workspace\/home-link >\/dev\/null 2>&1/);
+  assert.match(command, /! cat \/proc\/self\/root\/mounts\/home\/credential-canary >\/dev\/null 2>&1/);
+  assert.ok(command.indexOf('HOME_PROC_DENIED') < command.indexOf('git -C /tmp/task/workspace add'));
+  assert.throws(() => fixedCommand('/tmp/task/workspace', '/tmp/protected', '/tmp/sibling', '/home/bad path'));
+});
+
+test('dummy home value is created only after first accepted provider request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'passeur-codex-home-canary-test-'));
+  try {
+    const state = { requests: 0, first: false, homeCanaryReady: false,
+      homeCanary: 'a'.repeat(48), homeCanaryHostPath: join(root, 'credential-canary') };
+    assert.throws(() => createHomeCanaryAfterFirstPost(state));
+    await assert.rejects(readFile(state.homeCanaryHostPath));
+    state.requests = 1; state.first = true;
+    createHomeCanaryAfterFirstPost(state);
+    assert.equal(await readFile(state.homeCanaryHostPath, 'utf8'), state.homeCanary);
+    assert.equal((await stat(state.homeCanaryHostPath)).mode % 0o1000, 0o600);
+    assert.throws(() => createHomeCanaryAfterFirstPost(state));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('home denial marker projection rejects missing, altered and duplicate output envelopes', () => {
+  const body = `Chunk ID: a1\nProcess exited with code 0\nOutput:\n${HOME_DENIAL_MARKERS.join('\n')}\ncommit output`;
+  assert.equal(homeProbeOutputValid(body), true);
+  assert.equal(homeProbeOutputValid(body.replace(HOME_DENIAL_MARKERS[1], 'HOME_SYMLINK_VISIBLE')), false);
+  assert.equal(homeProbeOutputValid(body.replace(`${HOME_DENIAL_MARKERS[2]}\n`, '')), false);
+  assert.equal(homeProbeOutputValid(`${body}\nOutput:\n${HOME_DENIAL_MARKERS.join('\n')}`), false);
+  assert.equal(homeProbeOutputValid(`${body}\n${HOME_DENIAL_MARKERS[0]}`), false);
+  assert.equal(homeProbeOutputValid(null), false);
 });
 
 test('named profile grants only the task workspace and exact canonical private Git path', () => {
@@ -44,7 +80,7 @@ test('qualification pins one installed executable, model and synthetic provider 
   assert.equal(PROVIDER, 'passeur_fixture_loopback');
 });
 
-test('qualification accepts only the fixed commit and explicit cancellation modes', async () => {
+test('qualification accepts only fixed commit, cancellation and home-canary modes', async () => {
   await assert.rejects(run('retry'), /unsupported qualification mode/);
 });
 
@@ -56,6 +92,17 @@ test('provider sequence diagnostics preserve the primary native failure', () => 
     'CODEX_PROVIDER_SEQUENCE_INVALID');
 });
 
+test('home canary failure prevents Coordinator publication before the wrapper returns', () => {
+  const state = { first: true, second: true, failure: null, requests: 2, homeProbeMarkersValid: true };
+  assert.equal(providerSequenceComplete(state, 'home-canary', true, true), true);
+  assert.equal(providerSequenceComplete(state, 'home-canary', true, false), false);
+  assert.equal(providerSequenceComplete({ ...state, homeProbeMarkersValid: false }, 'home-canary', true, true), false);
+  assert.equal(providerSequenceComplete(state, 'home-canary', false, true), false);
+  const refused = providerSequenceResult({ status: 'completed', worker_stop: 'confirmed' }, false, 'home-canary');
+  assert.equal(refused.status, 'failed');
+  assert.equal(refused.error.code, 'CODEX_PROVIDER_SEQUENCE_INVALID');
+});
+
 test('native output diagnostic retains only a bounded failure class and exit code', () => {
   const denial = fixedOutputDiagnostic({ status: 'accepted', text:
     'Process exited with code 128\nfatal: Unable to create index.lock: Permission denied\nprivate output' },
@@ -64,6 +111,8 @@ test('native output diagnostic retains only a bounded failure class and exit cod
   assert.equal(JSON.stringify(denial).includes('private output'), false);
   assert.deepEqual(fixedOutputDiagnostic({ status: 'accepted', text: 'protected-secret' },
     'protected-secret', 'sibling-secret'), { category: 'canary_exposed', exitCode: null });
+  assert.deepEqual(fixedOutputDiagnostic({ status: 'accepted', text: 'Process exited with code 0\nhome-secret' },
+    'protected-secret', 'sibling-secret', 'home-secret'), { category: 'canary_exposed', exitCode: null });
   assert.deepEqual(fixedOutputDiagnostic({ status: 'call_output_mismatch' },
     'protected-secret', 'sibling-secret'), { category: 'call_output_mismatch', exitCode: null });
 });

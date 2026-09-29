@@ -3,7 +3,8 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -24,13 +25,44 @@ const CONTENT = 'exact protected Codex commit bytes\n';
 const REPORT = `PASSEUR_MESSAGE ${JSON.stringify({ schema_version: 2, kind: 'final',
   summary: 'Committed the fixed private Git change', assessment: 'met', blockers: [], questions: [], checks: [] })}`;
 
-export function fixedCommand(workspace, protectedPath, siblingPath) {
-  for (const path of [workspace, protectedPath, siblingPath]) {
+export const HOME_DENIAL_MARKERS = ['HOME_DIRECT_DENIED', 'HOME_SYMLINK_DENIED', 'HOME_PROC_DENIED'];
+export function homeProbeOutputValid(output) {
+  if (typeof output !== 'string') return false;
+  const at = output.indexOf('\nOutput:\n');
+  if (at < 0 || output.indexOf('\nOutput:\n', at + 1) !== -1) return false;
+  const body = output.slice(at + '\nOutput:\n'.length);
+  const prefix = `${HOME_DENIAL_MARKERS.join('\n')}\n`;
+  return body.startsWith(prefix) && HOME_DENIAL_MARKERS.every(marker => !body.slice(prefix.length).includes(marker));
+}
+export function createHomeCanaryAfterFirstPost(state) {
+  if (state.requests !== 1 || !state.first || state.homeCanaryReady ||
+      typeof state.homeCanary !== 'string' || !/^[a-f0-9]{48}$/.test(state.homeCanary) ||
+      typeof state.homeCanaryHostPath !== 'string') throw Error('home canary timing or identity invalid');
+  writeFileSync(state.homeCanaryHostPath, state.homeCanary, { flag: 'wx', mode: 0o600 });
+  state.homeCanaryReady = true;
+}
+async function homeCanaryHostIntact(path, expected) {
+  const [bytes, info] = await Promise.all([
+    readFile(path, 'utf8').catch(() => null), stat(path).catch(() => null),
+  ]);
+  return bytes === expected && info?.isFile() === true && (info.mode & 0o777) === 0o600;
+}
+
+export function fixedCommand(workspace, protectedPath, siblingPath, homeCanaryPath = null) {
+  for (const path of [workspace, protectedPath, siblingPath, ...(homeCanaryPath ? [homeCanaryPath] : [])]) {
     if (!/^\/[A-Za-z0-9_./-]+$/.test(path)) throw Error('unsafe disposable fixture path');
   }
   const alias = join(workspace, 'protected-link');
+  const homeAlias = join(workspace, 'home-link');
+  const homeProbe = homeCanaryPath ?
+    `cat ${join(workspace, 'watched.txt')} >/dev/null && ` +
+    `! cat ${homeCanaryPath} >/dev/null 2>&1 && printf '${HOME_DENIAL_MARKERS[0]}\\n' && ` +
+    `! cat ${homeAlias} >/dev/null 2>&1 && printf '${HOME_DENIAL_MARKERS[1]}\\n' && ` +
+    `! cat /proc/self/root${homeCanaryPath} >/dev/null 2>&1 && ` +
+    `printf '${HOME_DENIAL_MARKERS[2]}\\n' && rm -- ${homeAlias} && ` : '';
   return `test ! -e ${protectedPath} && test ! -e ${alias} && ` +
     `test ! -e /proc/self/root${protectedPath} && test ! -e ${siblingPath} && rm -- ${alias} && ` +
+    homeProbe +
     `printf '%s\\n' 'exact protected Codex commit bytes' > ${join(workspace, FILE)} && ` +
     `git -C ${workspace} add -- ${FILE} && ` +
     `git -C ${workspace} -c user.name='Passeur Fixture' -c user.email='passeur-fixture@example.invalid' ` +
@@ -76,11 +108,17 @@ export function providerSequenceResult(result, complete, mode) {
     worker_assessment: 'unknown', summary: message,
     error: { code: 'CODEX_PROVIDER_SEQUENCE_INVALID', message }, blockers: [], questions: [], checks: [] };
 }
+export function providerSequenceComplete(state, mode, correlated, homeIntact) {
+  if (mode === 'cancel') return state.first && !state.failure && state.requests === 1;
+  return state.first && state.second && !state.failure && state.requests === 2 && correlated &&
+    (mode !== 'home-canary' || state.homeProbeMarkersValid && homeIntact);
+}
 
-export function fixedOutputDiagnostic(output, protectedCanary, siblingCanary) {
+export function fixedOutputDiagnostic(output, protectedCanary, siblingCanary, homeCanary = null) {
   if (output.status !== 'accepted') return { category: output.status, exitCode: null };
   const text = output.text;
-  if (text.includes(protectedCanary) || text.includes(siblingCanary)) return { category: 'canary_exposed', exitCode: null };
+  if (text.includes(protectedCanary) || text.includes(siblingCanary) ||
+      homeCanary && text.includes(homeCanary)) return { category: 'canary_exposed', exitCode: null };
   const match = /Process exited with code ([0-9]{1,3})\b/.exec(text);
   const exitCode = match ? Number(match[1]) : null;
   const category = /(?:index\.lock|unable to create.*index|could not lock index)/i.test(text) &&
@@ -144,7 +182,8 @@ function gitBytes(cwd, ...args) { return execFileSync('/usr/bin/git', args, { cw
 } }); }
 
 function provider(socketPath, workspace, protectedPath, siblingPath, state, mode) {
-  const command = fixedCommand(workspace, protectedPath, siblingPath);
+  const command = fixedCommand(workspace, protectedPath, siblingPath,
+    mode === 'home-canary' ? state.homeCanaryGuestPath : null);
   const probe = { cmd: command, workspace };
   const server = createServer((request, response) => {
     const refuse = category => { state.failure ??= category; response.writeHead(400).end(); };
@@ -160,7 +199,8 @@ function provider(socketPath, workspace, protectedPath, siblingPath, state, mode
       let body;
       const raw = Buffer.concat(chunks).toString('utf8');
       state.requestDigests.push({ sha256: sha(raw), bytes: Buffer.byteLength(raw) });
-      if (raw.includes(state.protectedCanary) || raw.includes(state.siblingCanary)) {
+      if (raw.includes(state.protectedCanary) || raw.includes(state.siblingCanary) ||
+          state.homeCanaryReady && raw.includes(state.homeCanary)) {
         refuse('protected_canary_exposed'); return;
       }
       try { body = JSON.parse(raw); }
@@ -169,13 +209,22 @@ function provider(socketPath, workspace, protectedPath, siblingPath, state, mode
       if (state.requests === 1) {
         state.first = true;
         if (mode === 'cancel') return; // Keep the accepted native turn pending until task-owned cancellation.
+        if (mode === 'home-canary') {
+          try { createHomeCanaryAfterFirstPost(state); }
+          catch { refuse('home_canary_creation_failed'); return; }
+        }
         response.writeHead(200, { 'content-type': 'text/event-stream' }).end(sseCall(0, probe));
         return;
       }
       const output = outputForCall(body, 0, probe, [probe]);
-      state.outputDiagnostic = fixedOutputDiagnostic(output, state.protectedCanary, state.siblingCanary);
+      state.outputDiagnostic = fixedOutputDiagnostic(output, state.protectedCanary, state.siblingCanary,
+        state.homeCanaryReady ? state.homeCanary : null);
+      state.homeProbeMarkersValid = mode === 'home-canary' ? homeProbeOutputValid(output.text) : null;
       if (output.status !== 'accepted' || typeof output.text !== 'string' || output.text.includes(state.protectedCanary) ||
-          output.text.includes(state.siblingCanary) || !output.text.includes('Process exited with code 0')) {
+          output.text.includes(state.siblingCanary) ||
+          state.homeCanaryReady && output.text.includes(state.homeCanary) ||
+          mode === 'home-canary' && !state.homeProbeMarkersValid ||
+          !output.text.includes('Process exited with code 0')) {
         refuse('provider_tool_output_invalid'); return;
       }
       state.second = true; state.toolOutputSha256 = sha(output.text); state.toolOutputBytes = Buffer.byteLength(output.text);
@@ -189,7 +238,7 @@ function provider(socketPath, workspace, protectedPath, siblingPath, state, mode
 }
 
 export async function run(mode = 'commit') {
-  if (!['commit', 'cancel'].includes(mode)) throw Error('unsupported qualification mode');
+  if (!['commit', 'cancel', 'home-canary'].includes(mode)) throw Error('unsupported qualification mode');
   const root = await mkdtemp(join(tmpdir(), 'passeur-codex-protected-worker-'));
   const project = join(root, 'project'), worktrees = join(root, 'worktrees');
   const home = join(root, 'home'), relayDir = join(root, 'relay');
@@ -204,6 +253,9 @@ export async function run(mode = 'commit') {
   let coordinator, store, receipt, owner, activeProviderState;
   const protectedCanary = randomBytes(24).toString('hex'), siblingCanary = randomBytes(24).toString('hex');
   const protectedPath = join(protectedDir, 'auth-canary'), siblingPath = join(siblingDir, 'sibling-canary');
+  const homeCanary = randomBytes(24).toString('hex');
+  const homeCanaryHostPath = join(home, 'credential-canary');
+  const homeCanaryGuestPath = '/mounts/home/credential-canary';
   try {
     await Promise.all([project, worktrees, home, relayDir, protectedDir, siblingDir].map(path => mkdir(path, { mode: 0o700 })));
     report.nativeSha256 = sha(await readFile(ELF));
@@ -237,13 +289,15 @@ export async function run(mode = 'commit') {
         const canonical = input.private_git.view.canonical_common_dir;
         const socketPath = join(relayDir, 'provider.sock');
         const state = { requests: 0, first: false, second: false, failure: null, requestDigests: [],
-          protectedCanary, siblingCanary };
+          protectedCanary, siblingCanary, homeCanary,
+          homeCanaryHostPath, homeCanaryGuestPath, homeCanaryReady: false };
         activeProviderState = state;
         const relayPort = 39173;
         const p = provider(socketPath, input.workspace, protectedPath, siblingPath, state, mode);
         let result;
         try {
-          if (mode === 'commit') await symlink(protectedPath, join(input.workspace, 'protected-link'));
+          if (mode !== 'cancel') await symlink(protectedPath, join(input.workspace, 'protected-link'));
+          if (mode === 'home-canary') await symlink(homeCanaryGuestPath, join(input.workspace, 'home-link'));
           await p.listen();
           const config = protectedProfileToml(input.workspace, canonical,
             join(canonical, input.private_git.view.admin_relative), relayPort);
@@ -260,15 +314,19 @@ export async function run(mode = 'commit') {
         report.providerRequests = state.requests;
         report.providerRequestDigests = state.requestDigests;
         report.providerFailure = state.failure;
+        report.homeCanaryCreatedAfterFirstPost = mode === 'home-canary' ? state.homeCanaryReady : null;
+        report.homeProbeMarkersValid = mode === 'home-canary' ? state.homeProbeMarkersValid === true : null;
+        report.homeCanaryIntactBeforePublication = mode === 'home-canary' && state.homeCanaryReady ?
+          await homeCanaryHostIntact(homeCanaryHostPath, homeCanary) : null;
         report.providerOutputDiagnostic = state.outputDiagnostic ?? null;
         report.providerOutput = state.second ? { sha256: state.toolOutputSha256, bytes: state.toolOutputBytes } : null;
         report.workerStop = result?.worker_stop ?? 'unconfirmed';
         report.nativeCheckDiagnostic = nativeCheckDiagnostic(result,
-          nativePresentedFixedCommand(fixedCommand(input.workspace, protectedPath, siblingPath)), input.workspace);
+          nativePresentedFixedCommand(fixedCommand(input.workspace, protectedPath, siblingPath,
+            mode === 'home-canary' ? homeCanaryGuestPath : null)), input.workspace);
         report.nativeCommandCorrelated = report.nativeCheckDiagnostic.matches;
-        report.providerSequenceComplete = mode === 'cancel' ?
-          state.first && !state.failure && state.requests === 1 :
-          state.first && state.second && !state.failure && state.requests === 2 && report.nativeCommandCorrelated;
+        report.providerSequenceComplete = providerSequenceComplete(state, mode,
+          report.nativeCommandCorrelated, report.homeCanaryIntactBeforePublication);
         return providerSequenceResult(result, report.providerSequenceComplete, mode);
       } };
     coordinator = new Coordinator(project, 'codex-protected-fixture', policy, store,
@@ -332,6 +390,16 @@ export async function run(mode = 'commit') {
     report.bytesExact = resource?.worktree_path ? (await readFile(join(resource.worktree_path, FILE), 'utf8').catch(() => '')) === CONTENT : false;
     report.hostCanariesIntact = (await readFile(protectedPath, 'utf8')) === protectedCanary &&
       (await readFile(siblingPath, 'utf8')) === siblingCanary;
+    report.homeCanaryIntact = mode === 'home-canary' && report.homeCanaryCreatedAfterFirstPost ?
+      await homeCanaryHostIntact(homeCanaryHostPath, homeCanary) : null;
+    const commitValid = result?.execution_status === 'completed' && result.worker_stop === 'confirmed' &&
+      result.delivery?.status === 'committed' && resource?.private_git?.state === 'published' &&
+      report.privateResourceBefore === 'prepared' && report.branchRef === `refs/heads/muse-bridge/${receipt.task_id}` &&
+      report.privateBefore === base && report.canonicalBefore === base &&
+      report.privateAfter === report.canonicalAfter &&
+      report.privateAfter !== base && report.mainAfter === base && report.commitParentExact &&
+      report.commitBytesExact && report.commitTreeExact && report.hookRan && report.bytesExact && report.hostCanariesIntact &&
+      report.providerRequests === 2 && report.nativeCommandCorrelated && !report.providerFailure;
     report.status = mode === 'cancel' ?
       result?.execution_status === 'cancelled' && result.worker_stop === 'confirmed' &&
       resource?.private_git?.state === 'prepared' && report.privateBefore === base &&
@@ -339,15 +407,8 @@ export async function run(mode = 'commit') {
       report.hostCanariesIntact && report.providerRequests === 1 && report.cancelAfterProviderRequest &&
       report.explicitCancel && !report.providerFailure ?
         'accepted_synthetic_cancellation' : 'incomplete' :
-      result?.execution_status === 'completed' && result.worker_stop === 'confirmed' &&
-      result.delivery?.status === 'committed' && resource?.private_git?.state === 'published' &&
-      report.privateResourceBefore === 'prepared' && report.branchRef === `refs/heads/muse-bridge/${receipt.task_id}` &&
-      report.privateBefore === base && report.canonicalBefore === base &&
-      report.privateAfter === report.canonicalAfter &&
-      report.privateAfter !== base && report.mainAfter === base && report.commitParentExact &&
-      report.commitBytesExact && report.commitTreeExact && report.hookRan && report.bytesExact && report.hostCanariesIntact &&
-      report.providerRequests === 2 && report.nativeCommandCorrelated && !report.providerFailure ?
-        'accepted_synthetic_private_commit' : 'incomplete';
+      commitValid && (mode !== 'home-canary' || report.homeCanaryIntact && report.homeProbeMarkersValid) ?
+        (mode === 'home-canary' ? 'accepted_synthetic_home_canary' : 'accepted_synthetic_private_commit') : 'incomplete';
     await save();
     await coordinator.shutdown();
     return report;
@@ -371,8 +432,10 @@ export async function run(mode = 'commit') {
 }
 
 if (process.argv[1]?.endsWith('/qualify-codex-protected-worker.mjs')) {
-  const mode = process.argv[2] === '--cancel' ? 'cancel' : process.argv[2] === undefined ? 'commit' : 'invalid';
+  const mode = process.argv[2] === '--cancel' ? 'cancel' : process.argv[2] === '--home-canary' ?
+    'home-canary' : process.argv[2] === undefined ? 'commit' : 'invalid';
   const result = await run(mode);
   process.stdout.write(`${JSON.stringify(result)}\n`);
-  process.exitCode = ['accepted_synthetic_private_commit', 'accepted_synthetic_cancellation'].includes(result.status) ? 0 : 1;
+  process.exitCode = ['accepted_synthetic_private_commit', 'accepted_synthetic_cancellation',
+    'accepted_synthetic_home_canary'].includes(result.status) ? 0 : 1;
 }
