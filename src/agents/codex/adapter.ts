@@ -58,6 +58,25 @@ function argumentsFor(options: CodexOptions): string[] {
   ];
   return [...overrides.flatMap((value) => ["-c", value]), "app-server"];
 }
+const protectedOutputInstructions = `End each completed turn with one line: PASSEUR_MESSAGE followed by one JSON object. When the assignment is done, use {"schema_version":2,"kind":"final","summary":"brief outcome","assessment":"met","blockers":[],"questions":[],"checks":[]}. Use assessment partial, unmet, or unknown when truthful. For a question use {"schema_version":2,"kind":"input_required","question":"specific question"}; for a terminal blocker use {"schema_version":2,"kind":"blocked","reason":"specific blocker"}. A peer_operation is an intermediate disposition; continue the assignment afterward. Do not report final until the work is complete. Do not wrap the JSON in a code fence.`;
+export function threadStartArguments(options: CodexOptions, workspace: string, provider: string,
+  kind: "ordinary" | "protected_synthetic" | "protected_real") {
+  return kind === "ordinary"
+    ? { model: options.model, modelProvider: "openai", cwd: workspace,
+        approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write", ephemeral: true }
+    : { model: options.model, modelProvider: provider, cwd: workspace, permissions: "passeur-boundary",
+        ephemeral: true, allowProviderModelFallback: false,
+        ...(kind === "protected_real" ? { developerInstructions: protectedOutputInstructions } : {}) };
+}
+export function dispositionFailureCategory(message: string): "missing_or_oversize" | "marker_missing" | "json_invalid" | "contract_invalid" | "unknown" {
+  switch (message) {
+    case "The turn did not provide a bounded assignment disposition": return "missing_or_oversize";
+    case "The completed turn did not provide an explicit assignment disposition": return "marker_missing";
+    case "Assignment disposition is not valid JSON": return "json_invalid";
+    case "Assignment disposition violates its versioned contract": return "contract_invalid";
+    default: return "unknown";
+  }
+}
 function peerPrompt(envelope: PeerDeliveryEnvelope): string {
   const prompt = peerDeliveryPrompt(envelope, "codex");
   if (Buffer.byteLength(prompt, "utf8") > MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES) throw new BridgeError("PEER_DELIVERY_UNSUPPORTED", "Peer continuation exceeds the bounded native prompt");
@@ -355,11 +374,8 @@ export class CodexAdapter implements WorkerAdapter {
         }
       } else assertConfiguration(config, !!this.options.use_caller_codex_home);
       protectedStage = "thread/start";
-      const threadResponse = await transport.request("thread/start", launch
-        ? { model: this.options.model, modelProvider: provider, cwd: input.workspace, permissions: "passeur-boundary",
-          ephemeral: true, allowProviderModelFallback: false }
-        : { model: this.options.model, modelProvider: "openai", cwd: input.workspace,
-          approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write", ephemeral: true }, signal);
+      const threadResponse = await transport.request("thread/start", threadStartArguments(this.options,
+        input.workspace, provider, launch ? realProtected ? "protected_real" : "protected_synthetic" : "ordinary"), signal);
       const opened = launch ? protectedThreadStarted(threadResponse, input.workspace, this.options.model, provider)
         : threadStarted(threadResponse, input.workspace, this.options.model, this.options.network_access);
       threadId = opened.threadId; reportedModel = opened.reportedModel;
@@ -407,7 +423,7 @@ export class CodexAdapter implements WorkerAdapter {
         catch (error) {
           if (!(error instanceof BridgeError) || error.code !== "WORKER_MESSAGE_INVALID") throw error;
           if (peerTurn) throw new BridgeError("PEER_DELIVERY_OBSERVATION_MISSING", "Peer turn did not provide an exact disposition receipt");
-          prompt = await withAbort(Promise.race([input.input("The completed native turn has no valid assignment disposition. Supply an explicit continuation instruction, or cancel the task.", true, undefined, undefined, signal), transport.failure]), signal);
+          prompt = await withAbort(Promise.race([input.input(`The completed native turn has no valid assignment disposition (${dispositionFailureCategory(error.message)}). Supply an explicit continuation instruction, or cancel the task.`, true, undefined, undefined, signal), transport.failure]), signal);
           continue;
         }
         if (peerTurn) {

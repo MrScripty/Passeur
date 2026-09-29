@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CodexAdapter, codexEnvironment, resolveCodexHome, failOnProtectedCredentialExposure, failOnProtectedTerminalAuth,
-  initializeAfterProtectedCapture, protectedNativeRejection } from "../../src/agents/codex/adapter.js";
+  initializeAfterProtectedCapture, protectedNativeRejection, threadStartArguments, dispositionFailureCategory } from "../../src/agents/codex/adapter.js";
+import { parseWorkerMessage } from "../../src/agents/report.js";
+import { BridgeError } from "../../src/core/errors.js";
 import { assertConfiguration, assertEmptySkills, assertProtectedConfiguration, assertProtectedProfile, assertSyntheticSeedAccount, protectedItemType, protectedThreadStarted, protectedUserEcho } from "../../src/agents/codex/protocol.js";
 import type { CodexOptions } from "../../src/agents/codex/config.js";
 import type { WorkerInput } from "../../src/agents/types.js";
@@ -20,6 +22,45 @@ const input: Omit<WorkerInput, "signal"> = {
 const options: CodexOptions = { codex_bin: "/missing/codex", codex_home: "/unused/pre-cancelled-home", model: "fixture-model",
   network_access: false, allow_command_escalation: false, subscription_confirmed: true, experimental_opt_in: true };
 cancellationConformance("Codex", () => new CodexAdapter(options), input);
+
+describe("real protected Codex output contract", () => {
+  it("adds only a static bounded developer instruction to real protected thread/start", () => {
+    const workspace = "/tmp/private-workspace-sensitive", provider = "fixture-provider";
+    const ordinary = threadStartArguments(options, workspace, provider, "ordinary");
+    expect(ordinary).toEqual({ model: options.model, modelProvider: "openai", cwd: workspace,
+      approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write", ephemeral: true });
+    const synthetic = threadStartArguments(options, workspace, provider, "protected_synthetic");
+    expect(synthetic).toEqual({ model: options.model, modelProvider: provider, cwd: workspace,
+      permissions: "passeur-boundary", ephemeral: true, allowProviderModelFallback: false });
+    const real = threadStartArguments(options, workspace, provider, "protected_real");
+    expect(real).toEqual({ ...synthetic, developerInstructions: expect.any(String) });
+    if (!("developerInstructions" in real) || typeof real.developerInstructions !== "string") {
+      throw new Error("Real protected thread/start lacks developer instructions");
+    }
+    expect(real.developerInstructions).toContain('PASSEUR_MESSAGE');
+    expect(real.developerInstructions).toContain('"schema_version":2,"kind":"final"');
+    expect(Buffer.byteLength(real.developerInstructions, "utf8")).toBeLessThan(1_024);
+    for (const sensitive of [workspace, provider, "private_git", "peer content", "fixture-provider"]) {
+      expect(real.developerInstructions).not.toContain(sensitive);
+    }
+  });
+  it.each([
+    [undefined, "missing_or_oversize"],
+    ["plain native prose", "marker_missing"],
+    ["PASSEUR_MESSAGE {", "json_invalid"],
+    ['PASSEUR_MESSAGE {"schema_version":2,"kind":"final"}', "contract_invalid"],
+  ] as const)("classifies only a parser-owned invalid disposition from %s", (report, category) => {
+    let error: unknown;
+    try { parseWorkerMessage(report); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: "WORKER_MESSAGE_INVALID" });
+    expect(dispositionFailureCategory((error as BridgeError).message)).toBe(category);
+  });
+  it("uses a fixed unknown category without exposing an arbitrary parser error", () => {
+    const secret = "native-secret@example.invalid";
+    expect(dispositionFailureCategory(secret)).toBe("unknown");
+    expect(dispositionFailureCategory(`${secret} Assignment disposition is not valid JSON`)).toBe("unknown");
+  });
+});
 
 describe("ordinary Codex effective configuration", () => {
   const allowed = { config: { mcp_servers: {}, features: { multi_agent: false, apps: false, plugins: false },
@@ -483,8 +524,21 @@ describe.runIf(process.platform === "linux")("Codex adapter through an actual co
   });
   for (const name of ["bad-report", "question"]) it(`${name} waits for explicit input and continues the same native session`, async () => {
     await scenario(name, async (adapter, run, home) => {
-      let asked=0; run.input=async(question,attention)=>{asked++;expect(question.length).toBeGreaterThan(0);expect(attention??false).toBe(name==="bad-report");return "Continue using JSON";};
-      expect(await adapter.run(run)).toMatchObject({status:"completed",worker_stop:"confirmed"}); expect(asked).toBe(1);expect(await readFile(join(home,"fixture-turns"),"utf8")).toBe("2");
+      let asked = 0, release!: (value: string) => void, observe!: () => void;
+      const answer = new Promise<string>(resolve => { release = resolve; });
+      const requested = new Promise<void>(resolve => { observe = resolve; });
+      run.input = async (question, attention) => {
+        asked++; expect(question.length).toBeGreaterThan(0); expect(attention ?? false).toBe(name === "bad-report");
+        if (name === "bad-report") expect(question).toContain("(marker_missing)");
+        observe(); return answer;
+      };
+      const execution = adapter.run(run);
+      try {
+        await Promise.race([requested, execution.then(() => { throw new Error("Adapter settled before explicit input"); })]);
+        expect(await readFile(join(home, "fixture-turns"), "utf8")).toBe("1");
+      } finally { release("Continue using JSON"); }
+      expect(await execution).toMatchObject({ status: "completed", worker_stop: "confirmed" });
+      expect(asked).toBe(1); expect(await readFile(join(home, "fixture-turns"), "utf8")).toBe("2");
     });
   });
   it("does not close a successful turn before known background work settles", async () => {
