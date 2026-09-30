@@ -4,12 +4,13 @@
 
 | Field | Value |
 | --- | --- |
-| Plan status | `Verifying` |
-| Acceptance status | Implementation, automated upgrade qualification, concurrent real-host qualification and independent review complete; ordinary commit is the remaining operation |
-| Current phase | M0–M4 complete; V1 active |
-| Exactly one next slice | Commit the verified candidate through the repository's ordinary workflow |
+| Plan status | `Complete` |
+| Acceptance status | Implementation, automated upgrade qualification, concurrent real-host qualification, independent review and ordinary commit complete |
+| Current phase | M0–M4 and V1 complete |
+| Exactly one next slice | None; all acceptance work is complete |
 | Canonical plan path | `docs/plans/global-passeur-profile-upgrade/plan.md` |
-| Current invocation | `verify` — M1–M4, concurrent real-host qualification and read-only review are complete; commit remains |
+| Current invocation | `verify` — all acceptance work and the ordinary commit are complete |
+| Repair commit | `63b480ac6566ca962e19e29e5867673b8ffc7507` |
 | Source baseline | `7df5c71ea5a2be1eb2f1268b9f14e7599b127e79` |
 | Prior repair | `e5d599e` — global frontend routing; upgrade acceptance was overstated and is amended by this plan |
 | Design authority | GPT-6.1 Sol High composed-design handoff in [review](reports/composed-design-review.md) |
@@ -81,6 +82,6 @@ Run focused tests, type checks/build, core and relevant broader integration suit
 
 ## 6. Acceptance and operation history
 
-Automated and real-host qualification now demonstrates profile ownership semantics, deterministic registration migration, actual old-service compatibility, live accepted-task survival, complete frontend-process restart, two repository domains, and explicit-profile conflict. The independent Sol High read-only review approved the repaired candidate after its one migration-race finding was fixed and reverified. Plan completion remains pending only on the ordinary repair commit.
+Automated and real-host qualification demonstrates profile ownership semantics, deterministic registration migration, actual old-service compatibility, live accepted-task survival, complete frontend-process restart, two repository domains, and explicit-profile conflict. The independent Sol High read-only review approved the repaired candidate after its one migration-race finding was fixed and reverified. The repair is committed as `63b480ac6566ca962e19e29e5867673b8ffc7507`.
 
 Operation history: `start` admitted M0 and the repair on 2026-09-30 under the user’s explicit request. `continue` records each implementation slice and qualification result, including the user-required ephemeral real-host sessions. `verify` records the exact-candidate review disposition and ordinary commit. This plan does not change the shared-service plan’s task/resource authority or authorize personal configuration, dependency installation, authentication changes, publication, or history rewriting.

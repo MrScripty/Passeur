@@ -1,8 +1,8 @@
 # Verification and acceptance record
 
-**Operation:** `verify` — implementation, acceptance evidence and independent review recorded; commit remains.
+**Operation:** `verify` — implementation, acceptance evidence, independent review and commit recorded.
 **Candidate:** source, tests and documentation in the current working tree on 2026-09-30.
-**Status:** scoped automated and real-host acceptance passed; Sol High approved the repaired candidate after the migration race was fixed. The ordinary commit remains.
+**Status:** scoped automated and real-host acceptance passed; Sol High approved the repaired candidate after the migration race was fixed; the repair is committed.
 
 ## Check results
 
@@ -53,6 +53,6 @@ Both sessions saw the migrated empty agent registry, as expected from the intent
 | Linked worktree model | Canonical binding/source-view and legacy profile precedence tests pass | Demonstrated |
 | Ordinary recovery and election | Targeted attachment recovery and repository-scoped election tests pass | Demonstrated |
 | Independent Sol High final review | Repaired manifest `9bac760e51425faffbf6fb9ffe1e33ee0077e7c6c1c5f84b0e1e455f82ed6c4a`, read-only review | Approved; no remaining P0/P1/P2 findings |
-| Ordinary commit | Normal commit and hooks | Pending |
+| Ordinary commit | `63b480ac6566ca962e19e29e5867673b8ffc7507` | Complete |
 
 The previous global-routing acceptance report has been amended to preserve what it proved while explicitly excluding the pre-upgrade scenario; this follow-up supplies the missing migration evidence.
