@@ -30,10 +30,23 @@ function registration(name = "passeur_pumas"): CodexMcpRegistration {
     cwd: "/installed", env: {}, startup_timeout_sec: 10, tool_timeout_sec: 2100, enabled_tools: ["passeur_status", "passeur_prepare"],
     project: "/project", profile: "/profile.json", state_root: "/state", repository_id: "repository", build_id: "build", development: false };
 }
+function dynamicRegistration(name = "passeur"): CodexMcpRegistration {
+  return { server_name: name, command: "/node", args: ["/installed/dist/src/cli.js", "serve", "--state-root", "/state"],
+    env: {}, startup_timeout_sec: 10, tool_timeout_sec: 2100, enabled_tools: ["passeur_status", "passeur_prepare"],
+    state_root: "/state", build_id: "build", development: false };
+}
 it("renders both diagnostics and safely encodes spaces and quotes", () => {
   const r = registration(); r.args[0] = '/installed "with spaces"/cli.js';
   const parsed = TOML.parse(renderCodexMcpToml(r));
   expect(parsed.mcp_servers).toMatchObject({ passeur_pumas: { args: r.args, enabled_tools: r.enabled_tools } });
+});
+it("renders dynamic registration without a fixed repository or MCP working directory", () => {
+  const r = dynamicRegistration();
+  const table = (TOML.parse(renderCodexMcpToml(r)).mcp_servers as TOML.TomlTable).passeur as TOML.TomlTable;
+  expect(table.cwd).toBeUndefined();
+  expect(table.args).toEqual(r.args);
+  expect((table.args as string[])).not.toContain("--project");
+  expect(mergeCodexMcpToml(renderCodexMcpToml(r), r)).toBe(renderCodexMcpToml(r));
 });
 it("normal updates preserve unrelated bytes and allow separately named projects", () => {
   const prefix = '# keep this comment\nmodel = "chosen"\n';
@@ -59,6 +72,14 @@ it("rejects a known competing state namespace for the same repository", () => {
   const source = renderCodexMcpToml(registration()); const r = registration("passeur_second");
   r.state_root = "/another"; r.args[r.args.indexOf("--state-root") + 1] = r.state_root;
   expect(() => mergeCodexMcpToml(source, r)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
+});
+it("allows one dynamic registration beside pinned project registrations in the shared state namespace", () => {
+  const source = renderCodexMcpToml(registration());
+  const updated = mergeCodexMcpToml(source, dynamicRegistration());
+  expect(TOML.parse(updated).mcp_servers).toMatchObject({
+    passeur_pumas: { cwd: "/installed" },
+    passeur: { args: dynamicRegistration().args },
+  });
 });
 it("marker-like lines inside multiline strings cannot own a configuration edit", () => {
   const source = 'description = """\n# passeur:begin passeur_pumas\n# passeur:end passeur_pumas\n"""\n';
@@ -86,6 +107,16 @@ it("configuration presence cannot verify a different resolved command or tool al
   expect(() => verifyInspection({ ...response, transport: { ...response.transport, command: "/other" } }, r)).toThrowError(expect.objectContaining({ code: "CODEX_REGISTRATION_MISMATCH" }));
   expect(() => verifyInspection({ ...response, enabled_tools: ["delegate_to_muse"] }, r)).toThrowError(expect.objectContaining({ code: "CODEX_REGISTRATION_MISMATCH" }));
   expect(() => verifyInspection({ name: r.server_name }, r)).toThrowError(expect.objectContaining({ code: "CODEX_INSPECTION_UNSUPPORTED" }));
+});
+it("inspection preserves an unconfigured cwd for dynamic routing", async () => {
+  const { verifyInspection } = await import("../../src/codex/config.js");
+  const r = dynamicRegistration();
+  const response = { name: r.server_name, enabled: true, disabled_reason: null,
+    transport: { type: "stdio", command: r.command, args: r.args, cwd: null, env: null, env_vars: [] },
+    enabled_tools: [...r.enabled_tools], disabled_tools: null, startup_timeout_sec: 10, tool_timeout_sec: 2100 };
+  expect(() => verifyInspection(response, r)).not.toThrow();
+  expect(() => verifyInspection({ ...response, transport: { ...response.transport, cwd: "/fixed" } }, r))
+    .toThrowError(expect.objectContaining({ code: "CODEX_REGISTRATION_MISMATCH" }));
 });
 
 it("rolls back only its unchanged candidate when configuration inspection fails", async () => {
