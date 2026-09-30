@@ -14,9 +14,9 @@ const exec = promisify(execFile);
 export const CODEX_ENABLED_TOOLS = ["passeur_status", "passeur_prepare", "passeur_agents", "passeur_submit", "passeur_submit_coordinated", "passeur_announce", "passeur_announcement", "passeur_withdraw_announcement", "passeur_preflight", "passeur_submit_batch", "passeur_tasks", "passeur_wait", "passeur_cancel", "passeur_attach", "passeur_input", "passeur_result", "passeur_structural_report", "passeur_structural_detail", "passeur_structural_refresh", "passeur_structural_observation_status", "passeur_structural_notice_pull", "passeur_structural_notice_ack", "passeur_structural_current", "passeur_structural_artifact_report", "passeur_structural_artifact_detail", "passeur_finalize", "passeur_delegate", "passeur_delegate_batch", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize", ...COORDINATION_TOOL_NAMES] as const;
 export type CodexMcpRegistration = {
   server_name: string;
-  command: string; args: string[]; cwd: string; env: Record<string, string>;
+  command: string; args: string[]; cwd?: string; env: Record<string, string>;
   startup_timeout_sec: number; tool_timeout_sec: number; enabled_tools: readonly string[];
-  project: string; profile: string; state_root: string; repository_id: string; build_id: string;
+  project?: string; profile?: string; state_root: string; repository_id?: string; build_id: string;
   development: boolean;
   /** Omitted for an update: preserve the existing server policy. New servers default optional. */
   required?: boolean;
@@ -51,18 +51,34 @@ function servers(doc: Record<string, unknown>): Record<string, unknown> {
 function validateRegistration(registration: CodexMcpRegistration): void {
   validateServerName(registration.server_name);
   resolveStartupRequirement(registration.required, undefined);
-  for (const [key, value] of Object.entries({ command: registration.command, cwd: registration.cwd, project: registration.project, profile: registration.profile, state_root: registration.state_root })) {
+  for (const [key, value] of Object.entries({ command: registration.command, state_root: registration.state_root })) {
     if (!isAbsolute(value) || value.includes("\0")) throw new BridgeError("REGISTRATION_INVALID", `${key} must be an absolute path without NUL`);
   }
-  if (registration.args.some((value) => value.includes("\0")) || !registration.repository_id || !registration.build_id) throw new BridgeError("REGISTRATION_INVALID", "Registration identity or arguments are invalid");
+  for (const [key, value] of Object.entries({ cwd: registration.cwd, project: registration.project, profile: registration.profile })) {
+    if (value !== undefined && (!isAbsolute(value) || value.includes("\0"))) throw new BridgeError("REGISTRATION_INVALID", `${key} must be an absolute path without NUL`);
+  }
+  const bindingFields = [registration.project, registration.profile, registration.repository_id];
+  const bindingCount = bindingFields.filter((value) => value !== undefined).length;
+  if (bindingCount !== 0 && bindingCount !== bindingFields.length) throw new BridgeError("REGISTRATION_INVALID", "Repository-bound registration requires project, profile and repository identity together");
+  const table = { args: registration.args };
+  if (argument(table, "--state-root") !== registration.state_root) throw new BridgeError("REGISTRATION_INVALID", "Registration state namespace must match its launch arguments");
+  if (bindingCount === 0) {
+    if (registration.cwd !== undefined || argument(table, "--project") !== undefined || argument(table, "--profile") !== undefined || argument(table, "--expected-repository-id") !== undefined) {
+      throw new BridgeError("REGISTRATION_INVALID", "Dynamic registration must inherit its project working directory without fixed repository arguments");
+    }
+  } else if (argument(table, "--project") !== registration.project || argument(table, "--profile") !== registration.profile
+    || argument(table, "--expected-repository-id") !== registration.repository_id || registration.cwd === undefined) {
+    throw new BridgeError("REGISTRATION_INVALID", "Repository-bound registration arguments do not match their declared binding");
+  }
+  if (registration.args.some((value) => value.includes("\0")) || !registration.build_id) throw new BridgeError("REGISTRATION_INVALID", "Registration identity or arguments are invalid");
   for (const [name, value] of Object.entries(registration.env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || /token|secret|password|api.?key/i.test(name) || value.includes("\0")) throw new BridgeError("REGISTRATION_ENV_INVALID", "Only declared noncredential environment inputs may be recorded in registration");
   }
   for (const value of [registration.startup_timeout_sec, registration.tool_timeout_sec]) if (!Number.isFinite(value) || value <= 0) throw new BridgeError("REGISTRATION_INVALID", "Timeouts must be positive seconds");
 }
 function transport(registration: CodexMcpRegistration) {
-  return { command: registration.command, args: [...registration.args], cwd: registration.cwd, required: registration.required ?? false,
-    startup_timeout_sec: registration.startup_timeout_sec, tool_timeout_sec: registration.tool_timeout_sec,
+  return { command: registration.command, args: [...registration.args], ...(registration.cwd ? { cwd: registration.cwd } : {}),
+    required: registration.required ?? false, startup_timeout_sec: registration.startup_timeout_sec, tool_timeout_sec: registration.tool_timeout_sec,
     enabled_tools: [...registration.enabled_tools], ...(Object.keys(registration.env).length ? { env: { ...registration.env } } : {}) };
 }
 function managedBlock(name: string, table: Record<string, unknown>): string {
@@ -78,8 +94,13 @@ function argument(table: unknown, flag: string): string | undefined {
   return index >= 0 && typeof table.args[index + 1] === "string" ? table.args[index + 1] : undefined;
 }
 function sameBinding(table: unknown, registration: CodexMcpRegistration): boolean {
+  if (argument(table, "--state-root") !== registration.state_root) return false;
+  if (registration.repository_id === undefined) {
+    return argument(table, "--project") === undefined && argument(table, "--profile") === undefined
+      && argument(table, "--expected-repository-id") === undefined && (!object(table) || table.cwd === undefined);
+  }
   return argument(table, "--project") === registration.project && argument(table, "--profile") === registration.profile
-    && argument(table, "--state-root") === registration.state_root && argument(table, "--expected-repository-id") === registration.repository_id;
+    && argument(table, "--expected-repository-id") === registration.repository_id;
 }
 export function registrationFingerprint(table: unknown): string {
   if (!object(table)) throw new BridgeError("REGISTRATION_INVALID", "Existing server binding must be a TOML table");
@@ -95,7 +116,7 @@ export function mergeCodexMcpToml(source: string, registration: CodexMcpRegistra
   registration = { ...registration, required: resolveStartupRequirement(registration.required, object(prior) ? prior.required : undefined) };
   for (const [name, table] of Object.entries(tables)) {
     const repository = argument(table, "--expected-repository-id"), state = argument(table, "--state-root");
-    if (repository === registration.repository_id && state && state !== registration.state_root) {
+    if (registration.repository_id !== undefined && repository === registration.repository_id && state && state !== registration.state_root) {
       throw new BridgeError("STATE_BINDING_CONFLICT", `Registration ${name} binds this repository to another state namespace`, {
         stage: "codex.config.binding", next_action: "Use the existing namespace; state migration requires an explicit coordinated cutover.",
       });
@@ -166,7 +187,7 @@ async function atomicWrite(path: string, contents: Buffer, mode: number, authori
 }
 const inspectionSchema = z.object({
   name: z.string(), enabled: z.boolean(), disabled_reason: z.string().nullable().optional(),
-  transport: z.object({ type: z.literal("stdio"), command: z.string(), args: z.array(z.string()), cwd: z.string(),
+  transport: z.object({ type: z.literal("stdio"), command: z.string(), args: z.array(z.string()), cwd: z.string().nullable().optional(),
     env: z.record(z.string(), z.string()).nullable().optional(), env_vars: z.array(z.string()).nullable().optional(),
   }).passthrough(),
   enabled_tools: z.array(z.string()), disabled_tools: z.array(z.string()).nullable().optional(),
@@ -179,7 +200,7 @@ export function verifyInspection(value: unknown, registration: CodexMcpRegistrat
   if (!parsed.success) throw new BridgeError("CODEX_INSPECTION_UNSUPPORTED", "Codex inspection did not return the supported complete stdio configuration representation");
   const actual = parsed.data;
   if (actual.name !== registration.server_name || !actual.enabled || actual.disabled_reason
-    || actual.transport.command !== registration.command || actual.transport.cwd !== registration.cwd
+    || actual.transport.command !== registration.command || (actual.transport.cwd ?? undefined) !== registration.cwd
     || !isDeepStrictEqual(actual.transport.args, registration.args)
     || !isDeepStrictEqual(actual.transport.env ?? {}, registration.env)
     || (actual.transport.env_vars?.length ?? 0) !== 0
@@ -193,7 +214,7 @@ export function verifyInspection(value: unknown, registration: CodexMcpRegistrat
 export async function verifyCodexMcpRegistration(registration: CodexMcpRegistration, configPath = defaultConfigPath()): Promise<StartupPolicyObservation> {
   validateServerName(registration.server_name);
   if (basename(configPath) !== "config.toml") throw new BridgeError("CODEX_CONFIG_PATH_UNSUPPORTED", "Codex inspection requires a config.toml inside its selected CODEX_HOME");
-  const output = await exec("codex", ["mcp", "get", registration.server_name, "--json"], { cwd: registration.project,
+  const output = await exec("codex", ["mcp", "get", registration.server_name, "--json"], { cwd: registration.project ?? process.cwd(),
     timeout: 30_000, maxBuffer: 262_144, env: { ...process.env, CODEX_HOME: dirname(configPath) } });
   let value: unknown;
   try { value = JSON.parse(output.stdout); }
