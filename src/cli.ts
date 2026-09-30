@@ -169,7 +169,7 @@ async function registration(intent: LaunchIntent | undefined, values: Values): P
     cwd: root, project: binding.project, profile: profilePath!, repository_id: binding.repositoryId,
   };
 }
-async function register(intent: LaunchIntent | undefined, values: Values): Promise<void> {
+async function register(intent: LaunchIntent | undefined, values: Values, probeCwd = intent?.project ?? process.cwd()): Promise<void> {
   if (values["verify-readiness"] && !values.yes) throw new BridgeError("READINESS_AUTHORITY_REQUIRED", "--verify-readiness requires --yes; preparation may import/reconcile state");
   const descriptor = await registration(intent, values);
   const { installCodexMcpRegistration } = await import("./codex/config.js");
@@ -179,7 +179,7 @@ async function register(intent: LaunchIntent | undefined, values: Values): Promi
     ...(values["adopt-unmanaged"] ? { adoptUnmanaged: true } : {}),
   });
   const { probeRegistration } = await import("./codex/probe.js");
-  const probe = await probeRegistration(descriptor, Boolean(values["verify-readiness"]), intent?.project ?? process.cwd());
+  const probe = await probeRegistration(descriptor, Boolean(values["verify-readiness"]), probeCwd);
   console.log(JSON.stringify({ ...installed, ...probe, configuration: { status: "passed", scope: "codex mcp get configuration inspection" },
     next_action: "After controlled shutdown of the old host, start a fresh Codex session and call this named server's passeur_status. Verify build identity and actual callable tools before preparation or delegation. Direct transport and saved startup policy do not prove host-to-model exposure." }, null, 2));
   if (probe.transport.status !== "passed" || (values["verify-readiness"] && probe.readiness.status !== "passed")) process.exitCode = 1;
@@ -207,7 +207,7 @@ async function setup(intent: LaunchIntent, values: Values): Promise<void> {
     const doInstall = values["install-codex"] || /^(y|yes)$/i.test(await ask("Install a named Codex registration now? [y/N]: "));
     if (doInstall) {
       const name = values["server-name"] ?? required(await ask("Codex server name (for example passeur_pumas): "), "server name");
-      await register(undefined, { ...values, "server-name": name });
+      await register(undefined, { ...values, "server-name": name }, binding.project);
     } else console.log(JSON.stringify({ profile: binding.profilePath, configuration: "not_installed", installed_workflow: "not_run" }));
   } finally { terminal.close(); }
 }
@@ -303,7 +303,7 @@ async function main(): Promise<void> {
     const { resolveRepositoryBinding } = await import("./core/repository-runtime.js");
     const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
     const profile = await saveProfile(required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME"), values);
-    if (values["install-codex"]) await register(undefined, values);
+    if (values["install-codex"]) await register(undefined, values, binding.project);
     else console.log(JSON.stringify({ profile: binding.profilePath, capacity: { workers: profile.execution.max_workers, queued: profile.execution.max_queued_tasks }, configuration: "not_installed", installed_workflow: "not_run" }, null, 2));
     return;
   }
