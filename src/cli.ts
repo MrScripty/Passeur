@@ -206,7 +206,7 @@ async function setup(intent: LaunchIntent, values: Values): Promise<void> {
       ...(worktrees ? { "worktree-root": worktrees } : {}) });
     const doInstall = values["install-codex"] || /^(y|yes)$/i.test(await ask("Install a named Codex registration now? [y/N]: "));
     if (doInstall) {
-      const name = values["server-name"] ?? required(await ask("Codex server name (for example passeur_pumas): "), "server name");
+      const name = values["server-name"] ?? required(await ask("Codex server name (for example passeur): "), "server name");
       const fixedBinding = values.profile !== undefined || values["expected-repository-id"] !== undefined;
       await register(fixedBinding ? intent : undefined, { ...values, "server-name": name }, binding.project);
     } else console.log(JSON.stringify({ profile: binding.profilePath, configuration: "not_installed", installed_workflow: "not_run" }));
