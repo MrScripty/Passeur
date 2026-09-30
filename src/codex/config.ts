@@ -116,8 +116,10 @@ export function mergeCodexMcpToml(source: string, registration: CodexMcpRegistra
   registration = { ...registration, required: resolveStartupRequirement(registration.required, object(prior) ? prior.required : undefined) };
   for (const [name, table] of Object.entries(tables)) {
     const repository = argument(table, "--expected-repository-id"), state = argument(table, "--state-root");
-    if (registration.repository_id !== undefined && repository === registration.repository_id && state && state !== registration.state_root) {
-      throw new BridgeError("STATE_BINDING_CONFLICT", `Registration ${name} binds this repository to another state namespace`, {
+    const conflictingPinnedRepository = registration.repository_id !== undefined && repository === registration.repository_id;
+    const conflictingDynamicNamespace = registration.repository_id === undefined && repository !== undefined;
+    if ((conflictingPinnedRepository || conflictingDynamicNamespace) && state && state !== registration.state_root) {
+      throw new BridgeError("STATE_BINDING_CONFLICT", `Registration ${name} binds a reachable Passeur repository to another state namespace`, {
         stage: "codex.config.binding", next_action: "Use the existing namespace; state migration requires an explicit coordinated cutover.",
       });
     }
