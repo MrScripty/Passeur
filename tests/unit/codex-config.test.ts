@@ -42,7 +42,7 @@ it("renders both diagnostics and safely encodes spaces and quotes", () => {
 });
 it("renders dynamic registration without a fixed repository or MCP working directory", () => {
   const r = dynamicRegistration();
-  const table = (TOML.parse(renderCodexMcpToml(r)).mcp_servers as TOML.TomlTable).passeur as TOML.TomlTable;
+  const table = (TOML.parse(renderCodexMcpToml(r)).mcp_servers as Record<string, unknown>).passeur as Record<string, unknown>;
   expect(table.cwd).toBeUndefined();
   expect(table.args).toEqual(r.args);
   expect((table.args as string[])).not.toContain("--project");
