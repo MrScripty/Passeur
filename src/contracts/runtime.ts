@@ -5,6 +5,8 @@ export const RuntimeFailureSchema = z.object({
   code: z.string().min(1).max(128), message: z.string().max(2048),
   stage: z.string().max(128).optional(), path: path.optional(),
   requested_profile_path: path.optional(), service_profile_path: path.optional(),
+  requested_profile_fingerprint: z.string().max(128).optional(), service_profile_fingerprint: z.string().max(128).optional(),
+  service_generation: z.string().uuid().optional(),
   native_code: z.string().max(64).optional(), next_action: z.string().max(1024).optional(),
 }).strict();
 export type RuntimeFailure = z.infer<typeof RuntimeFailureSchema>;

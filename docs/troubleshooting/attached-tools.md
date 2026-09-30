@@ -10,7 +10,7 @@ Start from the affected agent session and call `passeur_status`. First-call stat
 
 - Same repository ID and service generation means the sessions share a coordination domain. Different source views can still be linked worktrees.
 - Different repository IDs mean the frontends are independent.
-- Different profile paths or service generations indicate a profile/service mismatch for the same repository.
+- Different effective profile fingerprints indicate a semantic profile mismatch. Different profile paths alone show different configuration provenance and can still refer to the same effective profile.
 - Frontend and service build IDs identify whether the current connection uses compatible builds.
 
 The launch input is not the resolved repository. If the resolved source view is wrong, inspect only this registration and the host session's launch context for a fixed `cwd` or `--project`. The normal registration omits both, and moving to a different repository should not require changing the registration.
@@ -21,9 +21,9 @@ If the tool catalog is absent or still carries an old namespace, start a fresh h
 
 When the current frontend reports a dead or unavailable service, call `passeur_prepare` from the affected repository. Preparation joins an existing service or uses the repository-scoped election guard to start one; it does not infer or adopt another frontend's tasks. A stale descriptor is re-observed and reconciled by bootstrap. Do not manually remove descriptors, sockets or leases, start a competing service, or inspect another repository's service first.
 
-A profile conflict reports both the requested/resolved profile and the profile recorded by the elected service. Compatible same-repository frontends must resolve to the same approved profile. Changing a profile while its service is active requires the controlled service handover in [task lifecycle](../task-lifecycle.md). Joining the service never requires `passeur_attach`; attach remains a human-confirmed transfer of control over an existing task.
+A profile conflict reports the requested and service-owned effective fingerprints, their provenance paths and the service generation. An ordinary unpinned frontend joins an existing service without reproducing the path from which that service loaded its profile. Agent discovery reads the live service's catalog. An explicit profile request with the same effective fingerprint joins even when its path differs; a changed file at the same path or another effective configuration requires the controlled service handover in [task lifecycle](../task-lifecycle.md). For a qualified pre-upgrade service with no retained fingerprint, unpinned use remains supported and explicit profile comparison reports that identity is unavailable. Joining the service never requires `passeur_attach`; attach remains a human-confirmed transfer of control over an existing task.
 
-`PATH_NOT_FOUND` includes the stage and exact affected path. The default agent configuration is selected once for the installation. Existing canonical-repository and supported legacy profiles remain overrides; a new repository falls back to the installation default. Repair the path named by the error and retry the same frontend when preparation failed before admission.
+For a missing installation default, agent discovery returns `PROFILE_CONFIGURATION_REQUIRED` with the selected path and filesystem context when available. Explicit and repository override paths still report `PATH_NOT_FOUND` when absent. A registration-only upgrade migrates one unambiguous existing version-3 profile before publishing the unpinned global entry. If source profiles materially differ or contain an unsafe repository-specific implementation root, it preserves them and the prior registration and reports `PROFILE_DEFAULT_MIGRATION_REQUIRED`. Do not copy a profile between repositories or remove service state to work around the result.
 
 ## Retire old registrations safely
 

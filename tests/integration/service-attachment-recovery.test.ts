@@ -13,6 +13,8 @@ import { preparePaths, readDescriptor, existingOwner } from "../../src/service/b
 import { processIdentity } from "../../src/service/process.js";
 import { resolveRepositoryBinding } from "../../src/core/repository-runtime.js";
 import { runtimeIdentity } from "../../src/install/runtime.js";
+import { SERVICE_CONTRACT } from "../../src/contracts/service.js";
+import { decodeSharedProfile, effectiveProfileFingerprint } from "../../src/core/profile.js";
 
 it("re-elects the service when the discovered owner dies before attachment", async () => {
   const root = await mkdtemp(join(tmpdir(), "passeur-attachment-recovery-"));
@@ -21,13 +23,17 @@ it("re-elects the service when the discovered owner dies before attachment", asy
   const intent = { project, stateRoot: state, profilePath: profile };
   const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(10_000));
   const paths = await preparePaths(binding), identity = await runtimeIdentity(process.cwd());
+  const executionProfile = decodeSharedProfile({ schema_version: 3, execution: { implementation: { enabled: false } }, agents: [] });
+  await writeFile(profile, JSON.stringify(executionProfile), { mode: 0o600 });
   const owner = spawn("sleep", ["30"], { stdio: "ignore" });
   assert.ok(owner.pid);
   const ownerExited = once(owner, "exit").then(() => undefined);
   const fakeGeneration = randomUUID();
   await writeFile(paths.descriptor, JSON.stringify({ protocol: 1, generation: fakeGeneration,
     repository_id: binding.repositoryId, state_root: binding.stateRoot, profile_path: binding.profilePath,
-    endpoint: paths.endpoint, runtime: identity, process: await processIdentity(owner.pid), token: randomBytes(32).toString("hex") }), { mode: 0o600 });
+    endpoint: paths.endpoint, runtime: identity, service_contract: SERVICE_CONTRACT,
+    profile_fingerprint: effectiveProfileFingerprint(executionProfile),
+    process: await processIdentity(owner.pid), token: randomBytes(32).toString("hex") }), { mode: 0o600 });
 
   let closeFake: (() => void) | undefined;
   const fakeClosed = new Promise<void>(resolveClosed => { closeFake = resolveClosed; });

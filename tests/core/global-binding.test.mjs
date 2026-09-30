@@ -76,7 +76,7 @@ test('frontend captures launch environment and bounds missing-path diagnostics',
     assert.equal(observed.resolved.profile_path, defaultProfilePath(f.environment));
     assert.equal(observed.resolved.profile_source, 'global');
     await assert.rejects(frontend.agents(0, 16), error => {
-      const info = diagnosticInfo(error); assert.equal(info.code, 'PATH_NOT_FOUND');
+      const info = diagnosticInfo(error); assert.equal(info.code, 'PROFILE_CONFIGURATION_REQUIRED');
       assert.equal(info.path, defaultProfilePath(f.environment)); assert.equal(info.native_code, 'ENOENT'); return true;
     });
     assert.equal(frontend.status().binding.project_input, f.project);

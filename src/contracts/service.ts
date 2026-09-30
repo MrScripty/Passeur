@@ -5,13 +5,21 @@ import { SubmitRequestSchema, SubmitBatchSchema, TasksRequestSchema, WaitRequest
 import { AssignmentSchema, AgentCatalogRequestSchema, AgentCatalogSchema } from "./agents.js";
 import { ResultRequestSchema, FinalizeRequestSchema } from "./index.js";
 const absolute = z.string().min(1).max(4096).refine((s) => isAbsolute(s) && !s.includes("\0"));
+export const SERVICE_CONTRACT = "passeur-service-v2";
+export const ProfileFingerprintSchema = z.string().regex(/^sha256:v1:[a-f0-9]{64}$/);
+// Qualified against the clean installed artifact from source 6e61bd93e74686620f0cffc3e54bf00c8e5373f8.
+export const QUALIFIED_LEGACY_BUILD = "6a43daa6eec45ddceadea0ba2e2a623d7fc8e81e330237c7762a7f1c63c33f63";
 export const DescriptorSchema = z.object({ protocol: z.literal(1), generation: z.string().uuid(),
   repository_id: z.string().min(1).max(256), state_root: absolute, profile_path: absolute.optional(), endpoint: absolute,
+  service_contract: z.string().min(1).max(128).optional(), profile_fingerprint: ProfileFingerprintSchema.optional(),
   runtime: RuntimeIdentitySchema, process: z.object({ pid: z.number().int().positive(), boot_id: z.string().min(1).max(128), started: z.string().min(1).max(128) }).strict(),
   token: z.string().regex(/^[a-f0-9]{64}$/),
-}).strict();
+}).strict().refine(value => (value.service_contract === undefined) === (value.profile_fingerprint === undefined),
+  "Service contract and retained profile identity must be declared together");
 export type ServiceDescriptor = z.output<typeof DescriptorSchema>;
 export const ServiceStatusSchema = z.object({ schema_version: z.literal(1), generation: z.string().uuid(),
+  service_contract: z.string().min(1).max(128).optional(), profile_path: absolute.optional(),
+  profile_fingerprint: ProfileFingerprintSchema.optional(),
   clients: z.number().int().min(0).max(128), admission: z.enum(["open", "draining"]), repository: RuntimeStatusSchema,
 }).strict();
 export const FrontendStatusSchema = z.object({ schema_version: z.literal(2), frontend: RuntimeIdentitySchema,

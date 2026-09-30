@@ -5,7 +5,7 @@
 | Field | Value |
 | --- | --- |
 | Plan status | `Complete` |
-| Acceptance status | GAU-1–GAU-13 evidenced and the repair committed. Full-suite exceptions and qualification limits are recorded in [verification](reports/verification.md). |
+| Acceptance status | Historical repair committed. GAU-1, GAU-2, GAU-4 and GAU-11 are qualified for dynamic routing only; the reported pre-upgrade live-service case was not covered. The corrective acceptance is tracked in [the profile-upgrade plan](../global-passeur-profile-upgrade/plan.md). |
 | Current phase | Complete |
 | Exactly one next slice | None — the requested repair, qualification, review and commit are complete. |
 | Canonical plan path | `docs/plans/global-agent-repository-usability/plan.md` |
@@ -20,6 +20,8 @@
 | Execution ledger | [implementation and host evidence](reports/execution-ledger.md) |
 
 This plan owns repository-independent frontend routing and its observability. The shared-service plan continues to own service election, runtime/task/resource lifecycle and task-control security. This plan does not replace that authority or accept its blocked claims.
+
+**Follow-up qualification amendment (2026-09-30):** The original repair tests provisioned the installation default before starting global frontends. They proved per-frontend routing, same-repository service sharing, cross-repository separation and linked-worktree source views after configuration existed. They did not prove upgrade from an already-configured pinned registration with a live service, nor did they prove registration-only migration creates a valid installation profile. The user reproduced `PATH_NOT_FOUND` plus `SERVICE_PROFILE_CONFLICT` after the repair. Consequently GAU-1, GAU-2, GAU-4 and GAU-11 below are not unconditional upgrade/usability claims. The corrective qualification now supplies the missing evidence: a pre-upgrade pinned registration was migrated before host startup, a fresh host frontend joined the still-live prior-build service, and a concurrent host frontend prepared an unrelated repository through the same global registration. See the [profile-upgrade verification](../../global-passeur-profile-upgrade/reports/verification.md). The original GAU test evidence still describes only the cases it exercised and cannot stand alone as proof of arbitrary in-place upgrades.
 
 ## 1. Objective
 
@@ -62,17 +64,17 @@ Retain only compatibility needed by actual consumers: explicit CLI project/profi
 
 | ID | Observable criterion | Evidence required | State |
 | --- | --- | --- | --- |
-| GAU-1 | One unpinned global `passeur` registration resolves each launch independently, with no global repository affinity or lock. | Registration/config contract, concurrent process tests, and one-registration Codex host sessions | passed |
-| GAU-2 | A repository with no local profile uses the installation default; optional repository override and explicit CLI profile remain deterministic. | Profile precedence/setup tests, missing-path projection and provenance assertions | passed |
+| GAU-1 | One unpinned global `passeur` registration resolves each launch independently, with no global repository affinity or lock. | Registration/config contract, concurrent process tests, and one-registration Codex host sessions | qualified — routing only; pre-upgrade profile/service compatibility pending |
+| GAU-2 | A repository with no local profile uses the installation default; optional repository override and explicit CLI profile remain deterministic. | Profile precedence/setup tests, missing-path projection and provenance assertions | qualified — default was pre-provisioned; registration-only migration pending |
 | GAU-3 | Concurrent same-repository frontends attach to one service, retain distinct task ownership, and accepted work survives the submitting frontend. | Concurrent process election, distinct owner/control test, and service-owned completion after frontend shutdown | passed |
-| GAU-4 | Concurrent unrelated repositories have independent identity, profiles, stores and service elections; blocked activity in one does not block another. | Concurrent process integration and actual Codex sessions across two repository IDs/generations | passed |
+| GAU-4 | Concurrent unrelated repositories have independent identity, profiles, stores and service elections; blocked activity in one does not block another. | Concurrent process integration and actual Codex sessions across two repository IDs/generations | qualified — routing separation proved; upgrade into an unseen repository pending |
 | GAU-5 | Linked worktrees share canonical service identity but report and use their own source view. | Worktree binding/status tests and actual Codex host session | passed |
 | GAU-6 | Restart, stale descriptor, dead service, profile mismatch, missing path and old registration remnants have deterministic recovery or bounded actionable failures. | Bootstrap/attachment recovery tests, failure projections and safe exact-name cleanup docs | passed |
 | GAU-7 | Status distinguishes effective frontend binding from launch inputs and names connected service generation/build. | Versioned contract tests and live process/host status assertions | passed |
 | GAU-8 | Typed bounded diagnostics survive all connection and MCP boundaries; profile conflict reports both effective paths. | IPC/status/MCP/startup/readiness projection, redaction, UTF-8 bound and long-path tests | passed |
 | GAU-9 | Existing task-control authority and resource/lifecycle guarantees remain intact. | Separate frontend owner/control test and focused lifecycle/service regressions | passed |
 | GAU-10 | Documentation presents one global registration and removes routine named-registration repair guidance. | README, setup, skill and troubleshooting review; historical report clearly marked superseded | passed |
-| GAU-11 | Multiple simultaneous real Codex/agent host sessions use Passeur across two independent repositories without repository-specific registration. | Host version, exact one-entry configuration/command, four concurrent session bindings and service identities | passed |
+| GAU-11 | Multiple simultaneous real Codex/agent host sessions use Passeur across two independent repositories without repository-specific registration. | Host version, exact one-entry configuration/command, four concurrent session bindings and service identities | qualified — host routing proved with an existing default; fresh upgrade and unseen repository pending |
 | GAU-12 | An independent read-only GPT-6.1 Sol High architecture/lifecycle review finds no unresolved P0/P1 issue on the exact candidate. | Final report with 27-file candidate identity and disposition | passed |
 | GAU-13 | The reviewed repair is committed through ordinary hooks. | Repair commit `e5d599e`; staged diff passed `git diff --cached --check`; unrelated files remained unstaged | passed |
 

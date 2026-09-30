@@ -1,0 +1,34 @@
+# Execution ledger
+
+## Admission and design
+
+- `start`: the user authorized reproduction, architecture repair, tests, documentation, real-host qualification, independent review and an ordinary commit.
+- The exact pre-change error pair was reproduced with a live prior-build repository service and no installation default; details are in [baseline](baseline.md).
+- GPT-6.1 Sol High completed the composed-design review read-only. The adopted decisions and ownership boundaries are in [composed-design review](composed-design-review.md).
+- The active Passeur MCP `passeur_agents` call returned `PROFILE_MIGRATION_REQUIRED`; no work was submitted through that unavailable route. GPT-6.1 Sol Medium was used as the implementation fallback, as authorized by the user.
+- Coding-Standards was used through supported application interface 45. Catalog digest: `sha256:8235cb21f7d1937be1a003eb2eef570345242194dac36d79463b16e26bb6d65d`. Core, Router and applicable canonical modules were available and read; no module was unavailable.
+
+## Contributor handoffs
+
+| Slice | Contributor | Objective and write set | Result and evidence |
+| --- | --- | --- | --- |
+| M1 — immutable profile snapshot | GPT-6.1 Sol Medium | `src/core/profile.ts`, `src/core/repository-runtime.ts`, `tests/core/profile-snapshot.test.mjs` | Complete. One detached, deeply frozen v3 configuration snapshot feeds catalog and execution. `sha256:v1:` fingerprints exclude paths and include effective policy and registry values. Load is configuration-only; failed loads retry. Six snapshot tests passed. |
+| M2 — service attachment/catalog | GPT-6.1 Sol Medium | Runtime/service contracts, client/server transport and peer auth, `src/core/errors.ts`, service tests | Complete. Unpinned clients join a valid service without opening candidate profiles; service catalog is authoritative. Explicit intent compares fingerprints. Exact prior-build legacy handshake is qualified; principals stay independent. Nine identity tests and focused attachment/IPC checks passed. |
+| M3 — registration/profile migration | GPT-6.1 Sol Medium | `src/codex/config.ts`, new `src/codex/profile-migration.ts`, `tests/unit/codex-profile-migration.test.ts` | Complete. Migration is bounded, writer-lease guarded, create-only/durable, and precedes TOML publication. One unambiguous effective profile may migrate; ambiguity or repository-specific worktree roots refuse without changing the old registration. A synthetic child-CLI/Codex-inspection probe was discarded after it failed in its fake inspection chain. A later isolated `register-codex` CLI run with the actual Codex `mcp get` inspector and direct MCP transport passed, without a precreated default. The independent review found an initially absent pinned-path race; migration now records and rechecks absence before publication. The new regression refuses a materially different late profile and confirms no default/temp file remains. Forty-one migration/config tests passed after the repair. |
+| M4 — integration/acceptance | Lead | `tests/integration/profile-upgrade.test.ts`, corrected `tests/integration/service-attachment-recovery.test.ts`, this plan and reports | Complete. An actual installed prior build serves a task accepted under its own principal; its frontend process exits; registration migration runs without a precreated default; a fresh frontend attaches to the live old service; an unrelated repo starts its own current service; another principal cannot control the old task. The task remains active until its owner explicitly cancels it. |
+| V1 — independent review/commit | GPT-6.1 Sol High reviewer (read-only); lead integrates | Exact candidate, verification and report files | Review approved. Initial review found one P2 absence-revalidation race; the lead repaired it and reran focused migration and upgrade suites. Bounded re-review approved manifest `9bac760e51425faffbf6fb9ffe1e33ee0077e7c6c1c5f84b0e1e455f82ed6c4a`; no remaining P0/P1/P2 findings. Reviewer confirmed the manifest matched the worktree and remained read-only; tests were not rerun by the reviewer. The ordinary commit is the remaining operation. |
+
+## Real-host evidence
+
+Codex CLI `0.159.2` ran two simultaneous `codex exec --ephemeral --json` sessions through one unpinned `passeur` registration supplied by invocation-only overrides. A disposable pre-upgrade pinned Codex entry was migrated by `installCodexMcpRegistration`; the test did not create `default-profile.json` itself. Separately, `register-codex` was run end-to-end against the actual Codex `mcp get` inspection and local MCP transport; it created the default and reported both configuration and transport `passed`. The legacy service remained live while the new host frontend attached. No personal Codex configuration or authentication was changed.
+
+- Existing pre-upgrade repo `8eab452df5547ae5c1ce322c`: `passeur_agents(offset=0, limit=4)` and then `passeur_status` returned `connected`, prior installed build `6a43daa6eec45ddceadea0ba2e2a623d7fc8e81e330237c7762a7f1c63c33f63`, generation `da2262cb-0838-4878-8f3e-7f5e2e7f1c1e`.
+- Previously unseen repo `59998e0c612bec844c8125ee`: `passeur_prepare`, agent listing and status succeeded; coordination was `ready` with authority `held`, connected to current development build `development-unidentified`, generation `10fdf65a-3ca5-46f6-b266-0033d0138278`.
+- Both catalogues correctly contained zero agents because the migrated fixture profile deliberately had an empty registry. This qualification tests host exposure, registration migration, attachment, repository separation and preparation; it does not test provider inference.
+- The first host attempt used an invalid agent-list limit and was rerun with the documented maximum of four. The second run is the qualifying evidence.
+
+## Verification and limitations
+
+Exact command results are in [verification](verification.md). The full repository core command did not complete: numerous unrelated Codex/native/coordinator tests failed in this environment, and a later run stalled on `peer-delivery-completion-restart`; it was stopped. Focused changed-path core tests passed 29/29; after the review repair, focused migration/config tests passed 41/41 and upgrade/recovery/migration integrations passed 22/22. This ledger makes no full-suite pass claim.
+
+Preserved invariants: repository-scoped election/state, canonical repository and worktree semantics, service-owned accepted work, independent task-control principals, explicit human-confirmed task adoption, bounded diagnostics and no cross-repository profile fallback. No unrelated untracked paths were edited or staged.

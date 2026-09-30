@@ -1,6 +1,8 @@
 import { createConnection } from "node:net";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { SERVICE_CONTRACT, QUALIFIED_LEGACY_BUILD } from "../contracts/service.js";
+import { effectiveProfileFingerprint, loadSharedProfile } from "../core/profile.js";
 import type { Operation, Response, ServiceDescriptor, FrontendStatus } from "../contracts/service.js";
 import { RepositoryRuntime, resolveRepositoryBinding, type LaunchIntent, type ResolvedBinding } from "../core/repository-runtime.js";
 import type { RuntimeIdentity } from "../contracts/runtime.js";
@@ -12,6 +14,15 @@ import type { LaunchReservation } from "./bootstrap.js";
 import { decodeCoordinationRequest, decodeCoordinationReply, type CoordinationReply } from "../contracts/coordination-service.js";
 import { assertRequestCapacity, serviceRequestLane, type RequestLane } from "./request-capacity.js";
 
+function assertServiceContract(descriptor: ServiceDescriptor): void {
+  if (descriptor.service_contract === undefined && (descriptor.runtime.mode !== "installed" || descriptor.runtime.build_id !== QUALIFIED_LEGACY_BUILD)) {
+    throw new BridgeError("SERVICE_BUILD_CONFLICT", "Legacy handshake requires the qualified prior installed service build");
+  }
+  if (descriptor.service_contract !== undefined && descriptor.service_contract !== SERVICE_CONTRACT) {
+    throw new BridgeError("SERVICE_CONTRACT_CONFLICT", "The service contract is unsupported");
+  }
+}
+
 type Pending = { lane: RequestLane; accept: (value: unknown) => void; reject: (error: unknown) => void };
 export class ServiceClient {
   readonly #pending = new Map<string, Pending>();
@@ -22,10 +33,13 @@ export class ServiceClient {
   #clientId: string | undefined;
   readonly #parentId: string;
   readonly #repositoryId: string;
-  constructor(readonly descriptor: ServiceDescriptor, binding: ResolvedBinding, ownerToken: string) {
+  constructor(readonly descriptor: ServiceDescriptor, binding: ResolvedBinding, ownerToken: string, requestedFingerprint?: string) {
+    assertServiceContract(descriptor);
     const hello = decodeFrame({ kind: "hello", protocol: 1, token: descriptor.token, owner_token: ownerToken,
       repository_id: binding.repositoryId, state_root: binding.stateRoot, source_view: binding.project,
-      ...(binding.profilePath ? { profile_path: binding.profilePath } : {}) });
+      ...(descriptor.service_contract === undefined
+        ? descriptor.profile_path ? { profile_path: descriptor.profile_path } : {}
+        : { service_contract: SERVICE_CONTRACT, ...(requestedFingerprint ? { profile_fingerprint: requestedFingerprint } : {}) }) });
     this.descriptor = Object.freeze({ ...descriptor });
     this.#parentId = createHash("sha256").update(ownerToken).digest("hex");
     this.#repositoryId = binding.repositoryId;
@@ -101,10 +115,13 @@ export class ServiceClient {
   }
   close(): void { this.connection.close(); }
 }
-function serviceProfileConflict(binding: ResolvedBinding, descriptor: ServiceDescriptor): BridgeError {
+function serviceProfileConflict(binding: ResolvedBinding, descriptor: ServiceDescriptor, requestedFingerprint?: string): BridgeError {
   return new BridgeError("SERVICE_PROFILE_CONFLICT",
     "The requested profile differs from the elected service profile", {
-      stage: "service.profile", ...(binding.profilePath ? { path: binding.profilePath } : {}),
+      stage: "service.profile", service_generation: descriptor.generation,
+      ...(requestedFingerprint ? { requested_profile_fingerprint: requestedFingerprint } : {}),
+      ...(descriptor.profile_fingerprint ? { service_profile_fingerprint: descriptor.profile_fingerprint } : {}),
+      ...(binding.profilePath ? { path: binding.profilePath } : {}),
       ...(binding.profilePath ? { requested_profile_path: binding.profilePath } : {}),
       ...(descriptor.profile_path ? { service_profile_path: descriptor.profile_path } : {}),
       next_action: "Use the elected service's approved profile or drain it explicitly before a controlled profile change.",
@@ -116,7 +133,8 @@ export class PasseurFrontend {
   readonly #lifetime = new AbortController();
   readonly #history: RepositoryRuntime;
   #client: ServiceClient | undefined;
-  #connecting: Promise<ServiceClient> | undefined;
+  #connecting: Promise<ServiceClient | undefined> | undefined;
+  #discovering: Promise<ServiceClient | undefined> | undefined;
   #binding: ResolvedBinding | undefined;
   #lastStatus: Response<"status"> | undefined;
   #failure: ErrorInfo | undefined;
@@ -159,10 +177,24 @@ export class PasseurFrontend {
     }
     return this.status();
   }
-  async #connect(): Promise<ServiceClient> {
+  #prospectiveFailure(error: unknown): unknown {
+    if (!this.intent.profilePath && this.#binding?.profileSource === "global" && error instanceof BridgeError && error.code === "PATH_NOT_FOUND") {
+      return new BridgeError("PROFILE_CONFIGURATION_REQUIRED", "No installation profile is configured for a new repository service", {
+        ...error.context, cause: error,
+        next_action: "Configure the installation default or migrate one unambiguous existing profile before starting a service.",
+      });
+    }
+    return error;
+  }
+  async #candidateSnapshot(): Promise<void> {
+    try { await this.#history.profileSnapshot(); }
+    catch (error) { throw this.#prospectiveFailure(error); }
+  }
+  async #connect(mode: "prepare" | "discover" = "prepare"): Promise<ServiceClient | undefined> {
     this.#lifetime.signal.throwIfAborted();
     if (this.#client && !this.#client.connection.isClosed) return this.#client;
-    if (this.#connecting) return this.#connecting;
+    const inFlight = mode === "prepare" ? this.#connecting : this.#discovering;
+    if (inFlight) return inFlight;
     const attempt = (async () => {
       let reservation: LaunchReservation | undefined;
       const budget = AbortSignal.timeout(10_000), signal = AbortSignal.any([budget, this.#lifetime.signal]);
@@ -179,8 +211,13 @@ export class PasseurFrontend {
           }
         }
         const live = descriptor ? await existingOwner(descriptor) : false;
-        if (live && descriptor?.profile_path !== binding.profilePath) throw serviceProfileConflict(binding, descriptor!);
-        if (!live) reservation = await launchService(binding, this.exactCli, this.#environment);
+        if (!live) {
+          if (mode === "discover") return this.#client && !this.#client.connection.isClosed ? this.#client : undefined;
+          // Validate prospective configuration before election. The service publishes
+          // only its own retained snapshot, never this candidate's identity.
+          await this.#candidateSnapshot();
+          reservation = await launchService(binding, this.exactCli, this.#environment);
+        }
         while (true) {
           signal.throwIfAborted();
           let candidate: ServiceClient | undefined;
@@ -188,14 +225,30 @@ export class PasseurFrontend {
           try {
             descriptor = await readDescriptor(binding);
             if (descriptor && await existingOwner(descriptor)) {
-              if (descriptor.profile_path !== binding.profilePath) throw serviceProfileConflict(binding, descriptor);
-              if (descriptor.runtime.build_id !== this.identity.build_id) throw new BridgeError("SERVICE_BUILD_CONFLICT", "The running service uses another build; drain it explicitly before a controlled upgrade");
-              candidate = new ServiceClient(descriptor, binding, this.#ownerToken);
+              const legacy = descriptor.service_contract === undefined;
+              assertServiceContract(descriptor);
+              if (!legacy && descriptor.runtime.build_id !== this.identity.build_id) throw new BridgeError("SERVICE_BUILD_CONFLICT",
+                "The running service build is outside the qualified compatibility window; preserve it for controlled handover");
+              let requestedFingerprint: string | undefined;
+              if (this.intent.profilePath) {
+                if (!descriptor.profile_fingerprint) throw new BridgeError("SERVICE_PROFILE_IDENTITY_UNAVAILABLE",
+                  "The running legacy service has no retained profile identity for an explicit compatibility check", {
+                    stage: "service.profile", requested_profile_path: binding.profilePath,
+                    service_profile_path: descriptor.profile_path, service_generation: descriptor.generation,
+                    next_action: "Use an unpinned connection or arrange a controlled service handover.",
+                  });
+                requestedFingerprint = effectiveProfileFingerprint(await loadSharedProfile(binding.profilePath!));
+                if (requestedFingerprint !== descriptor.profile_fingerprint) throw serviceProfileConflict(binding, descriptor, requestedFingerprint);
+              }
+              candidate = new ServiceClient(descriptor, binding, this.#ownerToken, requestedFingerprint);
               await withAbort(candidate.ready, signal);
               // This read-only probe may be retried if the service dies before
               // the frontend has attached. Mutating requests begin only after
               // this method returns a connected client.
               const status = await candidate.call("status", {}, signal, () => { dispatched = true; });
+              if (this.#client && !this.#client.connection.isClosed) {
+                candidate.close(); return this.#client;
+              }
               this.#lastStatus = status; this.#failure = undefined; this.#client = candidate;
               return candidate;
             }
@@ -209,6 +262,8 @@ export class PasseurFrontend {
           // the flock reservation prevents competing frontends from creating
           // another service generation.
           if (!reservation && (!descriptor || !(await existingOwner(descriptor)))) {
+            if (mode === "discover") return this.#client && !this.#client.connection.isClosed ? this.#client : undefined;
+            await this.#candidateSnapshot();
             reservation = await launchService(binding, this.exactCli, this.#environment);
           }
           if (reservation) await Promise.race([delay(25, undefined, { signal }), reservation.failure]);
@@ -219,13 +274,17 @@ export class PasseurFrontend {
         this.#lastStatus = undefined; this.#failure = info; throw new BridgeError(info.code, info.message, info);
       } finally { reservation?.released(); }
     })();
-    this.#connecting = attempt;
-    void attempt.then(() => { if (this.#connecting === attempt) this.#connecting = undefined; }, () => { if (this.#connecting === attempt) this.#connecting = undefined; });
+    if (mode === "prepare") this.#connecting = attempt; else this.#discovering = attempt;
+    const clear = () => {
+      if (mode === "prepare" && this.#connecting === attempt) this.#connecting = undefined;
+      if (mode === "discover" && this.#discovering === attempt) this.#discovering = undefined;
+    };
+    void attempt.then(clear, clear);
     return attempt;
   }
   async call<K extends Operation>(operation: K, args: unknown, signal?: AbortSignal): Promise<Response<K>> {
     const client = await withAbort(this.#connect(), signal);
-    const result = await client.call(operation, args, signal);
+    const result = await client!.call(operation, args, signal);
     if (operation === "status" || operation === "prepare") {
       this.#lastStatus = result as Response<"status">;
       this.#failure = undefined;
@@ -236,11 +295,14 @@ export class PasseurFrontend {
     signal?.throwIfAborted();
     const request = decodeCoordinationRequest(raw);
     const client = await withAbort(this.#connect(), signal);
-    return client.coordinate(request, signal);
+    return client!.coordinate(request, signal);
   }
   async agents(offset: number, limit: number, signal?: AbortSignal) {
-    if (this.#client && !this.#client.connection.isClosed) return this.#client.call("agents", { offset, limit }, signal);
-    return this.#history.agents(offset, limit);
+    const client = await withAbort(this.#connect("discover"), signal);
+    if (client) return client.call("agents", { offset, limit }, signal);
+    signal?.throwIfAborted();
+    try { return await this.#history.agents(offset, limit); }
+    catch (error) { throw this.#prospectiveFailure(error); }
   }
   async retained(request: ResultRequest) {
     const { textChunk } = await import("../core/result.js");
@@ -254,7 +316,7 @@ export class PasseurFrontend {
   async shutdown(): Promise<void> {
     this.#lifetime.abort(new BridgeError("FRONTEND_CLOSED", "The front end detached"));
     this.#client?.close();
-    if (this.#connecting) await this.#connecting.catch(() => undefined);
+    await Promise.allSettled([this.#connecting, this.#discovering].filter(Boolean));
     this.#client?.close(); await this.#history.shutdown();
   }
 }

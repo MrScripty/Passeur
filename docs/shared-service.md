@@ -6,7 +6,7 @@
 
 The same repository (including linked worktrees) and state namespace uses one service. Clients must agree on the operator-selected profile meaning and installed build/protocol. A mismatch is a diagnostic, never permission to kill another owner, choose a different state root or alter active configuration. The task captures its actual client source view; starting from a different worktree does not silently redirect reviews.
 
-Front-end MCP discovery and status require neither service startup nor a provider. Status version 2 distinguishes front-end identity from a connected service's build/generation. Preparation and submit may start/attach lazily. Profile failures can be repaired before successful composition; the admitted service profile is fixed until controlled restart.
+Front-end MCP discovery and status require neither service startup nor a provider. Status version 2 distinguishes front-end identity from a connected service's build/generation and reports frontend profile provenance separately from service-owned profile identity. A service generation retains one immutable decoded execution-profile snapshot and fingerprint. Unpinned frontends join a valid service without opening candidate profiles, and agent discovery uses that service's catalog. Explicit profile requests compare effective fingerprints; pathname equality does not define compatibility. The admitted snapshot remains fixed for the generation until controlled restart.
 
 ## Election and IPC
 

@@ -11,16 +11,23 @@ import { preparePaths } from '../../.passeur-core/src/service/bootstrap.js';
 import { processIdentity } from '../../.passeur-core/src/service/process.js';
 import { IpcConnection } from '../../.passeur-core/src/service/transport.js';
 import { diagnosticInfo } from '../../.passeur-core/src/core/errors.js';
+import { SERVICE_CONTRACT } from '../../.passeur-core/src/contracts/service.js';
+import { decodeSharedProfile, effectiveProfileFingerprint } from '../../.passeur-core/src/core/profile.js';
 
 async function attachmentFixture(t, profilePath) {
   const f = await serviceFixture(t);
   const identity = { package_version: 'fixture', build_id: 'fixture', mode: 'development',
     node_version: process.version, node_executable: process.execPath, pid: process.pid, started_at: new Date().toISOString() };
-  const intent = { project: f.root, stateRoot: f.state, profilePath: profilePath ?? `${f.temp}/profile.json` };
+  const selectedProfile = { schema_version: 3, execution: { implementation: { enabled: false } }, agents: [] };
+  const selectedPath = profilePath ?? `${f.temp}/profile.json`;
+  if (selectedPath.length < 2000) await writeFile(selectedPath, JSON.stringify(selectedProfile));
+  const profileFingerprint = effectiveProfileFingerprint(decodeSharedProfile(selectedProfile));
+  const intent = { project: f.root, stateRoot: f.state, profilePath: selectedPath };
   const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
   const paths = await preparePaths(binding), generation = randomUUID();
   const descriptor = { protocol: 1, generation, repository_id: binding.repositoryId, state_root: binding.stateRoot,
-    profile_path: binding.profilePath, endpoint: paths.endpoint, token: randomBytes(32).toString('hex'),
+    profile_path: binding.profilePath, service_contract: SERVICE_CONTRACT, profile_fingerprint: profileFingerprint,
+    endpoint: paths.endpoint, token: randomBytes(32).toString('hex'),
     runtime: identity, process: await processIdentity() };
   const publish = async value => writeFile(paths.descriptor, JSON.stringify(value), { mode: 0o600 });
   const frontend = new PasseurFrontend(intent, identity, '/unused-cli');
@@ -110,40 +117,19 @@ test('a transient status failure clears after a later successful observation', a
   assert.equal(requests, 4);
 });
 
-test('build and profile conflicts are terminal and recorded in frontend status', async t => {
-  for (const field of ['build', 'profile']) {
+test('build and service-contract conflicts are terminal and recorded in frontend status', async t => {
+  for (const field of ['build', 'contract']) {
     await t.test(field, async t => {
       const f = await attachmentFixture(t);
       await f.publish(field === 'build'
         ? { ...f.descriptor, runtime: { ...f.identity, build_id: 'other' } }
-        : { ...f.descriptor, profile_path: `${f.temp}/other-profile.json` });
-      const code = field === 'build' ? 'SERVICE_BUILD_CONFLICT' : 'SERVICE_PROFILE_CONFLICT';
+        : { ...f.descriptor, service_contract: 'unsupported-service-contract' });
+      const code = field === 'build' ? 'SERVICE_BUILD_CONFLICT' : 'SERVICE_CONTRACT_CONFLICT';
       await assert.rejects(f.frontend.call('status', {}), { code });
       assert.deepEqual(f.frontend.status().service, { state: 'unavailable', code,
-        message: f.frontend.status().service.message, ...(field === 'profile' ? {
-          stage: 'service.profile', path: f.intent.profilePath,
-          requested_profile_path: f.intent.profilePath,
-          service_profile_path: `${f.temp}/other-profile.json`,
-          next_action: "Use the elected service's approved profile or drain it explicitly before a controlled profile change.",
-        } : {}) });
+        message: f.frontend.status().service.message });
     });
   }
-});
-
-test('profile conflict retains both maximum-relevant paths beyond message bounds', async t => {
-  const requestedPath = `/tmp/${'r'.repeat(2300)}`, serviceProfile = `/tmp/${'s'.repeat(2300)}`;
-  const f = await attachmentFixture(t, requestedPath);
-  await f.publish({ ...f.descriptor, profile_path: serviceProfile });
-  await assert.rejects(f.frontend.call('status', {}), error => {
-    const detail = diagnosticInfo(error);
-    assert.equal(detail.code, 'SERVICE_PROFILE_CONFLICT');
-    assert.equal(detail.message.length < 2048, true);
-    assert.equal(detail.path, requestedPath);
-    assert.equal(detail.requested_profile_path, requestedPath);
-    assert.equal(detail.service_profile_path, serviceProfile);
-    assert.deepEqual(f.frontend.status().service, { state: 'unavailable', ...detail });
-    return true;
-  });
 });
 
 test('a stale welcome generation is terminal before any request is dispatched', async t => {

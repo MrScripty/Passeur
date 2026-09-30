@@ -4,7 +4,7 @@ import { lstat, unlink, chmod } from "node:fs/promises";
 import type { RepositoryRuntime, ResolvedBinding } from "../core/repository-runtime.js";
 import type { RuntimeIdentity } from "../contracts/runtime.js";
 import type { ResultRequest } from "../contracts/types.js";
-import { DescriptorSchema, operationSchemas, responseSchemas, type Arguments, type Operation } from "../contracts/service.js";
+import { SERVICE_CONTRACT, DescriptorSchema, operationSchemas, responseSchemas, type Arguments, type Operation } from "../contracts/service.js";
 import { BridgeError, diagnosticInfo, nativeCode, safeText, type ErrorInfo } from "../core/errors.js";
 import { atomicJson } from "../store/task-store.js";
 import { authenticateServicePeer } from "./peer-auth.js";
@@ -24,6 +24,10 @@ const finalizedErrorValue = (error: ErrorInfo) => ({ code: safeText(error.code, 
   message: safeText(error.message || "Service operation failed", 2048) });
 /** The elected process owns the runtime. Connection actors own no worker lifetime. */
 export async function runRepositoryService(runtime: RepositoryRuntime, binding: ResolvedBinding, identity: RuntimeIdentity, bootstrapInput: NodeJS.ReadableStream = process.stdin): Promise<void> {
+  const snapshot = await runtime.profileSnapshot();
+  const peerBinding = { ...binding, profileFingerprint: snapshot.fingerprint };
+  const profileIdentity = { service_contract: SERVICE_CONTRACT, profile_fingerprint: snapshot.fingerprint,
+    ...(snapshot.profilePath ? { profile_path: snapshot.profilePath } : {}) };
   const paths = await preparePaths(binding); await assertElectionGuard(paths.guard);
   const generation = randomUUID(), token = randomBytes(32).toString("hex");
   const peers = new Set<Peer>(), pending = new Set<Promise<unknown>>();
@@ -33,7 +37,7 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
   ended.catch(() => undefined);
   let stopPromise: Promise<void> | undefined;
   let socketIdentity: { dev: number; ino: number } | undefined;
-  const status = () => ({ schema_version: 1 as const, generation, clients: [...peers].filter((p) => p.actor).length,
+  const status = () => ({ schema_version: 1 as const, generation, ...profileIdentity, clients: [...peers].filter((p) => p.actor).length,
     admission: draining ? "draining" as const : "open" as const, repository: runtime.status() });
   const track = <T>(work: Promise<T>): Promise<T> => {
     pending.add(work); epoch++;
@@ -171,7 +175,7 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
       if (frame.kind === "hello") {
         if (peer.actor || peer.authenticating) throw new BridgeError("SERVICE_HANDSHAKE_INVALID", "Duplicate handshake");
         peer.authenticating = true;
-        const authenticated = await authenticateServicePeer(frame, binding, token);
+        const authenticated = await authenticateServicePeer(frame, peerBinding, token);
         if (connection.isClosed) return;
         peer.source = authenticated.source_view; peer.actor = authenticated.actor;
         clearTimeout(handshakeTimer);
@@ -237,7 +241,7 @@ export async function runRepositoryService(runtime: RepositoryRuntime, binding: 
     await chmod(paths.endpoint, 0o600);
     const info = await lstat(paths.endpoint); socketIdentity = { dev: info.dev, ino: info.ino };
     const descriptor = DescriptorSchema.parse({ protocol: 1, generation, repository_id: binding.repositoryId, state_root: binding.stateRoot,
-      ...(binding.profilePath ? { profile_path: binding.profilePath } : {}), endpoint: paths.endpoint, runtime: identity, process: await processIdentity(), token });
+      ...profileIdentity, endpoint: paths.endpoint, runtime: identity, process: await processIdentity(), token });
     await atomicJson(paths.descriptor, descriptor, () => {});
     published = true;
     if (draining) beginStop();

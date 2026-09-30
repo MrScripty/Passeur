@@ -8,6 +8,7 @@ import { chmod, lstat, mkdir, open, readFile, rename, unlink, writeFile } from "
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
 import { inspectStartupRequirement, resolveStartupRequirement, type StartupPolicyEvidence, type StartupPolicyObservation } from "./startup-policy.js";
+import { ensureInstallationDefaultProfile } from "./profile-migration.js";
 
 const exec = promisify(execFile);
 export const CODEX_ENABLED_TOOLS = ["passeur_status", "passeur_prepare", "passeur_agents", "passeur_submit", "passeur_submit_coordinated", "passeur_announce", "passeur_announcement", "passeur_withdraw_announcement", "passeur_preflight", "passeur_submit_batch", "passeur_tasks", "passeur_wait", "passeur_cancel", "passeur_attach", "passeur_input", "passeur_result", "passeur_structural_report", "passeur_structural_detail", "passeur_structural_refresh", "passeur_structural_observation_status", "passeur_structural_notice_pull", "passeur_structural_notice_ack", "passeur_structural_current", "passeur_structural_artifact_report", "passeur_structural_artifact_detail", "passeur_finalize", "passeur_delegate", "passeur_delegate_batch", "delegate_to_muse", "delegate_to_muse_batch", "muse_result", "muse_finalize", ...COORDINATION_TOOL_NAMES] as const;
@@ -124,6 +125,27 @@ function sameBinding(table: unknown, registration: CodexMcpRegistration): boolea
   }
   return launch.project === registration.project && launch.profile === registration.profile
     && launch.repository === registration.repository_id;
+}
+/** A marker alone is insufficient: its parsed table must exclusively match the actual document. */
+export function managedPinnedProfileSources(source: string): string[] {
+  const tables = servers(document(source)), paths: string[] = [];
+  for (const [name, table] of Object.entries(tables)) {
+    if (!/^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/.test(name)) continue;
+    const launch = tableLaunchBinding(table);
+    if (!launch?.profile || !launch.project || !launch.repository || !launch.state
+      || !object(table) || typeof table.command !== "string" || !isAbsolute(table.command)
+      || !Array.isArray(table.args) || typeof table.args[0] !== "string" || !isAbsolute(table.args[0])
+      || [launch.profile, launch.project, launch.state].some((path) => !isAbsolute(path) || path.includes("\0"))) continue;
+    const starts = [...source.matchAll(new RegExp(`^# passeur:begin ${name}\\r?$`, "gm"))];
+    const ends = [...source.matchAll(new RegExp(`^# passeur:end ${name}\\r?$`, "gm"))];
+    if (starts.length !== 1 || ends.length !== 1 || starts[0]!.index! >= ends[0]!.index!) continue;
+    try {
+      const owned = document(source.slice(starts[0]!.index!, ends[0]!.index! + ends[0]![0].length));
+      if (Object.keys(owned).length === 1 && Object.keys(servers(owned)).length === 1
+        && sameToml(servers(owned)[name], table)) paths.push(launch.profile);
+    } catch { /* Unverified marker text cannot authorize a profile source. */ }
+  }
+  return paths;
 }
 export function registrationFingerprint(table: unknown): string {
   if (!object(table)) throw new BridgeError("REGISTRATION_INVALID", "Existing server binding must be a TOML table");
@@ -266,11 +288,21 @@ export async function installCodexMcpRegistration(registration: CodexMcpRegistra
     const selected = servers(document(updated.toString("utf8")))[registration.server_name];
     if (!object(selected)) throw new BridgeError("CODEX_CONFIG_INVALID", "Selected registration is missing after merge");
     const resolved = { ...registration, required: resolveStartupRequirement(undefined, selected.required) };
+    const validateDefault = registration.profile === undefined
+      ? await ensureInstallationDefaultProfile({ pinnedProfiles: managedPinnedProfileSources(original?.toString("utf8") ?? ""), authority,
+        validateInputs: async () => {
+          authority();
+          if (!isDeepStrictEqual(await readOptional(configPath), original)) throw new BridgeError("CONFIG_CHANGED_CONCURRENTLY", "Codex config changed during profile migration");
+        },
+      })
+      : async () => {};
     const verify = options.verify ?? (() => verifyCodexMcpRegistration(resolved, configPath));
     const verifyPublished = async (): Promise<StartupPolicyEvidence> => {
       authority();
+      await validateDefault();
       const inspection = await verify();
       authority();
+      await validateDefault();
       if (!(await readOptional(configPath))?.equals(updated)) {
         throw new BridgeError("CONFIG_CHANGED_CONCURRENTLY", "Codex config changed during verification; preserve it and inspect the effective configuration");
       }
@@ -282,6 +314,7 @@ export async function installCodexMcpRegistration(registration: CodexMcpRegistra
     }
     const current = await readOptional(configPath);
     if (!isDeepStrictEqual(current, original)) throw new BridgeError("CONFIG_CHANGED_CONCURRENTLY", "Codex config changed before publication");
+    await validateDefault();
     const mode = original ? (await lstat(configPath)).mode & 0o777 : 0o600;
     const backupPath = original ? `${configPath}.passeur-${randomUUID()}.bak` : undefined;
     if (original && backupPath) { authority(); await writeFile(backupPath, original, { mode, flag: "wx" }); }

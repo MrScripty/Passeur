@@ -5,6 +5,9 @@ export type FailureContext = {
   path?: string | undefined;
   requested_profile_path?: string | undefined;
   service_profile_path?: string | undefined;
+  requested_profile_fingerprint?: string | undefined;
+  service_profile_fingerprint?: string | undefined;
+  service_generation?: string | undefined;
   native_code?: string | undefined;
   next_action?: string | undefined;
 };
@@ -45,6 +48,9 @@ export function diagnosticInfo(error: unknown): ErrorInfo {
     ...(context.path ? { path: safeText(context.path, 4096) } : {}),
     ...(context.requested_profile_path ? { requested_profile_path: safeText(context.requested_profile_path, 4096) } : {}),
     ...(context.service_profile_path ? { service_profile_path: safeText(context.service_profile_path, 4096) } : {}),
+    ...(context.requested_profile_fingerprint ? { requested_profile_fingerprint: safeText(context.requested_profile_fingerprint, 128) } : {}),
+    ...(context.service_profile_fingerprint ? { service_profile_fingerprint: safeText(context.service_profile_fingerprint, 128) } : {}),
+    ...(context.service_generation ? { service_generation: safeText(context.service_generation, 64) } : {}),
     ...(native ? { native_code: safeText(native, 64) } : {}),
     ...(context.next_action ? { next_action: safeText(context.next_action, 1024) } : {}),
   };

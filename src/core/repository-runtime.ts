@@ -41,6 +41,14 @@ import { decodePeerWorkerOperation, type PeerWorkerOperation, type PeerWorkerOpe
 import type { RepositoryLease } from "./lease.js";
 import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure, nativeCode } from "./errors.js";
 import { Mutex, withAbort, canonicalHash } from "./async.js";
+import { decodeSharedProfile, effectiveProfileFingerprint, loadSharedProfile } from "./profile.js";
+
+type ProfileSnapshot = Readonly<{ profile: SharedProfile; profilePath?: string; fingerprint: string }>;
+function freezeProfile(value: unknown): void {
+  if (typeof value !== "object" || value === null) return;
+  for (const child of Object.values(value)) freezeProfile(child);
+  Object.freeze(value);
+}
 
 const PREPARATION_TIMEOUT_MS = 90_000;
 // Initial safety bounds for metadata work, distinct from native inference capacity.
@@ -331,7 +339,8 @@ export class RepositoryRuntime {
   #preparation: Promise<void> | undefined;
   #profile: SharedProfile | undefined;
   #registry: AgentRegistry | undefined;
-  #profileLoading: Promise<SharedProfile> | undefined;
+  #profileSnapshot: ProfileSnapshot | undefined;
+  #profileLoading: Promise<ProfileSnapshot> | undefined;
   #coordinator: Coordinator | undefined;
   #admissionClosed = false;
   #controls: TaskControls | undefined;
@@ -2230,19 +2239,36 @@ export class RepositoryRuntime {
         { owner_id: state.owner_id, source_view: admission.source_view }, actor, operation, settled.result!);
     }
   }
+  /** Admission is configuration-only. A successful snapshot survives later preparation failures. */
+  profileSnapshot(): Promise<ProfileSnapshot> {
+    this.#assertOpen();
+    if (this.#profileSnapshot) return Promise.resolve(this.#profileSnapshot);
+    if (!this.#profileLoading) {
+      this.#profileLoading = this.#track(async () => {
+        const profilePath = (await this.#resolve(this.#lifetime.signal)).profilePath;
+        if (!profilePath) throw new BridgeError("PROFILE_PATH_UNAVAILABLE", "Profile admission requires a configured profile path");
+        const decoded = this.#deps.profile ? decodeSharedProfile(await this.#deps.profile(profilePath)) : await loadSharedProfile(profilePath);
+        // Validate JSON identity before cloning so injected options cannot silently lose values.
+        const fingerprint = effectiveProfileFingerprint(decoded);
+        const profile = structuredClone(decoded);
+        this.#assertOpen();
+        freezeProfile(profile);
+        const snapshot = Object.freeze({ profile, profilePath, fingerprint });
+        this.#profile = profile;
+        this.#profileSnapshot = snapshot;
+        return snapshot;
+      });
+      void this.#profileLoading.catch(() => { this.#profileLoading = undefined; });
+    }
+    return this.#profileLoading;
+  }
   async #execution(): Promise<Coordinator> {
     this.#assertOpen();
     if (this.#coordinator) return this.#coordinator;
     if (!this.#composition) {
       this.#composition = (async () => {
         const binding = await this.#resolve(this.#lifetime.signal);
-        const profilePath = binding.profilePath;
-        if (!profilePath) throw new BridgeError("PROFILE_PATH_UNAVAILABLE", "Execution requires an explicit profile path or configured HOME/XDG config root", { stage: "execution.profile" });
-        if (!this.#profileLoading) {
-          this.#profileLoading = this.#deps.profile ? this.#deps.profile(profilePath)
-            : import("./profile.js").then(({ loadSharedProfile }) => loadSharedProfile(profilePath));
-        }
-        const profile = await this.#profileLoading;
+        const { profile } = await this.profileSnapshot();
         this.#assertOpen();
         await this.#ensurePrepared(this.#lifetime.signal);
         const { Coordinator } = await import("./coordinator.js");
@@ -2295,7 +2321,6 @@ export class RepositoryRuntime {
       void this.#composition.catch((error: unknown) => {
         this.#executionFailure = diagnosticInfo(error);
         this.#composition = undefined;
-        if (!this.#profile) this.#profileLoading = undefined;
       });
     }
     return this.#composition;
@@ -2303,13 +2328,11 @@ export class RepositoryRuntime {
   agents(offset = 0, limit = 4): Promise<AgentCatalog> {
     return this.#track(async () => {
       if (this.#registry) return this.#registry.catalog(true, offset, limit);
-      const path = this.#intent.profilePath ?? (await this.#resolve(this.#lifetime.signal)).profilePath;
-      if (!path) throw new BridgeError("PROFILE_PATH_UNAVAILABLE", "Agent discovery requires a profile path");
-      const profile = this.#deps.profile ? await this.#deps.profile(path) : await (await import("./profile.js")).loadSharedProfile(path);
+      const { profile } = await this.profileSnapshot();
       const { AgentRegistry } = await import("../agents/registry.js");
       const definitions = this.#deps.definitions ?? (await import("../agents/builtins.js")).builtinAdapters;
       this.#assertOpen();
-      return new AgentRegistry(profile, definitions).catalog(false, offset, limit);
+      return new AgentRegistry(profile, definitions).catalog(true, offset, limit);
     });
   }
   async #taskControls(): Promise<TaskControls> {

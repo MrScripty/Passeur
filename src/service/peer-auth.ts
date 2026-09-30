@@ -1,9 +1,10 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { BridgeError } from "../core/errors.js";
 import { canonicalProject, repositoryIdentity } from "../workspace/project.js";
+import { SERVICE_CONTRACT } from "../contracts/service.js";
 import { decodeFrame } from "./transport.js";
 
-export type PeerBinding = Readonly<{ repositoryId: string; stateRoot: string; profilePath?: string }>;
+export type PeerBinding = Readonly<{ repositoryId: string; stateRoot: string; profilePath?: string; profileFingerprint?: string }>;
 export type AuthenticatedPeer = Readonly<{
   actor: Readonly<{ owner_id: string; client_id: string }>;
   source_view: string;
@@ -17,7 +18,9 @@ export async function authenticateServicePeer(raw: unknown, binding: PeerBinding
   const expected = { ...binding };
   if (!timingSafeEqual(Buffer.from(hello.token, "hex"), Buffer.from(serviceToken, "hex"))
       || hello.repository_id !== expected.repositoryId || hello.state_root !== expected.stateRoot
-      || hello.profile_path !== expected.profilePath) {
+      || (expected.profileFingerprint === undefined
+        ? hello.service_contract !== undefined || hello.profile_path !== expected.profilePath
+        : hello.service_contract !== SERVICE_CONTRACT || hello.profile_fingerprint !== undefined && hello.profile_fingerprint !== expected.profileFingerprint)) {
     throw new BridgeError("SERVICE_BINDING_CONFLICT", "Service credentials or approved binding do not match");
   }
   const source_view = await canonicalProject(hello.source_view);

@@ -1,11 +1,11 @@
 import type { Socket } from "node:net";
 import { TextDecoder } from "node:util";
-import { FailureSchema } from "../contracts/service.js";
+import { FailureSchema, SERVICE_CONTRACT, ProfileFingerprintSchema } from "../contracts/service.js";
 import type { ErrorInfo } from "../core/errors.js";
 import { BridgeError } from "../core/errors.js";
 
 export type Frame =
-  | { kind: "hello"; protocol: 1; token: string; owner_token: string; repository_id: string; profile_path?: string; source_view: string; state_root: string }
+  | { kind: "hello"; protocol: 1; token: string; owner_token: string; repository_id: string; profile_path?: string; service_contract?: typeof SERVICE_CONTRACT; profile_fingerprint?: string; source_view: string; state_root: string }
   | { kind: "welcome"; protocol: 1; generation: string; client_id: string }
   | { kind: "request"; id: string; generation: string; operation: string; arguments: unknown }
   | { kind: "response"; id: string; generation: string; result: unknown }
@@ -19,11 +19,15 @@ export function decodeFrame(value: unknown): Frame {
   if (!record(value) || !string(value.kind, 32)) throw new BridgeError("SERVICE_FRAME_INVALID", "Invalid IPC envelope");
   const extra = (allowed: string[]) => Object.keys(value).some((key) => !allowed.includes(key));
   if (value.kind === "hello") {
-    if (extra(["kind", "protocol", "token", "owner_token", "repository_id", "profile_path", "source_view", "state_root"]) || value.protocol !== 1 ||
+    const modern = value.service_contract !== undefined;
+    if (extra(modern ? ["kind", "protocol", "token", "owner_token", "repository_id", "profile_fingerprint", "service_contract", "source_view", "state_root"]
+      : ["kind", "protocol", "token", "owner_token", "repository_id", "profile_path", "source_view", "state_root"])
+      || modern && (value.service_contract !== SERVICE_CONTRACT || value.profile_fingerprint !== undefined && !ProfileFingerprintSchema.safeParse(value.profile_fingerprint).success) || value.protocol !== 1 ||
       !string(value.token, 64) || !/^[a-f0-9]{64}$/.test(value.token) || !string(value.owner_token, 64) || !/^[a-f0-9]{64}$/.test(value.owner_token) ||
       !string(value.repository_id, 256) || !string(value.source_view) || !string(value.state_root) || value.profile_path !== undefined && !string(value.profile_path)) throw new BridgeError("SERVICE_HANDSHAKE_INVALID", "Unsupported or invalid service handshake");
     return { kind: "hello", protocol: 1, token: value.token, owner_token: value.owner_token, repository_id: value.repository_id,
-      source_view: value.source_view, state_root: value.state_root, ...(value.profile_path === undefined ? {} : { profile_path: value.profile_path }) };
+      source_view: value.source_view, state_root: value.state_root, ...(modern ? { service_contract: SERVICE_CONTRACT, ...(value.profile_fingerprint === undefined ? {} : { profile_fingerprint: value.profile_fingerprint as string }) }
+        : value.profile_path === undefined ? {} : { profile_path: value.profile_path }) };
   }
   if (value.kind === "welcome") {
     if (extra(["kind", "protocol", "generation", "client_id"]) || value.protocol !== 1 || !string(value.generation, 64) || !string(value.client_id, 64)) throw new BridgeError("SERVICE_HANDSHAKE_INVALID", "Invalid service welcome");

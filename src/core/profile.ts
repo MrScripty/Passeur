@@ -1,6 +1,7 @@
 import { SharedProfileSchema, type SharedProfile } from "../contracts/tasks.js";
 import { AgentProfileSchema } from "../contracts/agents.js";
 import { open } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { ProfileSchema } from "../contracts/index.js";
 import { BridgeError, filesystemFailure } from "./errors.js";
@@ -66,6 +67,26 @@ export function decodeSharedProfile(value: unknown): SharedProfile {
   return parsed.data;
 }
 export async function loadSharedProfile(path: string): Promise<SharedProfile> { return decodeSharedProfile(await readProfileJson(path)); }
+
+/** Opaque options retain array order and every JSON value; object key order is immaterial. */
+function canonicalProfileJson(value: unknown): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalProfileJson).join(",")}]`;
+  if (typeof value === "object" && value !== null && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalProfileJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  throw new BridgeError("PROFILE_INVALID", "Effective profile options must contain only JSON values");
+}
+
+/** Versioned identity of effective configuration, independent of its source pathname. */
+export function effectiveProfileFingerprint(profile: SharedProfile): string {
+  const agents = [...profile.agents].sort((left, right) => left.agent_id < right.agent_id ? -1 : left.agent_id > right.agent_id ? 1 : 0)
+    .map(agent => ({ agent_id: agent.agent_id, adapter_id: agent.adapter_id, enabled: agent.enabled,
+      description: agent.description, ...(agent.modes ? { modes: [...agent.modes].sort() } : {}), options: agent.options }));
+  const canonical = canonicalProfileJson({ domain: "passeur-effective-profile", version: 1,
+    schema_version: profile.schema_version, execution: profile.execution, agents });
+  return `sha256:v1:${createHash("sha256").update(canonical).digest("hex")}`;
+}
 export function migrateSharedProfile(value: unknown): SharedProfile {
   if (typeof value === "object" && value !== null && "schema_version" in value && value.schema_version === 3) return decodeSharedProfile(value);
   const old = normalizeProfile(value);
