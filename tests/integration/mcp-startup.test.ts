@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,6 +10,7 @@ import { expect, it } from "vitest";
 import { FrontendStatusSchema } from "../../src/contracts/service.js";
 import { CODEX_ENABLED_TOOLS } from "../../src/codex/config.js";
 import { resolveRepositoryBinding } from "../../src/core/repository-runtime.js";
+import { projectId } from "../../src/workspace/project.js";
 import { readDescriptor, existingOwner } from "../../src/service/bootstrap.js";
 const exec = promisify(execFile);
 async function connect(project: string, state: string) {
@@ -68,6 +69,30 @@ it("real front-end discovery survives missing project/profile and permits repair
     const prepared = await prepare(client);
     expect(prepared.repository.execution.profile).toBe("not_checked");
   } finally { await client.close(); await assertGone(project, state); await rm(root, { recursive: true, force: true }); }
+}, 30000);
+it("linked worktrees reuse a canonical legacy default profile when it already exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "passeur-profile-binding-")), project = join(root, "project"), linked = join(root, "linked"),
+    state = join(root, "state"), config = join(root, "config");
+  await mkdir(project);
+  const git = (...args: string[]) => exec("git", ["-C", project, ...args], { timeout: 10000 });
+  await git("init", "-q", "-b", "main");
+  await git("-c", "user.name=Passeur Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "test: fixture");
+  await git("worktree", "add", "-b", "linked", linked);
+  const legacy = join(config, "muse-bridge", "projects", `${projectId(project)}.json`);
+  await mkdir(join(config, "muse-bridge", "projects"), { recursive: true });
+  await writeFile(legacy, "{}\n");
+  try {
+    const environment = { XDG_CONFIG_HOME: config };
+    const [mainBinding, linkedBinding] = await Promise.all([
+      resolveRepositoryBinding({ project, stateRoot: state }, environment, AbortSignal.timeout(10000)),
+      resolveRepositoryBinding({ project: linked, stateRoot: state }, environment, AbortSignal.timeout(10000)),
+    ]);
+    expect(mainBinding.profilePath).toBe(legacy);
+    expect(linkedBinding.profilePath).toBe(legacy);
+  } finally {
+    await git("worktree", "remove", linked);
+    await rm(root, { recursive: true, force: true });
+  }
 }, 30000);
 it("two real stdio clients concurrently prepare one service and closing either preserves the other", async () => {
   const root = await mkdtemp(join(tmpdir(), "passeur-shared-")), project = join(root, "project"), state = join(root, "state");
