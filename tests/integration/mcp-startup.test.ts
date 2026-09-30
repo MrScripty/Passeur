@@ -20,6 +20,13 @@ async function connect(project: string, state: string) {
   try { await client.connect(transport, { timeout: 10000 }); return client; }
   catch (error) { await client.close(); throw error; }
 }
+async function connectInherited(project: string, state: string) {
+  const client = new Client({ name: "passeur_dynamic_acceptance", version: "1" }, { capabilities: {} });
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [resolve("dist/src/cli.js"), "serve", "--state-root", state], cwd: project, stderr: "pipe" });
+  try { await client.connect(transport, { timeout: 10000 }); return client; }
+  catch (error) { await client.close(); throw error; }
+}
 function body(reply: unknown): unknown {
   if (!reply || typeof reply !== "object") throw new Error("Missing response body");
   const result = reply as Record<string, unknown>;
@@ -82,7 +89,13 @@ it("linked source views share the service while distinct repositories have diffe
   await git("init", "-q", "-b", "main");
   await git("-c", "user.name=Passeur Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "test: fixture");
   await git("worktree", "add", "-b", "linked", linked);
-  const a = await connect(project, state), b = await connect(linked, state), c = await connect(other, state);
+  const [projectBinding, linkedBinding] = await Promise.all([
+    resolveRepositoryBinding({ project, stateRoot: state }, process.env, AbortSignal.timeout(10000)),
+    resolveRepositoryBinding({ project: linked, stateRoot: state }, process.env, AbortSignal.timeout(10000)),
+  ]);
+  expect(projectBinding.repositoryId).toBe(linkedBinding.repositoryId);
+  expect(projectBinding.profilePath).toBe(linkedBinding.profilePath);
+  const a = await connectInherited(project, state), b = await connectInherited(linked, state), c = await connectInherited(other, state);
   try {
     const [one, two, three] = await Promise.all([prepare(a), prepare(b), prepare(c)]);
     expect(one.generation).toBe(two.generation); expect(three.generation).not.toBe(one.generation);
