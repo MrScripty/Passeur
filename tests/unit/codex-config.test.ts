@@ -48,6 +48,12 @@ it("renders dynamic registration without a fixed repository or MCP working direc
   expect((table.args as string[])).not.toContain("--project");
   expect(mergeCodexMcpToml(renderCodexMcpToml(r), r)).toBe(renderCodexMcpToml(r));
 });
+it("rejects accidental fixed routing fields on a dynamic registration", () => {
+  const fixedCwd = dynamicRegistration(); fixedCwd.cwd = "/fixed";
+  expect(() => renderCodexMcpToml(fixedCwd)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+  const fixedProject = dynamicRegistration(); fixedProject.args.push("--project", "/project");
+  expect(() => renderCodexMcpToml(fixedProject)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+});
 it("normal updates preserve unrelated bytes and allow separately named projects", () => {
   const prefix = '# keep this comment\nmodel = "chosen"\n';
   const first = mergeCodexMcpToml(prefix, registration());
