@@ -1,54 +1,82 @@
 # Dynamic repository routing
 
-Status: Active
+**Status:** Verifying  
+**Current phase:** objective verification  
+**Current acceptance:** blocked  
+**Next slice:** V1 — execute the locked repository checks and real Codex host routing workflow against this exact branch, repair only failures attributable to this slice, obtain independent final review, then decide acceptance.
 
-## Goal
+## Objective and scope
 
-Use one Codex-facing Passeur registration across repositories while preserving one elected Passeur service, lease, state store, and execution authority per canonical Git repository.
+Use one Codex-facing Passeur registration across repositories while preserving one elected Passeur service, lease, state store, execution authority, and profile identity per canonical repository.
 
-A Codex session supplies repository context through the working directory inherited by its stdio MCP process. Passeur resolves that directory through the existing canonical repository binding before service discovery or preparation. Linked worktrees continue to share the canonical Git common-directory identity and unrelated repositories continue to use separate service/state namespaces.
+A local Codex session supplies repository context through the working directory inherited by its stdio MCP process. Passeur resolves that directory through the existing canonical repository binding before service discovery or preparation. Linked worktrees converge on one repository identity; unrelated repositories retain independent repository services.
 
-## Product contract
+In scope: Codex registration/binding, default profile identity/migration compatibility, direct registration probing, focused routing/state regressions, and current user/agent guidance. Out of scope: a multi-repository daemon, new scheduler, tool-local repository selector, state-root migration, provider changes, worker sandbox changes, or relaxation of repository leases.
 
-- A global Codex registration can start Passeur without a pinned `--project`, `--profile`, `--expected-repository-id`, or MCP `cwd`.
-- An unpinned `serve` process uses its inherited current working directory as the project input.
-- Explicit `--project` remains available for operator commands and intentionally pinned compatibility registrations.
-- Repository state remains under the existing `<state-root>/muse-bridge/repositories/<repository-id>` authority.
-- The default execution profile identity is repository-stable so linked worktrees resolve the same profile.
-- Build/profile conflicts inside one repository remain explicit. Unrelated repositories never contend for the same service election or repository lease.
-- Discovery remains lazy: tool listing and frontend status do not acquire a repository lease or start inference.
+Implementation baseline: Passeur `46f5e8651240eb84e752940885073f6f338b9145`. Standards baseline and final review baseline: Coding-Standards `39d55dc330d44ecf940364ceada9d2527f7c7ea0`.
 
-## Design
+## Product contract and binding decisions
 
-Retain `RepositoryRuntime`, `resolveRepositoryBinding`, service election, IPC, task storage, and lease ownership unchanged. Change only the binding source above them:
+1. **Registration owner — `src/codex/config.ts`.** An unpinned registration contains runtime/build, state root, catalog and startup policy, but no MCP `cwd`, `--project`, `--profile`, or `--expected-repository-id`. Construction rejects accidental fixed routing fields.
+2. **Frontend launch owner — `src/cli.ts`.** `serve`/`start` use inherited `process.cwd()` only when no explicit project was supplied. Explicit `register-codex --project` remains a pinned compatibility path.
+3. **Repository identity owner — `resolveRepositoryBinding`.** Canonical Git common-directory identity, repository store root, service election and repository lease remain unchanged.
+4. **Profile owner — `resolveRepositoryBinding`.** New default profiles key by canonical repository ID. If that file is absent and the canonical main-worktree legacy default exists, both main and linked worktrees reuse that legacy profile. Once the repository-ID profile exists it takes precedence.
+5. **Explicit profile intent.** Setup/configure install the unpinned registration only when using the repository-default profile. Explicit `--profile` or `--expected-repository-id` retains a pinned registration; no repository→custom-profile registry is invented.
+6. **State authority.** Dynamic and pinned Passeur `serve` registrations may coexist only in the same state namespace where their reachability overlaps. The registration editor rejects dynamic↔pinned state-root splits in either direction.
+7. Existing binding replacement, unmanaged-adoption authority, build/profile conflicts, lazy discovery, IPC, task state and lease semantics are preserved.
 
-1. Codex dynamic registration records the runtime, state root, catalog, and startup policy, but omits a fixed MCP `cwd` and repository arguments.
-2. Codex launches the stdio process in the active project directory. `serve` uses `process.cwd()` only when no explicit project was supplied.
-3. `resolveRepositoryBinding` canonicalizes that project exactly as it does today.
-4. The fallback profile path is keyed by canonical repository ID instead of an individual worktree path.
-5. Existing explicitly pinned registrations continue to validate and run through the same transport contract. Replacing a named pinned registration with a dynamic registration still requires the existing explicit binding-replacement authority.
+No second repository authority, router daemon, global mutable `RepositoryRuntime`, alternate lease, or duplicate state store is introduced.
 
-No multi-repository scheduler, global mutable runtime, alternate state namespace, lease relaxation, or tool-local repository selector is introduced.
+## Objective acceptance claims
 
-## Standards admission
+| ID | Observable criterion | Kind | Environment | Mode | Status |
+| --- | --- | --- | --- | --- | --- |
+| DR-A1 | Unpinned registration serializes/inspects with omitted or null `cwd`; fixed routing fields are rejected; pinned registration behavior remains valid. | contract | not-applicable | automated | blocked |
+| DR-A2 | Frontends launched with the same unpinned command from a main worktree and linked worktree share repository ID/profile/service generation; an unrelated directory obtains a different service generation. | system | representative Linux/local FS | automated | blocked |
+| DR-A3 | Dynamic↔pinned registrations cannot create a known second state namespace; same-state coexistence remains valid. | focused | not-applicable | automated | blocked |
+| DR-A4 | Existing canonical main-worktree legacy default profiles are reused by linked worktrees, while a new repository-ID profile takes precedence once present. | integration | representative local FS/Git | automated | blocked |
+| DR-A5 | Existing full Passeur type/build/core/native/Vitest suite remains green. | integration | representative supported build environment | automated | blocked |
+| DR-A6 | A fresh supported Codex host with one unpinned registration started from two unrelated project sessions reports the correct `project_input` and attaches to distinct repository services without registration changes. | user-workflow | required-real installed Codex host | manual or automated | blocked |
+| DR-A7 | Independent final review finds no unresolved architecture, state-authority, compatibility, or lifecycle defect in the exact verified candidate. | contract/review | not-applicable | manual | pending |
 
-The existing repository runtime and service-election mechanisms already satisfy the required ownership and concurrency behavior. The mismatch is at the registration seam, where repository identity is selected too early. Reusing the existing binding owner is the smallest reversible production implementation that resolves the demonstrated mismatch.
+The current environment established the external design assumption from current Codex source: its stdio MCP transport permits an absent configured `cwd` and supplies the runtime's local process cwd to the local stdio launcher. That observation admits the design; it does not satisfy DR-A6.
 
-The material write set is limited to the registration/binding owners, direct verification/probe code, focused regression tests, and current user/agent guidance.
+## Constraints and assumptions
 
-## Verification
+- Passeur's qualified shared service remains Linux/local-filesystem scoped.
+- The local Codex host must provide its active project cwd as the stdio fallback when server `cwd` is absent. A host that cannot do this must use an explicit pinned registration.
+- One selected state root is the durable namespace for repositories reachable by the global router.
+- Custom repository-specific profile paths remain explicit pinned configuration until a separately justified repository-profile registry exists.
+- Source edits are reversible and preserve the existing repository runtime/service/lease owners.
 
-Acceptance requires:
+## Composed-design review
 
-- static type/check suite and repository tests pass;
-- a dynamic registration serializes without `cwd` or repository pin arguments;
-- Codex inspection accepts a null/omitted configured `cwd` only for an unpinned registration;
-- a real stdio frontend launched with no `--project` reports its inherited project root;
-- two frontends launched from linked worktrees share one service generation and default profile path;
-- two unrelated repositories launched from the same global registration obtain different service generations;
-- retained pinned-registration tests continue to pass;
-- direct registration probing validates both build identity and the selected dynamic launch context without claiming actual host attachment.
+**Applicable.** This change moves the repository-selection seam across the Codex registration/process boundary and changes profile identity selection. The complete artifact probe is recorded in [reports/composed-design-review.md](reports/composed-design-review.md). Result: the selected design reuses the existing deep repository-binding/runtime owners; no new permanent module, service, registry or state authority is required.
+
+## Milestones
+
+| Milestone | Goal / write set | Gate | State |
+| --- | --- | --- | --- |
+| M0 | Admit routing seam and product contract; write plan. | Existing repository/service ownership remains valid. | Implemented |
+| M1 | Implement registration, launch-context, profile compatibility and state-invariant repairs; add focused tests. Writes: `src/cli.ts`, `src/codex/config.ts`, `src/codex/probe.ts`, `src/core/repository-runtime.ts`, affected tests. | Source/contract review; no duplicate runtime/state owner. | Implemented |
+| M2 | Update current design/install/README/agent guidance and plan artifacts. | Documentation agrees with source and lifecycle. | Implemented |
+| V1 | Execute DR-A1–DR-A6 and independent final review on exact candidate. | All required claims satisfied. | Blocked |
+
+## Blockers
+
+- The available shell has no outbound dependency access and no Passeur dependency cache. The repository has no active GitHub Actions workflow/runs through the connected account. Therefore `npm ci`, `npm run check`, focused Vitest integration tests and `npm test` cannot be truthfully claimed here.
+- Actual fresh Codex host attachment across two project sessions is not available in this execution environment.
+- Independent final review has not yet been performed.
+
+These are verification blockers, not evidence for a source-design failure. See [execution-ledger.md](execution-ledger.md) and [issues.md](issues.md).
 
 ## Re-plan triggers
 
-Re-plan only if verification shows that the supported Codex host does not supply the active project as the fallback stdio working directory, the dynamic registration weakens repository/state isolation, or profile identity cannot be made repository-stable without a separate migration authority.
+Re-plan if executable verification shows that the supported Codex host does not supply the active project as fallback stdio cwd, routing changes repository/state isolation, profile compatibility cannot remain deterministic without another authority, explicit-profile consumers require global routing, or the implementation propagates repository-routing knowledge beyond the admitted registration/binding owners.
+
+## Plan artifacts
+
+- [Execution ledger](execution-ledger.md)
+- [Issues](issues.md)
+- [Composed-design review](reports/composed-design-review.md)
+- [Verification status](reports/verification.md)
