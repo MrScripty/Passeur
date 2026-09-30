@@ -21,6 +21,18 @@ export async function repositoryIdentity(root: string, signal?: AbortSignal): Pr
     throw error;
   }
 }
+export async function repositoryMainWorktree(root: string, signal?: AbortSignal): Promise<string> {
+  try {
+    const fields = (await git(root, ["worktree", "list", "--porcelain", "-z"], signal)).split("\0");
+    const entry = fields.find((field) => field.startsWith("worktree "));
+    if (!entry) throw new BridgeError("GIT_WORKTREE_INVALID", "Git did not report a canonical main worktree");
+    return realpath(entry.slice("worktree ".length));
+  } catch (error) {
+    // Preserve the existing non-Git directory identity used by read-only assignments.
+    if (error instanceof BridgeError && error.code === "GIT_ERROR" && error.message.includes("not a git repository")) return root;
+    throw error;
+  }
+}
 export async function resolveProjectFile(root: string, input: string): Promise<string> {
   if (isAbsolute(input) || input.includes("\0")) throw new BridgeError("INVALID_PATH", `Invalid project path: ${input}`);
   const candidate = resolve(root, input);
