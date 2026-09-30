@@ -260,7 +260,7 @@ export type RuntimeDependencies = {
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
-  const { canonicalProject, repositoryIdentity, projectId } = await import("../workspace/project.js");
+  const { canonicalProject, repositoryIdentity } = await import("../workspace/project.js");
   signal.throwIfAborted();
   let project: string;
   try { project = await canonicalProject(intent.project); }
@@ -275,7 +275,7 @@ export async function resolveRepositoryBinding(intent: LaunchIntent, environment
   const stateRoot = intent.stateRoot ?? environment.XDG_STATE_HOME ?? (environment.HOME ? join(environment.HOME, ".local", "state") : undefined);
   const configRoot = environment.XDG_CONFIG_HOME ?? (environment.HOME ? join(environment.HOME, ".config") : undefined);
   if (!stateRoot) throw new BridgeError("PATH_CONFIGURATION_UNAVAILABLE", "An explicit state path or HOME/XDG state root is required", { stage: "configuration.paths" });
-  const profilePath = intent.profilePath ?? (configRoot ? join(configRoot, "muse-bridge", "projects", `${projectId(project)}.json`) : undefined);
+  const profilePath = intent.profilePath ?? (configRoot ? join(configRoot, "muse-bridge", "projects", `${repository.id}.json`) : undefined);
   return {
     project, repositoryId: repository.id, commonDir: repository.common_dir, stateRoot: resolve(stateRoot),
     storeRoot: join(resolve(stateRoot), "muse-bridge", "repositories", repository.id),
