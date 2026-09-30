@@ -53,6 +53,12 @@ it("rejects accidental fixed routing fields on a dynamic registration", () => {
   expect(() => renderCodexMcpToml(fixedCwd)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
   const fixedProject = dynamicRegistration(); fixedProject.args.push("--project", "/project");
   expect(() => renderCodexMcpToml(fixedProject)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+  const inlineProject = dynamicRegistration(); inlineProject.args.push("--project=/project");
+  expect(() => renderCodexMcpToml(inlineProject)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+  const inlineProfile = dynamicRegistration(); inlineProfile.args.push("--profile=/profile.json");
+  expect(() => renderCodexMcpToml(inlineProfile)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+  const inlineRepository = dynamicRegistration(); inlineRepository.args.push("--expected-repository-id=repository");
+  expect(() => renderCodexMcpToml(inlineRepository)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
 });
 it("normal updates preserve unrelated bytes and allow separately named projects", () => {
   const prefix = '# keep this comment\nmodel = "chosen"\n';
@@ -91,6 +97,15 @@ it("rejects a dynamic registration that would route a known pinned repository th
   const source = renderCodexMcpToml(registration());
   const dynamic = dynamicRegistration(); dynamic.state_root = "/another";
   dynamic.args[dynamic.args.indexOf("--state-root") + 1] = dynamic.state_root;
+  expect(() => mergeCodexMcpToml(source, dynamic)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
+});
+it("recognizes inline binding options when enforcing state namespaces", () => {
+  const inline = registration();
+  inline.args = [inline.args[0]!, "serve", "--project=/project", "--profile=/profile.json",
+    "--state-root=/state", "--expected-repository-id=repository"];
+  const source = renderCodexMcpToml(inline);
+  const dynamic = dynamicRegistration(); dynamic.state_root = "/another";
+  dynamic.args = [dynamic.args[0]!, "serve", "--state-root=/another"];
   expect(() => mergeCodexMcpToml(source, dynamic)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
 });
 it("rejects a pinned registration that would split state from an existing dynamic router", () => {
