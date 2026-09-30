@@ -4,12 +4,12 @@
 
 | Field | Value |
 | --- | --- |
-| Plan status | `Active` |
-| Acceptance status | Functional criteria evidenced; final scoped commit pending. Full-suite exceptions are recorded in [verification](reports/verification.md). |
-| Current phase | V1 — final verification, review and commit |
-| Exactly one next slice | **V1 — stage only the scoped candidate, inspect it, run ordinary hooks and commit** |
+| Plan status | `Complete` |
+| Acceptance status | GAU-1–GAU-13 evidenced and the repair committed. Full-suite exceptions and qualification limits are recorded in [verification](reports/verification.md). |
+| Current phase | Complete |
+| Exactly one next slice | None — the requested repair, qualification, review and commit are complete. |
 | Canonical plan path | `docs/plans/global-agent-repository-usability/plan.md` |
-| Current invocation | `verify` — complete final evidence and ordinary commit |
+| Current invocation | `verify` — final evidence and ordinary repair commit complete |
 | Source baseline | `6e61bd93e74686620f0cffc3e54bf00c8e5373f8` |
 | Lifecycle authority | [shared-service plan](../shared-service-and-evidence-driven-lifecycle/plan.md), Verifying/blocked at M4-S1 |
 | Prior routing decision | [dynamic-routing plan](../dynamic-repository-routing/plan.md); this user-authorized objective supersedes its DR-I02 decision against an installation-level default profile |
@@ -74,7 +74,7 @@ Retain only compatibility needed by actual consumers: explicit CLI project/profi
 | GAU-10 | Documentation presents one global registration and removes routine named-registration repair guidance. | README, setup, skill and troubleshooting review; historical report clearly marked superseded | passed |
 | GAU-11 | Multiple simultaneous real Codex/agent host sessions use Passeur across two independent repositories without repository-specific registration. | Host version, exact one-entry configuration/command, four concurrent session bindings and service identities | passed |
 | GAU-12 | An independent read-only GPT-6.1 Sol High architecture/lifecycle review finds no unresolved P0/P1 issue on the exact candidate. | Final report with 27-file candidate identity and disposition | passed |
-| GAU-13 | The reviewed repair is committed through ordinary hooks. | Commit identity and clean owned diff; unrelated files preserved | pending |
+| GAU-13 | The reviewed repair is committed through ordinary hooks. | Repair commit `e5d599e`; staged diff passed `git diff --cached --check`; unrelated files remained unstaged | passed |
 
 Automated tests do not substitute for GAU-11. If the host or required account-backed behavior is unavailable, record the exact limitation and leave acceptance blocked rather than inventing an equivalent claim.
 
@@ -86,7 +86,7 @@ The current lifecycle plan is Verifying, so its `continue` operation cannot auth
 
 The eight-probe design admission is in [the composed-design review](reports/composed-design-review.md). It qualifies the design for implementation subject to real-host evidence; it does not imply acceptance.
 
-Operation history: `start` admitted M0 and this plan on 2026-09-30 under the user's explicit end-to-end implementation request. `continue` executed M1–M4. The current `verify` invocation records final evidence and proceeds to the requested commit, subject to the remaining V1 gate.
+Operation history: `start` admitted M0 and this plan on 2026-09-30 under the user's explicit end-to-end implementation request. `continue` executed M1–M4. `verify` recorded the final evidence, independent review, host qualification and ordinary repair commit `e5d599e`.
 
 ## 7. Write sets and milestones
 
@@ -99,7 +99,7 @@ Operation history: `start` admitted M0 and this plan on 2026-09-30 under the use
 | M2 — status and diagnostics | `src/contracts/runtime.ts`, `src/contracts/service.ts`, `src/service/client.ts`, `src/service/server.ts`, `src/service/transport.ts`, `src/mcp/server.ts`, affected projections/tests | Every relevant boundary preserves bounded typed context; status distinguishes launch and resolved/service data | Completed |
 | M3 — concurrency qualification | Focused integration fixtures/tests under `tests/integration/` and relevant core tests | Same repo, unrelated repos, worktrees, frontend/service restarts, stale descriptor and task survival demonstrated | Completed |
 | M4 — compatibility and operations | `src/codex/config.ts` only if exact safe cleanup is justified; README and affected setup/recovery/attached-tools docs; this plan's evidence | One global registration instructions; no routine named registration repair; docs match supported behavior | Completed |
-| V1 — real host, review, commit | Evidence reports and owned source/docs only | Focused checks, real-host qualification and independent review complete; final staged-diff review and ordinary commit remain | Active |
+| V1 — real host, review, commit | Evidence reports and owned source/docs only | Focused checks, real-host qualification, independent review and ordinary repair commit complete; full-suite exceptions are recorded | Completed |
 
 Do not add dependencies, mutate personal configuration, authenticate, use live accounts, or publish. Qualification uses disposable repositories and local/test profiles unless a separately permitted existing tool path is explicitly available. Normal hooks run at commit.
 

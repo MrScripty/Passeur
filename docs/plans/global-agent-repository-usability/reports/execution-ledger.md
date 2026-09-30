@@ -4,6 +4,8 @@
 **Source baseline:** `6e61bd93e74686620f0cffc3e54bf00c8e5373f8`
 **Date:** 2026-09-30
 
+**Repair commit:** `e5d599e` (`Make Passeur frontend repository agnostic`)
+
 ## Implementation
 
 - Added one installation-wide profile fallback with precedence: explicit path, canonical repository profile, supported legacy worktree/main-worktree profile, then `muse-bridge/default-profile.json`. Setup/configure selects the installation default unless the operator supplies an explicit profile path. Existing repository overrides remain untouched.
@@ -29,7 +31,7 @@ Implementation checks completed:
 - `npx vitest run tests/integration/global-frontend.test.ts tests/integration/service-attachment-recovery.test.ts tests/integration/mcp-startup.test.ts tests/integration/registration-probe.test.ts tests/integration/agent-migration.test.ts` — 16/16 passed before the final readiness-error projection regression was added (sandbox escalation was required for local process/socket tests).
 - After that final readiness-error projection change, `npx vitest run tests/integration/registration-probe.test.ts` — 2/2 passed.
 
-Disposable process tests exercise concurrent same-repository frontends, a linked worktree, an unrelated repository, repository-specific service generations, distinct frontend principals, denied cross-owner task control, independent service discovery, and accepted work completing after its submitting frontend disconnects. The full suite result is pending below.
+Disposable process tests exercise concurrent same-repository frontends, a linked worktree, an unrelated repository, repository-specific service generations, distinct frontend principals, denied cross-owner task control, independent service discovery, and accepted work completing after its submitting frontend disconnects. The full-suite outcome and limits are recorded below.
 
 ## Real Codex host qualification
 
@@ -39,11 +41,11 @@ One real `codex app-server` created four simultaneous ephemeral agent threads an
 
 The host run used the source development identity `development-unidentified`, rather than a packaged installed artifact. It demonstrates real host launch-context isolation and same/cross-repository service routing through the one registration; exact installed-artifact qualification is not claimed. The host app-server used OSS/local-provider selection and made no model turn. Codex's unauthenticated local-provider startup attempted a network connection that the sandbox denied; no account or credential was available to the process.
 
-## Remaining gates
+## Qualification limits and commit
 
 - Full `env -u PASSEUR_RELAY_NETWORK_TEST -u PASSEUR_MUSE_INSTALLED_PROVIDER_TRANSPORT_TASK npm test` completed its core phase with 1,424/1,452 passed, five failed and 23 skipped, then stopped before native and full Vitest phases. The exact failures and proof boundary are in [verification](verification.md). The slow race cases were not repeated individually, per user direction.
 - Independent read-only GPT-6.1 Sol High architecture/lifecycle review reports no unresolved P0/P1/P2 finding. Final 27-file source/test/docs candidate SHA-256: `30525febcfadb5a05ae9adc40ff520e8cbcde320435357d211896f8996a773b1`; tracked diff SHA-256: `c3fa53dab29716136acdb93f7426967f9b41a7d1474ade0c9c33c6dca36f3495`. The reviewer independently ran `git diff --check`.
-- Final plan acceptance update, staged-diff review and ordinary commit remain pending.
+- Repair commit `e5d599e` completed through the ordinary commit path after the staged diff passed `git diff --cached --check`. Unrelated user files remained unstaged. The final plan acceptance record is committed separately as documentation only.
 
 ## Independent architecture/lifecycle review
 

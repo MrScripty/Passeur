@@ -2,7 +2,7 @@
 
 **Operation:** `verify`
 **Candidate:** source/test/docs candidate reviewed on 2026-09-30
-**Status:** scoped acceptance demonstrated; repository-wide suite has five failures outside the focused routing/diagnostic acceptance tests.
+**Status:** scoped acceptance demonstrated and repair committed as `e5d599e`; repository-wide suite has five failures outside the focused routing/diagnostic acceptance tests.
 
 ## Check results
 
