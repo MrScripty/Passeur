@@ -15,6 +15,7 @@ Run from the exact branch in a supported complete checkout:
 ```sh
 npm ci --legacy-peer-deps
 npm run check
+npm run build
 npx vitest run tests/unit/codex-config.test.ts \
   tests/integration/mcp-startup.test.ts \
   tests/integration/registration-probe.test.ts
@@ -28,3 +29,8 @@ Finally obtain independent read-only review of the exact checked candidate, conc
 ## Current environment result
 
 The current execution environment cannot run the repository dependency-backed gates: shell network access is unavailable, the npm dependency cache is absent, and no GitHub Actions run is available for this repository through the connected account. A temporary verification workflow produced no run and was removed. Therefore DR-A1–DR-A6 remain blocked/pending as stated in the plan. No passing test, build, installed-host, or user-workflow claim is made.
+
+
+## Review repairs
+
+The first CodeRabbit source review identified four valid issues. The candidate now parses registration binding options with Node `parseArgs` semantics (including `--flag=value`), resolves legacy profile roots through Git main-worktree metadata for ordinary worktrees, submodules and separate Git directories with current-worktree fallback when Git exposes no reverse main path, scrubs inherited `GIT_*` variables from temporary fixture Git subprocesses, and builds `dist/src/cli.js` before focused integration tests in this procedure. These repairs have source/regression coverage but remain subject to the executable gates above.
