@@ -37,3 +37,26 @@ it("probes the exact compiled registration and keeps provider compatibility unve
     await rm(root, { recursive: true, force: true });
   }
 }, 45000);
+
+it("retains frontend diagnostics in the registration readiness projection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "passeur-probe-failure-")), project = join(root, "project");
+  await mkdir(project);
+  const binding = await resolveRepositoryBinding({ project, stateRoot: join(root, "state") }, {}, new AbortController().signal);
+  const identity = await runtimeIdentity(process.cwd());
+  const expectedRepositoryId = "f".repeat(24);
+  const registration: CodexMcpRegistration = {
+    server_name: "fixture", command: process.execPath,
+    args: [resolve("dist/src/cli.js"), "serve", "--state-root", binding.stateRoot,
+      "--expected-repository-id", expectedRepositoryId],
+    env: {}, startup_timeout_sec: 10, tool_timeout_sec: 2100,
+    enabled_tools: CODEX_ENABLED_TOOLS, state_root: binding.stateRoot, build_id: identity.build_id, development: true,
+    project, repository_id: expectedRepositoryId,
+  };
+  try {
+    const report = await probeRegistration(registration, true, project);
+    expect(report.transport.status).toBe("passed"); expect(report.readiness.status).toBe("blocked");
+    expect(report.readiness.error).toMatchObject({ code: "PROJECT_BINDING_CHANGED", stage: "project.identity",
+      path: project, next_action: expect.any(String) });
+    expect(report.status?.service).toMatchObject({ state: "unavailable", ...report.readiness.error });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 45000);

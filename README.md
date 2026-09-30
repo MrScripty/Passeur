@@ -17,7 +17,7 @@ npm test
 npm run build:runtime
 ```
 
-Follow [installation and cutover](docs/startup-and-installation.md), then the [installed acceptance procedure](docs/installed-acceptance.md). Profile migration and incompatible-reader cutover are explicit and backed up. The preferred named Codex registration keeps one state namespace and inherits repository context from each local session; intentionally pinned legacy/project registrations remain supported. Old delegation tools reject new execution; use the task API instead. No live configuration, account or task mutation is implied by reading this repository.
+Follow [installation and setup](docs/startup-and-installation.md), then the [installed acceptance procedure](docs/installed-acceptance.md). Configure supported agents once for the installation and register one unpinned `passeur`; each frontend follows the repository where its host session started. Opening another repository needs no registration or binding change. Existing repository profile overrides and explicit CLI bindings remain available for controlled maintenance. Old delegation tools reject new execution; use the task API instead. No live configuration, account or task mutation is implied by reading this repository.
 
 ## Task workflow
 

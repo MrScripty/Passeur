@@ -209,7 +209,7 @@ export type LaunchIntent = {
   project: string; profilePath?: string; stateRoot?: string; expectedRepositoryId?: string;
 };
 export type ResolvedBinding = {
-  project: string; repositoryId: string; commonDir: string; stateRoot: string; storeRoot: string; profilePath?: string;
+  project: string; repositoryId: string; commonDir: string; stateRoot: string; storeRoot: string; profilePath?: string; profileSource?: "explicit" | "repository" | "legacy" | "global";
 };
 // Binding consults only HOME/XDG keys; callers may supply a read-only environment map.
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -259,6 +259,11 @@ export type RuntimeDependencies = {
   beforeRetainedCaptureInstallForTest?: (workId: string, artifactId: string) => Promise<void>;
 };
 
+export function defaultProfilePath(environment: Environment): string | undefined {
+  const root = environment.XDG_CONFIG_HOME ?? (environment.HOME ? join(environment.HOME, ".config") : undefined);
+  return root ? resolve(root, "muse-bridge", "default-profile.json") : undefined;
+}
+
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
   const { canonicalProject, repositoryIdentity, repositoryMainWorktree, projectId } = await import("../workspace/project.js");
   signal.throwIfAborted();
@@ -276,6 +281,7 @@ export async function resolveRepositoryBinding(intent: LaunchIntent, environment
   const configRoot = environment.XDG_CONFIG_HOME ?? (environment.HOME ? join(environment.HOME, ".config") : undefined);
   if (!stateRoot) throw new BridgeError("PATH_CONFIGURATION_UNAVAILABLE", "An explicit state path or HOME/XDG state root is required", { stage: "configuration.paths" });
   let profilePath = intent.profilePath ?? (configRoot ? join(configRoot, "muse-bridge", "projects", `${repository.id}.json`) : undefined);
+  let profileSource: ResolvedBinding["profileSource"] = intent.profilePath ? "explicit" : profilePath ? "repository" : undefined;
   if (!intent.profilePath && configRoot && profilePath) {
     const exists = async (path: string): Promise<boolean> => {
       try { await (await import("node:fs/promises")).lstat(path); return true; }
@@ -293,14 +299,15 @@ export async function resolveRepositoryBinding(intent: LaunchIntent, environment
       if (!legacyRoots.includes(project)) legacyRoots.push(project);
       for (const root of legacyRoots) {
         const legacyProfile = join(configRoot, "muse-bridge", "projects", `${projectId(root)}.json`);
-        if (legacyProfile !== profilePath && await exists(legacyProfile)) { profilePath = legacyProfile; break; }
+        if (legacyProfile !== profilePath && await exists(legacyProfile)) { profilePath = legacyProfile; profileSource = "legacy"; break; }
       }
+      if (profileSource !== "legacy") { profilePath = defaultProfilePath(environment); profileSource = "global"; }
     }
   }
   return {
     project, repositoryId: repository.id, commonDir: repository.common_dir, stateRoot: resolve(stateRoot),
     storeRoot: join(resolve(stateRoot), "muse-bridge", "repositories", repository.id),
-    ...(profilePath ? { profilePath: resolve(profilePath) } : {}),
+    ...(profilePath ? { profilePath: resolve(profilePath), ...(profileSource ? { profileSource } : {}) } : {}),
   };
 }
 
@@ -420,7 +427,7 @@ export class RepositoryRuntime {
     }
   }
   #failureError(): BridgeError {
-    return new BridgeError(this.#failure?.code ?? "PROJECT_NEEDS_RECONCILIATION", this.#failure?.message ?? "Repository readiness is unavailable");
+    return new BridgeError(this.#failure?.code ?? "PROJECT_NEEDS_RECONCILIATION", this.#failure?.message ?? "Repository readiness is unavailable", this.#failure ?? {});
   }
   #assertAuthority(): void {
     if (!this.#lease) throw new BridgeError("LEASE_NOT_HELD", "Repository coordination authority has not been acquired");

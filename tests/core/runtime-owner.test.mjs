@@ -23,7 +23,7 @@ function runtimeFixture(t, overrides={}) {
   },{});
   t.after(()=>runtime.shutdown());
   return {runtime,lease,store,get authority(){return authority},get acquired(){return acquired},get initializes(){return initializes},get recoveries(){return recoveries},get releases(){return releases},
-    compromise(){state='lost';notification(new BridgeError('LEASE_COMPROMISED','lost'))}};
+    compromise(error = new BridgeError('LEASE_COMPROMISED','lost')){state='lost';notification(error)}};
 }
 
 test('diagnostics preserve native cause and do not label domain codes as native',()=>{
@@ -122,4 +122,14 @@ test('repository preparation retains no ambient per-client approval authority',a
 });
 test('history access has no lease or execution prerequisite and denies accidental writes',async t=>{
   const f=runtimeFixture(t,{profile:async()=>{throw Error('must not load')}});const result=await f.runtime.inspect();assert.deepEqual(result.tasks,[]);assert.equal(f.acquired,0);assert.throws(()=>f.authority(),{code:'READ_ONLY_STORE'});
+});
+
+test('repeated preparation retains stored diagnostic context after lease loss', async t => {
+  const f = runtimeFixture(t);
+  await f.runtime.prepare();
+  const failure = new BridgeError('LEASE_COMPROMISED', 'lost', { stage: 'lease.heartbeat', path: '/fixture/state', native_code: 'EIO', next_action: 'inspect ownership' });
+  f.compromise(failure);
+  for (let i = 0; i < 2; i++) await assert.rejects(f.runtime.prepare(), error => {
+    assert.deepEqual(diagnosticInfo(error), diagnosticInfo(failure)); return true;
+  });
 });

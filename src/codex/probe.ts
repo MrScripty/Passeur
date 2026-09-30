@@ -18,6 +18,8 @@ function runtimeFailureInfo(failure: RuntimeFailure): ErrorInfo {
     code: failure.code, message: failure.message,
     ...(failure.stage !== undefined ? { stage: failure.stage } : {}),
     ...(failure.path !== undefined ? { path: failure.path } : {}),
+    ...(failure.requested_profile_path !== undefined ? { requested_profile_path: failure.requested_profile_path } : {}),
+    ...(failure.service_profile_path !== undefined ? { service_profile_path: failure.service_profile_path } : {}),
     ...(failure.native_code !== undefined ? { native_code: failure.native_code } : {}),
     ...(failure.next_action !== undefined ? { next_action: failure.next_action } : {}),
   };
@@ -98,7 +100,7 @@ export async function probeRegistration(registration: CodexMcpRegistration, prep
         if (!current.isError) {
           report.status = FrontendStatusSchema.parse(toolBody(current));
           if (report.status.service.state === "connected" && report.status.service.status.repository.coordination.failure) report.readiness.error = runtimeFailureInfo(report.status.service.status.repository.coordination.failure);
-          else if (report.status.service.state === "unavailable") report.readiness.error = { code: report.status.service.code, message: report.status.service.message };
+          else if (report.status.service.state === "unavailable") report.readiness.error = runtimeFailureInfo(report.status.service);
         }
       } else {
         report.status = FrontendStatusSchema.parse(toolBody(ready));

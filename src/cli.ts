@@ -186,8 +186,8 @@ async function register(intent: LaunchIntent | undefined, values: Values, probeC
 }
 async function setup(intent: LaunchIntent, values: Values): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new BridgeError("TERMINAL_REQUIRED", "Interactive setup requires a terminal");
-  const { resolveRepositoryBinding } = await import("./core/repository-runtime.js");
-  const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
+  const { resolveRepositoryBinding, defaultProfilePath } = await import("./core/repository-runtime.js");
+  const binding = await resolveRepositoryBinding({ ...intent, profilePath: required(intent.profilePath ?? defaultProfilePath(process.env), "--profile or HOME/XDG_CONFIG_HOME") }, process.env, AbortSignal.timeout(90_000));
   const { discoverMuseModels } = await import("./muse/models.js");
   const models = await discoverMuseModels();
   if (!models.length) throw new BridgeError("MODEL_CATALOG_EMPTY", "No visible Muse models; refresh the Muse model catalog before setup");
@@ -301,8 +301,8 @@ async function main(): Promise<void> {
   if (action === "setup") { await setup(intent, values); return; }
   if (action === "register-codex") { await register(intent, values); return; }
   if (action === "configure") {
-    const { resolveRepositoryBinding } = await import("./core/repository-runtime.js");
-    const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
+    const { resolveRepositoryBinding, defaultProfilePath } = await import("./core/repository-runtime.js");
+    const binding = await resolveRepositoryBinding({ ...intent, profilePath: required(intent.profilePath ?? defaultProfilePath(process.env), "--profile or HOME/XDG_CONFIG_HOME") }, process.env, AbortSignal.timeout(90_000));
     const profile = await saveProfile(required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME"), values);
     if (values["install-codex"]) {
       const fixedBinding = values.profile !== undefined || values["expected-repository-id"] !== undefined;

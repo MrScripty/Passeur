@@ -10,12 +10,13 @@ import { resolveRepositoryBinding } from '../../.passeur-core/src/core/repositor
 import { preparePaths } from '../../.passeur-core/src/service/bootstrap.js';
 import { processIdentity } from '../../.passeur-core/src/service/process.js';
 import { IpcConnection } from '../../.passeur-core/src/service/transport.js';
+import { diagnosticInfo } from '../../.passeur-core/src/core/errors.js';
 
-async function attachmentFixture(t) {
+async function attachmentFixture(t, profilePath) {
   const f = await serviceFixture(t);
   const identity = { package_version: 'fixture', build_id: 'fixture', mode: 'development',
     node_version: process.version, node_executable: process.execPath, pid: process.pid, started_at: new Date().toISOString() };
-  const intent = { project: f.root, stateRoot: f.state, profilePath: `${f.temp}/profile.json` };
+  const intent = { project: f.root, stateRoot: f.state, profilePath: profilePath ?? `${f.temp}/profile.json` };
   const binding = await resolveRepositoryBinding(intent, {}, new AbortController().signal);
   const paths = await preparePaths(binding), generation = randomUUID();
   const descriptor = { protocol: 1, generation, repository_id: binding.repositoryId, state_root: binding.stateRoot,
@@ -33,6 +34,10 @@ test('transient endpoint refusal and descriptor replacement recover before dispa
   const connecting = f.frontend.call('status', {});
   await delay(70);
   await f.publish(f.descriptor);
+  // Let the refused connection close and discovery consume the replacement
+  // before publishing an endpoint for that new generation. A stale welcome is
+  // intentionally terminal and has its own separate regression below.
+  await delay(70);
   const server = createServer(socket => {
     const peer = new IpcConnection(socket, frame => {
       if (frame.kind === 'hello') return peer.send({ kind: 'welcome', protocol: 1, generation: f.descriptor.generation, client_id: randomUUID() });
@@ -91,14 +96,16 @@ test('a transient status failure clears after a later successful observation', a
       if (frame.kind !== 'request') return;
       requests++;
       if (requests === 3) return peer.send({ kind: 'failure', id: frame.id, generation: f.descriptor.generation,
-        error: { code: 'SERVICE_TEMPORARY', message: 'temporary observation failure' } });
+        error: { code: 'SERVICE_TEMPORARY', message: 'temporary observation failure', stage: 'status.read', path: '/fixture', native_code: 'EIO', next_action: 'retry observation' } });
       return peer.send({ kind: 'response', id: frame.id, generation: f.descriptor.generation, result });
     }); peers.add(peer);
   });
   t.after(async () => { for (const peer of peers) peer.close(); await new Promise(resolve => server.close(resolve)); });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(f.paths.endpoint, resolve); });
   await f.frontend.call('status', {});
-  assert.equal((await f.frontend.observeStatus()).service.state, 'unavailable');
+  const unavailable = (await f.frontend.observeStatus()).service;
+  assert.deepEqual(unavailable, { state: 'unavailable', code: 'SERVICE_TEMPORARY', message: 'temporary observation failure',
+    stage: 'status.read', path: '/fixture', native_code: 'EIO', next_action: 'retry observation' });
   assert.equal((await f.frontend.observeStatus()).service.state, 'connected');
   assert.equal(requests, 4);
 });
@@ -113,9 +120,30 @@ test('build and profile conflicts are terminal and recorded in frontend status',
       const code = field === 'build' ? 'SERVICE_BUILD_CONFLICT' : 'SERVICE_PROFILE_CONFLICT';
       await assert.rejects(f.frontend.call('status', {}), { code });
       assert.deepEqual(f.frontend.status().service, { state: 'unavailable', code,
-        message: f.frontend.status().service.message });
+        message: f.frontend.status().service.message, ...(field === 'profile' ? {
+          stage: 'service.profile', path: f.intent.profilePath,
+          requested_profile_path: f.intent.profilePath,
+          service_profile_path: `${f.temp}/other-profile.json`,
+          next_action: "Use the elected service's approved profile or drain it explicitly before a controlled profile change.",
+        } : {}) });
     });
   }
+});
+
+test('profile conflict retains both maximum-relevant paths beyond message bounds', async t => {
+  const requestedPath = `/tmp/${'r'.repeat(2300)}`, serviceProfile = `/tmp/${'s'.repeat(2300)}`;
+  const f = await attachmentFixture(t, requestedPath);
+  await f.publish({ ...f.descriptor, profile_path: serviceProfile });
+  await assert.rejects(f.frontend.call('status', {}), error => {
+    const detail = diagnosticInfo(error);
+    assert.equal(detail.code, 'SERVICE_PROFILE_CONFLICT');
+    assert.equal(detail.message.length < 2048, true);
+    assert.equal(detail.path, requestedPath);
+    assert.equal(detail.requested_profile_path, requestedPath);
+    assert.equal(detail.service_profile_path, serviceProfile);
+    assert.deepEqual(f.frontend.status().service, { state: 'unavailable', ...detail });
+    return true;
+  });
 });
 
 test('a stale welcome generation is terminal before any request is dispatched', async t => {

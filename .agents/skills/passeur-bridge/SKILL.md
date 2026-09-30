@@ -9,11 +9,11 @@ Read [setup](references/setup.md) for installation or migration. Use the current
 
 ## Diagnose
 
-Tool discovery and frontend status do not need the repository/service/provider. `passeur_status` version2 distinguishes the frontend build from the connected service generation/build. `passeur_prepare` attaches to or starts the one repository service without inference. `passeur_agents` reads configured registrations; it does not certify native readiness or billing. Keep named server, agent ID, service generation and build identities distinct.
+Tool discovery and first-call `passeur_status` resolve the current frontend's repository binding without acquiring a lease, starting a service or contacting a provider. Status separates launch inputs, canonical repository identity, current source view, profile selection, state namespace, frontend build and connected service generation/build. `passeur_prepare` joins or starts that repository's service without inference. It does not transfer task control. `passeur_agents` reads configured registrations; it does not certify native readiness or billing.
 
-Prefer the repository-unpinned Codex registration. It has no fixed MCP `cwd` or `--project`; each local host session launches its Passeur front end in that session's project working directory, and the front end resolves exactly one canonical repository before service attachment. Different linked worktrees can share coordination while preserving their source views. Unrelated repositories use different repository services even though they use the same named MCP registration. If `passeur_status.binding.project_input` is not the intended project, inspect the registration/host launch context for a stale fixed `cwd` or `--project`; repository locks are not the repair mechanism.
+Use the single global `passeur` registration with no fixed MCP `cwd`, `--project`, `--profile` or expected repository ID. Each host session launches its own frontend with its own working directory. Linked worktrees share one repository service and retain their source views; unrelated repositories resolve independently. Same-repository frontends use Passeur normally without attaching to one another's tasks. Attach remains human-confirmed task-control transfer.
 
-Use the same state namespace and approved repository profile. Default profiles are keyed by canonical repository identity, with deterministic reuse of an existing main-worktree legacy default when the new key is absent. Do not delete a lease/socket, kill another client/service, change state roots or start a second coordinator as a recovery shortcut. An incompatible running service needs controlled handover.
+The installation default applies where no repository override exists. Existing canonical or supported legacy repository profiles remain overrides. A profile conflict reports the requested and elected service profile paths; resolve it through controlled service handover. For `PATH_NOT_FOUND`, `observed_dead` or a disconnected service, read the status diagnostics and call `passeur_prepare` in the affected repository to use repository-scoped recovery. Do not delete a descriptor or lease. A failure in another repository does not need to be diagnosed before using this one.
 
 ## Submit once and observe
 
@@ -69,13 +69,7 @@ proves that an external process stopped; settlement needs separately confirmed
 operator evidence. Preserve v2 metadata after the first recovery and use only a
 compatible reader/writer.
 
-New named registrations include these tools. The preferred named registration
-is repository-unpinned; an explicitly project-bound registration is a
-compatibility choice. Updating an existing registration uses the normal explicit
-registration workflow and preserves its deny/approval policy. Tool listing is
-not proof of actual installed-host use. Follow the
-completion plan's installed and real-host acceptance gates before treating this
-candidate as deployed.
+Start a fresh host session after installing the global registration so its tool catalog reloads. Existing sessions can keep an earlier MCP namespace until they exit. Retire legacy repository-specific registrations only by exact verified server names after inspecting the active host config; preserve unrelated entries and policy. Tool listing alone does not prove actual installed-host use. Follow the completion plan's installed and real-host acceptance gates before treating this candidate as deployed.
 
 ## Enroll an existing managed task when coordination is useful
 

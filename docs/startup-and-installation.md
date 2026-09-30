@@ -1,35 +1,30 @@
-# Shared-service installation and cutover
+# Install and use Passeur
 
-This procedure targets the [structural completion candidate](plans/structural-coordination-completion/plan.md), whose acceptance remains open. Read [compatibility](compatibility.md), [shared service](shared-service.md) and [structural reporting](structural-reporting.md) first. The supported service environment is qualified Linux on local filesystems, with the candidate's exact Node ABI, architecture, libc and native grammar bundle.
+This procedure targets the [structural completion candidate](plans/structural-coordination-completion/plan.md), whose acceptance remains open. Read [compatibility](compatibility.md), [shared service](shared-service.md) and [task lifecycle](task-lifecycle.md) for the service and ownership contracts. The qualified service environment is Linux on local filesystems with the candidate's exact Node ABI, architecture, libc and native grammar bundle.
 
-1. Review the complete source and lockfile. Provision the exact pinned dependencies under explicit authority with `npm ci`, then run `npm run check` and `npm test`. Commit the reviewed result through ordinary hooks before building a clean candidate. The native Node binding and pinned grammar packages are build inputs. Linux and util-linux flock are required for service execution.
-2. Build a clean candidate with `npm run build:runtime -- --source "$PWD" --output /absolute/disposable/artifact-output`. Use an output root outside the source tree. Install its returned candidate path into a separate user-owned root using the CLI procedure below. Neither build, discovery nor normal execution installs dependencies. Do not overwrite an installed build or redirect a running process.
-3. Account for tasks and close old connection-owned servers normally. Do not delete their leases or select another state root.
-4. From the selected installed CLI, run `migrate-profile --project ABSOLUTE_PROJECT --profile ABSOLUTE_PROFILE --yes` when the profile needs migration. It writes a validated profile3 and exact backup. Current structural metadata v6 and coordinated task v5 require a capable reader; an older reader must refuse without changing bytes. A backup is evidence, not a downgrade path.
-5. Update the existing named registration using `register-codex` with its unchanged project/profile/state/server-name binding and explicit `--runtime`. Required/optional policy and existing permission settings are preserved unless an authorized flag changes them. Use the existing fingerprint/adoption procedure for conflicting unmanaged entries.
-6. Start fresh Codex clients. Call `passeur_status` (frontend and service identities differ), `passeur_prepare`, then the task and coordination tools. Two compatible linked worktree clients share one service; materially different profiles/builds conflict visibly. Verify the actual installed native parser separately with `doctor`; parser readiness does not determine task readiness or retained-result access.
+Build and install a reviewed candidate using the instructions below. Configure supported agents once, then install one unpinned Codex registration named `passeur`:
 
-The old four delegation entrypoints now reject execution and direct clients to submit/wait/input/cancel. Registration probes enumerate this catalog and inspect status2 without creating tasks. `probe:service -- --project PATH --profile FILE --state-root ROOT --runtime ABSOLUTE_INSTALLED_CLI --yes` exercises two real local front ends/one service without inference after building. `probe:agents` is separately opt-in live work and leaves accepted tasks alive when its observation finishes; retain the returned IDs and explicitly adopt/control them from the real host.
+```sh
+node /absolute/installed/runtime/dist/src/cli.js register-codex --server-name passeur --required
+```
 
-`service-stop --project PATH --profile FILE --state-root ROOT --operation-key KEY --yes` closes service admission and drains without a task deadline. To explicitly cancel named tasks, use `--cancel-tasks ID[,ID...] --yes --operation-key KEY` only with the required task-control authority. Ordinary front-end exit never forwards a service-stop request.
+The registration has no fixed MCP working directory, project, profile or expected repository ID. Each host session starts an independent frontend with that session's repository context. The frontend joins or starts the service for its canonical repository. Linked worktrees share that service and preserve separate source views; unrelated repositories remain independent. There is no global current-repository lock. Opening a repository requires no registration, binding repair, or host restart. Start a fresh host session after registration so it loads the current MCP catalog.
 
-## Installed acceptance
+Run interactive `setup` or `configure --install-codex` once to create the installation-wide agent profile and registration. Profile selection within each frontend is explicit profile, existing canonical-repository override, supported legacy worktree/main-worktree profile, then `$XDG_CONFIG_HOME/muse-bridge/default-profile.json` or `$HOME/.config/muse-bridge/default-profile.json`. Repository overrides remain available for advanced use; they are not needed when opening another repository.
 
-Use [installed acceptance](installed-acceptance.md) for the clean artifact, relocated offline all-language probe, schema cutover, named host and resource runs. The installed CLI's `doctor --project PATH` reports each grammar's selected-artifact readiness without preparing or authenticating a worker; `--prepare --yes` separately requests task preparation. The installed parser manifest records source pins, native hashes, Node ABI/N-API and libc. A mismatched or missing component produces a capability diagnostic. It does not authorize a fallback to development modules.
+Old tool namespaces can remain in an already-running host because its catalog was loaded earlier. Inspect the exact active Codex configuration and each obsolete server before changing it; back up the file, then remove only exact, verified legacy registration names through the host's configuration command. Never delete server entries by a name prefix. See [attached-tool recovery](troubleshooting/attached-tools.md).
 
-`PASSEUR_OBSERVATION_MONITOR=off` disables the optional background monitor for the SC16 same-machine baseline; the default is `on`. Set it on the service environment before startup and restore normal monitoring after measurement. It is an observation setting, not a worker lifetime or task-control limit. See [resource behavior](plans/structural-coordination-completion/reports/resource-behavior.md).
+Use [installed acceptance](installed-acceptance.md) for the clean artifact, offline native parser probe and installed-host qualification. `passeur_status` is read-only and resolves frontend identity; `passeur_prepare` explicitly joins/starts the repository service and prepares state without inference. A frontend disconnect does not stop accepted work. Use explicit service-stop only for controlled service handover, and account for tasks under the existing [lifecycle contract](task-lifecycle.md).
 
-## Historical installation reference
+The `probe:service` command can exercise local frontends and one repository service without inference after building. `probe:agents` performs separately authorized agent work; its accepted tasks remain alive when observation ends. The installed CLI's `doctor --project PATH` checks selected native artifacts without authenticating a worker; `--prepare --yes` separately requests service preparation. See [resource behavior](plans/structural-coordination-completion/reports/resource-behavior.md) for the controlled monitor baseline.
 
-The artifact installation, named-registration edit and backup mechanics below remain the reference. Earlier task/profile and connection-owned descriptions are superseded by [task lifecycle](task-lifecycle.md).
-
-# Discoverable startup and installed runtime
+## Discoverable startup and installed runtime
 
 ## Availability and coordination
 
 Passeur connects its fixed MCP catalog before it resolves the project, reads the execution profile, accesses task state, or loads Muse and the native parser bundle. A functioning Node/MCP installation is still required. A broken executable or missing essential dependency cannot expose its own tools.
 
-`passeur_status` is read-only. It returns the running identity, configured binding and observed coordination/profile/approval state. `not_checked` is not success. Provider compatibility is deliberately not inferred from versions, configuration or a readiness check.
+`passeur_status` is read-only. On first call it resolves that frontend's repository, worktree/source view, selected profile and state namespace without starting a service or taking a lease. It reports frontend identity and, when connected, the service generation/build. `not_checked` is not success. Provider compatibility is deliberately not inferred from versions, configuration or a readiness check.
 
 `passeur_prepare` acquires coordination authority and initializes/imports/reconciles supported state, without inference. Calling it is an explicit request to perform that preparation. Delegation enters the same readiness path automatically. History and offline administration do not require a working Muse session or a verified subscription profile. A malformed/missing execution profile blocks delegation, not the interface.
 
@@ -73,26 +68,18 @@ The installed directory includes compiled code and helper, locked production dep
 
 ## Register Passeur once
 
-The preferred local Codex registration is repository-unpinned:
+The one local Codex registration is repository-unpinned:
 
 ```sh
 node /absolute/installed/runtime/dist/src/cli.js register-codex \
-  --state-root "$HOME/.local/state" --server-name passeur --required
+  --server-name passeur --required
 ```
 
-This pins Node, the installed CLI, state namespace, build and tool policy, but deliberately omits an MCP `cwd`, `--project`, `--profile` and `--expected-repository-id`. Current local Codex stdio startup supplies the session's project working directory to an MCP server whose `cwd` is unconfigured. Passeur's `serve` action uses that inherited directory as its project input, resolves the canonical Git common directory, and then attaches to or elects the existing repository-scoped service. Linked worktrees share the canonical repository identity; unrelated repositories retain independent service/state/lease ownership.
+This pins the installed executable, build and tool policy while omitting MCP `cwd`, `--project`, `--profile` and `--expected-repository-id`. Each host session starts a separate frontend in its own working directory. That frontend resolves its canonical repository and connects to that repository's service. Linked worktrees share canonical identity and keep separate source views; unrelated repositories retain independent state and service election.
 
-Default profile lookup is repository-stable. New defaults use the canonical repository ID. If that profile is absent and a legacy main-worktree default profile exists, Passeur reuses the canonical legacy profile so linked worktrees do not split configuration during migration. Interactive `setup` and `configure --install-codex` install the unpinned registration when they use this default profile. Supplying an explicit `--profile` or `--expected-repository-id` is treated as deliberate repository-specific configuration and preserves a pinned registration; Passeur does not silently discard that mapping.
+Run `setup` or `configure --install-codex` once to configure the installation. Profile selection is explicit CLI profile, existing canonical-repository override, supported legacy main/worktree profile, then the installation default under `muse-bridge/default-profile.json`. A new repository needs no profile copy. Repository overrides and explicit CLI bindings remain available for controlled maintenance.
 
-An explicitly pinned registration remains supported when a fixed repository is intentional or a host cannot supply the required local working-directory context:
-
-```sh
-node /absolute/installed/runtime/dist/src/cli.js register-codex \
-  --project /absolute/Pumas-Library --profile /absolute/pumas-profile.json \
-  --state-root "$HOME/.local/state" --server-name passeur_pumas --required
-```
-
-A pinned registration records its working directory, project, profile and expected repository identity as before. Replacing an existing named pinned binding with the unpinned form still requires the exact `--replace-binding` fingerprint; routing changes do not bypass configuration ownership. `muse_bridge` remains available as an explicit server name; the unrelated Muse SDK client identifier also remains `muse_bridge`.
+Explicit project/profile CLI bindings remain available for controlled maintenance and tests. They are unnecessary for normal multi-repository use. Configuration updates still honor the exact existing-binding fingerprint and preserve unrelated policy; this routing change does not bypass configuration ownership. The unrelated Muse SDK client identifier `muse_bridge` remains distinct from the global Codex server name `passeur`.
 
 ### Required versus optional host startup
 

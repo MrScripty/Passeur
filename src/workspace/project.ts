@@ -13,7 +13,7 @@ export async function canonicalProject(path: string): Promise<string> {
 export function projectId(root: string): string { return createHash("sha256").update(root).digest("hex").slice(0, 24); }
 export async function repositoryIdentity(root: string, signal?: AbortSignal): Promise<{ common_dir: string; id: string }> {
   try {
-    const common = await realpath((await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim());
+    const common = await realpath((await gitSterile(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim());
     return { common_dir: common, id: projectId(common) };
   } catch (error) {
     // Non-Git directories remain supported for read-only assignments only.
@@ -24,9 +24,9 @@ export async function repositoryIdentity(root: string, signal?: AbortSignal): Pr
 export async function repositoryMainWorktree(root: string, signal?: AbortSignal): Promise<string> {
   try {
     const [topText, gitDirText, commonText] = await Promise.all([
-      git(root, ["rev-parse", "--path-format=absolute", "--show-toplevel"], signal),
-      git(root, ["rev-parse", "--path-format=absolute", "--absolute-git-dir"], signal),
-      git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+      gitSterile(root, ["rev-parse", "--path-format=absolute", "--show-toplevel"], signal),
+      gitSterile(root, ["rev-parse", "--path-format=absolute", "--absolute-git-dir"], signal),
+      gitSterile(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
     ]);
     const [top, gitDir, common] = await Promise.all([
       realpath(topText.trim()), realpath(gitDirText.trim()), realpath(commonText.trim()),
@@ -34,19 +34,19 @@ export async function repositoryMainWorktree(root: string, signal?: AbortSignal)
     if (gitDir === common) return top;
 
     try {
-      const configured = (await git(root, ["config", "--path", "--get", "core.worktree"], signal)).trim();
+      const configured = (await gitSterile(root, ["config", "--path", "--get", "core.worktree"], signal)).trim();
       if (configured) return realpath(isAbsolute(configured) ? configured : resolve(common, configured));
     } catch (error) {
       if (!(error instanceof BridgeError) || error.code !== "GIT_ERROR") throw error;
     }
 
-    const fields = (await git(root, ["worktree", "list", "--porcelain", "-z"], signal)).split("\0");
+    const fields = (await gitSterile(root, ["worktree", "list", "--porcelain", "-z"], signal)).split("\0");
     const entry = fields.find((field) => field.startsWith("worktree "));
     if (entry) {
       const candidate = await realpath(entry.slice("worktree ".length));
       try {
-        const candidateTop = await realpath((await git(candidate, ["rev-parse", "--path-format=absolute", "--show-toplevel"], signal)).trim());
-        const candidateCommon = await realpath((await git(candidate, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim());
+        const candidateTop = await realpath((await gitSterile(candidate, ["rev-parse", "--path-format=absolute", "--show-toplevel"], signal)).trim());
+        const candidateCommon = await realpath((await gitSterile(candidate, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim());
         if (candidateTop === candidate && candidateCommon === common) return candidate;
       } catch (error) {
         if (!(error instanceof BridgeError) || error.code !== "GIT_ERROR") throw error;

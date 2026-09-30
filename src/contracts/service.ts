@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { isAbsolute } from "node:path";
-import { RuntimeIdentitySchema, RuntimeStatusSchema } from "./runtime.js";
+import { RuntimeIdentitySchema, RuntimeStatusSchema, RuntimeFailureSchema } from "./runtime.js";
 import { SubmitRequestSchema, SubmitBatchSchema, TasksRequestSchema, WaitRequestSchema, CancelRequestSchema, AttachRequestSchema, TaskLookupSchema, TaskIdSchema, TaskObservationSchema, TaskReceiptSchema, ControlReceiptSchema, PendingInputSchema, AnnouncementReferenceSchema } from "./tasks.js";
 import { AssignmentSchema, AgentCatalogRequestSchema, AgentCatalogSchema } from "./agents.js";
 import { ResultRequestSchema, FinalizeRequestSchema } from "./index.js";
@@ -16,10 +16,13 @@ export const ServiceStatusSchema = z.object({ schema_version: z.literal(1), gene
 }).strict();
 export const FrontendStatusSchema = z.object({ schema_version: z.literal(2), frontend: RuntimeIdentitySchema,
   binding: z.object({ project_input: absolute, profile_path: absolute.optional(), state_root: absolute.optional(), expected_repository_id: z.string().optional() }).strict(),
+  resolved: z.object({ project: absolute, source_view: absolute, repository_id: z.string().min(1).max(256),
+    common_dir: absolute, state_root: absolute, store_root: absolute, profile_path: absolute.optional(),
+    profile_source: z.enum(["explicit", "repository", "legacy", "global"]).optional() }).strict().optional(),
   service: z.discriminatedUnion("state", [
     z.object({ state: z.literal("not_checked") }).strict(),
     z.object({ state: z.literal("connected"), status: ServiceStatusSchema }).strict(),
-    z.object({ state: z.literal("unavailable"), code: z.string().min(1).max(128), message: z.string().min(1).max(2048) }).strict(),
+    RuntimeFailureSchema.extend({ state: z.literal("unavailable") }),
   ]),
 }).strict();
 export type FrontendStatus = z.output<typeof FrontendStatusSchema>;
@@ -79,7 +82,7 @@ export const operationSchemas = {
 } as const;
 export type Operation = keyof typeof operationSchemas;
 export type Arguments<K extends Operation> = z.output<(typeof operationSchemas)[K]>;
-export const FailureSchema = z.object({ code: z.string().min(1).max(128), message: z.string().min(1).max(2048) }).strict();
+export const FailureSchema = RuntimeFailureSchema.extend({ message: z.string().min(1).max(2048) });
 const receipt = z.object({ kind: z.literal("accepted"), task: TaskObservationSchema }).strict();
 const taskPage = z.object({ total: z.number().int().min(0), offset: z.number().int().min(0), next_offset: z.number().int().min(0).nullable(), tasks: z.array(TaskObservationSchema).max(16) }).strict();
 const wait = z.object({ kind: z.enum(["changed", "terminal", "input_required", "wait_elapsed"]), task: TaskObservationSchema }).strict();

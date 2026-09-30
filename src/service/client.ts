@@ -5,7 +5,7 @@ import type { Operation, Response, ServiceDescriptor, FrontendStatus } from "../
 import { RepositoryRuntime, resolveRepositoryBinding, type LaunchIntent, type ResolvedBinding } from "../core/repository-runtime.js";
 import type { RuntimeIdentity } from "../contracts/runtime.js";
 import type { ResultRequest } from "../contracts/types.js";
-import { BridgeError, diagnosticInfo } from "../core/errors.js";
+import { BridgeError, diagnosticInfo, type ErrorInfo } from "../core/errors.js";
 import { withAbort } from "../core/async.js";
 import { IpcConnection, decodeFrame, type Frame } from "./transport.js";
 import type { LaunchReservation } from "./bootstrap.js";
@@ -40,7 +40,7 @@ export class ServiceClient {
       const request = this.#pending.get(frame.id);
       if (!request) throw new BridgeError("SERVICE_CORRELATION_INVALID", "Service response has no outstanding request");
       this.#pending.delete(frame.id);
-      if (frame.kind === "failure") { request.reject(new BridgeError(frame.error.code, frame.error.message)); return; }
+      if (frame.kind === "failure") { request.reject(new BridgeError(frame.error.code, frame.error.message, frame.error)); return; }
       request.accept(frame.result);
     }, () => {
       const failure = this.connection.error instanceof BridgeError && !this.#clientId
@@ -101,6 +101,15 @@ export class ServiceClient {
   }
   close(): void { this.connection.close(); }
 }
+function serviceProfileConflict(binding: ResolvedBinding, descriptor: ServiceDescriptor): BridgeError {
+  return new BridgeError("SERVICE_PROFILE_CONFLICT",
+    "The requested profile differs from the elected service profile", {
+      stage: "service.profile", ...(binding.profilePath ? { path: binding.profilePath } : {}),
+      ...(binding.profilePath ? { requested_profile_path: binding.profilePath } : {}),
+      ...(descriptor.profile_path ? { service_profile_path: descriptor.profile_path } : {}),
+      next_action: "Use the elected service's approved profile or drain it explicitly before a controlled profile change.",
+    });
+}
 /** One host connection. Its owner token survives IPC reconnects, but is never exposed to the model. */
 export class PasseurFrontend {
   readonly #ownerToken: string;
@@ -110,27 +119,43 @@ export class PasseurFrontend {
   #connecting: Promise<ServiceClient> | undefined;
   #binding: ResolvedBinding | undefined;
   #lastStatus: Response<"status"> | undefined;
-  #failure: { code: string; message: string } | undefined;
+  #failure: ErrorInfo | undefined;
+  readonly #environment: Readonly<Record<string, string | undefined>>;
   constructor(readonly intent: LaunchIntent, readonly identity: RuntimeIdentity, readonly exactCli: string, ownerToken = randomBytes(32).toString("hex")) {
     if (!/^[a-f0-9]{64}$/.test(ownerToken)) throw new BridgeError("CONTROL_CREDENTIAL_INVALID", "Invalid private control credential");
+    this.intent = Object.freeze({ ...intent });
+    this.identity = Object.freeze({ ...identity });
     this.#ownerToken = ownerToken;
-    this.#history = new RepositoryRuntime(intent, identity);
+    const inheritedKeys = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME",
+      "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR", "PASSEUR_OBSERVATION_MONITOR"] as const;
+    this.#environment = Object.freeze(Object.fromEntries(inheritedKeys.flatMap((key) =>
+      process.env[key] === undefined ? [] : [[key, process.env[key]]])));
+    this.#history = new RepositoryRuntime(this.intent, this.identity, {}, this.#environment);
   }
   async #resolve(): Promise<ResolvedBinding> {
-    return this.#binding ??= await resolveRepositoryBinding(this.intent, process.env, this.#lifetime.signal);
+    return this.#binding ??= await resolveRepositoryBinding(this.intent, this.#environment, this.#lifetime.signal);
   }
   status(): FrontendStatus {
+    const resolved = this.#binding ?? this.#history.binding;
     return { schema_version: 2, frontend: this.identity, binding: { project_input: this.intent.project,
       ...(this.intent.profilePath ? { profile_path: this.intent.profilePath } : {}), ...(this.intent.stateRoot ? { state_root: this.intent.stateRoot } : {}),
       ...(this.intent.expectedRepositoryId ? { expected_repository_id: this.intent.expectedRepositoryId } : {}) },
+      ...(resolved ? { resolved: { project: resolved.project, source_view: resolved.project, repository_id: resolved.repositoryId,
+        common_dir: resolved.commonDir, state_root: resolved.stateRoot, store_root: resolved.storeRoot,
+        ...(resolved.profilePath ? { profile_path: resolved.profilePath } : {}),
+        ...(resolved.profileSource ? { profile_source: resolved.profileSource } : {}) } } : {}),
       service: this.#failure ? { state: "unavailable", ...this.#failure }
         : this.#client?.connection.isClosed ? { state: "unavailable", code: "SERVICE_DISCONNECTED", message: "The previous service observation is stale" }
         : this.#lastStatus ? { state: "connected", status: this.#lastStatus } : { state: "not_checked" } };
   }
   async observeStatus(signal?: AbortSignal): Promise<FrontendStatus> {
+    if (!this.#binding) {
+      try { await withAbort(this.#resolve(), signal); this.#failure = undefined; }
+      catch (error) { this.#failure = diagnosticInfo(error); return this.status(); }
+    }
     if (this.#client && !this.#client.connection.isClosed) {
       try { this.#lastStatus = await this.#client.call("status", {}, signal); this.#failure = undefined; }
-      catch (error) { const info = diagnosticInfo(error); this.#failure = { code: info.code, message: info.message }; this.#lastStatus = undefined; }
+      catch (error) { const info = diagnosticInfo(error); this.#failure = info; this.#lastStatus = undefined; }
     }
     return this.status();
   }
@@ -154,8 +179,8 @@ export class PasseurFrontend {
           }
         }
         const live = descriptor ? await existingOwner(descriptor) : false;
-        if (live && descriptor?.profile_path !== binding.profilePath) throw new BridgeError("SERVICE_PROFILE_CONFLICT", "Use the same approved profile path for clients of this repository service");
-        if (!live) reservation = await launchService(binding, this.exactCli);
+        if (live && descriptor?.profile_path !== binding.profilePath) throw serviceProfileConflict(binding, descriptor!);
+        if (!live) reservation = await launchService(binding, this.exactCli, this.#environment);
         while (true) {
           signal.throwIfAborted();
           let candidate: ServiceClient | undefined;
@@ -163,7 +188,7 @@ export class PasseurFrontend {
           try {
             descriptor = await readDescriptor(binding);
             if (descriptor && await existingOwner(descriptor)) {
-              if (descriptor.profile_path !== binding.profilePath) throw new BridgeError("SERVICE_PROFILE_CONFLICT", "The elected service has a different approved profile");
+              if (descriptor.profile_path !== binding.profilePath) throw serviceProfileConflict(binding, descriptor);
               if (descriptor.runtime.build_id !== this.identity.build_id) throw new BridgeError("SERVICE_BUILD_CONFLICT", "The running service uses another build; drain it explicitly before a controlled upgrade");
               candidate = new ServiceClient(descriptor, binding, this.#ownerToken);
               await withAbort(candidate.ready, signal);
@@ -184,14 +209,14 @@ export class PasseurFrontend {
           // the flock reservation prevents competing frontends from creating
           // another service generation.
           if (!reservation && (!descriptor || !(await existingOwner(descriptor)))) {
-            reservation = await launchService(binding, this.exactCli);
+            reservation = await launchService(binding, this.exactCli, this.#environment);
           }
           if (reservation) await Promise.race([delay(25, undefined, { signal }), reservation.failure]);
           else await delay(25, undefined, { signal });
         }
       } catch (error) {
         const info = budget.aborted && !this.#lifetime.signal.aborted ? { code: "SERVICE_ATTACH_UNAVAILABLE", message: "Service attachment exceeded its observation budget; no running task was cancelled" } : diagnosticInfo(error);
-        this.#lastStatus = undefined; this.#failure = { code: info.code, message: info.message }; throw new BridgeError(info.code, info.message);
+        this.#lastStatus = undefined; this.#failure = info; throw new BridgeError(info.code, info.message, info);
       } finally { reservation?.released(); }
     })();
     this.#connecting = attempt;

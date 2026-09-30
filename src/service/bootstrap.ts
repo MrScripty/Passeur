@@ -2,12 +2,17 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { open, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { DescriptorSchema, type ServiceDescriptor } from "../contracts/service.js";
+import { DescriptorSchema, FailureSchema, type ServiceDescriptor } from "../contracts/service.js";
 import type { ResolvedBinding } from "../core/repository-runtime.js";
-import { BridgeError, nativeCode } from "../core/errors.js";
+import { BridgeError, nativeCode, diagnosticInfo, type ErrorInfo } from "../core/errors.js";
 import { privateDirectory, privateFile, sameProcess } from "./process.js";
 
 export type ServicePaths = { directory: string; descriptor: string; endpoint: string; guard: string };
+const serviceEnvironmentKeys = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME",
+  "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR", "PASSEUR_OBSERVATION_MONITOR"] as const;
+export function serviceLaunchEnvironment(environment: Readonly<Record<string, string | undefined>>): NodeJS.ProcessEnv {
+  return Object.fromEntries(serviceEnvironmentKeys.flatMap((key) => environment[key] === undefined ? [] : [[key, environment[key]!]]));
+}
 export function servicePaths(binding: ResolvedBinding): ServicePaths {
   const directory = join("/tmp", `passeur-${process.getuid?.() ?? "unsupported"}`);
   const digest = createHash("sha256").update(binding.storeRoot).digest("hex").slice(0, 40);
@@ -53,7 +58,8 @@ export async function readDescriptor(binding: ResolvedBinding): Promise<ServiceD
 }
 export type LaunchReservation = { child: ChildProcess; released: () => void; failure: Promise<never> };
 /** Launch arguments contain bindings only. Control credentials never enter process arguments or environment. */
-export async function launchService(binding: ResolvedBinding, exactCli: string): Promise<LaunchReservation> {
+export async function launchService(binding: ResolvedBinding, exactCli: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env): Promise<LaunchReservation> {
   const paths = await preparePaths(binding);
   let reject!: (error: unknown) => void;
   const failure = new Promise<never>((_yes, no) => { reject = no; }); failure.catch(() => undefined);
@@ -62,18 +68,56 @@ export async function launchService(binding: ResolvedBinding, exactCli: string):
   const args = ["--nonblock", "--no-fork", "--conflict-exit-code", "75", paths.guard, process.execPath, resolve(exactCli), "service-run", "--project", binding.project,
     "--state-root", binding.stateRoot, "--expected-repository-id", binding.repositoryId,
     ...(binding.profilePath ? ["--profile", binding.profilePath] : [])];
-  const child = spawn("flock", args, { stdio: ["pipe", "ignore", "ignore"], detached: true, shell: false,
-    env: Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR", "PASSEUR_OBSERVATION_MONITOR"].flatMap((k) => process.env[k] === undefined ? [] : [[k, process.env[k]]])) });
+  const child = spawn("flock", args, { stdio: ["pipe", "ignore", "pipe"], detached: true, shell: false,
+    env: serviceLaunchEnvironment(environment) });
+  const fallbackContext = { stage: "service.launch", path: resolve(exactCli),
+    next_action: "Inspect the exact installed runtime and dependencies; preserve the repository state namespace." };
+  // Drain stderr without retaining arbitrary output. Only complete, strict,
+  // bounded CLI diagnostic lines can become a public startup failure.
+  // The full UTF-8 FailureSchema maximum fits within this bound, including both
+  // profile paths. The same aggregate cap still limits all retained stderr.
+  const lineLimit = 65_536, captureLimit = 65_536;
+  let line = Buffer.alloc(0), discardedLine = false, captured = 0;
+  let diagnostic: ErrorInfo | undefined;
+  const decodeLine = () => {
+    if (!discardedLine && line.length) {
+      try {
+        const parsed = FailureSchema.safeParse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line)));
+        if (parsed.success) diagnostic = diagnosticInfo(new BridgeError(parsed.data.code, parsed.data.message, parsed.data));
+      } catch { /* Arbitrary stderr is never projected. */ }
+    }
+    line = Buffer.alloc(0); discardedLine = false;
+  };
+  child.stderr!.on("data", (chunk: Buffer) => {
+    const bytes = chunk.subarray(0, Math.max(0, captureLimit - captured)); captured += bytes.length;
+    let start = 0;
+    while (start < bytes.length) {
+      const end = bytes.indexOf(10, start), stop = end === -1 ? bytes.length : end;
+      if (!discardedLine) {
+        if (line.length + stop - start > lineLimit) { discardedLine = true; line = Buffer.alloc(0); }
+        else line = Buffer.concat([line, bytes.subarray(start, stop)]);
+      }
+      if (end === -1) break;
+      decodeLine(); start = end + 1;
+    }
+    if (captured === captureLimit) { line = Buffer.alloc(0); discardedLine = true; }
+  });
   child.on("error", (error) => {
     const code = nativeCode(error);
     reject(new BridgeError(code === "ENOENT" ? "SERVICE_PLATFORM_UNSUPPORTED" : "SERVICE_START_FAILED",
-      "The qualified flock launcher could not be started", { cause: error, ...(code ? { native_code: code } : {}) }));
+      "The qualified flock launcher could not be started", { ...fallbackContext, cause: error, ...(code ? { native_code: code } : {}) }));
   });
-  child.on("exit", (code, signal) => {
-    if (code !== 75) reject(new BridgeError("SERVICE_START_FAILED", signal
-      ? `Guarded service startup ended by signal ${signal}`
-      : `Guarded service startup exited with code ${code}; inspect the exact installed runtime and dependencies`));
+  // close follows exit and stderr EOF, so a final emitted diagnostic is not lost.
+  child.on("close", (code, signal) => {
+    decodeLine();
+    if (code !== 75) reject(diagnostic ? new BridgeError(diagnostic.code, diagnostic.message, diagnostic)
+      : new BridgeError("SERVICE_START_FAILED", signal
+        ? `Guarded service startup ended by signal ${signal}`
+        : `Guarded service startup exited with code ${code}; inspect the exact installed runtime and dependencies`, fallbackContext));
   });
+  // Observing service stderr must not keep a detached frontend alive while
+  // accepted work remains owned by the service after release.
+  (child.stderr as import("node:net").Socket).unref();
   child.stdin!.on("error", () => undefined);
   child.unref();
   return { child, failure, released: () => { child.stdin?.end(); } };

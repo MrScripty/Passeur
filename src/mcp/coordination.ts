@@ -92,7 +92,7 @@ export function registerCoordinationTools(mcp: McpServer, frontend: Coordination
     try { return toolPayload(await invokeCoordinationTool(name, value, frontend, AbortSignal.any([signal, lifecycle]))); }
     catch (error) {
       const detail = diagnosticInfo(error);
-      return toolPayload({ error: { code: detail.code, message: detail.message, ...(detail.next_action ? { next_action: detail.next_action } : {}) } }, true);
+      return toolPayload({ error: detail }, true);
     }
   };
   mcp.registerTool("passeur_coordination", { description: coordinationToolDescriptions.passeur_coordination,

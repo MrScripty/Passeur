@@ -19,7 +19,7 @@ import { taskReceipt } from "../contracts/tasks.js";
 import { textChunk } from "../core/result.js";
 
 type Peer = { connection: IpcConnection; actor?: ClientActor; source?: string; authenticating: boolean; requests: Map<string, { controller: AbortController; lane: RequestLane }> };
-const errorValue = (error: unknown) => { const e = diagnosticInfo(error); return { code: e.code.slice(0, 128), message: (e.message || "Service operation failed").slice(0, 2048) }; };
+const errorValue = (error: unknown) => { const e = diagnosticInfo(error); return { ...e, message: e.message || "Service operation failed" }; };
 const finalizedErrorValue = (error: ErrorInfo) => ({ code: safeText(error.code, 128),
   message: safeText(error.message || "Service operation failed", 2048) });
 /** The elected process owns the runtime. Connection actors own no worker lifetime. */

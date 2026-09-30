@@ -1,10 +1,12 @@
 /** Domain failures retain their cause; public projections contain only bounded, redacted context. */
 export type FailureContext = {
   cause?: unknown;
-  stage?: string;
-  path?: string;
-  native_code?: string;
-  next_action?: string;
+  stage?: string | undefined;
+  path?: string | undefined;
+  requested_profile_path?: string | undefined;
+  service_profile_path?: string | undefined;
+  native_code?: string | undefined;
+  next_action?: string | undefined;
 };
 export type ErrorInfo = { code: string; message: string } & Omit<FailureContext, "cause">;
 
@@ -41,6 +43,8 @@ export function diagnosticInfo(error: unknown): ErrorInfo {
     code: safeText(code, 128), message,
     ...(context.stage ? { stage: safeText(context.stage, 128) } : {}),
     ...(context.path ? { path: safeText(context.path, 4096) } : {}),
+    ...(context.requested_profile_path ? { requested_profile_path: safeText(context.requested_profile_path, 4096) } : {}),
+    ...(context.service_profile_path ? { service_profile_path: safeText(context.service_profile_path, 4096) } : {}),
     ...(native ? { native_code: safeText(native, 64) } : {}),
     ...(context.next_action ? { next_action: safeText(context.next_action, 1024) } : {}),
   };

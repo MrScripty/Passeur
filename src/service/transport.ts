@@ -1,5 +1,7 @@
 import type { Socket } from "node:net";
 import { TextDecoder } from "node:util";
+import { FailureSchema } from "../contracts/service.js";
+import type { ErrorInfo } from "../core/errors.js";
 import { BridgeError } from "../core/errors.js";
 
 export type Frame =
@@ -7,7 +9,7 @@ export type Frame =
   | { kind: "welcome"; protocol: 1; generation: string; client_id: string }
   | { kind: "request"; id: string; generation: string; operation: string; arguments: unknown }
   | { kind: "response"; id: string; generation: string; result: unknown }
-  | { kind: "failure"; id: string; generation: string; error: { code: string; message: string } }
+  | { kind: "failure"; id: string; generation: string; error: ErrorInfo }
   | { kind: "cancel_wait"; id: string; generation: string };
 const MAX_FRAME = 1_048_576, MAX_BUFFERED_WRITE = 4 * MAX_FRAME, MAX_CALLBACKS = 64;
 function record(v: unknown): v is Record<string, unknown> { return typeof v === "object" && v !== null && !Array.isArray(v); }
@@ -31,7 +33,10 @@ export function decodeFrame(value: unknown): Frame {
   if (value.kind === "cancel_wait" && !extra(["kind", "id", "generation"])) return { kind: "cancel_wait", id: value.id, generation: value.generation };
   if (value.kind === "request" && !extra(["kind", "id", "generation", "operation", "arguments"]) && string(value.operation, 128) && "arguments" in value) return { kind: "request", id: value.id, generation: value.generation, operation: value.operation, arguments: value.arguments };
   if (value.kind === "response" && !extra(["kind", "id", "generation", "result"]) && "result" in value) return { kind: "response", id: value.id, generation: value.generation, result: value.result };
-  if (value.kind === "failure" && !extra(["kind", "id", "generation", "error"]) && record(value.error) && Object.keys(value.error).every((k) => k === "code" || k === "message") && string(value.error.code, 128) && string(value.error.message, 2048)) return { kind: "failure", id: value.id, generation: value.generation, error: { code: value.error.code, message: value.error.message } };
+  if (value.kind === "failure" && !extra(["kind", "id", "generation", "error"])) {
+    const error = FailureSchema.safeParse(value.error);
+    if (error.success) return { kind: "failure", id: value.id, generation: value.generation, error: error.data };
+  }
   throw new BridgeError("SERVICE_FRAME_INVALID", "Invalid IPC variant");
 }
 /** Bounded JSON-lines framing. It has no task, permission or retry policy. */

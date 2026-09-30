@@ -1,5 +1,7 @@
 # Attached-tool registration correction: implementation and evidence
 
+> **Superseded for normal use:** this historical report's remaining two-name host check is not the current user model. The [global-agent repository-usability plan](../plans/global-agent-repository-usability/plan.md) qualifies one unpinned `passeur` registration across repositories. Do not recreate `passeur_pumas` or `passeur_tuldok` to satisfy the old check.
+
 Date: September 20, 2026. Subject: a source patch against Passeur `68c3e455ec35061c04b13a27d1ca9e438ec81f95` (`feat: add registered agent adapters`). Standards authority: MrScripty/Coding-Standards `366c1d90a24bbfb50973f62b155a5f3396c0f107`. Incident: Pumas-Library `d436ee6d09b07eafd2fe6ec259c4e3d9a648dbf5`, TIPC-I10.
 
 Status: source correction implemented; focused evidence passed; dependency-backed registration and actual-host acceptance pending. This does not mark either parent implementation plan Accepted or resolve the operational Pumas blocker.

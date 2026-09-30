@@ -70,8 +70,13 @@ it("real front-end discovery survives missing project/profile and permits repair
   const client = await connect(project, state);
   try {
     expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual([...CODEX_ENABLED_TOOLS].sort());
-    expect((await status(client)).service.state).toBe("not_checked");
-    expect((await client.callTool({ name: "passeur_prepare", arguments: {} })).isError).toBe(true);
+    expect((await status(client)).service).toMatchObject({ state: "unavailable", code: "PATH_NOT_FOUND", stage: "project.resolve", path: project });
+    const failed = await client.callTool({ name: "passeur_prepare", arguments: {} });
+    expect(failed.isError).toBe(true);
+    expect(body(failed)).toMatchObject({ error: { code: "PATH_NOT_FOUND", stage: "project.resolve", path: project,
+      native_code: "ENOENT", next_action: expect.any(String) } });
+    const unavailable = (await status(client)).service;
+    expect(unavailable).toMatchObject({ state: "unavailable", code: "PATH_NOT_FOUND", stage: "project.resolve", path: project, native_code: "ENOENT" });
     await mkdir(project);
     const prepared = await prepare(client);
     expect(prepared.repository.execution.profile).toBe("not_checked");
