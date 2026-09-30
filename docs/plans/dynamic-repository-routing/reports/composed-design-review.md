@@ -4,12 +4,12 @@
 
 ## Artifact probe
 
-1. **Independent concerns and dimensions.** Codex registration owns persisted host launch/catalog policy; the frontend launch owns one process invocation; repository binding owns canonical project/repository/profile/state resolution; service election/runtime own one repository's lifecycle and authority. They change for different reasons and remain separate.
+1. **Independent concerns and dimensions.** Codex registration owns persisted host launch/catalog policy; the frontend launch owns one process invocation; workspace Git owns canonical project/repository/main-worktree facts; repository binding owns profile/state selection from those facts; service election/runtime own one repository's lifecycle and authority. They change for different reasons and remain separate.
 2. **State/identity/value/time/policy/mechanism interleaving.** Registration contains stable runtime/state policy but no repository identity in dynamic mode. Repository identity is resolved at frontend process use-time from its inherited cwd. Durable repository state remains keyed only after canonical resolution. Profile identity follows repository identity. No caller-supplied repository value is cached globally.
 3. **Knowledge at callers/composition.** Codex needs only one registration plus its ordinary session cwd. `src/cli.ts` knows whether binding is dynamic or explicitly pinned. `resolveRepositoryBinding` knows Git/common-dir/profile/state representation. `RepositoryRuntime`, scheduler, workers and MCP tool handlers learn no new routing rule.
 4. **Representative changes/locality.**
    - Codex changes how an unset stdio cwd is represented: registration inspection/probe owner changes; repository runtime does not.
-   - Repository identity changes: `resolveRepositoryBinding` and its tests change; registration shape does not need Git semantics.
+   - Repository/main-worktree identity changes: workspace Git and repository-binding tests change; registration shape does not need Git semantics.
    - Profile migration changes: repository binding/profile tests change; task scheduler/IPC do not.
    - Lease/service mechanics change: existing service/runtime owners change; global registration remains a caller.
    The implemented propagation matches these owners.
