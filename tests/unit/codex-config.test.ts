@@ -30,10 +30,35 @@ function registration(name = "passeur_pumas"): CodexMcpRegistration {
     cwd: "/installed", env: {}, startup_timeout_sec: 10, tool_timeout_sec: 2100, enabled_tools: ["passeur_status", "passeur_prepare"],
     project: "/project", profile: "/profile.json", state_root: "/state", repository_id: "repository", build_id: "build", development: false };
 }
+function dynamicRegistration(name = "passeur"): CodexMcpRegistration {
+  return { server_name: name, command: "/node", args: ["/installed/dist/src/cli.js", "serve", "--state-root", "/state"],
+    env: {}, startup_timeout_sec: 10, tool_timeout_sec: 2100, enabled_tools: ["passeur_status", "passeur_prepare"],
+    state_root: "/state", build_id: "build", development: false };
+}
 it("renders both diagnostics and safely encodes spaces and quotes", () => {
   const r = registration(); r.args[0] = '/installed "with spaces"/cli.js';
   const parsed = TOML.parse(renderCodexMcpToml(r));
   expect(parsed.mcp_servers).toMatchObject({ passeur_pumas: { args: r.args, enabled_tools: r.enabled_tools } });
+});
+it("renders dynamic registration without a fixed repository or MCP working directory", () => {
+  const r = dynamicRegistration();
+  const table = (TOML.parse(renderCodexMcpToml(r)).mcp_servers as Record<string, unknown>).passeur as Record<string, unknown>;
+  expect(table.cwd).toBeUndefined();
+  expect(table.args).toEqual(r.args);
+  expect((table.args as string[])).not.toContain("--project");
+  expect(mergeCodexMcpToml(renderCodexMcpToml(r), r)).toBe(renderCodexMcpToml(r));
+});
+it("rejects accidental fixed routing fields on a dynamic registration", () => {
+  const fixedCwd = dynamicRegistration(); fixedCwd.cwd = "/fixed";
+  expect(() => renderCodexMcpToml(fixedCwd)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+  const fixedProject = dynamicRegistration(); fixedProject.args.push("--project", "/project");
+  expect(() => renderCodexMcpToml(fixedProject)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+  const inlineProject = dynamicRegistration(); inlineProject.args.push("--project=/project");
+  expect(() => renderCodexMcpToml(inlineProject)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+  const inlineProfile = dynamicRegistration(); inlineProfile.args.push("--profile=/profile.json");
+  expect(() => renderCodexMcpToml(inlineProfile)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
+  const inlineRepository = dynamicRegistration(); inlineRepository.args.push("--expected-repository-id=repository");
+  expect(() => renderCodexMcpToml(inlineRepository)).toThrowError(expect.objectContaining({ code: "REGISTRATION_INVALID" }));
 });
 it("normal updates preserve unrelated bytes and allow separately named projects", () => {
   const prefix = '# keep this comment\nmodel = "chosen"\n';
@@ -59,6 +84,35 @@ it("rejects a known competing state namespace for the same repository", () => {
   const source = renderCodexMcpToml(registration()); const r = registration("passeur_second");
   r.state_root = "/another"; r.args[r.args.indexOf("--state-root") + 1] = r.state_root;
   expect(() => mergeCodexMcpToml(source, r)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
+});
+it("allows one dynamic registration beside pinned project registrations in the shared state namespace", () => {
+  const source = renderCodexMcpToml(registration());
+  const updated = mergeCodexMcpToml(source, dynamicRegistration());
+  expect(TOML.parse(updated).mcp_servers).toMatchObject({
+    passeur_pumas: { cwd: "/installed" },
+    passeur: { args: dynamicRegistration().args },
+  });
+});
+it("rejects a dynamic registration that would route a known pinned repository through another state namespace", () => {
+  const source = renderCodexMcpToml(registration());
+  const dynamic = dynamicRegistration(); dynamic.state_root = "/another";
+  dynamic.args[dynamic.args.indexOf("--state-root") + 1] = dynamic.state_root;
+  expect(() => mergeCodexMcpToml(source, dynamic)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
+});
+it("recognizes inline binding options when enforcing state namespaces", () => {
+  const inline = registration();
+  inline.args = [inline.args[0]!, "serve", "--project=/project", "--profile=/profile.json",
+    "--state-root=/state", "--expected-repository-id=repository"];
+  const source = renderCodexMcpToml(inline);
+  const dynamic = dynamicRegistration(); dynamic.state_root = "/another";
+  dynamic.args = [dynamic.args[0]!, "serve", "--state-root=/another"];
+  expect(() => mergeCodexMcpToml(source, dynamic)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
+});
+it("rejects a pinned registration that would split state from an existing dynamic router", () => {
+  const source = renderCodexMcpToml(dynamicRegistration());
+  const pinned = registration(); pinned.state_root = "/another";
+  pinned.args[pinned.args.indexOf("--state-root") + 1] = pinned.state_root;
+  expect(() => mergeCodexMcpToml(source, pinned)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
 });
 it("marker-like lines inside multiline strings cannot own a configuration edit", () => {
   const source = 'description = """\n# passeur:begin passeur_pumas\n# passeur:end passeur_pumas\n"""\n';
@@ -86,6 +140,16 @@ it("configuration presence cannot verify a different resolved command or tool al
   expect(() => verifyInspection({ ...response, transport: { ...response.transport, command: "/other" } }, r)).toThrowError(expect.objectContaining({ code: "CODEX_REGISTRATION_MISMATCH" }));
   expect(() => verifyInspection({ ...response, enabled_tools: ["delegate_to_muse"] }, r)).toThrowError(expect.objectContaining({ code: "CODEX_REGISTRATION_MISMATCH" }));
   expect(() => verifyInspection({ name: r.server_name }, r)).toThrowError(expect.objectContaining({ code: "CODEX_INSPECTION_UNSUPPORTED" }));
+});
+it("inspection preserves an unconfigured cwd for dynamic routing", async () => {
+  const { verifyInspection } = await import("../../src/codex/config.js");
+  const r = dynamicRegistration();
+  const response = { name: r.server_name, enabled: true, disabled_reason: null,
+    transport: { type: "stdio", command: r.command, args: r.args, cwd: null, env: null, env_vars: [] },
+    enabled_tools: [...r.enabled_tools], disabled_tools: null, startup_timeout_sec: 10, tool_timeout_sec: 2100 };
+  expect(() => verifyInspection(response, r)).not.toThrow();
+  expect(() => verifyInspection({ ...response, transport: { ...response.transport, cwd: "/fixed" } }, r))
+    .toThrowError(expect.objectContaining({ code: "CODEX_REGISTRATION_MISMATCH" }));
 });
 
 it("rolls back only its unchanged candidate when configuration inspection fails", async () => {

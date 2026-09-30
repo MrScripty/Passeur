@@ -44,7 +44,8 @@ async function boundedClose(client: Client): Promise<void> {
 }
 
 /** Direct MCP evidence only. Actual Codex attachment and agent/account behavior are separate claims. */
-export async function probeRegistration(registration: CodexMcpRegistration, prepare = false): Promise<ProbeReport> {
+export async function probeRegistration(registration: CodexMcpRegistration, prepare = false,
+  launchCwd = registration.cwd ?? process.cwd()): Promise<ProbeReport> {
   const report: ProbeReport = {
     server_name: registration.server_name, stderr: "",
     configuration: { status: "not_run", scope: "Codex configuration inspection is a separate operation" },
@@ -54,7 +55,7 @@ export async function probeRegistration(registration: CodexMcpRegistration, prep
   };
   const client = new Client({ name: "passeur_probe", version: "0.1.0" }, { capabilities: {} });
   const transport = new StdioClientTransport({ command: registration.command, args: registration.args,
-    cwd: registration.cwd, env: launchEnvironment(registration.env), stderr: "pipe" });
+    cwd: launchCwd, env: launchEnvironment(registration.env), stderr: "pipe" });
   const observeStderr = (chunk: Buffer | string) => { report.stderr = safeText(report.stderr + chunk.toString(), 8192); };
   transport.stderr?.on("data", observeStderr);
   try {
@@ -79,9 +80,13 @@ export async function probeRegistration(registration: CodexMcpRegistration, prep
     if (reply.isError) throw new BridgeError("PROBE_STATUS_FAILED", "Status tool returned an execution error");
     report.status = FrontendStatusSchema.parse(toolBody(reply));
     const status = report.status;
+    const dynamicBinding = registration.repository_id === undefined;
+    const bindingMismatch = dynamicBinding
+      ? status.binding.project_input !== launchCwd || status.binding.profile_path !== undefined || status.binding.expected_repository_id !== undefined
+      : status.binding.project_input !== registration.project || status.binding.profile_path !== registration.profile
+        || status.binding.expected_repository_id !== registration.repository_id;
     if (status.frontend.build_id !== registration.build_id || (!registration.development && status.frontend.mode !== "installed")
-      || status.binding.project_input !== registration.project || status.binding.profile_path !== registration.profile
-      || status.binding.state_root !== registration.state_root || status.binding.expected_repository_id !== registration.repository_id) {
+      || status.binding.state_root !== registration.state_root || bindingMismatch) {
       throw new BridgeError("PROBE_IDENTITY_MISMATCH", "Running artifact or configured binding differs from the exact registration", { stage: "probe.status" });
     }
     report.transport.status = "passed";

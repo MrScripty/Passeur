@@ -39,7 +39,7 @@ import { MAX_CODEX_PEER_DELIVERY_PROMPT_BYTES, peerDeliveryPromptBytes } from ".
 import { decodePeerWorkerOperation, type PeerWorkerOperation, type PeerWorkerOperationResult } from "../contracts/peer-operations.js";
 
 import type { RepositoryLease } from "./lease.js";
-import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure } from "./errors.js";
+import { BridgeError, diagnosticInfo, errorInfo, filesystemFailure, nativeCode } from "./errors.js";
 import { Mutex, withAbort, canonicalHash } from "./async.js";
 
 const PREPARATION_TIMEOUT_MS = 90_000;
@@ -260,7 +260,7 @@ export type RuntimeDependencies = {
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
-  const { canonicalProject, repositoryIdentity, projectId } = await import("../workspace/project.js");
+  const { canonicalProject, repositoryIdentity, repositoryMainWorktree, projectId } = await import("../workspace/project.js");
   signal.throwIfAborted();
   let project: string;
   try { project = await canonicalProject(intent.project); }
@@ -275,7 +275,28 @@ export async function resolveRepositoryBinding(intent: LaunchIntent, environment
   const stateRoot = intent.stateRoot ?? environment.XDG_STATE_HOME ?? (environment.HOME ? join(environment.HOME, ".local", "state") : undefined);
   const configRoot = environment.XDG_CONFIG_HOME ?? (environment.HOME ? join(environment.HOME, ".config") : undefined);
   if (!stateRoot) throw new BridgeError("PATH_CONFIGURATION_UNAVAILABLE", "An explicit state path or HOME/XDG state root is required", { stage: "configuration.paths" });
-  const profilePath = intent.profilePath ?? (configRoot ? join(configRoot, "muse-bridge", "projects", `${projectId(project)}.json`) : undefined);
+  let profilePath = intent.profilePath ?? (configRoot ? join(configRoot, "muse-bridge", "projects", `${repository.id}.json`) : undefined);
+  if (!intent.profilePath && configRoot && profilePath) {
+    const exists = async (path: string): Promise<boolean> => {
+      try { await (await import("node:fs/promises")).lstat(path); return true; }
+      catch (error) {
+        if (nativeCode(error) === "ENOENT") return false;
+        throw filesystemFailure(error, "profile.binding", path);
+      }
+    };
+    if (!await exists(profilePath)) {
+      const legacyRoots: string[] = [];
+      try { legacyRoots.push(await repositoryMainWorktree(project, signal)); }
+      catch (error) {
+        if (!(error instanceof BridgeError) || error.code !== "GIT_MAIN_WORKTREE_UNAVAILABLE") throw error;
+      }
+      if (!legacyRoots.includes(project)) legacyRoots.push(project);
+      for (const root of legacyRoots) {
+        const legacyProfile = join(configRoot, "muse-bridge", "projects", `${projectId(root)}.json`);
+        if (legacyProfile !== profilePath && await exists(legacyProfile)) { profilePath = legacyProfile; break; }
+      }
+    }
+  }
   return {
     project, repositoryId: repository.id, commonDir: repository.common_dir, stateRoot: resolve(stateRoot),
     storeRoot: join(resolve(stateRoot), "muse-bridge", "repositories", repository.id),

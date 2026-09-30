@@ -1,6 +1,6 @@
 # Passeur
 
-A local coding-agent delegation service. Several Codex sessions can attach to one repository coordinator; registered Muse/Codex workers share its bounded queue, task store and protected Git worktrees.
+A local coding-agent delegation service. One unpinned Codex registration can follow each session's project working directory while Passeur retains one coordinator per canonical repository. Several Codex sessions can attach to the same repository coordinator; registered Muse/Codex workers share its bounded queue, task store and protected Git worktrees.
 
 Accepted tasks outlive client connections and individual tool calls. There is no execution, queue, approval or inactivity timeout that kills an assignment. Explicit task cancellation, native terminal evidence and real failures govern lifetime. The service distinguishes waiting for input/known tools from completed work and unknown runtime state.
 
@@ -17,7 +17,7 @@ npm test
 npm run build:runtime
 ```
 
-Follow [installation and cutover](docs/startup-and-installation.md), then the [installed acceptance procedure](docs/installed-acceptance.md). Profile migration and incompatible-reader cutover are explicit and backed up. Existing named server/state bindings remain. Old delegation tools reject new execution; use the task API instead. No live configuration, account or task mutation is implied by reading this repository.
+Follow [installation and cutover](docs/startup-and-installation.md), then the [installed acceptance procedure](docs/installed-acceptance.md). Profile migration and incompatible-reader cutover are explicit and backed up. The preferred named Codex registration keeps one state namespace and inherits repository context from each local session; intentionally pinned legacy/project registrations remain supported. Old delegation tools reject new execution; use the task API instead. No live configuration, account or task mutation is implied by reading this repository.
 
 ## Task workflow
 

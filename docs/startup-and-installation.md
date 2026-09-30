@@ -71,9 +71,20 @@ The installed directory includes compiled code and helper, locked production dep
 
 `--allow-dirty` on `build:runtime` creates an explicitly developmental candidate, not an installable production artifact. Development checkout registration requires `--development-runtime`; it is not an implicit fallback.
 
-## Register projects explicitly
+## Register Passeur once
 
-For an existing profile:
+The preferred local Codex registration is repository-unpinned:
+
+```sh
+node /absolute/installed/runtime/dist/src/cli.js register-codex \
+  --state-root "$HOME/.local/state" --server-name passeur --required
+```
+
+This pins Node, the installed CLI, state namespace, build and tool policy, but deliberately omits an MCP `cwd`, `--project`, `--profile` and `--expected-repository-id`. Current local Codex stdio startup supplies the session's project working directory to an MCP server whose `cwd` is unconfigured. Passeur's `serve` action uses that inherited directory as its project input, resolves the canonical Git common directory, and then attaches to or elects the existing repository-scoped service. Linked worktrees share the canonical repository identity; unrelated repositories retain independent service/state/lease ownership.
+
+Default profile lookup is repository-stable. New defaults use the canonical repository ID. If that profile is absent and a legacy main-worktree default profile exists, Passeur reuses the canonical legacy profile so linked worktrees do not split configuration during migration. Interactive `setup` and `configure --install-codex` install the unpinned registration when they use this default profile. Supplying an explicit `--profile` or `--expected-repository-id` is treated as deliberate repository-specific configuration and preserves a pinned registration; Passeur does not silently discard that mapping.
+
+An explicitly pinned registration remains supported when a fixed repository is intentional or a host cannot supply the required local working-directory context:
 
 ```sh
 node /absolute/installed/runtime/dist/src/cli.js register-codex \
@@ -81,7 +92,7 @@ node /absolute/installed/runtime/dist/src/cli.js register-codex \
   --state-root "$HOME/.local/state" --server-name passeur_pumas --required
 ```
 
-Use `passeur_tuldok` for a distinct project's registration. The generator pins Node, the installed CLI, working directory, project, profile, state namespace and expected repository identity. `muse_bridge` is supported when explicitly supplied as a registration name; the unrelated Muse SDK client identifier remains `muse_bridge`.
+A pinned registration records its working directory, project, profile and expected repository identity as before. Replacing an existing named pinned binding with the unpinned form still requires the exact `--replace-binding` fingerprint; routing changes do not bypass configuration ownership. `muse_bridge` remains available as an explicit server name; the unrelated Muse SDK client identifier also remains `muse_bridge`.
 
 ### Required versus optional host startup
 
@@ -99,7 +110,7 @@ Registration changes personal Codex configuration only when the operator request
 
 Existing Passeur-managed blocks preserve all outside text. A conflicting binding requires the exact fingerprint returned by the diagnostic via `--replace-binding`. An unmarked existing table additionally requires `--adopt-unmanaged`: **that explicit adoption may reformat TOML and remove comments**, while preserving parsed settings and an original backup. It is not automatic. Known same-repository bindings to conflicting state namespaces are refused; do not use a new state root as a permission workaround.
 
-Registration verifies Codex's resolved configuration and launches the exact configured command for MCP initialization, complete tool enumeration and status/identity comparison. The direct probe uses its declared controlled inherited environment; it does not prove an arbitrary Codex host sandbox has identical access.
+Registration verifies Codex's resolved configuration and launches the exact configured command for MCP initialization, complete tool enumeration and status/identity comparison. For an unpinned registration the direct probe runs in the selected project when invoked through setup/configure, or in the caller's current directory for a standalone unpinned register command. This confirms the dynamic binding path only for that controlled launch; it does not prove an arbitrary Codex host sandbox has identical access.
 
 Add `--verify-readiness --yes` to explicitly prepare/reconcile the repository during verification. A correct registration with blocked readiness remains installed-but-blocked. Live inference is never silently run by registration.
 

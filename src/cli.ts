@@ -15,9 +15,9 @@ const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const help = `Passeur — repository-scoped agent coordination
 
 Usage: passeur <action> [options]
-  serve|start --project PATH [--profile FILE] [--state-root PATH]
+  serve|start [--project PATH] [--profile FILE] [--state-root PATH]
   setup|configure --project PATH [--profile FILE] [--server-name NAME]
-  register-codex --project PATH --server-name NAME [--runtime DIRECTORY] [--required|--optional]
+  register-codex [--project PATH] --server-name NAME [--runtime DIRECTORY] [--required|--optional]
   doctor --project PATH [--prepare --yes]
   agents --project PATH [--offset NUMBER] [--limit 1..4]
   configure-agent --project PATH --agent-file FILE --yes [--replace-agent FINGERPRINT]
@@ -67,9 +67,12 @@ budget rather than the host's optional-catalog grace, and initialization
 failure blocks host startup. These options change only the named server;
 no global grace, approval or sandbox setting is changed.
 
-serve never builds, installs or edits configuration. Normal run/setup use
-HOME or XDG_CONFIG_HOME/XDG_STATE_HOME unless paths are explicit. Registration
-pins project/profile/state paths. Close external config editors while registering.
+serve never builds, installs or edits configuration. Without --project it binds
+to the inherited process working directory. Normal run/setup use HOME or
+XDG_CONFIG_HOME/XDG_STATE_HOME unless paths are explicit. A project-free Codex
+registration inherits each host session's project working directory and pins only
+the state namespace/runtime; --project keeps an intentional fixed binding.
+Close external config editors while registering.
 Exit 0 means the requested action passed; 1 means failure or blocked required
 verification; 130/143 represent interruption by SIGINT/SIGTERM. Accepted assignments survive CLI/host closure. wait timeout cancels only observation.
 attach/input/cancel are explicit operator-control actions; never use them to bypass host human approvals.
@@ -129,13 +132,17 @@ async function saveProfile(path: string, values: Values): Promise<SharedProfile>
   return profile;
 }
 
-async function registration(intent: LaunchIntent, values: Values): Promise<CodexMcpRegistration> {
+async function registration(intent: LaunchIntent | undefined, values: Values): Promise<CodexMcpRegistration> {
   const { resolveRepositoryBinding } = await import("./core/repository-runtime.js");
   const { installedEntry, runtimeIdentity } = await import("./install/runtime.js");
   const { CODEX_ENABLED_TOOLS, validateServerName } = await import("./codex/config.js");
   const serverName = validateServerName(required(values["server-name"], "--server-name"));
-  const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
-  const profilePath = required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME");
+  const binding = intent ? await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000)) : undefined;
+  const configuredStateRoot = values["state-root"] ?? process.env.XDG_STATE_HOME
+    ?? (process.env.HOME ? join(process.env.HOME, ".local", "state") : undefined);
+  if (!binding && !configuredStateRoot) throw new BridgeError("PATH_CONFIGURATION_UNAVAILABLE", "An explicit state path or HOME/XDG state root is required", { stage: "configuration.paths" });
+  const stateRoot = binding?.stateRoot ?? resolve(configuredStateRoot!);
+  const profilePath = binding ? required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME") : undefined;
   const root = resolve(values.runtime ?? runtimeRoot);
   let cli: string, identity;
   if (values["development-runtime"]) {
@@ -149,16 +156,20 @@ async function registration(intent: LaunchIntent, values: Values): Promise<Codex
   const timeout = integer(values["tool-timeout-sec"], "--tool-timeout-sec") ?? 2100;
   if (timeout < 1) throw new BridgeError("ARGUMENT_INVALID", "--tool-timeout-sec must be positive");
   const startupRequired = startupRequirementFromFlags(values.required, values.optional);
-  return {
+  const common = {
     ...(startupRequired === undefined ? {} : { required: startupRequired }),
-    server_name: serverName, command: process.execPath,
-    args: [cli, "serve", "--project", binding.project, "--profile", profilePath, "--state-root", binding.stateRoot, "--expected-repository-id", binding.repositoryId],
-    cwd: root, env: {}, startup_timeout_sec: 10, tool_timeout_sec: timeout, enabled_tools: CODEX_ENABLED_TOOLS,
-    project: binding.project, profile: profilePath, state_root: binding.stateRoot, repository_id: binding.repositoryId,
-    build_id: identity.build_id, development: identity.mode !== "installed",
+    server_name: serverName, command: process.execPath, env: {},
+    startup_timeout_sec: 10, tool_timeout_sec: timeout, enabled_tools: CODEX_ENABLED_TOOLS,
+    state_root: stateRoot, build_id: identity.build_id, development: identity.mode !== "installed",
+  };
+  if (!binding) return { ...common, args: [cli, "serve", "--state-root", stateRoot] };
+  return {
+    ...common,
+    args: [cli, "serve", "--project", binding.project, "--profile", profilePath!, "--state-root", binding.stateRoot, "--expected-repository-id", binding.repositoryId],
+    cwd: root, project: binding.project, profile: profilePath!, repository_id: binding.repositoryId,
   };
 }
-async function register(intent: LaunchIntent, values: Values): Promise<void> {
+async function register(intent: LaunchIntent | undefined, values: Values, probeCwd = intent?.project ?? process.cwd()): Promise<void> {
   if (values["verify-readiness"] && !values.yes) throw new BridgeError("READINESS_AUTHORITY_REQUIRED", "--verify-readiness requires --yes; preparation may import/reconcile state");
   const descriptor = await registration(intent, values);
   const { installCodexMcpRegistration } = await import("./codex/config.js");
@@ -168,7 +179,7 @@ async function register(intent: LaunchIntent, values: Values): Promise<void> {
     ...(values["adopt-unmanaged"] ? { adoptUnmanaged: true } : {}),
   });
   const { probeRegistration } = await import("./codex/probe.js");
-  const probe = await probeRegistration(descriptor, Boolean(values["verify-readiness"]));
+  const probe = await probeRegistration(descriptor, Boolean(values["verify-readiness"]), probeCwd);
   console.log(JSON.stringify({ ...installed, ...probe, configuration: { status: "passed", scope: "codex mcp get configuration inspection" },
     next_action: "After controlled shutdown of the old host, start a fresh Codex session and call this named server's passeur_status. Verify build identity and actual callable tools before preparation or delegation. Direct transport and saved startup policy do not prove host-to-model exposure." }, null, 2));
   if (probe.transport.status !== "passed" || (values["verify-readiness"] && probe.readiness.status !== "passed")) process.exitCode = 1;
@@ -195,8 +206,9 @@ async function setup(intent: LaunchIntent, values: Values): Promise<void> {
       ...(worktrees ? { "worktree-root": worktrees } : {}) });
     const doInstall = values["install-codex"] || /^(y|yes)$/i.test(await ask("Install a named Codex registration now? [y/N]: "));
     if (doInstall) {
-      const name = values["server-name"] ?? required(await ask("Codex server name (for example passeur_pumas): "), "server name");
-      await register(intent, { ...values, "server-name": name });
+      const name = values["server-name"] ?? required(await ask("Codex server name (for example passeur): "), "server name");
+      const fixedBinding = values.profile !== undefined || values["expected-repository-id"] !== undefined;
+      await register(fixedBinding ? intent : undefined, { ...values, "server-name": name }, binding.project);
     } else console.log(JSON.stringify({ profile: binding.profilePath, configuration: "not_installed", installed_workflow: "not_run" }));
   } finally { terminal.close(); }
 }
@@ -261,7 +273,14 @@ async function main(): Promise<void> {
     if (value !== undefined && (!value.length || value.length > 4096 || value.includes("\0"))) throw new BridgeError("PATH_ARGUMENT_INVALID", `${key} must be a bounded path without NUL`);
   }
   if (values["expected-repository-id"] !== undefined && !/^[a-f0-9]{24}$/.test(values["expected-repository-id"])) throw new BridgeError("REPOSITORY_ID_INVALID", "Expected the canonical 24-hex repository identity");
-  const intent: LaunchIntent = { project: resolve(required(values.project, "--project")),
+  if (action === "register-codex" && values.project === undefined) {
+    if (values.profile !== undefined || values["expected-repository-id"] !== undefined) {
+      throw new BridgeError("ARGUMENT_INAPPLICABLE", "--profile/--expected-repository-id require --project for a pinned registration");
+    }
+    await register(undefined, values); return;
+  }
+  const projectInput = values.project ?? ((action === "serve" || action === "start") ? process.cwd() : undefined);
+  const intent: LaunchIntent = { project: resolve(required(projectInput, "--project")),
     ...(values.profile ? { profilePath: resolve(values.profile) } : {}), ...(values["state-root"] ? { stateRoot: resolve(values["state-root"]) } : {}),
     ...(values["expected-repository-id"] ? { expectedRepositoryId: values["expected-repository-id"] } : {}) };
   // Transport bootstrap deliberately has no profile, repository, store or Muse prerequisites.
@@ -285,7 +304,10 @@ async function main(): Promise<void> {
     const { resolveRepositoryBinding } = await import("./core/repository-runtime.js");
     const binding = await resolveRepositoryBinding(intent, process.env, AbortSignal.timeout(90_000));
     const profile = await saveProfile(required(binding.profilePath, "--profile or HOME/XDG_CONFIG_HOME"), values);
-    if (values["install-codex"]) await register(intent, values);
+    if (values["install-codex"]) {
+      const fixedBinding = values.profile !== undefined || values["expected-repository-id"] !== undefined;
+      await register(fixedBinding ? intent : undefined, values, binding.project);
+    }
     else console.log(JSON.stringify({ profile: binding.profilePath, capacity: { workers: profile.execution.max_workers, queued: profile.execution.max_queued_tasks }, configuration: "not_installed", installed_workflow: "not_run" }, null, 2));
     return;
   }

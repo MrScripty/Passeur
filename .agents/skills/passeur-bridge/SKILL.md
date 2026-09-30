@@ -11,7 +11,9 @@ Read [setup](references/setup.md) for installation or migration. Use the current
 
 Tool discovery and frontend status do not need the repository/service/provider. `passeur_status` version2 distinguishes the frontend build from the connected service generation/build. `passeur_prepare` attaches to or starts the one repository service without inference. `passeur_agents` reads configured registrations; it does not certify native readiness or billing. Keep named server, agent ID, service generation and build identities distinct.
 
-Use the same repository state namespace and approved profile. Different linked worktrees can share coordination but preserve their source views. Do not delete a lease/socket, kill another client/service, change state roots or start a second coordinator as a recovery shortcut. An incompatible running service needs controlled handover.
+Prefer the repository-unpinned Codex registration. It has no fixed MCP `cwd` or `--project`; each local host session launches its Passeur front end in that session's project working directory, and the front end resolves exactly one canonical repository before service attachment. Different linked worktrees can share coordination while preserving their source views. Unrelated repositories use different repository services even though they use the same named MCP registration. If `passeur_status.binding.project_input` is not the intended project, inspect the registration/host launch context for a stale fixed `cwd` or `--project`; repository locks are not the repair mechanism.
+
+Use the same state namespace and approved repository profile. Default profiles are keyed by canonical repository identity, with deterministic reuse of an existing main-worktree legacy default when the new key is absent. Do not delete a lease/socket, kill another client/service, change state roots or start a second coordinator as a recovery shortcut. An incompatible running service needs controlled handover.
 
 ## Submit once and observe
 
@@ -67,9 +69,11 @@ proves that an external process stopped; settlement needs separately confirmed
 operator evidence. Preserve v2 metadata after the first recovery and use only a
 compatible reader/writer.
 
-New named registrations include these tools. Updating an existing registration
-uses the normal explicit registration workflow and preserves its deny/approval
-policy. Tool listing is not proof of actual installed-host use. Follow the
+New named registrations include these tools. The preferred named registration
+is repository-unpinned; an explicitly project-bound registration is a
+compatibility choice. Updating an existing registration uses the normal explicit
+registration workflow and preserves its deny/approval policy. Tool listing is
+not proof of actual installed-host use. Follow the
 completion plan's installed and real-host acceptance gates before treating this
 candidate as deployed.
 

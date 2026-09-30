@@ -11,20 +11,22 @@ it("probes the exact compiled registration and keeps provider compatibility unve
   const root = await mkdtemp(join(tmpdir(), "passeur-probe-")), project = join(root, "project"); await mkdir(project);
   let binding: Awaited<ReturnType<typeof resolveRepositoryBinding>> | undefined;
   try {
-    binding = await resolveRepositoryBinding({ project, stateRoot: join(root, "state"), profilePath: join(root, "missing.json") }, {}, new AbortController().signal);
+    binding = await resolveRepositoryBinding({ project, stateRoot: join(root, "state") }, {}, new AbortController().signal);
     const identity = await runtimeIdentity(process.cwd());
     const registration: CodexMcpRegistration = {
-      server_name: "fixture", command: process.execPath, args: [resolve("dist/src/cli.js"), "serve", "--project", project,
-        "--profile", binding.profilePath!, "--state-root", binding.stateRoot, "--expected-repository-id", binding.repositoryId],
-      cwd: process.cwd(), env: {}, startup_timeout_sec: 10, tool_timeout_sec: 2100, enabled_tools: CODEX_ENABLED_TOOLS,
-      project, profile: binding.profilePath!, state_root: binding.stateRoot, repository_id: binding.repositoryId, build_id: identity.build_id, development: true,
+      server_name: "fixture", command: process.execPath,
+      args: [resolve("dist/src/cli.js"), "serve", "--state-root", binding.stateRoot],
+      env: {}, startup_timeout_sec: 10, tool_timeout_sec: 2100, enabled_tools: CODEX_ENABLED_TOOLS,
+      state_root: binding.stateRoot, build_id: identity.build_id, development: true,
     };
-    const report = await probeRegistration(registration, true);
+    const report = await probeRegistration(registration, true, project);
     expect(report.transport.status).toBe("passed"); expect(report.readiness.status).toBe("passed");
+    expect(report.status?.binding).toMatchObject({ project_input: project, state_root: binding.stateRoot });
+    expect(report.status?.binding.profile_path).toBeUndefined();
     expect(report.configuration.status).toBe("not_run"); expect(report.installed_workflow.status).toBe("not_run");
-    const wrong = await probeRegistration({ ...registration, build_id: "wrong" });
+    const wrong = await probeRegistration({ ...registration, build_id: "wrong" }, false, project);
     expect(wrong.transport.status).toBe("failed"); expect(wrong.transport.error?.code).toBe("PROBE_IDENTITY_MISMATCH");
-    const missing = await probeRegistration({ ...registration, command: join(root, "missing-node") });
+    const missing = await probeRegistration({ ...registration, command: join(root, "missing-node") }, false, project);
     expect(missing.transport.status).toBe("failed");
   } finally {
     // Do not remove the synthetic store while its service still owns coordination.
