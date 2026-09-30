@@ -82,7 +82,7 @@ node /absolute/installed/runtime/dist/src/cli.js register-codex \
 
 This pins Node, the installed CLI, state namespace, build and tool policy, but deliberately omits an MCP `cwd`, `--project`, `--profile` and `--expected-repository-id`. Current local Codex stdio startup supplies the session's project working directory to an MCP server whose `cwd` is unconfigured. Passeur's `serve` action uses that inherited directory as its project input, resolves the canonical Git common directory, and then attaches to or elects the existing repository-scoped service. Linked worktrees share the canonical repository identity; unrelated repositories retain independent service/state/lease ownership.
 
-Default profile lookup is repository-stable. New defaults use the canonical repository ID. If that profile is absent and a legacy main-worktree default profile exists, Passeur reuses the canonical legacy profile so linked worktrees do not split configuration during migration.
+Default profile lookup is repository-stable. New defaults use the canonical repository ID. If that profile is absent and a legacy main-worktree default profile exists, Passeur reuses the canonical legacy profile so linked worktrees do not split configuration during migration. Interactive `setup` and `configure --install-codex` install the unpinned registration when they use this default profile. Supplying an explicit `--profile` or `--expected-repository-id` is treated as deliberate repository-specific configuration and preserves a pinned registration; Passeur does not silently discard that mapping.
 
 An explicitly pinned registration remains supported when a fixed repository is intentional or a host cannot supply the required local working-directory context:
 
