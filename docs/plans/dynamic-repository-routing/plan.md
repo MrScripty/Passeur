@@ -20,7 +20,7 @@ Implementation baseline: Passeur `46f5e8651240eb84e752940885073f6f338b9145`. Sta
 1. **Registration owner — `src/codex/config.ts`.** An unpinned registration contains runtime/build, state root, catalog and startup policy, but no MCP `cwd`, `--project`, `--profile`, or `--expected-repository-id`. Construction rejects accidental fixed routing fields.
 2. **Frontend launch owner — `src/cli.ts`.** `serve`/`start` use inherited `process.cwd()` only when no explicit project was supplied. Explicit `register-codex --project` remains a pinned compatibility path.
 3. **Repository identity owner — `resolveRepositoryBinding`.** Canonical Git common-directory identity, repository store root, service election and repository lease remain unchanged.
-4. **Profile owner — `resolveRepositoryBinding`.** New default profiles key by canonical repository ID. If that file is absent and the canonical main-worktree legacy default exists, both main and linked worktrees reuse that legacy profile. Once the repository-ID profile exists it takes precedence.
+4. **Profile owner — workspace Git identity + `resolveRepositoryBinding`.** `src/workspace/project.ts` owns canonical main-worktree resolution from Git metadata; repository binding owns profile selection. New default profiles key by canonical repository ID. If that file is absent and an applicable legacy worktree default exists, main and linked worktrees reuse it; repository-ID profiles take precedence.
 5. **Explicit profile intent.** Setup/configure install the unpinned registration only when using the repository-default profile. Explicit `--profile` or `--expected-repository-id` retains a pinned registration; no repository→custom-profile registry is invented.
 6. **State authority.** Dynamic and pinned Passeur `serve` registrations may coexist only in the same state namespace where their reachability overlaps. The registration editor rejects dynamic↔pinned state-root splits in either direction.
 7. Existing binding replacement, unmanaged-adoption authority, build/profile conflicts, lazy discovery, IPC, task state and lease semantics are preserved.
@@ -58,7 +58,7 @@ The current environment established the external design assumption from current 
 | Milestone | Goal / write set | Gate | State |
 | --- | --- | --- | --- |
 | M0 | Admit routing seam and product contract; write plan. | Existing repository/service ownership remains valid. | Implemented |
-| M1 | Implement registration, launch-context, profile compatibility and state-invariant repairs; add focused tests. Writes: `src/cli.ts`, `src/codex/config.ts`, `src/codex/probe.ts`, `src/core/repository-runtime.ts`, affected tests. | Source/contract review; no duplicate runtime/state owner. | Implemented |
+| M1 | Implement registration, launch-context, profile compatibility and state-invariant repairs; add focused tests. Writes: `src/cli.ts`, `src/codex/config.ts`, `src/codex/probe.ts`, `src/workspace/project.ts`, `src/core/repository-runtime.ts`, affected tests. | Source/contract review; no duplicate runtime/state owner. | Implemented |
 | M2 | Update current design/install/README/agent guidance and plan artifacts. | Documentation agrees with source and lifecycle. | Implemented |
 | V1 | Execute DR-A1–DR-A6 and independent final review on exact candidate. | All required claims satisfied. | Blocked |
 
