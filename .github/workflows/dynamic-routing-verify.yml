@@ -1,0 +1,24 @@
+name: Dynamic routing verification
+
+on:
+  push:
+    branches:
+      - feat/dynamic-repository-routing
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --legacy-peer-deps
+      - run: npm run check
+      - run: npx vitest run tests/unit/codex-config.test.ts tests/integration/mcp-startup.test.ts tests/integration/registration-probe.test.ts
+      - run: npm test
