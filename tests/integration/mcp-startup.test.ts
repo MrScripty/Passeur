@@ -89,6 +89,14 @@ it("linked worktrees reuse a canonical legacy default profile when it already ex
     ]);
     expect(mainBinding.profilePath).toBe(legacy);
     expect(linkedBinding.profilePath).toBe(legacy);
+    const repositoryProfile = join(config, "muse-bridge", "projects", `${mainBinding.repositoryId}.json`);
+    await writeFile(repositoryProfile, "{}\n");
+    const [migratedMain, migratedLinked] = await Promise.all([
+      resolveRepositoryBinding({ project, stateRoot: state }, environment, AbortSignal.timeout(10000)),
+      resolveRepositoryBinding({ project: linked, stateRoot: state }, environment, AbortSignal.timeout(10000)),
+    ]);
+    expect(migratedMain.profilePath).toBe(repositoryProfile);
+    expect(migratedLinked.profilePath).toBe(repositoryProfile);
   } finally {
     await git("worktree", "remove", linked);
     await rm(root, { recursive: true, force: true });
