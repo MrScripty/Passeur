@@ -3,8 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as TOML from "smol-toml";
 import { z } from "zod";
-import { isDeepStrictEqual } from "node:util";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, parseArgs, promisify } from "node:util";
 import { chmod, lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { BridgeError, filesystemFailure, nativeCode } from "../core/errors.js";
@@ -48,6 +47,23 @@ function servers(doc: Record<string, unknown>): Record<string, unknown> {
   if (!object(value)) throw new BridgeError("CODEX_CONFIG_INVALID", "mcp_servers must be a TOML table");
   return value;
 }
+const bindingOptions = {
+  project: { type: "string" }, profile: { type: "string" }, "state-root": { type: "string" },
+  "expected-repository-id": { type: "string" },
+} as const;
+type LaunchBindingArguments = { project?: string; profile?: string; state?: string; repository?: string };
+function launchBindingArguments(args: readonly string[]): LaunchBindingArguments | undefined {
+  if (args.length < 2 || args[1] !== "serve" || args.some((value) => value.includes("\0"))) return undefined;
+  try {
+    const { values } = parseArgs({ args: [...args.slice(2)], options: bindingOptions, strict: true, allowPositionals: false });
+    return {
+      ...(values.project !== undefined ? { project: values.project } : {}),
+      ...(values.profile !== undefined ? { profile: values.profile } : {}),
+      ...(values["state-root"] !== undefined ? { state: values["state-root"] } : {}),
+      ...(values["expected-repository-id"] !== undefined ? { repository: values["expected-repository-id"] } : {}),
+    };
+  } catch { return undefined; }
+}
 function validateRegistration(registration: CodexMcpRegistration): void {
   validateServerName(registration.server_name);
   resolveStartupRequirement(registration.required, undefined);
@@ -60,17 +76,17 @@ function validateRegistration(registration: CodexMcpRegistration): void {
   const bindingFields = [registration.project, registration.profile, registration.repository_id];
   const bindingCount = bindingFields.filter((value) => value !== undefined).length;
   if (bindingCount !== 0 && bindingCount !== bindingFields.length) throw new BridgeError("REGISTRATION_INVALID", "Repository-bound registration requires project, profile and repository identity together");
-  const table = { args: registration.args };
-  if (argument(table, "--state-root") !== registration.state_root) throw new BridgeError("REGISTRATION_INVALID", "Registration state namespace must match its launch arguments");
+  const launch = launchBindingArguments(registration.args);
+  if (!launch || launch.state !== registration.state_root) throw new BridgeError("REGISTRATION_INVALID", "Registration launch arguments or state namespace are invalid");
   if (bindingCount === 0) {
-    if (registration.cwd !== undefined || argument(table, "--project") !== undefined || argument(table, "--profile") !== undefined || argument(table, "--expected-repository-id") !== undefined) {
+    if (registration.cwd !== undefined || launch.project !== undefined || launch.profile !== undefined || launch.repository !== undefined) {
       throw new BridgeError("REGISTRATION_INVALID", "Dynamic registration must inherit its project working directory without fixed repository arguments");
     }
-  } else if (argument(table, "--project") !== registration.project || argument(table, "--profile") !== registration.profile
-    || argument(table, "--expected-repository-id") !== registration.repository_id || registration.cwd === undefined) {
+  } else if (launch.project !== registration.project || launch.profile !== registration.profile
+    || launch.repository !== registration.repository_id || registration.cwd === undefined) {
     throw new BridgeError("REGISTRATION_INVALID", "Repository-bound registration arguments do not match their declared binding");
   }
-  if (registration.args.some((value) => value.includes("\0")) || !registration.build_id) throw new BridgeError("REGISTRATION_INVALID", "Registration identity or arguments are invalid");
+  if (!registration.build_id) throw new BridgeError("REGISTRATION_INVALID", "Registration identity or arguments are invalid");
   for (const [name, value] of Object.entries(registration.env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || /token|secret|password|api.?key/i.test(name) || value.includes("\0")) throw new BridgeError("REGISTRATION_ENV_INVALID", "Only declared noncredential environment inputs may be recorded in registration");
   }
@@ -88,29 +104,26 @@ export function renderCodexMcpToml(registration: CodexMcpRegistration): string {
   validateRegistration(registration);
   return managedBlock(registration.server_name, transport(registration));
 }
-function argument(table: unknown, flag: string): string | undefined {
-  if (!object(table) || !Array.isArray(table.args) || table.args.some((value) => typeof value !== "string")) return undefined;
-  const index = table.args.indexOf(flag);
-  return index >= 0 && typeof table.args[index + 1] === "string" ? table.args[index + 1] : undefined;
-}
 type PasseurBinding = { state: string; repository?: string; dynamic: boolean };
+function tableLaunchBinding(table: unknown): LaunchBindingArguments | undefined {
+  if (!object(table) || !Array.isArray(table.args) || table.args.some((value) => typeof value !== "string")) return undefined;
+  return launchBindingArguments(table.args);
+}
 function passeurBinding(table: unknown): PasseurBinding | undefined {
-  if (!object(table) || !Array.isArray(table.args) || table.args.some((value) => typeof value !== "string")
-    || !table.args.includes("serve")) return undefined;
-  const state = argument(table, "--state-root");
-  if (!state) return undefined;
-  const repository = argument(table, "--expected-repository-id");
-  const project = argument(table, "--project");
-  return { state, ...(repository ? { repository } : {}), dynamic: repository === undefined && project === undefined };
+  const launch = tableLaunchBinding(table);
+  if (!launch?.state) return undefined;
+  return { state: launch.state, ...(launch.repository ? { repository: launch.repository } : {}),
+    dynamic: launch.repository === undefined && launch.project === undefined };
 }
 function sameBinding(table: unknown, registration: CodexMcpRegistration): boolean {
-  if (argument(table, "--state-root") !== registration.state_root) return false;
+  const launch = tableLaunchBinding(table);
+  if (!launch || launch.state !== registration.state_root) return false;
   if (registration.repository_id === undefined) {
-    return argument(table, "--project") === undefined && argument(table, "--profile") === undefined
-      && argument(table, "--expected-repository-id") === undefined && (!object(table) || table.cwd === undefined);
+    return launch.project === undefined && launch.profile === undefined && launch.repository === undefined
+      && (!object(table) || table.cwd === undefined);
   }
-  return argument(table, "--project") === registration.project && argument(table, "--profile") === registration.profile
-    && argument(table, "--expected-repository-id") === registration.repository_id;
+  return launch.project === registration.project && launch.profile === registration.profile
+    && launch.repository === registration.repository_id;
 }
 export function registrationFingerprint(table: unknown): string {
   if (!object(table)) throw new BridgeError("REGISTRATION_INVALID", "Existing server binding must be a TOML table");
