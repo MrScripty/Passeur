@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { CoordinationService, type CoordinationServiceLimits } from "../service/coordination.js";
@@ -260,7 +260,7 @@ export type RuntimeDependencies = {
 };
 
 export async function resolveRepositoryBinding(intent: LaunchIntent, environment: Environment, signal: AbortSignal): Promise<ResolvedBinding> {
-  const { canonicalProject, repositoryIdentity, projectId } = await import("../workspace/project.js");
+  const { canonicalProject, repositoryIdentity, repositoryMainWorktree, projectId } = await import("../workspace/project.js");
   signal.throwIfAborted();
   let project: string;
   try { project = await canonicalProject(intent.project); }
@@ -276,17 +276,18 @@ export async function resolveRepositoryBinding(intent: LaunchIntent, environment
   const configRoot = environment.XDG_CONFIG_HOME ?? (environment.HOME ? join(environment.HOME, ".config") : undefined);
   if (!stateRoot) throw new BridgeError("PATH_CONFIGURATION_UNAVAILABLE", "An explicit state path or HOME/XDG state root is required", { stage: "configuration.paths" });
   let profilePath = intent.profilePath ?? (configRoot ? join(configRoot, "muse-bridge", "projects", `${repository.id}.json`) : undefined);
-  if (!intent.profilePath && configRoot && profilePath && basename(repository.common_dir) === ".git") {
-    const legacyProfile = join(configRoot, "muse-bridge", "projects", `${projectId(dirname(repository.common_dir))}.json`);
-    if (legacyProfile !== profilePath) {
-      const exists = async (path: string): Promise<boolean> => {
-        try { await (await import("node:fs/promises")).lstat(path); return true; }
-        catch (error) {
-          if (nativeCode(error) === "ENOENT") return false;
-          throw filesystemFailure(error, "profile.binding", path);
-        }
-      };
-      if (!await exists(profilePath) && await exists(legacyProfile)) profilePath = legacyProfile;
+  if (!intent.profilePath && configRoot && profilePath) {
+    const exists = async (path: string): Promise<boolean> => {
+      try { await (await import("node:fs/promises")).lstat(path); return true; }
+      catch (error) {
+        if (nativeCode(error) === "ENOENT") return false;
+        throw filesystemFailure(error, "profile.binding", path);
+      }
+    };
+    if (!await exists(profilePath)) {
+      const mainWorktree = await repositoryMainWorktree(project, signal);
+      const legacyProfile = join(configRoot, "muse-bridge", "projects", `${projectId(mainWorktree)}.json`);
+      if (legacyProfile !== profilePath && await exists(legacyProfile)) profilePath = legacyProfile;
     }
   }
   return {
