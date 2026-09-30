@@ -87,6 +87,12 @@ it("rejects a dynamic registration that would route a known pinned repository th
   dynamic.args[dynamic.args.indexOf("--state-root") + 1] = dynamic.state_root;
   expect(() => mergeCodexMcpToml(source, dynamic)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
 });
+it("rejects a pinned registration that would split state from an existing dynamic router", () => {
+  const source = renderCodexMcpToml(dynamicRegistration());
+  const pinned = registration(); pinned.state_root = "/another";
+  pinned.args[pinned.args.indexOf("--state-root") + 1] = pinned.state_root;
+  expect(() => mergeCodexMcpToml(source, pinned)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
+});
 it("marker-like lines inside multiline strings cannot own a configuration edit", () => {
   const source = 'description = """\n# passeur:begin passeur_pumas\n# passeur:end passeur_pumas\n"""\n';
   expect(() => mergeCodexMcpToml(source, registration())).toThrow();
