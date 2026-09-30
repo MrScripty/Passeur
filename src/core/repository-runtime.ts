@@ -285,9 +285,16 @@ export async function resolveRepositoryBinding(intent: LaunchIntent, environment
       }
     };
     if (!await exists(profilePath)) {
-      const mainWorktree = await repositoryMainWorktree(project, signal);
-      const legacyProfile = join(configRoot, "muse-bridge", "projects", `${projectId(mainWorktree)}.json`);
-      if (legacyProfile !== profilePath && await exists(legacyProfile)) profilePath = legacyProfile;
+      const legacyRoots: string[] = [];
+      try { legacyRoots.push(await repositoryMainWorktree(project, signal)); }
+      catch (error) {
+        if (!(error instanceof BridgeError) || error.code !== "GIT_MAIN_WORKTREE_UNAVAILABLE") throw error;
+      }
+      if (!legacyRoots.includes(project)) legacyRoots.push(project);
+      for (const root of legacyRoots) {
+        const legacyProfile = join(configRoot, "muse-bridge", "projects", `${projectId(root)}.json`);
+        if (legacyProfile !== profilePath && await exists(legacyProfile)) { profilePath = legacyProfile; break; }
+      }
     }
   }
   return {
