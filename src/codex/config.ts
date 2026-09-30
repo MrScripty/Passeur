@@ -93,6 +93,16 @@ function argument(table: unknown, flag: string): string | undefined {
   const index = table.args.indexOf(flag);
   return index >= 0 && typeof table.args[index + 1] === "string" ? table.args[index + 1] : undefined;
 }
+type PasseurBinding = { state: string; repository?: string; dynamic: boolean };
+function passeurBinding(table: unknown): PasseurBinding | undefined {
+  if (!object(table) || !Array.isArray(table.args) || table.args.some((value) => typeof value !== "string")
+    || !table.args.includes("serve")) return undefined;
+  const state = argument(table, "--state-root");
+  if (!state) return undefined;
+  const repository = argument(table, "--expected-repository-id");
+  const project = argument(table, "--project");
+  return { state, ...(repository ? { repository } : {}), dynamic: repository === undefined && project === undefined };
+}
 function sameBinding(table: unknown, registration: CodexMcpRegistration): boolean {
   if (argument(table, "--state-root") !== registration.state_root) return false;
   if (registration.repository_id === undefined) {
@@ -115,10 +125,11 @@ export function mergeCodexMcpToml(source: string, registration: CodexMcpRegistra
   const current = document(source), tables = servers(current), prior = tables[registration.server_name];
   registration = { ...registration, required: resolveStartupRequirement(registration.required, object(prior) ? prior.required : undefined) };
   for (const [name, table] of Object.entries(tables)) {
-    const repository = argument(table, "--expected-repository-id"), state = argument(table, "--state-root");
-    const conflictingPinnedRepository = registration.repository_id !== undefined && repository === registration.repository_id;
-    const conflictingDynamicNamespace = registration.repository_id === undefined && repository !== undefined;
-    if ((conflictingPinnedRepository || conflictingDynamicNamespace) && state && state !== registration.state_root) {
+    const existing = passeurBinding(table);
+    if (!existing) continue;
+    const samePinnedRepository = registration.repository_id !== undefined && existing.repository === registration.repository_id;
+    const eitherDynamic = registration.repository_id === undefined || existing.dynamic;
+    if ((samePinnedRepository || eitherDynamic) && existing.state !== registration.state_root) {
       throw new BridgeError("STATE_BINDING_CONFLICT", `Registration ${name} binds a reachable Passeur repository to another state namespace`, {
         stage: "codex.config.binding", next_action: "Use the existing namespace; state migration requires an explicit coordinated cutover.",
       });
