@@ -81,6 +81,12 @@ it("allows one dynamic registration beside pinned project registrations in the s
     passeur: { args: dynamicRegistration().args },
   });
 });
+it("rejects a dynamic registration that would route a known pinned repository through another state namespace", () => {
+  const source = renderCodexMcpToml(registration());
+  const dynamic = dynamicRegistration(); dynamic.state_root = "/another";
+  dynamic.args[dynamic.args.indexOf("--state-root") + 1] = dynamic.state_root;
+  expect(() => mergeCodexMcpToml(source, dynamic)).toThrowError(expect.objectContaining({ code: "STATE_BINDING_CONFLICT" }));
+});
 it("marker-like lines inside multiline strings cannot own a configuration edit", () => {
   const source = 'description = """\n# passeur:begin passeur_pumas\n# passeur:end passeur_pumas\n"""\n';
   expect(() => mergeCodexMcpToml(source, registration())).toThrow();
