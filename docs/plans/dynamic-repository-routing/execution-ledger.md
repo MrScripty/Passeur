@@ -48,3 +48,15 @@ Not executed and therefore not claimed:
 - independent final review.
 
 Disposition: source implementation is complete; plan transitioned to **Verifying** with acceptance **blocked** on V1. No merge to `main` is authorized by this evidence.
+
+
+## 2026-09-29 — CodeRabbit review repair
+
+Independent draft review raised four valid findings and each was repaired within the admitted routing slice:
+
+1. Registration binding parsing now uses Node `parseArgs` with the same string-option semantics as the CLI, so separate and inline forms participate in validation, same-binding comparison and state-namespace conflict checks.
+2. Legacy profile lookup no longer infers the main worktree from the common-dir basename. Workspace Git ownership now resolves the current top-level/per-worktree/common dirs, uses shared `core.worktree` for submodules when present, validates Git's listed main worktree, and retains the current legacy key only when a reverse main path is unavailable.
+3. Temporary integration repositories now run Git with inherited `GIT_*` variables removed, preventing caller repository-location/index/object overrides from redirecting fixture mutation.
+4. The focused verification recipe now runs `npm run build` after the no-emit type check and before integration tests that launch `dist/src/cli.js`.
+
+Added regression coverage for inline project/profile/repository/state arguments, inline state-root conflicts, separate-Git-dir legacy lookup, submodule linked-worktree legacy lookup, and isolated Git fixture execution. Acceptance remains blocked until the documented executable and real-host gates run.
