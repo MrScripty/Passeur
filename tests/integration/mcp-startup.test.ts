@@ -13,6 +13,13 @@ import { resolveRepositoryBinding } from "../../src/core/repository-runtime.js";
 import { projectId } from "../../src/workspace/project.js";
 import { readDescriptor, existingOwner } from "../../src/service/bootstrap.js";
 const exec = promisify(execFile);
+function cleanGitEnvironment() {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+}
+function fixtureGit(project: string) {
+  const env = cleanGitEnvironment();
+  return (...args: string[]) => exec("git", ["-C", project, ...args], { timeout: 10000, env });
+}
 async function connect(project: string, state: string) {
   const client = new Client({ name: "passeur_acceptance", version: "1" }, { capabilities: {} });
   const transport = new StdioClientTransport({ command: process.execPath,
@@ -74,7 +81,7 @@ it("linked worktrees reuse a canonical legacy default profile when it already ex
   const root = await mkdtemp(join(tmpdir(), "passeur-profile-binding-")), project = join(root, "project"), linked = join(root, "linked"),
     state = join(root, "state"), config = join(root, "config");
   await mkdir(project);
-  const git = (...args: string[]) => exec("git", ["-C", project, ...args], { timeout: 10000 });
+  const git = fixtureGit(project);
   await git("init", "-q", "-b", "main");
   await git("-c", "user.name=Passeur Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "test: fixture");
   await git("worktree", "add", "-b", "linked", linked);
@@ -102,6 +109,41 @@ it("linked worktrees reuse a canonical legacy default profile when it already ex
     await rm(root, { recursive: true, force: true });
   }
 }, 30000);
+it("legacy profile lookup resolves separate Git directories and submodule main worktrees", async () => {
+  const root = await mkdtemp(join(tmpdir(), "passeur-profile-layouts-")), state = join(root, "state"), config = join(root, "config");
+  const profiles = join(config, "muse-bridge", "projects"); await mkdir(profiles, { recursive: true });
+  try {
+    const separate = join(root, "separate"), metadata = join(root, "separate-git");
+    await mkdir(separate);
+    await exec("git", ["init", "-q", "-b", "main", `--separate-git-dir=${metadata}`, separate],
+      { timeout: 10000, env: cleanGitEnvironment() });
+    const separateGit = fixtureGit(separate);
+    await separateGit("-c", "user.name=Passeur Test", "-c", "user.email=test@example.invalid",
+      "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "test: separate fixture");
+    const separateLegacy = join(profiles, `${projectId(separate)}.json`); await writeFile(separateLegacy, "{}\n");
+    const separateBinding = await resolveRepositoryBinding({ project: separate, stateRoot: state },
+      { XDG_CONFIG_HOME: config }, AbortSignal.timeout(10000));
+    expect(separateBinding.profilePath).toBe(separateLegacy);
+
+    const child = join(root, "child"), parent = join(root, "parent"), linked = join(root, "sub-linked");
+    await mkdir(child); await exec("git", ["init", "-q", "-b", "main", child], { timeout: 10000, env: cleanGitEnvironment() });
+    const childGit = fixtureGit(child);
+    await childGit("-c", "user.name=Passeur Test", "-c", "user.email=test@example.invalid",
+      "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "test: child fixture");
+    await mkdir(parent); await exec("git", ["init", "-q", "-b", "main", parent], { timeout: 10000, env: cleanGitEnvironment() });
+    const parentGit = fixtureGit(parent);
+    await parentGit("-c", "protocol.file.allow=always", "submodule", "add", "-q", child, "sub");
+    await parentGit("-c", "user.name=Passeur Test", "-c", "user.email=test@example.invalid",
+      "-c", "commit.gpgsign=false", "commit", "-qam", "test: submodule fixture");
+    const submodule = join(parent, "sub"), submoduleGit = fixtureGit(submodule);
+    await submoduleGit("worktree", "add", "-q", "-b", "linked", linked);
+    const submoduleLegacy = join(profiles, `${projectId(submodule)}.json`); await writeFile(submoduleLegacy, "{}\n");
+    const linkedBinding = await resolveRepositoryBinding({ project: linked, stateRoot: state },
+      { XDG_CONFIG_HOME: config }, AbortSignal.timeout(10000));
+    expect(linkedBinding.profilePath).toBe(submoduleLegacy);
+    await submoduleGit("worktree", "remove", linked);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 30000);
 it("two real stdio clients concurrently prepare one service and closing either preserves the other", async () => {
   const root = await mkdtemp(join(tmpdir(), "passeur-shared-")), project = join(root, "project"), state = join(root, "state");
   await mkdir(project);
@@ -118,7 +160,7 @@ it("two real stdio clients concurrently prepare one service and closing either p
 it("linked source views share the service while distinct repositories have different owners", async () => {
   const root = await mkdtemp(join(tmpdir(), "passeur-linked-")), project = join(root, "project"), linked = join(root, "linked"), other = join(root, "other"), state = join(root, "state");
   await mkdir(project); await mkdir(other);
-  const git = (...args: string[]) => exec("git", ["-C", project, ...args], { timeout: 10000 });
+  const git = fixtureGit(project);
   await git("init", "-q", "-b", "main");
   await git("-c", "user.name=Passeur Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "test: fixture");
   await git("worktree", "add", "-b", "linked", linked);
