@@ -23,10 +23,36 @@ export async function repositoryIdentity(root: string, signal?: AbortSignal): Pr
 }
 export async function repositoryMainWorktree(root: string, signal?: AbortSignal): Promise<string> {
   try {
+    const [topText, gitDirText, commonText] = await Promise.all([
+      git(root, ["rev-parse", "--path-format=absolute", "--show-toplevel"], signal),
+      git(root, ["rev-parse", "--path-format=absolute", "--absolute-git-dir"], signal),
+      git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+    ]);
+    const [top, gitDir, common] = await Promise.all([
+      realpath(topText.trim()), realpath(gitDirText.trim()), realpath(commonText.trim()),
+    ]);
+    if (gitDir === common) return top;
+
+    try {
+      const configured = (await git(root, ["config", "--path", "--get", "core.worktree"], signal)).trim();
+      if (configured) return realpath(isAbsolute(configured) ? configured : resolve(common, configured));
+    } catch (error) {
+      if (!(error instanceof BridgeError) || error.code !== "GIT_ERROR") throw error;
+    }
+
     const fields = (await git(root, ["worktree", "list", "--porcelain", "-z"], signal)).split("\0");
     const entry = fields.find((field) => field.startsWith("worktree "));
-    if (!entry) throw new BridgeError("GIT_WORKTREE_INVALID", "Git did not report a canonical main worktree");
-    return realpath(entry.slice("worktree ".length));
+    if (entry) {
+      const candidate = await realpath(entry.slice("worktree ".length));
+      try {
+        const candidateTop = await realpath((await git(candidate, ["rev-parse", "--path-format=absolute", "--show-toplevel"], signal)).trim());
+        const candidateCommon = await realpath((await git(candidate, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim());
+        if (candidateTop === candidate && candidateCommon === common) return candidate;
+      } catch (error) {
+        if (!(error instanceof BridgeError) || error.code !== "GIT_ERROR") throw error;
+      }
+    }
+    throw new BridgeError("GIT_MAIN_WORKTREE_UNAVAILABLE", "Git metadata does not expose the canonical main-worktree path");
   } catch (error) {
     // Preserve the existing non-Git directory identity used by read-only assignments.
     if (error instanceof BridgeError && error.code === "GIT_ERROR" && error.message.includes("not a git repository")) return root;
