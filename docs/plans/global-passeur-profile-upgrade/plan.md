@@ -4,12 +4,12 @@
 
 | Field | Value |
 | --- | --- |
-| Plan status | `Complete` |
-| Acceptance status | Profile/path repair, Muse model query, installed-host qualification, post-close re-audit and independent final review complete; documented limitations remain bounded |
-| Current phase | M0–M6, V1/V2 reviews and 2026-10-01 current-state audit complete |
-| Exactly one next slice | None — accepted repair and evidence are complete |
+| Plan status | `Active` |
+| Acceptance status | Profile/path repair, Muse model query, installed-host qualification, post-close re-audit and independent final review complete; M7 exposed a native-stop evidence defect and final implementation-worktree/native-task qualification remains in progress |
+| Current phase | M0–M6, V1/V2 reviews and 2026-10-01 current-state audit complete; M7 continues after live Muse task evidence exposed an adapter lifecycle defect |
+| Exactly one next slice | M7 — repair the authorized existing-repository worktree-root override and Muse stop-evidence contract, then qualify completed implementation tasks in this repository and an unseen repository |
 | Canonical plan path | `docs/plans/global-passeur-profile-upgrade/plan.md` |
-| Current invocation | `verify` — record fresh-host catalog/service evidence and safe removal of the unreferenced intermediate runtime |
+| Current invocation | `continue` — perform the authorized worktree-root correction and end-to-end implementation qualification |
 | Previous repair commit | `63b480ac6566ca962e19e29e5867673b8ffc7507` |
 | Continuation baseline | `2c3fe209ffc4c487558d19955544830e6af4bcae` |
 | Prior repair | `e5d599e` — global frontend routing; upgrade acceptance was overstated and is amended by this plan |
@@ -61,6 +61,7 @@ The current Passeur MCP session is not an available implementation delegate: `pa
 | M5 — live Muse model catalog | GPT-6.1 Sol Medium (fallback after Passeur task failed before native start); lead integrates | `src/muse/models.ts`, `src/mcp/server.ts`, `src/codex/config.ts`, `src/cli.ts`, focused tests/fixture and startup documentation | `passeur_models` queries Muse via MSP `model/list`; bounded paging, catalog change detection, cancellation/closure and at most two concurrent owned hosts per frontend; setup selects Muse-reported default; no hardcoded catalog | Complete after read-only Sol High review and 52/52 focused tests |
 | M6 — installed global cutover and cleanup | Lead | Approved user profile/configuration through supported CLI; plan and reports | Shared installation default uses the approved existing policy and Muse-reported default; sole global `passeur` registration points at clean installed candidate; service is gracefully stopped without task cancellation and restarted by fresh hosts; same and unseen repositories use the registered catalog; no stale repository-specific registration remains | Complete |
 | V2 — final architecture/lifecycle review | GPT-6.1 Sol High, read-only; lead integrates | Exact integrated M5/M6 candidate, docs and evidence | Review covers model-query ownership, registration/profile cutover, service restart, host freshness and legacy-artifact disposition; repair and reverify any material finding | Complete — PASS; no P0/P1/P2 findings |
+| M7 — worktree and native implementation qualification | Lead; Passeur MCP Muse Spark 1.3 contributor for live task qualification; GPT-6.1 Sol Medium code fallback after the accepted Passeur task could not certify native stop; GPT-6.1 Sol High read-only architecture review | Existing repository's one `worktree_root` field; `src/muse/adapter.ts` and its focused lifecycle regression test; this plan's verification, inventory, execution ledger and bounded prior-plan addendum | Supported locked profile edit changes only the malformed root to `/home/jeremy/.local/share/passeur/worktrees`; normal SDK close evidence and protected namespace proof retain distinct semantics; fresh hosts complete a tiny disposable implementation task in this repository and one unseen repository; verify native start/stop, result and supported resource cleanup; repository domains remain distinct | In progress |
 
 M1 exports the following narrow API for M2 and M3:
 

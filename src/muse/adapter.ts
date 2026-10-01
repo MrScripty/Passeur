@@ -126,7 +126,8 @@ export class MuseSdkAdapter implements WorkerAdapter {
       client = undefined; startup = undefined;
       if (owned) {
         const closeSettled = await settlesWithin(Promise.resolve().then(() => owned.close()), remaining());
-        const independentlyStopped = stopProof &&
+        // SDK-owned close observes ordinary host exit; protected namespaces need their owner's proof too.
+        const independentlyStopped = !stopProof ||
           await settlesWithin(Promise.resolve().then(() => stopProof!()).then(proved => {
             if (!proved) throw new BridgeError("MUSE_STOP_UNCONFIRMED", "Protected namespace retirement was not observed");
           }), remaining());
