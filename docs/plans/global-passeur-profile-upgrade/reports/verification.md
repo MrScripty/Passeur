@@ -1,8 +1,8 @@
 # Verification and acceptance record
 
-**Operation:** `verify` — M6 installed-host cutover and final V2 review recorded; the reviewed evidence is ready for commit.
-**Candidate:** M5 source commit `c69cb4f460b8fc154f70c7bc17c65f9269cf5006`, installed build `35452931cd3700f5d77cdb9b8c2b25952696347b14fc85fe36252cb4a02edbd9`, plus the approved host configuration migration.
-**Status:** focused code checks and fresh-host qualification passed. Previous V1 review and final read-only V2 review passed; no P0/P1/P2 findings remain. Final evidence commit is pending.
+**Operation:** `verify` — M6 installed-host cutover, final V2 review and evidence commit recorded.
+**Candidate:** M5 source commit `c69cb4f460b8fc154f70c7bc17c65f9269cf5006`, installed build `35452931cd3700f5d77cdb9b8c2b25952696347b14fc85fe36252cb4a02edbd9`, plus the approved host configuration migration; M6 evidence commit `6deb15b2314e17dc2d0b0ccbe2cf85fc62219388`.
+**Status:** focused code checks and fresh-host qualification passed. V1 and final read-only V2 reviews passed with no P0/P1/P2 findings. The scoped repair is committed; the documented worktree/runtime/full-suite limits remain.
 
 ## Check results
 
@@ -60,6 +60,7 @@ Both sessions saw the migrated empty agent registry, as expected from the intent
 | Graceful service restart | Old generations drained with `outstanding:false`; installed candidate started as `fd29dd0e…`; no task cancellation | Demonstrated |
 | Legacy session behavior | Cached old conversation frontend re-elected prior build after cutover; drained again. Current host requires a new Codex session to load the updated registration. | Host limitation recorded |
 | Final V2 Sol High review | HEAD `c69cb4f…` plus five documentation/evidence diffs; read-only architecture/lifecycle review | PASS; no unresolved P0/P1/P2 findings |
+| Final M6 evidence commit | `6deb15b2314e17dc2d0b0ccbe2cf85fc62219388` | Complete |
 
 The previous global-routing acceptance report has been amended to preserve what it proved while explicitly excluding the pre-upgrade scenario; this follow-up supplies the missing migration evidence.
 

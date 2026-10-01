@@ -4,12 +4,12 @@
 
 | Field | Value |
 | --- | --- |
-| Plan status | `Active` |
-| Acceptance status | Profile/path repair, live model catalog, installed-host qualification and independent final review complete; final evidence commit pending |
-| Current phase | M0–M6 and V1/V2 reviews complete; final evidence commit pending |
-| Exactly one next slice | Commit the reviewed five-file M6 plan, inventory, verification, execution ledger and startup guidance |
+| Plan status | `Complete` |
+| Acceptance status | Profile/path repair, live model catalog, installed-host qualification and independent final review complete; documented limitations remain bounded |
+| Current phase | M0–M6 and V1/V2 reviews complete; M6 evidence committed |
+| Exactly one next slice | None — accepted repair and evidence are complete |
 | Canonical plan path | `docs/plans/global-passeur-profile-upgrade/plan.md` |
-| Current invocation | `verify` — record the final read-only review and commit the accepted M6 evidence |
+| Current invocation | `verify` — close out the accepted M6 evidence commit `6deb15b2314e17dc2d0b0ccbe2cf85fc62219388` |
 | Previous repair commit | `63b480ac6566ca962e19e29e5867673b8ffc7507` |
 | Continuation baseline | `2c3fe209ffc4c487558d19955544830e6af4bcae` |
 | Prior repair | `e5d599e` — global frontend routing; upgrade acceptance was overstated and is amended by this plan |
@@ -103,4 +103,4 @@ The separate metadata API still returns `state:"not_enabled"` for this repositor
 
 The installed candidate and exact prior-service compatibility remain. Compatibility is limited to the reviewed prior build and is needed for already-running frontends; no named repository MCP registrations are present or required. The old `6a43…` artifact remains while this active session still has it loaded. The unreferenced `488ba1fa…` intermediate artifact has no current Codex registration or service descriptor reference; it was left on disk because this host namespace cannot prove that no other already-running host has loaded it. Repository profile overrides, task state, descriptors and leases were not removed. The retained checkout override’s worktree root is malformed; user-approved preservation means task implementation requiring a new worktree in this checkout is still not qualified. Repositories without overrides use the valid installation worktree root.
 
-Operation `continue` was reopened on 2026-09-30 after the user reported that a fresh session still lacked `passeur_models` and the installed global profile path had not been exercised. The user selected the separate read-only catalog tool, approved the default-profile policy and global registration update, and authorized graceful service cutover. M6 and the final V2 review are complete; the ordinary evidence commit remains.
+Operation `continue` was reopened on 2026-09-30 after the user reported that a fresh session still lacked `passeur_models` and the installed global profile path had not been exercised. The user selected the separate read-only catalog tool, approved the default-profile policy and global registration update, and authorized graceful service cutover. M6 and the final V2 review are complete. The accepted evidence was committed as `6deb15b2314e17dc2d0b0ccbe2cf85fc62219388`; this closeout records the completed plan state.
