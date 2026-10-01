@@ -5,11 +5,11 @@
 | Field | Value |
 | --- | --- |
 | Plan status | `Complete` |
-| Acceptance status | Profile/path repair, live model catalog, installed-host qualification and independent final review complete; documented limitations remain bounded |
-| Current phase | M0–M6 and V1/V2 reviews complete; M6 evidence committed |
+| Acceptance status | Profile/path repair, Muse model query, installed-host qualification, post-close re-audit and independent final review complete; documented limitations remain bounded |
+| Current phase | M0–M6, V1/V2 reviews and 2026-10-01 current-state audit complete |
 | Exactly one next slice | None — accepted repair and evidence are complete |
 | Canonical plan path | `docs/plans/global-passeur-profile-upgrade/plan.md` |
-| Current invocation | `verify` — close out the accepted M6 evidence commit `6deb15b2314e17dc2d0b0ccbe2cf85fc62219388` |
+| Current invocation | `verify` — record fresh-host catalog/service evidence and safe removal of the unreferenced intermediate runtime |
 | Previous repair commit | `63b480ac6566ca962e19e29e5867673b8ffc7507` |
 | Continuation baseline | `2c3fe209ffc4c487558d19955544830e6af4bcae` |
 | Prior repair | `e5d599e` — global frontend routing; upgrade acceptance was overstated and is amended by this plan |
@@ -104,3 +104,13 @@ The separate metadata API still returns `state:"not_enabled"` for this repositor
 The installed candidate and exact prior-service compatibility remain. Compatibility is limited to the reviewed prior build and is needed for already-running frontends; no named repository MCP registrations are present or required. The old `6a43…` artifact remains while this active session still has it loaded. The unreferenced `488ba1fa…` intermediate artifact has no current Codex registration or service descriptor reference; it was left on disk because this host namespace cannot prove that no other already-running host has loaded it. Repository profile overrides, task state, descriptors and leases were not removed. The retained checkout override’s worktree root is malformed; user-approved preservation means task implementation requiring a new worktree in this checkout is still not qualified. Repositories without overrides use the valid installation worktree root.
 
 Operation `continue` was reopened on 2026-09-30 after the user reported that a fresh session still lacked `passeur_models` and the installed global profile path had not been exercised. The user selected the separate read-only catalog tool, approved the default-profile policy and global registration update, and authorized graceful service cutover. M6 and the final V2 review are complete. The accepted evidence was committed as `6deb15b2314e17dc2d0b0ccbe2cf85fc62219388`; this closeout records the completed plan state.
+
+## 8. 2026-10-01 current-state re-audit
+
+Two fresh real Codex hosts were started concurrently through the current one-entry registration, one in this existing repository and one in a temporary unseen Git repository. Both loaded installed build `35452931…`, exposed `passeur_models`, and successfully called `passeur_prepare`, `passeur_status`, `passeur_agents` and `passeur_models`. The existing repository remained on its preserved legacy override and connected to generation `ec5a99b4-4274-4751-933d-fa5bc6e16028`; the unseen repository selected the installation default and connected to generation `c793444e-b3ca-4aad-ae0c-94cfcf68cc4c`. Their repository IDs and service generations were distinct. Both services reached `connected`, admission `open`, coordination `ready`/`held`, and profile `valid`; each reported configured agent ID `muse` with readiness `not_checked`. Both services later retired after their one-shot Codex clients exited, consistent with on-demand service lifetime. No work was submitted and no inference was started.
+
+Both fresh Muse `model/list` calls returned the same complete call-time snapshot: source `bundledCatalog`, provider `meta`, Muse profile `tbh`, and one model row, `muse-spark-1.3-contributor`, with `is_default:false`. This is a current Muse response, not a Passeur fallback. Passeur launches the installed Muse executable and returns its source and rows unchanged. Muse 1.4.2's generated stable MSP schema describes `model/list` as a query of models accepted by that host and explicitly lists `bundledCatalog` and `providerCatalog` as distinct source values. The earlier four-row `providerCatalog` observation remains historical and is not claimed as the current catalog. A separately logged Codex model-manager timeout was not attributed to Muse because no causal evidence connected them.
+
+The host-visible active process inventory showed 20 Passeur frontends still loaded from prior build `6a43…`; that runtime remains installed to avoid breaking those sessions. Intermediate build `488ba…` had no active Passeur process, Codex registration or service-descriptor reference; after checking the host process namespace, its exact installed directory was removed. Historical Codex session logs that mention that build remain. The temporary Git fixture was removed after its service reported `absent`; no repository profile, task state, descriptor, lease or control token was deleted. The sole global registration remains on build `35452931…` with no named repository registrations.
+
+No source code changed during this re-audit. The focused suites, `npm run check` and build results remain those recorded above for clean source commit `c69cb4f…`. The independent V2 Sol High review remains applicable to that unchanged source candidate; the re-audit adds host evidence and cleanup disposition only.
