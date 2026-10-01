@@ -4,14 +4,14 @@
 
 | Field | Value |
 | --- | --- |
-| Plan status | `Complete` |
-| Acceptance status | Implementation, automated upgrade qualification, concurrent real-host qualification, independent review and ordinary commit complete |
-| Current phase | M0–M4 and V1 complete |
-| Exactly one next slice | None; all acceptance work is complete |
+| Plan status | `Active` |
+| Acceptance status | Profile/path repair and pre-upgrade routing qualification remain accepted; live model-catalog integration and installed-host cutover are in progress |
+| Current phase | M0–M5 and prior V1 complete; M6 and final V2 pending |
+| Exactly one next slice | M6 — publish the approved installation default, install/register the current candidate, safely restart this repository service, and qualify fresh Codex sessions in this and an unseen repository |
 | Canonical plan path | `docs/plans/global-passeur-profile-upgrade/plan.md` |
-| Current invocation | `verify` — all acceptance work and the ordinary commit are complete |
-| Repair commit | `63b480ac6566ca962e19e29e5867673b8ffc7507` |
-| Source baseline | `7df5c71ea5a2be1eb2f1268b9f14e7599b127e79` |
+| Current invocation | `continue` — add the live Muse model catalog and complete the installed-host cutover and fresh-host qualification |
+| Previous repair commit | `63b480ac6566ca962e19e29e5867673b8ffc7507` |
+| Continuation baseline | `2c3fe209ffc4c487558d19955544830e6af4bcae` |
 | Prior repair | `e5d599e` — global frontend routing; upgrade acceptance was overstated and is amended by this plan |
 | Design authority | GPT-6.1 Sol High composed-design handoff in [review](reports/composed-design-review.md) |
 | Baseline evidence | [failure reproduction and inventory](reports/baseline.md) |
@@ -19,7 +19,7 @@
 | Execution ledger | [contributors and implementation evidence](reports/execution-ledger.md) |
 | Verification | [acceptance and test evidence](reports/verification.md) |
 
-This plan owns profile migration, service profile identity, connection behavior and upgrade qualification. The shared-service plan remains authoritative for repository election, service-owned accepted work, task control, and resource lifecycle. The prior global-routing plan remains historical evidence for routing behavior, with the upgrade qualification limits amended here.
+This plan owns profile migration, service profile identity, connection behavior and upgrade qualification. The shared-service plan remains authoritative for repository election, service-owned accepted work, task control, and resource lifecycle. The prior global-routing plan remains historical evidence for routing behavior, with the upgrade qualification limits amended here. This continuation adds a live Muse catalog and the actual installed-host cutover; the earlier review and commit do not cover those additions.
 
 ## 1. Objective
 
@@ -57,7 +57,10 @@ The current Passeur MCP session is not an available implementation delegate: `pa
 | M2 — service attachment, legacy handshake, and catalog authority | GPT-6.1 Sol Medium | `src/contracts/runtime.ts`, `src/contracts/service.ts`, `src/service/client.ts`, `src/service/server.ts`, `src/service/transport.ts`, `src/service/peer-auth.ts`, `src/core/errors.ts`, focused service tests | Unpinned live join is path-independent; explicit compatibility uses effective identity; service catalog is authoritative; task principals stay independent | Complete |
 | M3 — registration/profile migration | GPT-6.1 Sol Medium | `src/codex/config.ts`, `src/codex/profile-migration.ts`, registration-focused tests; `src/cli.ts` only if needed and coordinated with lead | Migration is deterministic, durable, bounded, and precedes unpinned registration publication | Complete |
 | M4 — integration and acceptance evidence | Lead | New integration tests and this plan’s evidence/docs | Actual old-service upgrade with active task; complete frontend-process restart; existing and unseen repositories; explicit conflicts and migration ambiguity | Complete |
-| V1 — independent review, repair, and commit | GPT-6.1 Sol High read-only reviewer; lead integrates | Review report, verification, inventory, execution ledger, prior-plan addendum | All material findings fixed and reverified; no unrelated changes staged | Active |
+| V1 — independent review, repair, and commit | GPT-6.1 Sol High read-only reviewer; lead integrates | Review report, verification, inventory, execution ledger, prior-plan addendum | All material findings fixed and reverified; no unrelated changes staged | Complete for the previous profile-upgrade candidate |
+| M5 — live Muse model catalog | GPT-6.1 Sol Medium (fallback after Passeur task failed before native start); lead integrates | `src/muse/models.ts`, `src/mcp/server.ts`, `src/codex/config.ts`, `src/cli.ts`, focused tests/fixture and startup documentation | `passeur_models` queries Muse via MSP `model/list`; bounded paging, catalog change detection, cancellation/closure and at most two concurrent owned hosts per frontend; setup selects Muse-reported default; no hardcoded catalog | Complete after read-only Sol High review and 52/52 focused tests |
+| M6 — installed global cutover and cleanup | Lead | Approved user profile/configuration through supported CLI; plan and reports | Shared installation default uses the approved existing policy and Muse-reported default; sole global `passeur` registration points at clean installed candidate; service is gracefully stopped without task cancellation and restarted by a fresh host; same and unseen repositories use the registered catalog; no stale repository-specific registration remains | Pending |
+| V2 — final architecture/lifecycle review | GPT-6.1 Sol High, read-only; lead integrates | Exact integrated M5/M6 candidate, docs and evidence | Review covers model-query ownership, registration/profile cutover, service restart, host freshness and legacy-artifact disposition; repair and reverify any material finding | Pending |
 
 M1 exports the following narrow API for M2 and M3:
 
@@ -84,4 +87,16 @@ Run focused tests, type checks/build, core and relevant broader integration suit
 
 Automated and real-host qualification demonstrates profile ownership semantics, deterministic registration migration, actual old-service compatibility, live accepted-task survival, complete frontend-process restart, two repository domains, and explicit-profile conflict. The independent Sol High read-only review approved the repaired candidate after its one migration-race finding was fixed and reverified. The repair is committed as `63b480ac6566ca962e19e29e5867673b8ffc7507`.
 
-Operation history: `start` admitted M0 and the repair on 2026-09-30 under the user’s explicit request. `continue` records each implementation slice and qualification result, including the user-required ephemeral real-host sessions. `verify` records the exact-candidate review disposition and ordinary commit. This plan does not change the shared-service plan’s task/resource authority or authorize personal configuration, dependency installation, authentication changes, publication, or history rewriting.
+Operation history: `start` admitted M0 and the profile repair on 2026-09-30 under the user’s explicit request. `continue` records each implementation slice and qualification result, including the user-required ephemeral real-host sessions. `verify` records the prior exact-candidate review disposition and ordinary commit. This plan does not change the shared-service plan’s task/resource authority, authorize dependency installation or authentication changes, publish work, or rewrite shared history. Personal-profile and global-registration changes for M6 are separately authorized by the user’s follow-up in this conversation.
+
+## 7. Live model catalog and installed-host continuation
+
+The host-global Codex registration currently has one `passeur` entry and no `passeur_pumas` or `passeur_tuldok` entries, but it still selects the previous installed build. The connected repository service is still on that build. The current Codex host cannot reload a changed MCP tool catalog in place; a fresh Codex session is required to expose `passeur_models`. A same-namespace local descriptor probe reported `observed_dead`, while the live MCP frontend reported `connected`; that CLI observation is not service-death evidence because its process namespace differs from the active host. Use the supported MCP/service lifecycle for cutover.
+
+The new read-only `passeur_models` tool performs a bounded live MSP `model/list` request using an owned short-lived `muse serve --no-session-log` process. It does not depend on a Passeur profile, repository binding, session, task, inference, or repository service. Setup uses the same live provider result and defaults to the row Muse marks as default. The live query during this continuation reported four models from `providerCatalog` / provider `meta`, Muse profile `tbh`; `muse-spark-1.3-contributor` was the marked default. The catalog is evidence with a query time, not a constant to copy into code.
+
+The user explicitly approved creating `/home/jeremy/.config/muse-bridge/default-profile.json` from this repository’s existing approved Passeur policy, changing only the worktree root to `/home/jeremy/.local/share/passeur/worktrees`, retaining existing repository overrides, updating the one global registration, and starting this repository’s service. The source profile is `muse-spark-1.3-contributor`, which the live catalog marked default. Preserve the prior installed artifact while any already-running host may still load it. Remove no repository profiles, task state, descriptors or lease files manually. The cutover must use the supported registration and graceful service-stop workflows, cancel no tasks, and verify the resulting profile and service identities in new host sessions.
+
+The old-runtime compatibility code remains narrowly supported so a current frontend can safely join a valid pre-upgrade service. This is required transition support until the existing service is drained; it does not retain or require old named MCP registrations. Fresh sessions must use the one updated global registration. No user-facing profile, state-root or descriptor action is part of normal operation.
+
+Operation `continue` was reopened on 2026-09-30 after the user reported that the previous repair’s fresh host still lacked `passeur_models` and the local installation did not yet exercise the new registration/tool catalog. The user selected a separate read-only `passeur_models` tool, approved promoting the existing Passeur policy as the default with Muse’s live default model and a shared worktree root, and authorized the global registration and service cutover. Completion remains pending until M6, V2, documentation/evidence updates and the ordinary commit are complete.

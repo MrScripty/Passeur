@@ -189,14 +189,16 @@ async function setup(intent: LaunchIntent, values: Values): Promise<void> {
   const { resolveRepositoryBinding, defaultProfilePath } = await import("./core/repository-runtime.js");
   const binding = await resolveRepositoryBinding({ ...intent, profilePath: required(intent.profilePath ?? defaultProfilePath(process.env), "--profile or HOME/XDG_CONFIG_HOME") }, process.env, AbortSignal.timeout(90_000));
   const { discoverMuseModels } = await import("./muse/models.js");
-  const models = await discoverMuseModels();
-  if (!models.length) throw new BridgeError("MODEL_CATALOG_EMPTY", "No visible Muse models; refresh the Muse model catalog before setup");
+  const { models } = await discoverMuseModels({ museBin: values["muse-bin"] ?? "muse" });
+  if (!models.length) throw new BridgeError("MODEL_CATALOG_EMPTY", "Muse returned no visible models; check the Muse catalog configuration before setup");
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   const ask = async (prompt: string) => (await terminal.question(prompt)).trim();
   try {
     console.log(`Passeur setup for ${binding.project}`);
-    models.forEach((model, index) => console.log(`${index + 1}) ${model.display_label ?? model.model_id}`));
-    const choice = Number((await ask("Select model [1]: ")) || "1") - 1;
+    const configuredDefault = models.findIndex(model => model.is_default);
+    const defaultChoice = configuredDefault >= 0 ? configuredDefault : 0;
+    models.forEach((model, index) => console.log(`${index + 1}) ${model.display_label} (${model.model_id})${model.is_default ? " [default]" : ""}`));
+    const choice = Number((await ask(`Select model [${defaultChoice + 1}]: `)) || String(defaultChoice + 1)) - 1;
     const selected = Number.isInteger(choice) ? models[choice] : undefined;
     if (!selected) throw new BridgeError("MODEL_SELECTION_INVALID", "Select one of the numbered models");
     const implement = /^(y|yes)$/i.test(await ask("Enable implementation worktrees? [y/N]: "));
@@ -252,7 +254,7 @@ async function main(): Promise<void> {
     agents: [...bindingFlags, "offset", "limit"],
     "configure-agent": [...bindingFlags, "agent-file", "replace-agent", "yes"],
     "migrate-profile": [...bindingFlags, "yes"],
-    setup: [...bindingFlags, ...registrationFlags, "install-codex"],
+    setup: [...bindingFlags, "muse-bin", ...registrationFlags, "install-codex"],
     configure: [...bindingFlags, ...configurationFlags, ...registrationFlags],
     "register-codex": [...bindingFlags, ...registrationFlags],
     doctor: [...bindingFlags, "prepare", "yes"], result: [...bindingFlags, "task"],

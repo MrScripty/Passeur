@@ -1,7 +1,11 @@
 import { expect, it } from "vitest";
 import * as TOML from "smol-toml";
-import { mergeCodexMcpToml, renderCodexMcpToml, registrationFingerprint, type CodexMcpRegistration } from "../../src/codex/config.js";
+import { CODEX_ENABLED_TOOLS, mergeCodexMcpToml, renderCodexMcpToml, registrationFingerprint, type CodexMcpRegistration } from "../../src/codex/config.js";
 import { CodexOptionsSchema, codexDefinition } from "../../src/agents/codex/config.js";
+
+it("enables the live Muse model catalog in the single global MCP tool allowlist", () => {
+  expect(CODEX_ENABLED_TOOLS).toContain("passeur_models");
+});
 
 it("requires a named boolean caller-home opt-in and defaults to a dedicated home", () => {
   const raw = { codex_bin: "/bin/codex", codex_home: "/caller/.codex", model: "fixture-model",

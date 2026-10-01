@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFile } from "node:child_process";
@@ -13,6 +13,16 @@ import { resolveRepositoryBinding } from "../../src/core/repository-runtime.js";
 import { projectId } from "../../src/workspace/project.js";
 import { readDescriptor, existingOwner } from "../../src/service/bootstrap.js";
 const exec = promisify(execFile);
+const testProfile = () => ({ schema_version: 3, execution: { stop_grace_ms: 1000, max_workers: 2,
+  max_queued_tasks: 8, max_clients: 32, max_waiters: 128, max_pending_inputs: 16, max_control_receipts: 512,
+  implementation: { enabled: false } },
+  agents: [{ agent_id: "muse", adapter_id: "muse", description: "MCP startup fixture", enabled: true,
+    options: { muse_bin: "muse", model: "muse-spark-1.3", review: { disable_write: true, disable_shell: true, sandbox_network: "proxy-only" },
+      implementation: { sandbox_network: "proxy-only" }, subscription: { provenance: "user_confirmed" } } }] });
+async function writeProfile(path: string) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(testProfile())}\n`);
+}
 function cleanGitEnvironment() {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 }
@@ -28,10 +38,13 @@ async function connect(project: string, state: string) {
   try { await client.connect(transport, { timeout: 10000 }); return client; }
   catch (error) { await client.close(); throw error; }
 }
-async function connectInherited(project: string, state: string) {
+async function connectInherited(project: string, state: string, configHome: string) {
   const client = new Client({ name: "passeur_dynamic_acceptance", version: "1" }, { capabilities: {} });
+  const env = Object.fromEntries(Object.entries(process.env).flatMap(([key, value]) => value === undefined ? [] : [[key, value]])) as Record<string, string>;
+  env.XDG_CONFIG_HOME = configHome;
   const transport = new StdioClientTransport({ command: process.execPath,
-    args: [resolve("dist/src/cli.js"), "serve", "--state-root", state], cwd: project, stderr: "pipe" });
+    args: [resolve("dist/src/cli.js"), "serve", "--state-root", state], cwd: project, stderr: "pipe",
+    env });
   try { await client.connect(transport, { timeout: 10000 }); return client; }
   catch (error) { await client.close(); throw error; }
 }
@@ -78,8 +91,14 @@ it("real front-end discovery survives missing project/profile and permits repair
     const unavailable = (await status(client)).service;
     expect(unavailable).toMatchObject({ state: "unavailable", code: "PATH_NOT_FOUND", stage: "project.resolve", path: project, native_code: "ENOENT" });
     await mkdir(project);
+    const missingProfile = await client.callTool({ name: "passeur_prepare", arguments: {} });
+    expect(missingProfile.isError).toBe(true);
+    expect(body(missingProfile)).toMatchObject({ error: { code: "PATH_NOT_FOUND", stage: "profile.open",
+      path: join(state, "absent-profile.json"), native_code: "ENOENT", next_action: expect.any(String) } });
+    expect((await status(client)).service).toMatchObject({ state: "unavailable", code: "PATH_NOT_FOUND", stage: "profile.open" });
+    await writeProfile(join(state, "absent-profile.json"));
     const prepared = await prepare(client);
-    expect(prepared.repository.execution.profile).toBe("not_checked");
+    expect(prepared.repository.execution.profile).toBe("valid");
   } finally { await client.close(); await assertGone(project, state); await rm(root, { recursive: true, force: true }); }
 }, 30000);
 it("linked worktrees reuse a canonical legacy default profile when it already exists", async () => {
@@ -151,7 +170,7 @@ it("legacy profile lookup resolves separate Git directories and submodule main w
 }, 30000);
 it("two real stdio clients concurrently prepare one service and closing either preserves the other", async () => {
   const root = await mkdtemp(join(tmpdir(), "passeur-shared-")), project = join(root, "project"), state = join(root, "state");
-  await mkdir(project);
+  await mkdir(project); await writeProfile(join(state, "absent-profile.json"));
   const first = await connect(project, state), second = await connect(project, state);
   try {
     const [a, b] = await Promise.all([prepare(first), prepare(second)]);
@@ -163,8 +182,9 @@ it("two real stdio clients concurrently prepare one service and closing either p
   } finally { await Promise.all([first.close(), second.close()]); await assertGone(project, state); await rm(root, { recursive: true, force: true }); }
 }, 30000);
 it("linked source views share the service while distinct repositories have different owners", async () => {
-  const root = await mkdtemp(join(tmpdir(), "passeur-linked-")), project = join(root, "project"), linked = join(root, "linked"), other = join(root, "other"), state = join(root, "state");
+  const root = await mkdtemp(join(tmpdir(), "passeur-linked-")), project = join(root, "project"), linked = join(root, "linked"), other = join(root, "other"), state = join(root, "state"), config = join(root, "config");
   await mkdir(project); await mkdir(other);
+  await writeProfile(join(config, "muse-bridge", "default-profile.json"));
   const git = fixtureGit(project);
   await git("init", "-q", "-b", "main");
   await git("-c", "user.name=Passeur Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "test: fixture");
@@ -175,7 +195,7 @@ it("linked source views share the service while distinct repositories have diffe
   ]);
   expect(projectBinding.repositoryId).toBe(linkedBinding.repositoryId);
   expect(projectBinding.profilePath).toBe(linkedBinding.profilePath);
-  const a = await connectInherited(project, state), b = await connectInherited(linked, state), c = await connectInherited(other, state);
+  const a = await connectInherited(project, state, config), b = await connectInherited(linked, state, config), c = await connectInherited(other, state, config);
   try {
     const [one, two, three] = await Promise.all([prepare(a), prepare(b), prepare(c)]);
     expect(one.generation).toBe(two.generation); expect(three.generation).not.toBe(one.generation);
