@@ -210,7 +210,9 @@ export const AttachRequestSchema = z.object({ schema_version: z.literal(1), task
   .refine((v) => Number(!!v.task_id) + Number(!!v.request_key) === 1, "supply exactly one task identity");
 // MCP tool schemas require an object root. The cross-field rule forbids a model-supplied permission answer.
 export const InputRequestSchema = z.object({
-  schema_version: z.literal(1), kind: z.enum(["permission", "clarification"]), task_id: TaskIdSchema, input_id: TaskIdSchema,
+  // MCP's registered schema supplies the current version. Keep accepting it
+  // when an already-loaded host still sends the explicit value.
+  schema_version: z.literal(1).default(1), kind: z.enum(["permission", "clarification"]), task_id: TaskIdSchema, input_id: TaskIdSchema,
   operation_key: key, control_generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), answer: z.string().min(1).max(16_384).optional(),
 }).strict().superRefine((r, context) => {
   if (r.kind === "permission" && r.answer !== undefined) context.addIssue({ code: "custom", path: ["answer"], message: "Permission must be elicited from the human, not supplied as a tool argument" });

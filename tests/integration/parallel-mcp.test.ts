@@ -12,6 +12,8 @@ it("the real MCP catalog exposes durable operations and rejects obsolete executi
   try {
     await Promise.all([server.mcp.connect(st), client.connect(ct)]);
     expect((await client.listTools()).tools.map(t => t.name).sort()).toEqual([...CODEX_ENABLED_TOOLS].sort());
+    const inputTool = (await client.listTools()).tools.find(t => t.name === "passeur_input");
+    expect(inputTool?.inputSchema.required).not.toContain("schema_version");
     const result = await client.callTool({ name: "passeur_delegate", arguments: { schema_version: 3, agent_id: "muse", request_key: "obsolete", mode: "review", objective: "No execution", context: "", acceptance_criteria: ["Reject old API"] } });
     expect(result.isError).toBe(true); expect(JSON.stringify(result)).toContain("TASK_API_UPGRADE_REQUIRED"); expect(frontend.status().service.state).toBe("not_checked");
     const permission = await client.callTool({ name: "passeur_input", arguments: { schema_version: 1, kind: "permission", task_id: crypto.randomUUID(), input_id: crypto.randomUUID(), operation_key: "forged", control_generation: 1, answer: "accept" } });
