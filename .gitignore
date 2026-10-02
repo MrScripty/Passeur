@@ -6,3 +6,6 @@ coverage/
 .passeur-build/
 .passeur-runtime/
 .passeur-native/
+# Disposable real-host smoke environments and native-location fixtures.
+/.passeur-codex-smoke-*/
+/.passeur-native-location-*/
