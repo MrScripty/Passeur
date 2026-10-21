@@ -8,7 +8,7 @@ Accepted work stays alive until it finishes, fails or is explicitly cancelled. D
 
 ## Build from source
 
-Use Node.js 20 or later and the complete repository with its pinned lockfile:
+Use Node.js 20 or later and the complete repository with its pinned lockfile. Authorize dependency provisioning and its install scripts before running `npm ci`:
 
 ```sh
 git clone https://github.com/MrScripty/Passeur.git
@@ -23,7 +23,7 @@ Dependency installation includes native components and install scripts. Runtime 
 
 The build produces an identified runtime candidate. Follow [installation and setup](docs/startup-and-installation.md#build-and-install-a-runtime) to install that exact candidate, configure agents once and register `passeur` with Codex. Start a fresh Codex session after registration.
 
-**Current status:** the structural-coordination candidate is under acceptance. The supported service environment is Linux on local filesystems with a matching native bundle. Complete [installed acceptance](docs/installed-acceptance.md) before relying on a new installation; [compatibility](docs/compatibility.md) records the remaining limits.
+**Current status:** the [structural-coordination completion plan](docs/plans/structural-coordination-completion/plan.md) records acceptance of its exact source and installed build; the [claim ledger](docs/plans/structural-coordination-completion/reports/claim-status.md) owns the evidence and limits. The supported service environment is Linux on local filesystems with a matching native bundle. Complete [installed acceptance](docs/installed-acceptance.md) before relying on a new installation; see [compatibility](docs/compatibility.md) for environment constraints.
 
 ## The task loop
 
@@ -44,4 +44,3 @@ The caller chooses the task, worker, base and acceptance criteria. Passeur does 
 - [Usage skill](.agents/skills/passeur-bridge/SKILL.md)
 
 [MIT License](LICENSE).
-
